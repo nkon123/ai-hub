@@ -20,6 +20,8 @@
 
 ## 구성
 
+전체 구조·데이터 흐름·거버넌스 상태 전이는 **[시스템 구조 문서](docs/architecture.md)** 를 참고하세요 (GitHub에서 바로 렌더링됩니다).
+
 | 모듈 | 경로 | 책임 |
 |---|---|---|
 | M01 | `apps/portal-web` | Portal UI (Next.js 14) — 25개 화면 |
