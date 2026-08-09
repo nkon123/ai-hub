@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "type": "knowledge_package",
+  "package_id": "pkg-d9e660b7-ca76-4f46-899e-2e1621bac139",
+  "knowledge_asset_version_id": "d9e660b7-ca76-4f46-899e-2e1621bac139",
+  "built_at": "2026-08-07T00:00:00+00:00",
+  "chunking_strategy": "parent_child",
+  "embed_model": "qwen3-embedding:0.6b",
+  "counts": {
+    "chunk_count": 4,
+    "parent_count": 4,
+    "document_count": 1,
+    "chroma_record_count": 4,
+    "bm25_record_count": 4
+  },
+  "files": [
+    {
+      "relative_path": "index/index-meta.json",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 123,
+      "role": "index"
+    },
+    {
+      "relative_path": "source-manifest.json",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size_bytes": 456,
+      "role": "source_manifest"
+    }
+  ],
+  "artifact_notes": {
+    "bm25_pkl_is_pickle": true,
+    "bm25_pkl_relativized": false,
+    "notes": "bm25.pkl은 Python pickle이며 unpickle하지 않습니다 (D-054 참고)"
+  },
+  "verification": {
+    "passed": true,
+    "checks": [
+      {
+        "name": "manifest_file_list_consistency",
+        "passed": true,
+        "message": "Manifest에 선언된 2개 파일이 실제 파일과 정확히 일치합니다",
+        "details": {}
+      }
+    ]
+  },
+  "path_relativization_applied": true,
+  "path_relativization_details": {
+    "parents_rewritten": 4,
+    "chroma_rewritten": 4
+  },
+  "source_manifest_ref": "source-manifest.json",
+  "evaluation_result_ref": null
+}

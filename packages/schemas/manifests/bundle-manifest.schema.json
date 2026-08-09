@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bundle-manifest",
+  "title": "Offline Bundle Manifest (bundle-manifest.yaml)",
+  "description": "Documents the shape `services/distribution-service` (M03) writes into `bundle-manifest.yaml` at the root of every Offline Bundle ZIP (`01-portal-and-distribution.md` §4.2), and that `apps/desktop-client` (M04) reads back on import (`electron/bundle-verify.ts#ParsedManifest`, `electron/bundle-install.ts`). Documentation-only contract, same as `api/knowledge-search.schema.json` — not wired into `ai_asset_schemas.validator` (no SchemaType entry); M03/M04 keep their own hand-written parse/serialize code in sync with this file rather than validating against it at runtime. D-060: added `included_assets[].asset_version_id` so a consumer that needs to *search* a Knowledge item (not just locate its files on disk) has the id search-runtime/agent-runtime actually index by.",
+  "type": "object",
+  "required": [
+    "bundle_id",
+    "created_at",
+    "requested_by",
+    "target_site_id",
+    "root_type",
+    "root_id",
+    "included_assets",
+    "runtime_requirements",
+    "install_order",
+    "forbidden_or_suspended_versions_present",
+    "total_installed_size_bytes"
+  ],
+  "properties": {
+    "bundle_id": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "requested_by": { "type": ["string", "null"] },
+    "target_site_id": { "type": ["string", "null"] },
+    "root_type": { "type": "string", "enum": ["ASSET_VERSION", "SERVICE_VERSION"] },
+    "root_id": { "type": "string" },
+    "included_assets": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/IncludedAssetSummary" }
+    },
+    "runtime_requirements": {
+      "type": "object",
+      "required": ["os", "python", "model_aliases"],
+      "properties": {
+        "os": { "type": "string" },
+        "python": { "type": "string" },
+        "model_aliases": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "install_order": { "type": "array", "items": { "type": "string" } },
+    "forbidden_or_suspended_versions_present": { "type": "boolean" },
+    "total_installed_size_bytes": { "type": "integer", "minimum": 0 }
+  },
+  "definitions": {
+    "IncludedAssetSummary": {
+      "type": "object",
+      "required": ["asset_id", "asset_type", "role", "name", "version", "required", "status", "size_bytes"],
+      "properties": {
+        "asset_id": {
+          "type": ["string", "null"],
+          "description": "Parent Asset.id. Drives the on-disk/in-zip directory layout (`assets/knowledge/{asset_id}/{version}/...`), which stays Asset-id-keyed for D-060 — only the search identifier moved to asset_version_id, not the file layout."
+        },
+        "asset_version_id": {
+          "type": ["string", "null"],
+          "description": "AssetVersion.id — the id `services/agent-runtime` and `services/search-runtime` actually key Knowledge search by (D-060, distinct from asset_id above; the two are never expected to be equal). `null` for two legitimate cases a consumer must handle without guessing: (1) STANDARD_LOCAL_COPY items (D-034 static standard agent/prompt config) have no backing AssetVersion row at all; (2) Bundles produced before this field existed. A consumer MUST NOT fall back to asset_id when this is null — that silently reintroduces the D-060 bug (a request that looks successful but always returns zero Knowledge search results)."
+        },
+        "asset_type": { "type": "string", "enum": ["agent", "knowledge", "prompt", "mcp_tool", "service"] },
+        "role": { "type": "string", "enum": ["root", "agent", "knowledge", "mcp_tool", "prompt", "service"] },
+        "name": { "type": ["string", "null"] },
+        "version": { "type": ["string", "null"] },
+        "required": { "type": "boolean" },
+        "status": { "type": "string" },
+        "size_bytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

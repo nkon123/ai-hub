@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "agent-manifest",
+  "title": "Agent Package Manifest",
+  "type": "object",
+  "required": ["schema_version", "id", "type", "name", "version", "owner", "classification", "workflow", "capabilities"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "const": "agent" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string" }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "manifest_hash": { "type": "string" },
+    "changelog": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "workflow": {
+      "type": "object",
+      "required": ["entry_role", "roles"],
+      "additionalProperties": false,
+      "properties": {
+        "entry_role": { "type": "string" },
+        "roles": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["id", "type"],
+            "additionalProperties": false,
+            "properties": {
+              "id": { "type": "string" },
+              "type": { "type": "string", "enum": ["planner", "retriever", "answerer", "validator"] },
+              "description": { "type": "string" },
+              "requires_knowledge": { "type": "boolean", "default": false },
+              "requires_mcp": { "type": "boolean", "default": false },
+              "requires_prompt": { "type": "boolean", "default": true }
+            }
+          }
+        }
+      }
+    },
+    "capabilities": {
+      "type": "object",
+      "required": ["knowledge_required", "mcp_allowed"],
+      "additionalProperties": false,
+      "properties": {
+        "knowledge_required": { "type": "boolean" },
+        "mcp_allowed": { "type": "boolean" },
+        "streaming": { "type": "boolean", "default": true },
+        "citation_required": { "type": "boolean", "default": false }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_context_tokens": { "type": "integer", "minimum": 0 },
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "max_mcp_calls": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

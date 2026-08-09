@@ -1,0 +1,196 @@
+"""Office MCP Server entrypoint (M10) — 05-mcp-security-governance.md §11.
+
+READ_ONLY MCP tools only. No arbitrary SQL, no arbitrary code execution, no
+arbitrary external URL, no package install — this process only ever talks to
+`Connector` (a Mock in this PoC, D-014) and never shells out or imports
+user-controlled code.
+"""
+
+from __future__ import annotations
+
+import logging
+import uuid
+
+from fastapi import FastAPI, Header
+from fastapi.responses import JSONResponse
+from observability import configure_logging
+
+from office_mcp_server.audit import InMemoryAuditSink, LoggingAuditSink, MultiAuditSink
+from office_mcp_server.connector import MockOracleConnector
+from office_mcp_server.errors import ErrorCode, McpError, error_response, mcp_error_response
+from office_mcp_server.pipeline import ToolCallPipeline
+from office_mcp_server.tool_registry import ToolRegistry
+from office_mcp_server.tools_setup import register_poc_tools
+
+# Structured, Trace ID-carrying logs to stdout — see observability.logging_config
+# for why a plain logging.basicConfig() call is not sufficient under uvicorn
+# (uvicorn's own Config.configure_logging() never touches the root logger).
+configure_logging("office-mcp-server")
+_logger = logging.getLogger("office_mcp_server")
+
+SERVER_VERSION = "0.1.0"
+SCHEMA_VERSION = "1.0"
+
+app = FastAPI(
+    title="Office MCP Server",
+    version=SERVER_VERSION,
+    description="READ_ONLY MCP tools only. No arbitrary SQL or code execution.",
+)
+
+registry = ToolRegistry()
+register_poc_tools(registry)
+connector = MockOracleConnector()
+# The MCP Tool audit trail (05-mcp-security-governance.md §10/§12) must be
+# both queryable in-process (InMemoryAuditSink, kept for `/admin/audit/events`
+# below and for tests) and visible from outside the process (LoggingAuditSink
+# — a structured log line per AuditEvent, carrying the same trace_id/run_id
+# as everything else this run touched). Neither alone was enough: in-memory
+# only is a write-only trail no operator can inspect without an endpoint;
+# log-only would drop admin introspection this PoC already had.
+in_memory_audit_sink = InMemoryAuditSink()
+audit_sink = MultiAuditSink([in_memory_audit_sink, LoggingAuditSink()])
+pipeline = ToolCallPipeline(registry=registry, connector=connector, audit_sink=audit_sink)
+
+ADMIN_ROLE = "ADMIN"
+
+
+def _trace_id(x_trace_id: str | None) -> str:
+    return x_trace_id or str(uuid.uuid4())
+
+
+def _require_admin(x_actor_role: str | None) -> None:
+    """PoC Mock Enterprise Identity Adapter (§7): admin endpoints trust an
+    `X-Actor-Role` header set by the (mocked) trusted auth gateway. This is
+    intentionally the same "never trust a client-asserted role for a real
+    permission decision without a trusted layer in front of it" caveat as
+    `RequestContext` — D-001/D-015 track the real adapter as PoC-only."""
+    if x_actor_role != ADMIN_ROLE:
+        raise McpError(ErrorCode.PERMISSION_DENIED, "관리자 권한이 필요한 API입니다.")
+
+
+@app.get("/health")
+async def health_legacy() -> JSONResponse:
+    """Kept for backward compatibility with the pre-§11 stub; §11's
+    `/health/live` and `/health/ready` are the canonical operational API."""
+    return JSONResponse({"status": "ok", "version": SERVER_VERSION})
+
+
+@app.get("/health/live")
+async def health_live() -> JSONResponse:
+    return JSONResponse({"status": "ok"})
+
+
+@app.get("/health/ready")
+async def health_ready() -> JSONResponse:
+    status = await connector.health()
+    body = {"status": "ready" if status.healthy else "not_ready", "detail": status.detail}
+    return JSONResponse(body, status_code=200 if status.healthy else 503)
+
+
+@app.get("/version")
+async def version() -> JSONResponse:
+    return JSONResponse(
+        {
+            "server_version": SERVER_VERSION,
+            "schema_version": SCHEMA_VERSION,
+            "tools": [{"name": t.name, "version": t.version} for t in registry.list_all()],
+        }
+    )
+
+
+@app.get("/mcp/v1/tools")
+async def list_tools() -> JSONResponse:
+    tools = registry.admin_list()
+    return JSONResponse({"tools": tools, "count": len(tools)})
+
+
+@app.post("/mcp/v1/tools/{tool_name}/call")
+async def call_tool(
+    tool_name: str,
+    body: dict,
+    x_trace_id: str | None = Header(default=None),
+) -> JSONResponse:
+    trace_id = _trace_id(x_trace_id)
+    try:
+        result = await pipeline.call(tool_name, body)
+        return JSONResponse(result)
+    except McpError as error:
+        return mcp_error_response(error, trace_id)
+    except Exception:  # noqa: BLE001 — last-resort boundary, never leak internals to the caller
+        _logger.exception("Unhandled error while executing MCP tool %s", tool_name)
+        return error_response(
+            500,
+            ErrorCode.INTERNAL_ERROR,
+            "Tool 실행 중 오류가 발생했습니다.",
+            trace_id,
+        )
+
+
+@app.get("/admin/tools")
+async def admin_list_tools(x_actor_role: str | None = Header(default=None)) -> JSONResponse:
+    try:
+        _require_admin(x_actor_role)
+    except McpError as error:
+        return mcp_error_response(error, str(uuid.uuid4()))
+    return JSONResponse({"tools": registry.admin_list()})
+
+
+@app.post("/admin/tools/{tool_name}/disable")
+async def admin_disable_tool(
+    tool_name: str, x_actor_role: str | None = Header(default=None)
+) -> JSONResponse:
+    trace_id = str(uuid.uuid4())
+    try:
+        _require_admin(x_actor_role)
+    except McpError as error:
+        return mcp_error_response(error, trace_id)
+    if not registry.disable(tool_name):
+        return error_response(
+            404, ErrorCode.MCP_TOOL_NOT_FOUND, "존재하지 않는 Tool입니다.", trace_id
+        )
+    return JSONResponse({"tool_name": tool_name, "status": "DISABLED"})
+
+
+@app.post("/admin/tools/{tool_name}/enable")
+async def admin_enable_tool(
+    tool_name: str, x_actor_role: str | None = Header(default=None)
+) -> JSONResponse:
+    trace_id = str(uuid.uuid4())
+    try:
+        _require_admin(x_actor_role)
+    except McpError as error:
+        return mcp_error_response(error, trace_id)
+    if not registry.enable(tool_name):
+        return error_response(
+            404, ErrorCode.MCP_TOOL_NOT_FOUND, "존재하지 않는 Tool입니다.", trace_id
+        )
+    return JSONResponse({"tool_name": tool_name, "status": "ACTIVE"})
+
+
+@app.get("/admin/audit/events")
+async def admin_list_audit_events(
+    x_actor_role: str | None = Header(default=None),
+    trace_id: str | None = None,
+    limit: int = 100,
+) -> JSONResponse:
+    """Read path for the MCP Tool audit trail — additive beyond
+    05-mcp-security-governance.md §11's documented `/admin/tools*` table,
+    gated identically (admin-only, same PoC Mock Identity caveat as
+    `_require_admin`). `LoggingAuditSink` (wired into `audit_sink` above) is
+    the log-line side of the same trail and is what actually satisfies
+    README §15 step 12 ("MCP 로그가 동일 Trace ID로 연결된다") from outside
+    this process; this endpoint is a convenience for inspecting it without
+    grepping a log file while the process is still running. In-memory only
+    (§12.9 append-only/durable storage is out of scope for this PoC sink,
+    same caveat `InMemoryAuditSink`'s own docstring already states)."""
+    request_trace_id = str(uuid.uuid4())
+    try:
+        _require_admin(x_actor_role)
+    except McpError as error:
+        return mcp_error_response(error, request_trace_id)
+    events = in_memory_audit_sink.events
+    if trace_id is not None:
+        events = [e for e in events if e.trace_id == trace_id]
+    events = events[-limit:] if limit > 0 else []
+    dumped = [e.model_dump(mode="json") for e in events]
+    return JSONResponse({"events": dumped, "count": len(dumped)})

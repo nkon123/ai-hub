@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "indexing-profile",
+  "title": "Knowledge Indexing Profile",
+  "type": "object",
+  "required": ["name", "version", "chunking_strategy", "embedding_model_alias"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "description": { "type": "string" },
+    "chunking_strategy": {
+      "type": "string",
+      "enum": ["recursive", "markdown", "parent_child"]
+    },
+    "chunk_size": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 4096,
+      "default": 512,
+      "description": "Target chunk size in characters (UTF-8 code points), not whitespace tokens — see D-053. For recursive/markdown this is the leaf chunk size; for parent_child this is the child chunk size."
+    },
+    "chunk_overlap": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 512,
+      "default": 64,
+      "description": "Overlap between consecutive chunks, in characters (same unit as chunk_size). Must be smaller than chunk_size."
+    },
+    "parent_chunk_size": {
+      "type": "integer",
+      "minimum": 256,
+      "default": 2048,
+      "description": "Parent chunk size for parent_child strategy, in characters (same unit as chunk_size). Default keeps roughly the previous 4:1 parent:child ratio (D-053)."
+    },
+    "minimum_size": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4096,
+      "default": 64,
+      "description": "Minimum chunk size in characters. A trailing recursive-split chunk shorter than this is merged into the previous chunk instead of being stored on its own (04-knowledge-platform.md §2.5 Recursive). Added contract-first alongside the chunking strategy implementation — see D-053."
+    },
+    "embedding_model_alias": {
+      "type": "string",
+      "description": "Model alias from Office Profile"
+    },
+    "enable_bm25": { "type": "boolean", "default": true },
+    "language": { "type": "string", "default": "ko" },
+    "metadata_fields": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Document metadata fields to index for filtering"
+    }
+  }
+}

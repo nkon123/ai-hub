@@ -1,0 +1,52 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440021",
+  "type": "prompt",
+  "name": "Standard Knowledge+DB Answer Prompt",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "Knowledge 검색 결과와 읽기 전용 MCP Tool 조회 결과를 함께 근거로 삼아 한국어 답변을 생성하는 프롬프트",
+  "tags": ["standard", "answer", "korean", "mcp"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Initial standard-db-prompt — separate asset from standard-prompt so the Knowledge-only agent's prompt stays unchanged.",
+  "created_at": "2026-08-06T09:00:00Z",
+  "template": {
+    "system": "당신은 사내 지식 자산과 읽기 전용 시스템 조회 결과를 기반으로 직원의 질문에 답변하는 AI 어시스턴트입니다. 반드시 제공된 참고 문서와 조회된 시스템 정보에만 근거하여 답변하고, 근거가 없는 내용은 답변하지 마세요.",
+    "file": "template.md",
+    "language": "ko"
+  },
+  "variables": [
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "사용자 질문"
+    },
+    {
+      "name": "context_chunks",
+      "type": "array",
+      "required": false,
+      "description": "Knowledge 검색 결과 청크 목록"
+    },
+    {
+      "name": "tool_results",
+      "type": "array",
+      "required": false,
+      "description": "읽기 전용 MCP Tool 호출 결과 목록"
+    }
+  ],
+  "model_capability": {
+    "min_context_tokens": 4096,
+    "requires_function_calling": false,
+    "requires_vision": false
+  },
+  "output_schema": {
+    "format": "markdown",
+    "citation_required": true
+  }
+}

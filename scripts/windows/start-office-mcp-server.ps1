@@ -1,0 +1,15 @@
+<#
+.SYNOPSIS
+    office-mcp-server (M10, 읽기 전용 MCP Tool 서버)를 :8500 포트에서
+    기동한다.
+
+.DESCRIPTION
+    Makefile의 `dev-office-mcp-server` 타겟과 동일한 명령. Health Check는
+    `/health`가 아니라 `/health/live`, `/health/ready`에 있다(health-check.ps1
+    참고).
+#>
+
+$RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+Set-Location (Join-Path $RepoRoot "services\office-mcp-server")
+
+uv run uvicorn office_mcp_server.main:app --reload --port 8500

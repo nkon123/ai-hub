@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-audit-context",
+  "title": "MCP Audit Context & Tool Call",
+  "description": "AuditContext is reconciled with the §3 Request Context shape in 05-mcp-security-governance.md (nested user{id, organization_id, site_id, roles[]}, plus request_id/requested_tool) as of the office-mcp-server (M10) implementation. Before this change the field was a narrower, undocumented flat shape (user_id/org/site/role) with zero consumers in the codebase (grep across apps/services/packages/tests found none), so this is an in-place extension rather than an additive parallel type — see docs/implementation-spec/open-decisions.md D-049.",
+  "definitions": {
+    "RequestContextUser": {
+      "type": "object",
+      "required": ["id", "organization_id", "site_id", "roles"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string" },
+        "organization_id": { "type": "string" },
+        "site_id": { "type": "string" },
+        "roles": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Roles as resolved by the trusted runtime/authentication layer — never taken from Agent Prompt or tool input."
+        }
+      }
+    },
+    "AuditContext": {
+      "title": "Request Context (§3)",
+      "type": "object",
+      "required": [
+        "request_id",
+        "trace_id",
+        "run_id",
+        "service_id",
+        "service_version",
+        "agent_id",
+        "agent_version",
+        "user",
+        "requested_tool"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "request_id": { "type": "string" },
+        "trace_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "service_id": { "type": "string" },
+        "service_version": { "type": "string" },
+        "agent_id": { "type": "string" },
+        "agent_version": { "type": "string" },
+        "user": { "$ref": "#/definitions/RequestContextUser" },
+        "requested_tool": {
+          "type": "string",
+          "description": "Tool name this context was minted for; the server must reject a call where this does not match the tool actually being invoked."
+        }
+      }
+    },
+    "ToolCallRequest": {
+      "type": "object",
+      "required": ["tool_name", "server_alias", "input", "audit_context"],
+      "additionalProperties": false,
+      "properties": {
+        "tool_name": { "type": "string" },
+        "server_alias": { "type": "string" },
+        "input": { "type": "object" },
+        "audit_context": { "$ref": "#/definitions/AuditContext" },
+        "confirmed": {
+          "type": "boolean",
+          "default": false,
+          "description": "§8.4 사용자 확인 정책. Set by the trusted caller (Agent/Desktop Runtime) after it has obtained the user's confirmation for an ALWAYS/ON_PARAMETER tool — never inferred from tool input."
+        }
+      }
+    },
+    "ToolCallResult": {
+      "type": "object",
+      "required": ["success", "tool_name", "duration_ms", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "success": { "type": "boolean" },
+        "tool_name": { "type": "string" },
+        "output": { "type": "object" },
+        "error_code": { "type": "string" },
+        "error_message": { "type": "string" },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "trace_id": { "type": "string" },
+        "rows_returned": { "type": "integer" },
+        "truncated": { "type": "boolean" },
+        "limit_info": { "type": "object" }
+      }
+    },
+    "ExecutionGuard": {
+      "type": "object",
+      "required": ["timeout_seconds", "max_rows", "max_bytes"],
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "max_rows": { "type": "integer", "minimum": 1 },
+        "max_bytes": { "type": "integer", "minimum": 1 },
+        "rate_limit_per_minute": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}

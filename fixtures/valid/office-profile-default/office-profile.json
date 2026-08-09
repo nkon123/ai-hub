@@ -1,0 +1,31 @@
+{
+  "name": "miracom-default",
+  "version": "1.0.0",
+  "org": "miracom",
+  "sites": ["headquarters", "gumi"],
+  "model_aliases": {
+    "default-chat": {
+      "provider": "ollama",
+      "model_id": "exaone3.5:7.8b",
+      "endpoint": "http://127.0.0.1:11434",
+      "max_context_tokens": 32768
+    },
+    "default-embedding": {
+      "provider": "ollama",
+      "model_id": "qwen3-embedding:0.6b",
+      "endpoint": "http://127.0.0.1:11434",
+      "max_context_tokens": 8192
+    }
+  },
+  "allowed_mcp_servers": [
+    {
+      "alias": "oracle-connector",
+      "endpoint": "http://127.0.0.1:8500",
+      "allowed_tools": ["db_metadata.get_tables", "db_metadata.get_columns", "table_count.query"]
+    }
+  ],
+  "security": {
+    "max_classification_allowed": "CONFIDENTIAL",
+    "audit_retention_days": 90
+  }
+}

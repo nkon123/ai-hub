@@ -1,0 +1,8 @@
+{
+  "knowledge_id": "af146e3d-a6f8-4516-912e-819903a1bef1",
+  "chunk_count": 4,
+  "parent_count": 4,
+  "document_count": 4,
+  "collection_name": "knowledge_af146e3d_a6f8_4516_912e_819903a1bef1",
+  "embed_model": "qwen3-embedding:0.6b"
+}

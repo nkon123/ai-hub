@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "search-runtime"
+version = "0.1.0"
+description = "Enterprise AI Asset Hub — Knowledge Search Runtime (M08)"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.29.0",
+  "pydantic>=2.7.0",
+  "chromadb>=0.5.0",
+  "ai-asset-schemas",
+  "httpx>=0.28.1",
+  "rank-bm25>=0.2.2",
+  "observability",
+  # §3.8 Filter와 ACL: security_policy.Classification/clearance_covers is the
+  # single central definition shared with M07 indexing-runtime — public
+  # package API, not an internal folder import (CLAUDE.md 구현 원칙 2).
+  # Already a uv workspace member; no external install needed.
+  "security-policy",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/search_runtime"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }
+observability = { workspace = true }
+security-policy = { workspace = true }

@@ -1,0 +1,24 @@
+{
+  "schema_version": "1.0",
+  "type": "source_manifest",
+  "knowledge_asset_version_id": "d9e660b7-ca76-4f46-899e-2e1621bac139",
+  "documents": [
+    {
+      "document_id": "d9e660b7-ca76-4f46-899e-2e1621bac139:remote-work-policy.md",
+      "display_name": "remote-work-policy",
+      "relative_source_path": "remote-work-policy.md",
+      "source_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "source_version": "미기재",
+      "owner": {
+        "org": "miracom",
+        "team": "hr",
+        "creator_id": "admin@miracom.com"
+      },
+      "classification": "INTERNAL",
+      "license_or_usage_basis": "미기재",
+      "effective_date": "미기재",
+      "status": "미기재",
+      "parser_identity": "미기재"
+    }
+  ]
+}

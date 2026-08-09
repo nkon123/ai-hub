@@ -1,0 +1,110 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-search",
+  "title": "Knowledge Search Request/Response",
+  "definitions": {
+    "SearchRequest": {
+      "type": "object",
+      "required": ["query", "knowledge_id", "knowledge_version"],
+      "additionalProperties": false,
+      "properties": {
+        "query": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "knowledge_id": { "type": "string", "format": "uuid" },
+        "knowledge_version": { "type": "string" },
+        "retrieval_profile_ref": {
+          "type": "object",
+          "required": ["name", "version"],
+          "additionalProperties": false,
+          "properties": {
+            "name": { "type": "string" },
+            "version": { "type": "string" }
+          }
+        },
+        "top_k": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "metadata_filters": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "description": "Business (non-ACL) metadata equality filters only. `classification` (or any future field in the central ACL field list — see packages/security-policy Classification/ACL_METADATA_FIELDS) is rejected with KNOWLEDGE_ACCESS_DENIED if present here — see 04-knowledge-platform.md §3.8 and access_context below."
+        },
+        "retrieval_profile": {
+          "type": "object",
+          "description": "D-062: an optional, possibly-partial, already-resolved Retrieval Profile dict (retrieval-profile.schema.json subset) — no Profile Registry exists in this PoC (same D-053 shape as indexing-runtime's `profile` field), so this is caller-supplied JSON in the same request. Only `metadata_filters` (§3.8 step 3, Profile Default Filter) is read; it is subject to the same ACL-field rejection as the top-level `metadata_filters` above.",
+          "properties": {
+            "metadata_filters": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          }
+        },
+        "access_context": {
+          "type": "object",
+          "description": "04-knowledge-platform.md §3.8 step 1. Optional on the wire for backward compatibility with callers that predate this feature — omitting it resolves to the least-privileged clearance (PUBLIC_INTERNAL), never to 'no check' or 'see everything'. If present, `clearance` must be one of the four real levels (never UNKNOWN — a caller cannot assert 'my clearance is unknown') or the request is rejected with KNOWLEDGE_ACCESS_DENIED. HONESTY NOTE (D-062, D-015): search-runtime has no authentication — `clearance` is asserted by the caller (agent-runtime, forwarding its Run's user_context) and is never independently verified against a real identity/session in this PoC.",
+          "properties": {
+            "user_id": { "type": "string" },
+            "organization_id": { "type": "string" },
+            "permissions": { "type": "array", "items": { "type": "string" } },
+            "clearance": {
+              "type": "string",
+              "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+            }
+          }
+        },
+        "trace_id": { "type": "string" },
+        "run_id": { "type": "string" },
+        "min_relevance_score": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "D-046: cosine-similarity floor applied after RRF fusion. 0 disables filtering. Defaults to search-runtime's policy setting (see retrieval-profile.schema.json min_relevance_score) when omitted."
+        },
+        "query_instruct_prefix": {
+          "type": "string",
+          "description": "D-046: text prepended to the query only (never to indexed documents) before embedding. Defaults to search-runtime's policy setting when omitted."
+        }
+      }
+    },
+    "Citation": {
+      "type": "object",
+      "required": ["chunk_id", "document_path", "score", "excerpt"],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_id": { "type": "string" },
+        "parent_chunk_id": { "type": "string" },
+        "document_path": { "type": "string" },
+        "document_title": { "type": "string" },
+        "page": { "type": "integer" },
+        "section": { "type": "string" },
+        "excerpt": { "type": "string", "maxLength": 1024 },
+        "score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "similarity": {
+          "type": ["number", "null"],
+          "minimum": -1,
+          "maximum": 1,
+          "description": "D-046: cosine similarity (1 - Chroma distance) of this chunk's vector match, the value min_relevance_score filters on. null when the chunk was found only via BM25 (no vector match) and filtering was disabled — a BM25-only chunk is dropped, not returned as null, whenever filtering is enabled."
+        }
+      }
+    },
+    "SearchResult": {
+      "type": "object",
+      "required": ["citations", "latency_ms", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "citations": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/Citation" }
+        },
+        "rewritten_query": { "type": "string" },
+        "total_chunks_searched": { "type": "integer" },
+        "latency_ms": { "type": "integer", "minimum": 0 },
+        "trace_id": { "type": "string" },
+        "search_id": { "type": "string" },
+        "min_relevance_score_applied": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "description": "D-046: the min_relevance_score actually used for this search (request override or search-runtime's default)."
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,327 @@
+openapi: "3.1.0"
+info:
+  title: Local Agent Runtime API
+  version: "0.1.0"
+  description: |
+    Desktop Local Runtime API (M05) — loopback-only, 127.0.0.1:8100.
+    Desktop Client communicates with this API for local agent execution.
+
+servers:
+  - url: http://127.0.0.1:8100
+    description: Loopback only — not exposed to network
+
+paths:
+  /health:
+    get:
+      summary: Runtime health check
+      operationId: health
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  /local/v1/health:
+    get:
+      summary: Detailed health with component status
+      operationId: detailed_health
+      security: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DetailedHealthResponse"
+
+  /local/v1/services:
+    get:
+      summary: List installed services
+      operationId: list_services
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ServiceListResponse"
+
+  /local/v1/services/{service_id}/preflight:
+    post:
+      summary: Preflight check for a service
+      operationId: preflight_service
+      parameters:
+        - $ref: "#/components/parameters/ServiceId"
+      responses:
+        "200":
+          description: Preflight result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PreflightResult"
+
+  /local/v1/runs:
+    post:
+      summary: Start agent run
+      operationId: start_run
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/StartRunRequest"
+      responses:
+        "202":
+          description: Run started
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+
+  /local/v1/runs/{run_id}:
+    get:
+      summary: Get run status
+      operationId: get_run
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+
+  /local/v1/runs/{run_id}/cancel:
+    post:
+      summary: Cancel run
+      operationId: cancel_run
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: Cancelled
+
+  /local/v1/runs/{run_id}/confirm:
+    post:
+      summary: >
+        Resolve a Run parked in WAITING_FOR_USER (02-desktop-and-agent-runtime.md
+        §5.3) with an explicit approve/deny decision for the MCP Tool call
+        awaiting confirmation (D-052 후속). Denial is not an error — the Run
+        continues (or ends via the existing INSUFFICIENT_EVIDENCE/SUCCEEDED
+        paths) exactly as if the Tool had never been requested.
+      operationId: confirm_run
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConfirmRunRequest"
+      responses:
+        "200":
+          description: Decision accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunResponse"
+        "404":
+          description: Run not found
+        "409":
+          description: >
+            Run is not currently WAITING_FOR_USER (already resolved, expired,
+            or otherwise terminal/running) — decision rejected, not applied.
+
+  /local/v1/runs/{run_id}/events:
+    get:
+      summary: SSE event stream for run
+      operationId: run_events_stream
+      parameters:
+        - $ref: "#/components/parameters/RunId"
+      responses:
+        "200":
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/RuntimeSSEEvent"
+
+components:
+  parameters:
+    ServiceId:
+      name: service_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    RunId:
+      name: run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, unavailable]
+
+    DetailedHealthResponse:
+      allOf:
+        - $ref: "#/components/schemas/HealthResponse"
+        - type: object
+          properties:
+            components:
+              type: object
+              properties:
+                ollama:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                    model_loaded:
+                      type: boolean
+                chroma:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+                mcp:
+                  type: object
+                  properties:
+                    status:
+                      type: string
+
+    ServiceListResponse:
+      type: object
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            type: object
+            properties:
+              service_id:
+                type: string
+                format: uuid
+              name:
+                type: string
+              version:
+                type: string
+              status:
+                type: string
+                enum: [ACTIVE, INACTIVE, INVALID, QUARANTINED, REVOKED]
+
+    PreflightResult:
+      type: object
+      required: [passed, checks]
+      properties:
+        passed:
+          type: boolean
+        checks:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+              passed:
+                type: boolean
+              message:
+                type: string
+
+    StartRunRequest:
+      type: object
+      required: [service_id, input]
+      properties:
+        service_id:
+          type: string
+          format: uuid
+        input:
+          type: object
+        trace_id:
+          type: string
+        user_context:
+          type: object
+
+    RunResponse:
+      type: object
+      required: [id, status, trace_id, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [CREATED, PREFLIGHT, RUNNING, WAITING_FOR_USER, SUCCEEDED, FAILED, CANCELLED, INSUFFICIENT_EVIDENCE]
+        output:
+          type: object
+        error:
+          type: object
+        trace_id:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+        pending_confirmation:
+          type: object
+          description: >
+            Present only while status is WAITING_FOR_USER — a safe,
+            human-readable (Korean) summary of the MCP Tool call awaiting
+            approval. Never contains the raw tool input or result (same
+            property `mcp.call.*` events already hold, D-052 후속).
+          properties:
+            tool_name:
+              type: string
+            summary:
+              type: string
+            deadline:
+              type: string
+              format: date-time
+
+    ConfirmRunRequest:
+      type: object
+      required: [decision]
+      properties:
+        decision:
+          type: string
+          enum: [approve, deny]
+
+    RuntimeSSEEvent:
+      type: object
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum:
+            - run.started
+            - preflight.completed
+            - knowledge.search.started
+            - knowledge.search.completed
+            - mcp.call.started
+            - mcp.call.completed
+            - mcp.confirmation_required
+            - mcp.confirmation_resolved
+            - mcp.confirmation_expired
+            - answer.delta
+            - citation.added
+            - run.completed
+            - run.failed
+            - run.cancelled
+        data:
+          type: object
+        id:
+          type: string

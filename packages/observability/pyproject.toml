@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "observability"
+version = "0.1.0"
+description = "Structured logging + Trace ID propagation (cross-cutting; consumed by M02/M05/M07/M08/M10)"
+requires-python = ">=3.11"
+dependencies = [
+  # Only used by observability.middleware's optional FastAPI/Starlette Trace
+  # ID middleware — observability.context/observability.logging_config are
+  # stdlib-only (logging, contextvars). Already resolved in uv.lock (every
+  # consuming service depends on fastapi, which pulls in starlette itself),
+  # declared directly here because this package imports it directly — same
+  # precedent as packages/evaluation-runner's httpx/pydantic-settings.
+  # 폐쇄망 설치: D-031 사설 PyPI 미러 캐시에서 `uv sync --offline`으로 설치,
+  # 신규 외부 다운로드 없음.
+  "starlette>=0.37.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/observability"]

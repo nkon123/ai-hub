@@ -1,0 +1,90 @@
+@import "tailwindcss";
+
+@theme {
+  /*
+   * Typography — style guide §6.1 wants Pretendard / Noto Sans KR, but this
+   * app targets an air-gapped internal network (see CLAUDE.md 폐쇄망 설치
+   * 원칙), so we cannot pull a webfont from a public CDN. The stack below
+   * uses those faces when the OS or an internally-mirrored @font-face
+   * provides them, and degrades to the closest system Korean-aware font
+   * otherwise (Apple SD Gothic Neo / Malgun Gothic / system-ui). To get the
+   * exact guide typeface, self-host the Pretendard Variable woff2 from the
+   * internal npm/asset mirror and add an @font-face block here — do not add
+   * a <link> to a public font CDN. Tracked as D-050 in
+   * docs/implementation-spec/open-decisions.md.
+   */
+  --font-sans: Pretendard, "Pretendard Variable", "Noto Sans KR", Inter, -apple-system,
+    BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+
+  /* Brand scale — base is style guide §5.1 (primary-50/100/500/600).
+     200/300/400/700/800/900 are interpolated so every brand-* class already
+     used across app/ (50/100/200/400/500/600/700) keeps resolving. */
+  --color-brand-50: #f3f6ff;
+  --color-brand-100: #e9eeff;
+  --color-brand-200: #c9d3fa;
+  --color-brand-300: #a3b2f5;
+  --color-brand-400: #6d84ee;
+  --color-brand-500: #3157e8;
+  --color-brand-600: #2747c7;
+  --color-brand-700: #1f3a9e;
+  --color-brand-800: #182d78;
+  --color-brand-900: #121f54;
+
+  /* Neutrals — style guide §5.2 */
+  --color-background: #f7f8fc;
+  --color-surface: #ffffff;
+  --color-border: #e5e8ef;
+  --color-text-primary: #171b2a;
+  --color-text-secondary: #5e6575;
+  --color-text-muted: #8a91a1;
+
+  /* Status — style guide §5.3 */
+  --color-success: #16a36a;
+  --color-warning: #f59e0b;
+  --color-danger: #e5484d;
+  --color-info: #2f6fed;
+
+  /* Asset-type accents — style guide §5.4. For icon backgrounds, tags and
+     small badges only; never large background fills. */
+  --color-asset-prompt: #16a34a;
+  --color-asset-tool: #9333ea;
+  --color-asset-agent: #f97316;
+  --color-asset-knowledge: #0d9488;
+  --color-asset-chatbot: #db2777;
+  --color-asset-workflow: #2563eb;
+
+  /* Card — style guide §7.1 */
+  --radius-card: 14px;
+  --shadow-card: 0 2px 8px rgba(20, 30, 55, 0.04);
+
+  /* Type scale — style guide §6.2. Sizes only; apply weight with
+     font-normal/semibold/bold per row so callers stay explicit. */
+  --text-page-title: 1.75rem; /* 28px */
+  --text-page-title--line-height: 1.2;
+  --text-section-title: 1.125rem; /* 18px */
+  --text-section-title--line-height: 1.3;
+  --text-card-title: 0.9375rem; /* 15px */
+  --text-card-title--line-height: 1.4;
+  --text-body: 0.875rem; /* 14px */
+  --text-body--line-height: 1.6;
+  --text-caption: 0.8125rem; /* 13px */
+  --text-caption--line-height: 1.4;
+  --text-kpi: 1.75rem; /* 28px */
+  --text-kpi--line-height: 1.2;
+}
+
+/* Must stay inside @layer base — unlayered CSS beats Tailwind's layered
+   utilities regardless of specificity, so an unlayered `a { color }` here
+   would silently override every text-* class applied to an <a>. */
+@layer base {
+  body {
+    background-color: var(--color-background);
+    color: var(--color-text-primary);
+    font-family: var(--font-sans);
+  }
+
+  a {
+    color: inherit;
+    text-decoration: none;
+  }
+}

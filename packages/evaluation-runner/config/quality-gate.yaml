@@ -1,0 +1,32 @@
+# Knowledge Quality Gate policy (04-knowledge-platform.md §4.7, D-013).
+#
+# "수치는 최초 실험 후 조정하며 코드에 하드코딩하지 않고 정책 설정으로
+# 관리한다" — evaluation_runner.quality_gate reads these values at run time;
+# it never hardcodes thresholds. Adjust this file (or point --policy at a
+# copy) once real evaluation experience justifies different numbers.
+schema_version: "1.0"
+
+quality_gate:
+  # §4.7 "Recall@5 80% 이상"
+  recall_at_5_min: 0.80
+
+  # §4.7 "이전 승인 버전보다 Recall@5가 5%p 이상 하락하지 않음"
+  # Only checked when a --baseline-result is supplied to `evaluate-knowledge run`
+  # (or to `evaluate-knowledge compare`); otherwise this check is skipped, not failed.
+  recall_at_5_max_regression_pp: 0.05
+
+  # §4.7 "평가 환경에서 P95 Search 2초 이하"
+  p95_latency_ms_max: 2000
+
+  # Not explicitly numeric in §4.7 ("기대 문서가 없는 질문에서 치명적
+  # 오검색이 없음") but directly computable from the dataset's
+  # forbidden_document_ids field: fraction of cases whose top-k retrieved
+  # documents include a document the case explicitly forbids. PoC default
+  # is zero tolerance; loosen only with a documented reason.
+  forbidden_hit_rate_max: 0.0
+
+notes: >
+  모든 ACL Test 통과, Package Smoke Test 통과(§4.7)는 이 evaluation-runner의
+  범위 밖이다 — ACL 케이스 데이터셋과 packages/knowledge-packager Smoke Test가
+  아직 없다(open-decisions.md D-045 참고). 이 파일이 표현하는 Gate는 검색
+  품질/지연시간 부분에 한정된다.

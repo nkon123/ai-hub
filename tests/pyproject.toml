@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tests"
+version = "0.1.0"
+description = "Contract, integration, and E2E tests — M12"
+requires-python = ">=3.11"
+dependencies = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "openapi-spec-validator>=0.7.1",
+  "ai-asset-schemas",
+  "observability",
+  # tests/e2e/ (M12) hits live services over plain HTTP and drives
+  # packages/evaluation-runner as a library against a live search-runtime
+  # (E2E-07). Both are already resolved in uv.lock (evaluation-runner
+  # depends on httpx itself) — declared directly here too since this
+  # project imports them directly (same convention as evaluation-runner's
+  # own pyproject.toml comment for its own httpx dependency).
+  "httpx>=0.27.0",
+  "evaluation-runner",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["contract", "integration", "e2e"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }
+observability = { workspace = true }
+evaluation-runner = { workspace = true }

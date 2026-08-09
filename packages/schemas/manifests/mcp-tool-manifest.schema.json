@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-tool-manifest",
+  "title": "MCP Tool Package Manifest",
+  "description": "PoC: READ_ONLY tools only",
+  "type": "object",
+  "required": ["schema_version", "id", "type", "name", "version", "owner", "classification", "server_alias", "tool_name", "risk_level"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "const": "mcp_tool" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string" }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "manifest_hash": { "type": "string" },
+    "changelog": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "server_alias": {
+      "type": "string",
+      "description": "Registered MCP server identifier in Office Profile"
+    },
+    "tool_name": {
+      "type": "string",
+      "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*){0,4}$",
+      "maxLength": 128,
+      "description": "Identifier-style tool name. Dot-separated namespacing (e.g. 'db_metadata.get_tables') is allowed per 05-mcp-security-governance.md §5; each segment is still identifier-only — no path separators, no leading digit or dot per segment."
+    },
+    "risk_level": {
+      "type": "string",
+      "enum": ["READ_ONLY"],
+      "description": "PoC: only READ_ONLY is permitted"
+    },
+    "input_schema": {
+      "type": "object",
+      "description": "JSON Schema for tool input parameters"
+    },
+    "output_schema": {
+      "type": "object",
+      "description": "JSON Schema for tool output"
+    },
+    "execution_guards": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "max_rows": { "type": "integer", "minimum": 1 },
+        "max_bytes": { "type": "integer", "minimum": 1 },
+        "requires_user_confirmation": { "type": "boolean", "default": false }
+      }
+    },
+    "permissions": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowed_roles": { "type": "array", "items": { "type": "string" } },
+        "allowed_orgs": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}

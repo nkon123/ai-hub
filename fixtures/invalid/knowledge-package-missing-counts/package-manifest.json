@@ -1,0 +1,23 @@
+{
+  "schema_version": "1.0",
+  "type": "knowledge_package",
+  "package_id": "pkg-invalid",
+  "knowledge_asset_version_id": "invalid-version-id",
+  "built_at": "2026-08-07T00:00:00+00:00",
+  "chunking_strategy": "parent_child",
+  "embed_model": "qwen3-embedding:0.6b",
+  "counts": {
+    "chunk_count": 4,
+    "parent_count": 4
+  },
+  "files": [],
+  "artifact_notes": {
+    "bm25_pkl_is_pickle": true,
+    "bm25_pkl_relativized": false,
+    "notes": ""
+  },
+  "verification": { "passed": true, "checks": [] },
+  "path_relativization_applied": false,
+  "source_manifest_ref": "source-manifest.json",
+  "evaluation_result_ref": null
+}

@@ -1,0 +1,60 @@
+"""Agent Runtime settings."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from pydantic_settings import BaseSettings
+
+_REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-asset-hub/
+
+
+class AgentRuntimeSettings(BaseSettings):
+    config_dir: Path = _REPO_ROOT / "services" / "agent-runtime" / "config"
+    search_runtime_url: str = "http://localhost:8300"
+    portal_api_url: str = "http://localhost:8000"
+    office_mcp_url: str = "http://localhost:8500"
+    # Browser origins allowed to call this runtime directly. Portal Web (:3000)
+    # drives Preview/Hosted Chat; the Desktop renderer's Vite dev server (:5174)
+    # drives D06/D07, which talk to this service over HTTP rather than through
+    # the Electron IPC bridge (the bridge exists for filesystem work only).
+    # Packaged Electron sends `Origin: null` from a file:// document and is NOT
+    # covered here — that needs its own decision, tracked as D-059.
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+    ]
+    # 02-desktop-and-agent-runtime.md §5.3: "WAITING_FOR_USER는 Tool 확인 또는
+    # 추가 입력에 사용한다. 무한 대기를 방지하기 위해 만료시간을 가진다." —
+    # a setting (not a literal in workflow.py) so it is tunable per
+    # deployment/test without a code change, per the lesson learned on this
+    # file's sibling (main.py previously hardcoded a CORS value that silently
+    # shadowed the `cors_origins` setting above).
+    mcp_confirmation_timeout_seconds: float = 120.0
+    # D-062 (open-decisions.md), 04-knowledge-platform.md §3.8: the clearance
+    # asserted to search-runtime's `access_context.clearance` when a Run's
+    # own `user_context` (StartRunRequest.user_context, set by the calling
+    # service — never by `input`, which a chat UI's end user controls) is
+    # absent or omits `clearance` — Hosted Chat (chat.py) never supplies one
+    # at all today (D-015: no identity layer). INTERNAL, not the more
+    # conservative PUBLIC_INTERNAL, because this PoC's demo Knowledge assets
+    # default to INTERNAL classification (apps/portal-web/app/knowledge/new
+    # /page.tsx's `useState("INTERNAL")`) and the existing published demo
+    # chatbots are meant to keep answering once their indexes are upgraded
+    # via `stamp-classification` — see open-decisions.md D-062 for the full
+    # reasoning and its explicit caveat: this is the platform ASSERTING a
+    # clearance on an unauthenticated caller's behalf, not verifying one.
+    default_search_clearance: str = "INTERNAL"
+    # D-034: the Bearer token this runtime presents to portal-api when
+    # resolving an Agent/Prompt AssetVersion from the Registry
+    # (`agent_runtime.adapters.registry.HttpAssetRegistryResolver`). PoC-only
+    # (D-001 Test Identity Adapter fixed dev token, not a secret — see that
+    # adapter's docstring) until a real service-identity mechanism exists.
+    portal_api_token: str = "dev-user-token"
+
+    class Config:
+        env_prefix = "AGENT_RUNTIME_"
+
+
+settings = AgentRuntimeSettings()

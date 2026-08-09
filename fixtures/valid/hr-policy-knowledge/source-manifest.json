@@ -1,0 +1,41 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440001",
+  "type": "knowledge",
+  "name": "HR 정책 Knowledge",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "hr",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "사내 HR 정책 및 복리후생 안내 문서 Knowledge 패키지 (샘플)",
+  "tags": ["hr", "policy", "benefit", "sample"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Initial sample fixture",
+  "created_at": "2026-08-01T09:00:00Z",
+  "source": {
+    "type": "portal_upload",
+    "documents": [
+      {
+        "path": "documents/sample-hr-policy.md",
+        "mime_type": "text/markdown",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "language": "ko"
+      }
+    ]
+  },
+  "indexing_profile_ref": {
+    "name": "default-korean-parent-child",
+    "version": "1.0.0"
+  },
+  "access_control": {
+    "allowed_orgs": ["miracom"],
+    "allowed_roles": ["USER", "CREATOR", "TECH_REVIEWER"]
+  },
+  "evaluation": {
+    "recall_at_5_target": 0.8,
+    "p95_latency_ms_target": 2000
+  }
+}

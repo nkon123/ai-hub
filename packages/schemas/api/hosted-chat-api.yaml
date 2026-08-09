@@ -1,0 +1,213 @@
+openapi: "3.1.0"
+info:
+  title: Hosted Chat API
+  version: "0.1.0"
+  description: |
+    Hosted Chatbot API — served at /chat-api/v1/.
+    Used by the browser-based chat UI at /chat/{slug}.
+    Internal access only; no external URL publishing.
+
+servers:
+  - url: https://ai.company.local
+    description: Internal hosted runtime
+
+paths:
+  /chat-api/v1/chatbots/{slug}:
+    get:
+      summary: Get chatbot config by slug
+      operationId: get_chatbot
+      parameters:
+        - name: slug
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$"
+      responses:
+        "200":
+          description: Chatbot config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatbotConfig"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /chat-api/v1/sessions:
+    post:
+      summary: Create chat session
+      operationId: create_session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSessionRequest"
+      responses:
+        "201":
+          description: Session created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatSession"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /chat-api/v1/sessions/{session_id}/messages:
+    post:
+      summary: Send message — returns SSE stream
+      operationId: send_message
+      parameters:
+        - name: session_id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SendMessageRequest"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                $ref: "#/components/schemas/ChatSSEEvent"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "429":
+          $ref: "#/components/responses/RateLimited"
+
+components:
+  responses:
+    Forbidden:
+      description: Permission denied
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    ValidationError:
+      description: Validation error
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+    RateLimited:
+      description: Rate limit exceeded
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+
+  schemas:
+    ErrorEnvelope:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message, trace_id]
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+            trace_id:
+              type: string
+
+    ChatbotConfig:
+      type: object
+      required: [slug, name, deployment_revision_id]
+      properties:
+        slug:
+          type: string
+        name:
+          type: string
+        welcome_message:
+          type: string
+        suggested_questions:
+          type: array
+          items:
+            type: string
+        citation_display:
+          type: boolean
+        deployment_revision_id:
+          type: string
+          format: uuid
+
+    CreateSessionRequest:
+      type: object
+      required: [slug]
+      properties:
+        slug:
+          type: string
+
+    ChatSession:
+      type: object
+      required: [id, status, trace_id, expires_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [ACTIVE, EXPIRED, TERMINATED]
+        trace_id:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+
+    SendMessageRequest:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+          minLength: 1
+          maxLength: 4096
+        run_id:
+          type: string
+          format: uuid
+          description: Client-provided idempotency key
+
+    ChatSSEEvent:
+      type: object
+      required: [event, data]
+      properties:
+        event:
+          type: string
+          enum:
+            - run.started
+            - search.completed
+            - answer.delta
+            - citation.added
+            - run.completed
+            - run.failed
+        data:
+          type: object
+        id:
+          type: string
+
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+security:
+  - BearerAuth: []

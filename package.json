@@ -1,0 +1,17 @@
+{
+  "name": "enterprise-ai-asset-hub",
+  "private": true,
+  "version": "0.0.1",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev:portal": "pnpm --filter portal-web dev",
+    "dev:desktop": "pnpm --filter desktop-client dev",
+    "build": "pnpm -r build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0"
+  }
+}

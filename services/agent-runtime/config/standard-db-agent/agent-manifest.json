@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440011",
+  "type": "agent",
+  "name": "Standard Knowledge+DB Chat Agent",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "Knowledge 검색과 함께 읽기 전용 MCP DB Metadata Tool을 명시적 Workflow로 호출할 수 있는 챗봇 에이전트 (05-mcp-security-governance.md §5 PoC Tool 전용)",
+  "tags": ["standard", "chatbot", "knowledge", "mcp"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Initial MCP-capable agent — adds requires_mcp workflow role and capabilities.mcp_allowed=true; standard-agent (mcp_allowed=false) is left unchanged for existing published chatbots.",
+  "created_at": "2026-08-06T09:00:00Z",
+  "workflow": {
+    "entry_role": "answerer",
+    "roles": [
+      {
+        "id": "answerer",
+        "type": "answerer",
+        "description": "Knowledge를 검색하고, 호출 요청이 있으면 허용된 읽기 전용 MCP Tool을 호출해 근거를 보강한 뒤 답변을 생성한다",
+        "requires_knowledge": false,
+        "requires_mcp": true,
+        "requires_prompt": true
+      }
+    ]
+  },
+  "capabilities": {
+    "knowledge_required": false,
+    "mcp_allowed": true,
+    "streaming": true,
+    "citation_required": true
+  },
+  "limits": {
+    "max_context_tokens": 8192,
+    "timeout_seconds": 60,
+    "max_mcp_calls": 1
+  }
+}

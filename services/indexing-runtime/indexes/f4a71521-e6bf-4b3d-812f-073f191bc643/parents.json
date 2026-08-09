@@ -1,0 +1,50 @@
+{
+  "chunk-3f98145a8f69a471": {
+    "id": "chunk-3f98145a8f69a471",
+    "text": "# HR 정책 샘플 (Fixture용) 이 파일은 Phase 0 Schema/Contract 검증을 위한 placeholder입니다. 실제 업무 데이터를 포함하지 않습니다.",
+    "metadata": {
+      "knowledge_id": "f4a71521-e6bf-4b3d-812f-073f191bc643",
+      "source_path": "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/apps/portal-api/storage/knowledge/550e8400-e29b-41d4-a716-446655440001/1.0.0/sample-hr-policy.md",
+      "title": "sample-hr-policy.md",
+      "section": "HR 정책 샘플 (Fixture용)",
+      "page": 1,
+      "chunk_type": "parent"
+    }
+  },
+  "chunk-7e38079bd7ab374f": {
+    "id": "chunk-7e38079bd7ab374f",
+    "text": "## 연차 휴가 - 입사 1년 미만: 11일 - 입사 1년 이상: 15일 - 매년 1일 추가 (최대 25일)",
+    "metadata": {
+      "knowledge_id": "f4a71521-e6bf-4b3d-812f-073f191bc643",
+      "source_path": "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/apps/portal-api/storage/knowledge/550e8400-e29b-41d4-a716-446655440001/1.0.0/sample-hr-policy.md",
+      "title": "sample-hr-policy.md",
+      "section": "연차 휴가",
+      "page": 2,
+      "chunk_type": "parent"
+    }
+  },
+  "chunk-202430e78cd853be": {
+    "id": "chunk-202430e78cd853be",
+    "text": "## 복리후생 - 식비 지원: 월 10만원 - 교통비 지원: 실비 처리",
+    "metadata": {
+      "knowledge_id": "f4a71521-e6bf-4b3d-812f-073f191bc643",
+      "source_path": "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/apps/portal-api/storage/knowledge/550e8400-e29b-41d4-a716-446655440001/1.0.0/sample-hr-policy.md",
+      "title": "sample-hr-policy.md",
+      "section": "복리후생",
+      "page": 3,
+      "chunk_type": "parent"
+    }
+  },
+  "chunk-c68ae0bf8bfb788d": {
+    "id": "chunk-c68ae0bf8bfb788d",
+    "text": "## 문의 HR팀 내선 1234",
+    "metadata": {
+      "knowledge_id": "f4a71521-e6bf-4b3d-812f-073f191bc643",
+      "source_path": "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/apps/portal-api/storage/knowledge/550e8400-e29b-41d4-a716-446655440001/1.0.0/sample-hr-policy.md",
+      "title": "sample-hr-policy.md",
+      "section": "문의",
+      "page": 4,
+      "chunk_type": "parent"
+    }
+  }
+}

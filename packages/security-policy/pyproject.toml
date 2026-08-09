@@ -1,0 +1,16 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "security-policy"
+version = "0.1.0"
+description = "RBAC, approval, integrity, audit policy — M11"
+requires-python = ">=3.11"
+dependencies = ["ai-asset-schemas"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/security_policy"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }

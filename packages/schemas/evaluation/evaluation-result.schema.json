@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evaluation-result",
+  "title": "Knowledge Evaluation Result",
+  "description": "Output of running an Evaluation Dataset against Knowledge search (04-knowledge-platform.md §4.4/§4.7). Produced by packages/evaluation-runner; consumed by version comparison (§4.6) and the Data Card (§4.8).",
+  "type": "object",
+  "required": [
+    "schema_version", "type", "result_id", "knowledge_asset_version_id",
+    "dataset_id", "dataset_version", "evaluated_at", "run_id",
+    "retrieval_settings", "metrics", "gate", "per_case"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "type": { "type": "string", "const": "evaluation_result" },
+    "result_id": { "type": "string", "minLength": 1 },
+    "knowledge_asset_version_id": {
+      "type": "string",
+      "description": "AssetVersion id evaluated — this is the knowledge_id sent to search-runtime's POST /search/v1/query"
+    },
+    "dataset_id": { "type": "string", "minLength": 1 },
+    "dataset_version": { "type": "string", "minLength": 1 },
+    "evaluated_at": { "type": "string", "format": "date-time" },
+    "run_id": {
+      "type": "string",
+      "description": "Trace/run correlation id (CLAUDE.md 구현 원칙 9) shared by every search-runtime call made during this evaluation"
+    },
+    "retrieval_settings": {
+      "type": "object",
+      "required": ["top_k", "alpha"],
+      "additionalProperties": false,
+      "properties": {
+        "top_k": { "type": "integer", "minimum": 1 },
+        "alpha": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "knowledge_version": { "type": "string" }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "case_count", "cases_with_ground_truth", "recall_at_1", "recall_at_5",
+        "mrr", "no_result_rate", "latency_p50_ms", "latency_p95_ms",
+        "avg_context_tokens", "forbidden_hit_rate"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "case_count": { "type": "integer", "minimum": 0 },
+        "cases_with_ground_truth": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of cases with a non-empty expected_document_ids — the denominator for recall_at_1/recall_at_5/mrr"
+        },
+        "recall_at_1": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "recall_at_5": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "mrr": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "no_result_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "latency_p50_ms": { "type": "number", "minimum": 0.0 },
+        "latency_p95_ms": { "type": "number", "minimum": 0.0 },
+        "avg_context_tokens": { "type": "number", "minimum": 0.0 },
+        "forbidden_hit_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+      }
+    },
+    "gate": {
+      "type": "object",
+      "required": ["passed", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "passed", "actual", "threshold", "comparison", "message"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "passed": { "type": "boolean" },
+              "actual": { "type": "number" },
+              "threshold": { "type": "number" },
+              "comparison": { "type": "string" },
+              "message": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "per_case": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id", "question", "expected_document_ids", "retrieved_document_ids",
+          "hit_at_1", "hit_at_5", "reciprocal_rank", "latency_ms", "returned_count",
+          "context_tokens", "forbidden_hit", "tags"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": { "type": "string" },
+          "question": { "type": "string" },
+          "expected_document_ids": { "type": "array", "items": { "type": "string" } },
+          "retrieved_document_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Deduplicated document ids in ranked order, derived per D-045"
+          },
+          "hit_at_1": { "type": "boolean" },
+          "hit_at_5": { "type": "boolean" },
+          "reciprocal_rank": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+          "latency_ms": { "type": "integer", "minimum": 0 },
+          "returned_count": { "type": "integer", "minimum": 0 },
+          "context_tokens": { "type": "integer", "minimum": 0 },
+          "forbidden_hit": { "type": "boolean" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    }
+  }
+}

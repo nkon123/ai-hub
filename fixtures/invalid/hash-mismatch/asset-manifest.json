@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655449004",
+  "type": "knowledge",
+  "name": "Hash Mismatch Test",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "manifest_hash": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "_comment": "This file is intentionally missing required 'source' and 'indexing_profile_ref' to test schema rejection"
+}

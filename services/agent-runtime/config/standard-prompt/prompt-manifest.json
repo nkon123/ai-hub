@@ -1,0 +1,46 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440020",
+  "type": "prompt",
+  "name": "Standard Knowledge Answer Prompt",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "Knowledge 검색 결과를 바탕으로 한국어 답변을 생성하는 표준 프롬프트",
+  "tags": ["standard", "answer", "korean"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Initial standard prompt",
+  "created_at": "2026-08-01T09:00:00Z",
+  "template": {
+    "system": "당신은 사내 지식 자산을 기반으로 직원의 질문에 답변하는 AI 어시스턴트입니다. 반드시 제공된 참고 문서에 근거하여 답변하고, 근거가 없는 내용은 답변하지 마세요.",
+    "file": "template.md",
+    "language": "ko"
+  },
+  "variables": [
+    {
+      "name": "question",
+      "type": "string",
+      "required": true,
+      "description": "사용자 질문"
+    },
+    {
+      "name": "context_chunks",
+      "type": "array",
+      "required": true,
+      "description": "Knowledge 검색 결과 청크 목록"
+    }
+  ],
+  "model_capability": {
+    "min_context_tokens": 4096,
+    "requires_function_calling": false,
+    "requires_vision": false
+  },
+  "output_schema": {
+    "format": "markdown",
+    "citation_required": true
+  }
+}

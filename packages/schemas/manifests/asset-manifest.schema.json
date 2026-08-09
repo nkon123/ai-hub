@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "asset-manifest",
+  "title": "Asset Manifest",
+  "description": "Common header for all AI Asset packages",
+  "type": "object",
+  "required": ["schema_version", "id", "type", "name", "version", "owner", "classification"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Permanent asset identifier (UUID v4)"
+    },
+    "type": {
+      "type": "string",
+      "enum": ["agent", "knowledge", "prompt", "mcp_tool", "service", "office_profile"]
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "SemVer major.minor.patch"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string", "minLength": 1 },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string", "minLength": 1 }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 1024
+    },
+    "tags": {
+      "type": "array",
+      "items": { "type": "string" },
+      "maxItems": 20
+    },
+    "manifest_hash": {
+      "type": "string",
+      "description": "SHA-256 hex digest of canonical manifest JSON (excluding this field)"
+    },
+    "changelog": {
+      "type": "string",
+      "maxLength": 4096
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

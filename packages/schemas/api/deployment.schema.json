@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "deployment",
+  "title": "Hosted Chatbot Deployment Models",
+  "definitions": {
+    "ServiceDeployment": {
+      "type": "object",
+      "required": ["id", "service_id", "slug", "environment", "status", "access_policy", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "service_id": { "type": "string", "format": "uuid" },
+        "slug": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{2,62}[a-z0-9]$",
+          "description": "Platform-assigned URL slug — no arbitrary user input"
+        },
+        "environment": { "type": "string", "enum": ["internal", "demo"] },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "ACTIVE", "SUSPENDED", "RETIRED"]
+        },
+        "access_policy": {
+          "type": "string",
+          "enum": ["INTERNAL_AUTHENTICATED", "DEMO_TOKEN"]
+        },
+        "target_orgs": { "type": "array", "items": { "type": "string" } },
+        "target_sites": { "type": "array", "items": { "type": "string" } },
+        "target_roles": { "type": "array", "items": { "type": "string" } },
+        "active_revision_id": { "type": "string", "format": "uuid" },
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "suspended_by": { "type": "string" },
+        "suspended_at": { "type": "string", "format": "date-time" },
+        "suspend_reason": { "type": "string" }
+      }
+    },
+    "DeploymentRevision": {
+      "type": "object",
+      "required": ["id", "deployment_id", "service_version_id", "status", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "deployment_id": { "type": "string", "format": "uuid" },
+        "service_version_id": { "type": "string", "format": "uuid" },
+        "resolved_dependency_snapshot": {
+          "type": "object",
+          "description": "Immutable snapshot of all resolved asset versions at publish time"
+        },
+        "test_suite_run_id": { "type": "string", "format": "uuid" },
+        "status": {
+          "type": "string",
+          "enum": ["PENDING", "PUBLISHING", "ACTIVE", "SUPERSEDED", "FAILED"]
+        },
+        "publish_job_id": { "type": "string", "format": "uuid" },
+        "created_by": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "activated_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ChatSession": {
+      "type": "object",
+      "required": ["id", "deployment_revision_id", "status", "trace_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "deployment_revision_id": { "type": "string", "format": "uuid" },
+        "user_context_hash": {
+          "type": "string",
+          "description": "Opaque hash of org/site/role — no PII stored"
+        },
+        "status": {
+          "type": "string",
+          "enum": ["ACTIVE", "EXPIRED", "TERMINATED"]
+        },
+        "trace_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "expires_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "ChatRun": {
+      "type": "object",
+      "required": ["id", "session_id", "status", "trace_id", "created_at"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "session_id": { "type": "string", "format": "uuid" },
+        "status": {
+          "type": "string",
+          "enum": ["CREATED", "PREFLIGHT", "RUNNING", "SUCCEEDED", "FAILED", "CANCELLED"]
+        },
+        "citations": {
+          "type": "array",
+          "items": { "type": "object" }
+        },
+        "search_id": { "type": "string" },
+        "latency_ms": { "type": "integer" },
+        "trace_id": { "type": "string" },
+        "created_at": { "type": "string", "format": "date-time" },
+        "completed_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "SSEEvent": {
+      "type": "object",
+      "required": ["event", "data"],
+      "additionalProperties": false,
+      "properties": {
+        "event": {
+          "type": "string",
+          "enum": ["run.started", "search.completed", "answer.delta", "citation.added", "run.completed", "run.failed"]
+        },
+        "data": { "type": "object" },
+        "id": { "type": "string" }
+      }
+    }
+  }
+}

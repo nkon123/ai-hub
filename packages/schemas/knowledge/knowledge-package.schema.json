@@ -1,0 +1,109 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-package",
+  "title": "Knowledge Package Manifest",
+  "description": "04-knowledge-platform.md §4.1 — the manifest written at the root of a Knowledge Package directory produced by `package-knowledge build` (packages/knowledge-packager). Describes every packaged file's checksum and the outcome of the §4.1 verification checks. This is a directory manifest, not a transport format — ZIP assembly is services/distribution-service's responsibility (M03), out of scope here.",
+  "type": "object",
+  "required": [
+    "schema_version", "type", "package_id", "knowledge_asset_version_id", "built_at",
+    "chunking_strategy", "embed_model", "counts", "files", "artifact_notes",
+    "verification", "path_relativization_applied", "source_manifest_ref"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "type": { "type": "string", "const": "knowledge_package" },
+    "package_id": { "type": "string", "minLength": 1 },
+    "knowledge_asset_version_id": {
+      "type": "string",
+      "description": "AssetVersion id this package was built from — matches data/indexes/{id}/"
+    },
+    "built_at": { "type": "string", "format": "date-time" },
+    "chunking_strategy": {
+      "oneOf": [
+        { "type": "string", "enum": ["recursive", "markdown", "parent_child"] },
+        { "const": "미기재" }
+      ],
+      "description": "미기재 for index dirs built before D-053 added chunking_strategy to index-meta.json"
+    },
+    "embed_model": { "type": "string", "minLength": 1 },
+    "counts": {
+      "type": "object",
+      "required": [
+        "chunk_count", "parent_count", "document_count",
+        "chroma_record_count", "bm25_record_count"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "chunk_count": { "type": "integer", "minimum": 0 },
+        "parent_count": { "type": "integer", "minimum": 0 },
+        "document_count": { "type": "integer", "minimum": 0 },
+        "chroma_record_count": { "type": "integer", "minimum": 0 },
+        "bm25_record_count": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "files": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["relative_path", "sha256", "size_bytes", "role"],
+        "additionalProperties": false,
+        "properties": {
+          "relative_path": { "type": "string", "pattern": "^(?!.*\\.\\.).*$" },
+          "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "size_bytes": { "type": "integer", "minimum": 0 },
+          "role": { "type": "string", "enum": ["index", "source_manifest", "evaluation", "other"] }
+        }
+      }
+    },
+    "artifact_notes": {
+      "type": "object",
+      "required": ["bm25_pkl_is_pickle", "bm25_pkl_relativized", "notes"],
+      "additionalProperties": false,
+      "properties": {
+        "bm25_pkl_is_pickle": {
+          "type": "boolean",
+          "description": "Always true today — flags that index/bm25.pkl is a Python pickle and was never unpickled by the packager (open-decisions.md D-054)"
+        },
+        "bm25_pkl_relativized": {
+          "type": "boolean",
+          "description": "Always false today — absolute source_path leaks embedded inside the pickle cannot be fixed without unpickling it"
+        },
+        "notes": { "type": "string" }
+      }
+    },
+    "verification": {
+      "type": "object",
+      "required": ["passed", "checks"],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "passed", "message", "details"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "passed": { "type": "boolean" },
+              "message": { "type": "string" },
+              "details": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "path_relativization_applied": { "type": "boolean" },
+    "path_relativization_details": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "parents_rewritten": { "type": "integer", "minimum": 0 },
+        "chroma_rewritten": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "source_manifest_ref": { "type": "string", "minLength": 1 },
+    "evaluation_result_ref": { "type": ["string", "null"] }
+  }
+}

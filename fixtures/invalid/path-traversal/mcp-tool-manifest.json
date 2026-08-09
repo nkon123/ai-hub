@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655449003",
+  "type": "mcp_tool",
+  "name": "Path Traversal Attempt",
+  "version": "1.0.0",
+  "owner": {
+    "org": "attacker",
+    "creator_id": "attacker@evil.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "server_alias": "oracle-connector",
+  "tool_name": "../../etc/passwd",
+  "risk_level": "READ_ONLY",
+  "input_schema": {},
+  "output_schema": {}
+}

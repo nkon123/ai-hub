@@ -1,0 +1,16 @@
+{
+  "version": "1.0.0",
+  "archive_extensions": [
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".jar", ".war", ".iso"
+  ],
+  "executable_extensions": [
+    ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi",
+    ".sh", ".ps1", ".vbs", ".scr", ".app", ".py", ".pyc", ".js", ".cjs", ".mjs"
+  ],
+  "size_caps": {
+    "max_total_uncompressed_bytes": 2147483648,
+    "max_single_file_uncompressed_bytes": 524288000,
+    "max_compression_ratio": 200,
+    "min_ratio_check_bytes": 1048576
+  }
+}

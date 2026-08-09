@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "evaluation-runner"
+version = "0.1.0"
+description = "Knowledge evaluation runner (Recall@K, MRR, latency) — M09"
+requires-python = ">=3.11"
+dependencies = [
+  "ai-asset-schemas",
+  # HTTP client for the SearchClient adapter that calls services/search-runtime's
+  # POST /search/v1/query (CLAUDE.md: Provider/Vector Store/MCP Connector류는
+  # Adapter Interface 뒤에 둔다 — httpx never leaks past search_client.py).
+  # Already resolved in uv.lock (search-runtime and agent-runtime both use it),
+  # declared directly here too since this package imports it in its own code.
+  # 폐쇄망 설치: 동일 PyPI 미러 캐시(D-031)에서 uv sync --offline으로 설치.
+  "httpx>=0.27.0",
+  # Env-backed Settings, same pattern as agent_runtime.config /
+  # distribution_service.config. Already resolved transitively; declared
+  # directly because this package imports it directly. 폐쇄망 설치: 동일.
+  "pydantic-settings>=2.2.0",
+  # Quality Gate 임계값을 코드에 하드코딩하지 않고 정책 파일(YAML)로 관리하기
+  # 위함 (§4.7 요구사항). ai-asset-schemas가 이미 의존하므로 uv.lock에 해시가
+  # 있음 — D-033/distribution_service pyyaml 선례와 동일하게 직접 선언.
+  # 폐쇄망 설치: 동일.
+  "pyyaml>=6.0.1",
+  # CLI entry point (evaluate-knowledge), 기존 validate-manifest(ai_asset_schemas.cli)와
+  # 동일한 선례. 이미 워크스페이스에 해시가 있음. 폐쇄망 설치: 동일.
+  "click>=8.1.0",
+]
+
+[project.scripts]
+evaluate-knowledge = "evaluation_runner.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/evaluation_runner"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }

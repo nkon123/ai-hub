@@ -1,0 +1,106 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "source-manifest",
+  "title": "Knowledge Source Manifest",
+  "description": "04-knowledge-platform.md §4.2 — one row per source document that fed a Knowledge Package. Produced by packages/knowledge-packager from the indexing artifacts of one AssetVersion (data/indexes/{id}/parents.json). Field names are verbatim from §4.2. A value of '미기재' (NOT_RECORDED) means the field is not derivable from data the pipeline actually captured today — never a fabricated value (see packages/knowledge-packager/src/knowledge_packager/source_manifest.py).",
+  "type": "object",
+  "required": ["schema_version", "type", "knowledge_asset_version_id", "documents"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "type": { "type": "string", "const": "source_manifest" },
+    "knowledge_asset_version_id": {
+      "type": "string",
+      "description": "The Knowledge AssetVersion id these documents were indexed under — matches data/indexes/{id}/"
+    },
+    "documents": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/document_entry" }
+    }
+  },
+  "$defs": {
+    "not_recorded": { "const": "미기재" },
+    "document_entry": {
+      "type": "object",
+      "required": [
+        "document_id", "display_name", "relative_source_path", "source_hash",
+        "source_version", "owner", "classification", "license_or_usage_basis",
+        "effective_date", "status", "parser_identity"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable id, conventionally `{knowledge_asset_version_id}:{relative_source_path}`"
+        },
+        "display_name": { "type": "string", "minLength": 1 },
+        "relative_source_path": {
+          "type": "string",
+          "pattern": "^(?!.*\\.\\.).*$",
+          "description": "Relative path — no path traversal. For legacy (pre-D-053) index dirs this may be a filename-only best-effort value, never a fabricated directory structure."
+        },
+        "source_hash": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            { "$ref": "#/$defs/not_recorded" }
+          ],
+          "description": "sha256 of the original source file, computed only when that file still resolves on the build host filesystem at package-build time; otherwise 미기재"
+        },
+        "source_version": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/not_recorded" }]
+        },
+        "owner": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["org", "creator_id"],
+              "additionalProperties": false,
+              "properties": {
+                "org": { "type": "string" },
+                "team": { "type": "string" },
+                "creator_id": { "type": "string" }
+              }
+            },
+            { "$ref": "#/$defs/not_recorded" }
+          ],
+          "description": "Populated from the Knowledge Asset Manifest's owner field when the caller supplies one to `package-knowledge build --asset-manifest`; otherwise 미기재"
+        },
+        "classification": {
+          "oneOf": [
+            { "type": "string", "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"] },
+            { "$ref": "#/$defs/not_recorded" }
+          ]
+        },
+        "license_or_usage_basis": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/not_recorded" }]
+        },
+        "effective_date": {
+          "anyOf": [
+            { "type": "string", "format": "date", "minLength": 1 },
+            { "$ref": "#/$defs/not_recorded" }
+          ],
+          "description": "ISO 8601 date when populated; note 'format' is annotation-only (not enforced) under this repo's Draft202012Validator(schema) usage — see ai_asset_schemas.validator.validate"
+        },
+        "status": {
+          "anyOf": [{ "type": "string", "minLength": 1 }, { "$ref": "#/$defs/not_recorded" }]
+        },
+        "parser_identity": {
+          "oneOf": [
+            {
+              "type": "object",
+              "required": ["name", "version"],
+              "additionalProperties": false,
+              "properties": {
+                "name": { "type": "string" },
+                "version": { "type": "string" }
+              }
+            },
+            { "$ref": "#/$defs/not_recorded" }
+          ],
+          "description": "Loader/parser identity — not tracked anywhere in the current indexing pipeline output, so always 미기재 today (documented limitation, not silently dropped)"
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "knowledge_id": "test-version",
+  "chunk_count": 4,
+  "parent_count": 4,
+  "document_count": 4,
+  "collection_name": "knowledge_test_version",
+  "embed_model": "qwen3-embedding:0.6b"
+}

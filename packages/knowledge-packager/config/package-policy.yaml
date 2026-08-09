@@ -1,0 +1,99 @@
+# Knowledge Package verification policy (04-knowledge-platform.md §4.1, D-045
+# sibling pattern). "수치는... 코드에 하드코딩하지 않고 정책 설정으로
+# 관리한다" (§4.7) is written for Quality Gate but the same principle is
+# applied here: which forbidden-content patterns exist and whether a match
+# blocks the build (FATAL) or is merely surfaced (WARNING) is a policy
+# decision, not something knowledge_packager.scanner hardcodes.
+schema_version: "1.0"
+
+# Filenames (matched case-insensitively against a packaged file's basename,
+# fnmatch-style globs) that must never appear in a Knowledge Package.
+forbidden_filenames:
+  - ".env"
+  - "*.pem"
+  - "*.pfx"
+  - "*.p12"
+  - "id_rsa"
+  - "id_dsa"
+  - "id_ecdsa"
+  - "id_ed25519"
+  - "*.key"
+
+# Content patterns scanned across every packaged file's raw bytes (works for
+# both text files like parents.json and opaque binaries like bm25.pkl/
+# chroma.sqlite3 — see knowledge_packager.scanner module docstring for why a
+# byte-level scan is safe and still effective against a pickle without
+# unpickling it). `severity` is FATAL (blocks the build) or WARNING
+# (recorded, does not block).
+forbidden_content_patterns:
+  # Absolute build-host filesystem paths leak the builder's directory layout
+  # and OS username into a package that may be shipped off the build host
+  # (04-knowledge-platform.md §4.1 "금지 파일과 Secret Pattern 없음";
+  # discovered in data/indexes/d9e660b7-.../parents.json's `source_path`).
+  - id: absolute_path_unix_users
+    pattern: '/Users/[A-Za-z0-9_.\-]+'
+    severity: FATAL
+    description: "macOS 개발자 홈 디렉터리 절대경로 (빌드 호스트 사용자명 노출)"
+  - id: absolute_path_unix_home
+    pattern: '/home/[A-Za-z0-9_.\-]+'
+    severity: FATAL
+    description: "Linux 홈 디렉터리 절대경로"
+  - id: absolute_path_windows_users
+    pattern: 'C:\\\\Users\\\\[A-Za-z0-9_.\-]+'
+    severity: FATAL
+    description: "Windows 사용자 디렉터리 절대경로"
+  - id: private_key_header
+    pattern: '-----BEGIN (RSA |EC |OPENSSH |DSA |)PRIVATE KEY-----'
+    severity: FATAL
+    description: "PEM 개인키 헤더"
+  - id: password_assignment
+    pattern: '(?i)password\s*[=:]\s*[^\s"\x27]{4,}'
+    severity: WARNING
+    description: "password= 형태의 대입식 (오탐 가능성이 있어 WARNING)"
+  - id: bearer_token
+    pattern: '(?i)bearer\s+[A-Za-z0-9\-_.]{16,}'
+    severity: WARNING
+    description: "Bearer Token으로 보이는 문자열"
+  - id: generic_api_key
+    pattern: '(?i)api[_-]?key["\x27\s:=]+[A-Za-z0-9\-_]{16,}'
+    severity: WARNING
+    description: "API Key로 보이는 문자열"
+
+# Artifacts knowledge_packager cannot fully scrub of historical byte-level
+# values even after "path relativization" runs, for two different reasons
+# (both documented in open-decisions.md D-054):
+#
+#   - bm25.pkl: a Python pickle. Loading a pickle received over a
+#     distribution channel is arbitrary code execution, so knowledge_packager
+#     never unpickles it — including to clean it. The pre-relativization
+#     absolute path stays embedded in the pickle bytes.
+#
+#   - chroma.sqlite3: NOT a pickle, but Chroma's internal `embeddings_queue`
+#     table is an append-only write-ahead log of every add/update operation.
+#     `Collection.update()` (used by knowledge_packager.relativize to fix
+#     the queryable metadata) changes what future `.get()` calls return, but
+#     it does not delete the original `add()` operation's queue row — the
+#     pre-relativization absolute path physically remains in the file
+#     (confirmed empirically: verified with `sqlite3` directly against the
+#     `embeddings_queue.metadata` column, and a `VACUUM` afterward does NOT
+#     remove it, since the row is still live/referenced, not a freed page).
+#
+# A forbidden-content match found *inside* a file listed here (matched by
+# basename) is downgraded from its configured severity to
+# `residual_leak_severity_override` instead of blocking the build — the
+# leak is real and stays flagged in the verification report, but a
+# Knowledge Package cannot currently be built byte-level "clean" of it
+# short of not shipping these artifacts at all, which would break Hybrid
+# Search entirely. See knowledge_packager.relativize module docstring.
+known_residual_leak_artifacts:
+  - "bm25.pkl"
+  - "chroma.sqlite3"
+residual_leak_severity_override: WARNING
+
+verification:
+  # If true, a FATAL-severity check failure (or a FATAL-severity forbidden
+  # pattern finding not covered by known_residual_leak_artifacts) makes
+  # `package-knowledge build`/`verify` exit non-zero. The package directory
+  # is still written either way (§4.4 Bundle Builder precedent: report the
+  # failure, don't hide it by refusing to write anything).
+  fail_on_fatal: true

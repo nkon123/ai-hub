@@ -1,0 +1,82 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "prompt-manifest",
+  "title": "Prompt Package Manifest",
+  "type": "object",
+  "required": ["schema_version", "id", "type", "name", "version", "owner", "classification", "template", "variables"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "const": "prompt" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string" }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "manifest_hash": { "type": "string" },
+    "changelog": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "template": {
+      "type": "object",
+      "required": ["system", "file"],
+      "additionalProperties": false,
+      "properties": {
+        "system": { "type": "string", "description": "System prompt text" },
+        "file": {
+          "type": "string",
+          "pattern": "^(?!.*\\.\\.).*$",
+          "description": "Relative path to template markdown file"
+        },
+        "language": { "type": "string", "default": "ko" }
+      }
+    },
+    "variables": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "type"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "type": { "type": "string", "enum": ["string", "integer", "boolean", "array"] },
+          "required": { "type": "boolean", "default": true },
+          "description": { "type": "string" }
+        }
+      }
+    },
+    "model_capability": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "min_context_tokens": { "type": "integer" },
+        "requires_function_calling": { "type": "boolean", "default": false },
+        "requires_vision": { "type": "boolean", "default": false }
+      }
+    },
+    "output_schema": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "format": { "type": "string", "enum": ["text", "markdown", "json"] },
+        "citation_required": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

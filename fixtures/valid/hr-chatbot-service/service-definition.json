@@ -1,0 +1,66 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440040",
+  "type": "service",
+  "name": "HR 정책 챗봇",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "hr",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "사내 HR 정책 질문에 답변하는 Knowledge 챗봇 (Quick Create)",
+  "tags": ["hr", "chatbot", "knowledge"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Quick Create via Service Composer Wizard",
+  "created_at": "2026-08-01T09:00:00Z",
+  "agent_ref": {
+    "id": "550e8400-e29b-41d4-a716-446655440010",
+    "version": "1.0.0"
+  },
+  "knowledge_bindings": [
+    {
+      "role_id": "answerer",
+      "knowledge_id": "550e8400-e29b-41d4-a716-446655440001",
+      "knowledge_version": "1.0.0",
+      "retrieval_profile_ref": {
+        "name": "default-korean",
+        "version": "1.0.0"
+      },
+      "context_token_limit": 4096
+    }
+  ],
+  "mcp_bindings": [],
+  "prompt_bindings": [
+    {
+      "role_id": "answerer",
+      "prompt_id": "550e8400-e29b-41d4-a716-446655440020",
+      "prompt_version": "1.0.0"
+    }
+  ],
+  "model_policy": {
+    "model_alias": "default-chat",
+    "fallback_allowed": false,
+    "max_context_tokens": 8192
+  },
+  "target_users": {
+    "orgs": ["miracom"],
+    "roles": ["USER", "CREATOR"]
+  },
+  "limits": {
+    "timeout_seconds": 60,
+    "max_mcp_calls": 0,
+    "max_context_tokens": 8192,
+    "audit_level": "standard"
+  },
+  "chatbot_config": {
+    "welcome_message": "안녕하세요! HR 정책에 대해 궁금한 점을 물어보세요.",
+    "suggested_questions": [
+      "연차 휴가는 몇 일인가요?",
+      "식비 지원은 얼마인가요?",
+      "교통비 처리 방법을 알려주세요."
+    ],
+    "citation_display": true
+  }
+}

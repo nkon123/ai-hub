@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "retrieval-profile",
+  "title": "Knowledge Retrieval Profile",
+  "type": "object",
+  "required": ["name", "version", "top_k"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "description": { "type": "string" },
+    "top_k": { "type": "integer", "minimum": 1, "maximum": 50, "default": 5 },
+    "hybrid_alpha": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "default": 0.5,
+      "description": "Weight for vector vs BM25 fusion (0=BM25 only, 1=vector only)"
+    },
+    "enable_parent_expansion": { "type": "boolean", "default": true },
+    "enable_query_rewrite": { "type": "boolean", "default": true },
+    "context_budget_tokens": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Max tokens to include in context window from retrieved chunks"
+    },
+    "metadata_filters": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "Static metadata filter conditions"
+    },
+    "citation_required": { "type": "boolean", "default": true },
+    "min_relevance_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "default": 0.42,
+      "description": "Minimum cosine similarity (1 - Chroma distance) of a chunk's best vector match, evaluated after RRF fusion. Chunks below this score are dropped from the citation list before being returned to agent-runtime, so an out-of-scope question can yield zero citations and trigger the D-036 INSUFFICIENT_EVIDENCE guard deterministically instead of relying on the answer prompt alone. 0 disables filtering (returns top_k regardless of relevance, the pre-D-046 behavior). D-046 measured this default from the seeded 재택근무 정책 Knowledge index: with the Qwen3 instruct query prefix, in-scope top-1 similarity was 0.446–0.709 and out-of-scope was 0.196–0.391 — 0.42 sits in that separation gap. A chunk found only via BM25 (no vector similarity available) is treated as failing this threshold and is dropped whenever filtering is enabled, since there is no cosine-similarity evidence it is relevant."
+    },
+    "query_instruct_prefix": {
+      "type": "string",
+      "default": "Instruct: Given a web search query, retrieve relevant passages that answer the query\nQuery: ",
+      "description": "Text prepended to the query (query side only, never applied to indexed document text) before embedding it for vector search. Required for min_relevance_score to be a meaningful threshold: Qwen3-Embedding is trained for asymmetric retrieval and its raw-text query embeddings do not cleanly separate in-scope from out-of-scope questions (D-046 measured a -0.034 overlap without the prefix vs. +0.056 separation with it). Set to an empty string to disable the prefix for embedding models that do not use this convention; indexing-runtime is unaffected either way and does not need re-indexing when this changes."
+    }
+  }
+}

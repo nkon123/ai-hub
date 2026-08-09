@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "service-definition",
+  "title": "AI Service Definition",
+  "description": "Binds Agent + Knowledge + MCP Tools + Prompts + Model Policy",
+  "type": "object",
+  "required": ["schema_version", "id", "type", "name", "version", "owner", "classification", "agent_ref", "model_policy"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "const": "service" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string" }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "manifest_hash": { "type": "string" },
+    "changelog": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+    "agent_ref": {
+      "type": "object",
+      "required": ["id", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "version": { "type": "string" }
+      }
+    },
+    "knowledge_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role_id", "knowledge_id", "knowledge_version", "retrieval_profile_ref"],
+        "additionalProperties": false,
+        "properties": {
+          "role_id": { "type": "string" },
+          "knowledge_id": { "type": "string", "format": "uuid" },
+          "knowledge_version": { "type": "string" },
+          "retrieval_profile_ref": {
+            "type": "object",
+            "required": ["name", "version"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "version": { "type": "string" }
+            }
+          },
+          "metadata_filters": {
+            "type": "object",
+            "additionalProperties": { "type": "string" }
+          },
+          "context_token_limit": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "mcp_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role_id", "tool_id", "tool_version"],
+        "additionalProperties": false,
+        "properties": {
+          "role_id": { "type": "string" },
+          "tool_id": { "type": "string", "format": "uuid" },
+          "tool_version": { "type": "string" },
+          "confirmation_policy": {
+            "type": "string",
+            "enum": ["always", "never", "sensitive_only"],
+            "default": "always"
+          },
+          "timeout_seconds": { "type": "integer", "minimum": 1 },
+          "max_calls_per_run": { "type": "integer", "minimum": 1 }
+        }
+      }
+    },
+    "prompt_bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role_id", "prompt_id", "prompt_version"],
+        "additionalProperties": false,
+        "properties": {
+          "role_id": { "type": "string" },
+          "prompt_id": { "type": "string", "format": "uuid" },
+          "prompt_version": { "type": "string" }
+        }
+      }
+    },
+    "model_policy": {
+      "type": "object",
+      "required": ["model_alias"],
+      "additionalProperties": false,
+      "properties": {
+        "model_alias": { "type": "string", "description": "Office Profile 내 모델 별칭" },
+        "fallback_allowed": { "type": "boolean", "default": false },
+        "max_context_tokens": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "target_users": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "orgs": { "type": "array", "items": { "type": "string" } },
+        "sites": { "type": "array", "items": { "type": "string" } },
+        "roles": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "timeout_seconds": { "type": "integer", "minimum": 1 },
+        "max_mcp_calls": { "type": "integer", "minimum": 0 },
+        "max_context_tokens": { "type": "integer", "minimum": 0 },
+        "max_input_bytes": { "type": "integer", "minimum": 0 },
+        "audit_level": {
+          "type": "string",
+          "enum": ["minimal", "standard", "full"],
+          "default": "standard"
+        }
+      }
+    },
+    "chatbot_config": {
+      "type": "object",
+      "description": "Present only for Knowledge Chatbot Quick Create services",
+      "additionalProperties": false,
+      "properties": {
+        "welcome_message": { "type": "string", "maxLength": 512 },
+        "suggested_questions": {
+          "type": "array",
+          "items": { "type": "string" },
+          "maxItems": 5
+        },
+        "citation_display": { "type": "boolean", "default": true }
+      }
+    }
+  }
+}

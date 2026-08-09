@@ -1,0 +1,165 @@
+# electron-builder configuration — M04 apps/desktop-client
+#
+# Scope: config only. This file is NOT executed as part of this change —
+# `electron-builder` is not installed and must never be invoked on this
+# machine (see docs/implementation-spec/11-desktop-packaging-and-distribution.md
+# "런타임 동봉 문제" background: a prior `pnpm install`-triggered Electron
+# postinstall download was quarantined by macOS XProtect on this workstation).
+# A real Windows installer must be produced on Windows, or a Windows CI
+# runner, per that doc.
+#
+# Why a standalone YAML file instead of package.json's "build" key: this repo
+# is a pnpm workspace and apps/desktop-client/package.json is already the
+# source of truth for scripts/dependencies; keeping packaging config in its
+# own file avoids a large embedded block in package.json and lets this file
+# carry explanatory comments (JSON does not support comments).
+#
+# D-030 (docs/implementation-spec/open-decisions.md): packaging method is
+# decided as electron-builder + NSIS, Windows x64. Code signing certificate
+# material does not exist yet — every signing-related field below is a
+# placeholder wired to environment variables the BUILD MACHINE must supply.
+# Never put a certificate, password, subject name, or thumbprint value in
+# this file (CLAUDE.md: no real secrets in code/config).
+
+appId: com.enterprise-ai-asset-hub.desktop-client
+# ^ Placeholder reverse-DNS id. Replace the domain segment with the
+# company's actual registered domain before the first production build —
+# appId is embedded in Windows registry uninstall keys and (if ever added)
+# auto-update manifests, so changing it later is a breaking change for
+# already-installed machines.
+productName: "AI Asset Hub 데스크톱"
+copyright: "Copyright (c) Enterprise AI Asset Hub"
+
+directories:
+  # Output goes to release/, NOT dist/ — apps/desktop-client/dist is already
+  # owned by this package's own build (`vite build` -> dist/renderer,
+  # `tsc -p tsconfig.electron.json` -> dist/electron; see package.json
+  # "build" script). If electron-builder's output also defaulted to "dist"
+  # it would collide with the very payload it needs to read from "files"
+  # below (self-referential packaging).
+  output: release
+  # electron-builder's default location for icon.ico / installerSidebar.bmp
+  # etc. Does not exist yet in this repo — see build/README.md added
+  # alongside this file for what to add before the first Windows build.
+  buildResources: build
+
+# What ships inside the app (asar-packed). Only the compiled output plus
+# package.json — NOT electron/**, src/**, vite.config.ts, tsconfig*.json,
+# postcss.config.mjs, or the root-level dev index.html (production loads
+# dist/renderer/index.html via win.loadFile(), see electron/main.ts).
+files:
+  - dist/**/*
+  - package.json
+  - "!**/*.map"
+
+# No native (compiled) modules among the runtime dependencies — adm-zip and
+# yaml (used by electron/bundle-install.ts, the main-process side) are pure
+# JS, and react/react-dom/lucide-react are bundled into dist/renderer by
+# Vite and not required as unpacked node_modules at runtime. That means:
+#  (a) asar can stay true with no asarUnpack entries, and
+#  (b) no native-module rebuild step (electron-builder's
+#      `install-app-deps`/node-gyp) is needed for this app, which is one
+#      less thing that would try to reach the network during a build.
+# NOTE (follow-up, not applied here): react/react-dom/lucide-react are
+# listed in "dependencies" in package.json but are renderer-only and already
+# bundled by Vite — electron-builder will still copy them into the packaged
+# node_modules by default (it includes all non-dev "dependencies"), which
+# only bloats the installer, it does not break it. Reclassifying them to
+# devDependencies would shrink the artifact but is left as a follow-up since
+# it wasn't verified against a real `pnpm install` in this session.
+asar: true
+
+publish: null
+# ^ Explicitly disable electron-builder's auto-publish behavior. Without
+# this, electron-builder can try to auto-detect a GitHub repo from
+# package.json and reach out to the GitHub API during build/publish steps.
+# This app has no update server and no publish target (PoC).
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  # icon: build/icon.ico   # add a real multi-resolution .ico here (256x256
+  #                         # down to 16x16) before the first production
+  #                         # Windows build; omitted for now so this config
+  #                         # does not reference a file that doesn't exist.
+  #                         # Until then, electron-builder falls back to the
+  #                         # default Electron icon with a build-time warning
+  #                         # (not a failure).
+  signingHashAlgorithms:
+    - sha256
+  # --- Code signing placeholders -------------------------------------------
+  # electron-builder reads CSC_LINK and CSC_KEY_PASSWORD from the build
+  # machine's environment AUTOMATICALLY for the common case of a certificate
+  # exported to a .pfx/.p12 file — no config field is needed here for that
+  # path; it must not be added to this file. The build pipeline sets:
+  #   CSC_LINK           = file path or URL to the .pfx (never committed)
+  #   CSC_KEY_PASSWORD   = the .pfx export password (never committed)
+  #
+  # If the company's cert is instead issued on a hardware token/HSM (typical
+  # for EV certificates, which cannot be exported as a .pfx), electron-builder
+  # can sign against a certificate already installed in the Windows
+  # certificate store on the build machine via subject name or thumbprint.
+  # Uncomment and let the BUILD PIPELINE inject real values (e.g. by
+  # generating this file from a template, or overriding via electron-builder
+  # CLI flags) — do not hand-edit real values into this repo file:
+  # certificateSubjectName: "<injected by build pipeline>"
+  # certificateSha1: "<injected by build pipeline>"
+  # rfc3161TimeStampServer: "http://timestamp.digicert.com"
+  #
+  # See docs/implementation-spec/11-desktop-packaging-and-distribution.md
+  # "코드 서명" for which of the two paths applies once the company
+  # provisions a certificate, and docs/implementation-spec/open-decisions.md
+  # for the still-open decision this depends on.
+
+nsis:
+  # oneClick:false switches from the silent one-click installer to the
+  # assisted wizard, which is what lets the same installer also support
+  # unattended pushes: electron-builder's NSIS template always accepts
+  # `/S` (silent) and `/D=<install dir>` (must be the last argument, no
+  # quotes) regardless of this setting, which is what SCCM/Intune use — this
+  # setting only controls the *interactive* double-click experience.
+  oneClick: false
+  # Per-machine (installs under Program Files, HKLM registry, one shared
+  # copy for every user on the PC) rather than per-user (%LOCALAPPDATA%,
+  # HKCU). Chosen for a corporate managed environment because:
+  #  - SCCM/Intune pushes typically run as SYSTEM or a provisioning account,
+  #    not the eventual end user's own profile — a per-user install done as
+  #    SYSTEM lands in SYSTEM's own profile, not the user's, which is a
+  #    well-known SCCM/NSIS pitfall.
+  #  - IT asset inventory and centralized uninstall (Programs and Features /
+  #    Intune "detected apps") expect machine-scoped installs.
+  #  - Shared/kiosk-style workstations (plausible for a shared department PC
+  #    running this client) need one install visible to every logged-in user.
+  # Trade-off accepted: per-machine requires admin rights, so an interactive
+  # (non-SCCM) install prompts UAC — acceptable since target users are on
+  # corporate-managed hardware where IT already controls elevation policy.
+  perMachine: true
+  # Let a standard user's interactive double-click still complete via a UAC
+  # elevation prompt (rather than failing outright) since perMachine needs
+  # admin. SCCM/Intune installs already run elevated, so this only matters
+  # for the manual/interactive install path.
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: "AI Asset Hub 데스크톱"
+  unicode: true
+  # Don't auto-launch the app as the last wizard step — matters most for
+  # unattended /S installs (there may be no interactive session/user to
+  # launch into), and is also just less surprising for an IT-pushed install.
+  runAfterFinish: false
+  # Keep local install state (assets/, state/installations.db, logs/) on
+  # uninstall — this is where D04/D05-imported Offline Bundle assets and the
+  # installed-asset list live (see electron/installed-assets-store.ts,
+  # electron/bundle-install.ts::resolveInstallRoot). Losing them on a routine
+  # version upgrade (uninstall-then-reinstall) would be a data-loss surprise
+  # for a PC that may not have easy access to re-import bundles.
+  deleteAppDataOnUninstall: false
+  differentialPackage: false
+  # ^ Skips generating a delta/blockmap update package. There is no update
+  # server (publish: null above), so a differential package would be dead
+  # weight in every build.
+
+artifactName: "${productName}-Setup-${version}-${arch}.${ext}"

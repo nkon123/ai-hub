@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "type": "evaluation_dataset",
+  "dataset_id": "remote-work-policy-eval-v1",
+  "name": "재택근무 정책 Knowledge 평가 데이터셋 (PoC 샘플)",
+  "version": "1.0.0",
+  "description": "apps/portal-api/storage/knowledge/2f157a86-29c2-41d7-a8a8-e3d34a36e515/1.0.0/remote-work-policy.md 문서 하나(섹션: 재택근무 신청/장비 지원/근무 시간)를 대상으로 한 평가 질문 세트.",
+  "knowledge_asset_id": "2f157a86-29c2-41d7-a8a8-e3d34a36e515",
+  "review_status": "AI_GENERATED_UNREVIEWED",
+  "reviewed_by": null,
+  "reviewed_at": null,
+  "notes": "이 케이스들은 Claude Code가 remote-work-policy.md 원문을 근거로 초안 작성했다 (04-knowledge-platform.md §4.3: '생성형 AI가 만든 질문은 사람 검토 없이 기준 데이터로 사용하지 않는다'). PoC 데모/개발 중 Recall@K·MRR 계측 파이프라인을 검증하는 용도로만 사용하고, review_status가 EXPERT_REVIEWED로 바뀌기 전까지는 D-013 품질 기준(Recall@5 80%) 판정의 공식 기준 데이터로 쓰지 않는다.",
+  "cases": [
+    {
+      "case_id": "WFH-001",
+      "question": "재택근무는 일주일에 최대 며칠까지 신청할 수 있나요?",
+      "expected_document_ids": ["remote-work-policy"],
+      "expected_chunk_ids": ["chunk-f82cfe6039862dff"],
+      "required_filters": {},
+      "forbidden_document_ids": [],
+      "tags": ["재택근무", "신청", "일수"]
+    },
+    {
+      "case_id": "WFH-002",
+      "question": "재택근무 신청은 누구의 승인을 받아야 확정되나요?",
+      "expected_document_ids": ["remote-work-policy"],
+      "expected_chunk_ids": ["chunk-f82cfe6039862dff"],
+      "required_filters": {},
+      "forbidden_document_ids": [],
+      "tags": ["재택근무", "승인"]
+    },
+    {
+      "case_id": "WFH-003",
+      "question": "재택근무자에게 회사가 지원하는 장비는 무엇인가요?",
+      "expected_document_ids": ["remote-work-policy"],
+      "expected_chunk_ids": ["chunk-9a122ba94aed7015"],
+      "required_filters": {},
+      "forbidden_document_ids": [],
+      "tags": ["재택근무", "장비지원"]
+    },
+    {
+      "case_id": "WFH-004",
+      "question": "재택근무 중 인터넷 요금은 월 얼마까지 지원되나요?",
+      "expected_document_ids": ["remote-work-policy"],
+      "expected_chunk_ids": ["chunk-9a122ba94aed7015"],
+      "required_filters": {},
+      "forbidden_document_ids": [],
+      "tags": ["재택근무", "장비지원", "인터넷"]
+    },
+    {
+      "case_id": "WFH-005",
+      "question": "재택근무 중에도 지켜야 하는 코어타임은 몇 시부터 몇 시까지인가요?",
+      "expected_document_ids": ["remote-work-policy"],
+      "expected_chunk_ids": ["chunk-5eab2f2503836921"],
+      "required_filters": {},
+      "forbidden_document_ids": [],
+      "tags": ["재택근무", "근무시간", "코어타임"]
+    },
+    {
+      "case_id": "WFH-006",
+      "question": "해외 출장 중 법인카드 정산 한도는 얼마인가요?",
+      "expected_document_ids": [],
+      "expected_chunk_ids": [],
+      "required_filters": {},
+      "forbidden_document_ids": ["remote-work-policy"],
+      "tags": ["범위밖", "출장", "distractor"]
+    }
+  ]
+}

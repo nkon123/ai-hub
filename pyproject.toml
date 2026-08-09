@@ -1,0 +1,83 @@
+[tool.uv.workspace]
+members = [
+  "apps/portal-api",
+  "services/distribution-service",
+  "services/agent-runtime",
+  "services/indexing-runtime",
+  "services/search-runtime",
+  "services/office-mcp-server",
+  "packages/schemas",
+  "packages/knowledge-packager",
+  "packages/evaluation-runner",
+  "packages/security-policy",
+  "packages/observability",
+]
+
+[project]
+name = "enterprise-ai-asset-hub-dev"
+version = "0.0.1"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2.0",
+  "pytest-asyncio>=0.23.0",
+  "openapi-spec-validator>=0.7.1",
+  "ruff>=0.4.4",
+  "mypy>=1.10.0",
+  "ai-asset-schemas",
+  "security-policy",
+  "evaluation-runner",
+  "knowledge-packager",
+  "observability",
+]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }
+security-policy = { workspace = true }
+evaluation-runner = { workspace = true }
+knowledge-packager = { workspace = true }
+observability = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = []
+bypass-selection = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# `tests/e2e/` hits LIVE running services (portal-api, agent-runtime,
+# Ollama, ...) with real embeddings/generation — see
+# `tests/e2e/conftest.py` module docstring. It must never run as part of
+# the fast, offline default suite (`uv run pytest tests/ -q`), and CI
+# without the live stack must SKIP it, not fail. `make e2e-test` overrides
+# this default with an explicit `-m e2e` (command-line `-m` wins over
+# addopts — see Makefile).
+#
+# `tests/security/` (05-mcp-security-governance.md §12/§13) is the same
+# live-service model applied to cross-cutting security properties
+# (authn/authz/injection/audit/trace correlation) rather than functional
+# scenarios — excluded from the default run for the identical reason, use
+# `make security-test`.
+addopts = "-m 'not e2e and not security'"
+markers = [
+  "e2e: requires the live service stack (portal-api/agent-runtime/.../Ollama); excluded from the default `pytest tests/` run, use `make e2e-test`",
+  "security: requires the live service stack (portal-api/agent-runtime/office-mcp-server/...); cross-cutting security properties, excluded from the default `pytest tests/` run, use `make security-test`",
+]

@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "office-profile",
+  "title": "Office Profile",
+  "description": "Organization or site level AI policy and model configuration",
+  "type": "object",
+  "required": ["name", "version", "org", "model_aliases"],
+  "additionalProperties": false,
+  "properties": {
+    "name": { "type": "string", "minLength": 1 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "org": { "type": "string" },
+    "sites": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Sites this profile applies to"
+    },
+    "model_aliases": {
+      "type": "object",
+      "description": "Maps logical alias names to actual model endpoints",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "object",
+        "required": ["provider", "model_id", "endpoint"],
+        "additionalProperties": false,
+        "properties": {
+          "provider": { "type": "string", "enum": ["ollama", "openai_compatible", "anthropic"] },
+          "model_id": { "type": "string" },
+          "endpoint": {
+            "type": "string",
+            "description": "Loopback or internal endpoint only — no arbitrary URLs"
+          },
+          "max_context_tokens": { "type": "integer", "minimum": 0 }
+        }
+      }
+    },
+    "allowed_mcp_servers": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["alias", "endpoint"],
+        "additionalProperties": false,
+        "properties": {
+          "alias": { "type": "string" },
+          "endpoint": { "type": "string" },
+          "allowed_tools": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_classification_allowed": {
+          "type": "string",
+          "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+        },
+        "audit_retention_days": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

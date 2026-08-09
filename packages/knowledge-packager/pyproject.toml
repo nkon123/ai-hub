@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "knowledge-packager"
+version = "0.1.0"
+description = "Knowledge Package assembler — M09"
+requires-python = ">=3.11"
+dependencies = [
+  "ai-asset-schemas",
+  # Read-only client for services/indexing-runtime's Chroma collections
+  # (record-count reconciliation, Chunk ID consistency, Child->Parent
+  # integrity — §4.1). Already resolved in uv.lock (indexing-runtime and
+  # search-runtime both depend on it), declared directly here too since
+  # this package imports it directly (CLAUDE.md: Provider/Vector Store는
+  # Adapter 뒤에 둔다 — chromadb never leaks past index_reader.py/
+  # relativize.py's public contracts). 폐쇄망 설치: 동일 PyPI 미러
+  # 캐시(D-031)에서 uv sync --offline으로 설치.
+  "chromadb>=0.5.0",
+  # Package verification policy YAML (§4.1 severities are policy, not
+  # hardcoded) — same pattern/precedent as evaluation-runner's
+  # quality-gate.yaml. 폐쇄망 설치: 동일.
+  "pyyaml>=6.0.1",
+  # Env-backed Settings, same pattern as evaluation_runner.settings /
+  # distribution_service.config. 폐쇄망 설치: 동일.
+  "pydantic-settings>=2.2.0",
+  # CLI entry point (package-knowledge), same precedent as
+  # evaluate-knowledge/validate-manifest. 폐쇄망 설치: 동일.
+  "click>=8.1.0",
+]
+
+[project.scripts]
+package-knowledge = "knowledge_packager.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/knowledge_packager"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }

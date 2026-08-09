@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "bundle-install-policy",
+  "title": "Desktop Offline Bundle Install Policy",
+  "description": "Archive/executable extension blocklists and zip-bomb size caps enforced by apps/desktop-client/electron/bundle-verify.ts (M04) when importing an Offline Bundle. Read directly (not via TypeScript source parsing) by apps/portal-api/src/portal_api/routers/admin.py (M02, P15 관리자 설정) so both modules share one contract instead of M02 coupling to M04's source formatting (CLAUDE.md 원칙 2/3).",
+  "type": "object",
+  "required": ["version", "archive_extensions", "executable_extensions", "size_caps"],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "archive_extensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+      "description": "Lowercase, dot-prefixed archive extensions treated as forbidden nested archives inside an Offline Bundle."
+    },
+    "executable_extensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+      "description": "Lowercase, dot-prefixed extensions classified as executable/code and forbidden inside an Offline Bundle."
+    },
+    "size_caps": {
+      "type": "object",
+      "required": [
+        "max_total_uncompressed_bytes",
+        "max_single_file_uncompressed_bytes",
+        "max_compression_ratio",
+        "min_ratio_check_bytes"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "max_total_uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Zip-bomb defense: total uncompressed bytes allowed across the whole bundle."
+        },
+        "max_single_file_uncompressed_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Zip-bomb defense: uncompressed bytes allowed for any single entry."
+        },
+        "max_compression_ratio": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "description": "uncompressed/compressed ratio above which an entry is treated as a suspected zip bomb."
+        },
+        "min_ratio_check_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Entries smaller than this (uncompressed) are exempt from the compression-ratio check."
+        }
+      }
+    }
+  }
+}

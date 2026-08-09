@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "evaluation-dataset",
+  "title": "Knowledge Evaluation Dataset",
+  "description": "Ground-truth question set used to measure Knowledge search quality (04-knowledge-platform.md §4.3). 평가 질문은 업무 전문가가 검토한다 — 생성형 AI가 만든 질문은 사람 검토 없이 기준 데이터로 사용하지 않는다(§4.3). review_status가 EXPERT_REVIEWED가 아닌 데이터셋은 참고용으로만 취급해야 한다.",
+  "type": "object",
+  "required": ["schema_version", "type", "dataset_id", "name", "version", "knowledge_asset_id", "review_status", "cases"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "type": { "type": "string", "const": "evaluation_dataset" },
+    "dataset_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Stable dataset identifier used by version comparison (§4.6) to confirm two evaluation runs used the same dataset"
+    },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "SemVer of the dataset content itself; bump when cases are added/edited"
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "knowledge_asset_id": {
+      "type": "string",
+      "description": "The Knowledge Asset (not AssetVersion) this dataset provides ground truth for — expected to stay valid across versions of the same Knowledge"
+    },
+    "review_status": {
+      "type": "string",
+      "enum": ["AI_GENERATED_UNREVIEWED", "EXPERT_REVIEWED"],
+      "description": "AI_GENERATED_UNREVIEWED: questions/expected answers were drafted by a generative AI and have NOT been checked by a domain expert — per §4.3 this must never be treated as an approved quality baseline. EXPERT_REVIEWED: a named reviewer has confirmed the cases."
+    },
+    "reviewed_by": {
+      "type": ["string", "null"],
+      "description": "Reviewer identity; required (non-null) when review_status is EXPERT_REVIEWED"
+    },
+    "reviewed_at": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "notes": { "type": "string", "maxLength": 2048 },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["case_id", "question", "expected_document_ids"],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "expected_document_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Document ids this question should retrieve. Matched against the search-runtime citation's document_path/document_title filename stem, lower-cased (see docs/implementation-spec/open-decisions.md D-045) — an empty array means this question is expected to have no correct document (used for no-result / distractor cases)."
+          },
+          "expected_chunk_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "Optional stronger ground truth: exact chunk_id(s) that should be cited. Informational in this evaluator (chunk-level hit is reported per-case but is not part of the required aggregate metrics)."
+          },
+          "required_filters": {
+            "type": "object",
+            "additionalProperties": { "type": "string" },
+            "default": {},
+            "description": "metadata_filters sent to search-runtime for this case"
+          },
+          "forbidden_document_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": [],
+            "description": "Document ids that must never appear in the result set for this question (e.g. superseded/out-of-scope policy documents)"
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          }
+        }
+      }
+    }
+  }
+}

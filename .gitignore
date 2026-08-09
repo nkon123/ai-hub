@@ -1,0 +1,59 @@
+# ── 의존성 / 빌드 산출물 ──────────────────────────────────────────────
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.next/
+dist/
+build/
+out/
+*.tsbuildinfo
+
+# ── 런타임 상태 (소스가 아님) ────────────────────────────────────────
+# 아래 항목은 서비스가 실행 중에 생성하는 데이터다. 소스 관리 대상이 아닐 뿐
+# 아니라, 생성된 인덱스와 DB에는 빌드한 PC의 절대경로(`source_path`)가 그대로
+# 박히기 때문에 다른 OS/PC로 옮기면 어차피 동작하지 않는다. 대상 PC에서
+# 지식을 새로 등록해 재생성하는 것이 정상 흐름이다
+# (docs/implementation-spec/13-windows-local-setup.md §6 참고).
+data/indexes/
+data/bundles/
+apps/portal-api/storage/
+# 저장소 루트에도 같은 것이 생긴다: `portal_api.config.Settings.storage_root`
+# 기본값이 `./storage`(CWD 기준)이라, 저장소 루트에서 테스트를 돌리면 여기에
+# 쌓인다. 마찬가지로 런타임 산출물이므로 제외한다.
+/storage/
+/portal.db
+/portal.db-journal
+apps/portal-api/*.db
+apps/portal-api/*.db-journal
+apps/portal-api/*.db-wal
+apps/portal-api/*.db-shm
+*.bak
+
+# Desktop Client가 설치한 로컬 자산/상태
+apps/desktop-client/install-root/
+apps/desktop-client/.vite/
+
+# ── 비밀정보 ─────────────────────────────────────────────────────────
+# CLAUDE.md 구현 원칙 6: 실제 Secret/개인정보/운영 DB 정보를 저장소에 넣지
+# 않는다. 서명 인증서·Thumbprint는 환경변수로만 주입한다
+# (docs/implementation-spec/11-desktop-packaging-and-distribution.md §3.3).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+
+# ── OS / 편집기 ──────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,42 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655440010",
+  "type": "agent",
+  "name": "Standard Knowledge Chat Agent",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "Knowledge 기반 Q&A를 수행하는 표준 챗봇 에이전트",
+  "tags": ["standard", "chatbot", "knowledge"],
+  "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+  "changelog": "Initial standard agent",
+  "created_at": "2026-08-01T09:00:00Z",
+  "workflow": {
+    "entry_role": "answerer",
+    "roles": [
+      {
+        "id": "answerer",
+        "type": "answerer",
+        "description": "Knowledge를 검색하고 답변을 생성한다",
+        "requires_knowledge": true,
+        "requires_mcp": false,
+        "requires_prompt": true
+      }
+    ]
+  },
+  "capabilities": {
+    "knowledge_required": true,
+    "mcp_allowed": false,
+    "streaming": true,
+    "citation_required": true
+  },
+  "limits": {
+    "max_context_tokens": 8192,
+    "timeout_seconds": 60,
+    "max_mcp_calls": 0
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "name": "desktop-client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Enterprise AI Asset Hub — Desktop Client (M04, Electron)",
+  "author": "Enterprise AI Asset Hub Team (placeholder — replace with the legal entity name before production packaging/signing)",
+  "main": "dist/electron/main.js",
+  "scripts": {
+    "dev": "tsc -p tsconfig.electron.json && concurrently -k -n vite,electron \"vite\" \"electron .\"",
+    "build": "vite build && tsc -p tsconfig.electron.json",
+    "lint": "eslint src electron --ext .ts,.tsx",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
+    "test": "vitest run",
+    "dist:win": "pnpm run build && electron-builder --win --x64"
+  },
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "lucide-react": "^1.28.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "yaml": "^2.5.0"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "^4.3.3",
+    "@types/adm-zip": "^0.5.5",
+    "@types/node": "^20.14.0",
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^8.2.2",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "postcss": "^8.5.25",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.11",
+    "vitest": "^2.1.9"
+  }
+}

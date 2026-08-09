@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "indexing-runtime"
+version = "0.1.0"
+description = "Enterprise AI Asset Hub — Knowledge Indexing Runtime (M07)"
+requires-python = ">=3.11"
+dependencies = [
+  "click>=8.1.0",
+  "pydantic>=2.7.0",
+  "httpx>=0.27.0",
+  "chromadb>=0.5.0",
+  "ai-asset-schemas",
+  "fastapi>=0.141.1",
+  "uvicorn[standard]>=0.52.1",
+  "rank-bm25>=0.2.2",
+  "observability",
+  # Classification stamping (04-knowledge-platform.md §2.7, §3.8) uses
+  # security_policy.Classification as the single central definition shared
+  # with M08 search-runtime — public package API, not an internal folder
+  # import (CLAUDE.md 구현 원칙 2, ai_asset_schemas/observability와 동일한
+  # 선례). Already a uv workspace member; no external install needed.
+  "security-policy",
+  # PDF 확장 Loader (04-knowledge-platform.md §2.3, open-decisions.md
+  # D-073). Chosen over PyPDF2 (unmaintained, merged into pypdf) and
+  # pdfminer.six (lower-level, more code for the same MVP text-extraction
+  # need): pure-Python, BSD-3-Clause, no native/build toolchain dependency,
+  # widely used. 폐쇄망 설치: 사내 PyPI 미러/인덱스에 pypdf 휠(순수 Python,
+  # OS/아키텍처 무관 단일 wheel)을 반입하거나 `pip download`로 미리 받아
+  # 내부망에 올린 뒤 `uv sync`가 그 인덱스를 사용하도록 설정한다. 개발 머신
+  # (본 저장소가 위치한 이 macOS 환경)은 폐쇄망 정책상 이 저장소 세션에서
+  # 네트워크 설치가 금지되어 있어 아직 lock/install되지 않았다 — Windows
+  # 대상 PC에서 `uv sync` 실행 시 최초로 해석된다.
+  "pypdf>=4.0.0",
+  # Word(.docx) 확장 Loader (04-knowledge-platform.md §2.3, open-decisions.md
+  # D-073). python-docx: pure-Python, MIT, 표준적으로 널리 쓰임. 유일한
+  # 런타임 의존성인 lxml은 Windows(win_amd64)용 사전 빌드 wheel을 제공하므로
+  # 폐쇄망에서도 별도 C 빌드 도구 없이 설치 가능 — 다만 lxml wheel 자체도
+  # 함께 미러에 반입해야 한다(위 pypdf와 동일한 폐쇄망 절차). 레거시 바이너리
+  # `.doc`(97-2003)는 python-docx가 읽지 못하므로 범위에서 제외한다.
+  "python-docx>=1.1.0",
+]
+
+[project.scripts]
+index-knowledge = "indexing_runtime.main:main"
+stamp-classification = "indexing_runtime.stamp_classification:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/indexing_runtime"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }
+observability = { workspace = true }
+security-policy = { workspace = true }

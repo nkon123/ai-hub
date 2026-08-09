@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "portal-api"
+version = "0.1.0"
+description = "Enterprise AI Asset Hub — Portal API (M02)"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.111.0",
+  "uvicorn[standard]>=0.29.0",
+  "sqlalchemy[asyncio]>=2.0.0",
+  "aiosqlite>=0.20.0",
+  "alembic>=1.13.0",
+  "pydantic>=2.7.0",
+  "pydantic-settings>=2.2.0",
+  "python-jose[cryptography]>=3.3.0",
+  "ai-asset-schemas",
+  "security-policy",
+  "aiofiles>=25.1.0",
+  "python-multipart>=0.0.32",
+  "observability",
+  # P12 Knowledge 품질: portal-api는 evaluation_runner의 공개 API만 사용해
+  # (run_evaluation/load_dataset/load_policy/compare_versions) 백그라운드
+  # Job으로 평가를 실행한다 — 내부 모듈 직접 Import 없음(CLAUDE.md 구현
+  # 원칙 2, ai_asset_schemas/security-policy와 동일한 선례). 이미 워크스페이스
+  # uv.lock에 해시가 있음. 폐쇄망 설치: 동일 사내 PyPI 미러.
+  "evaluation-runner",
+  # P15 관리자 설정: reads `packages/knowledge-packager/config/package-policy.yaml`
+  # directly (forbidden filename/extension policy) to render 자산 크기·확장자
+  # 정책. Deliberately does NOT depend on `knowledge_packager` itself for this —
+  # that package pulls in `chromadb` (a vector-store client, unrelated to
+  # reading one policy YAML file), so a direct read + `yaml.safe_load` is the
+  # narrower choice (CLAUDE.md "함수와 클래스는 한 가지 책임을 가진다"). Already
+  # resolved in uv.lock (evaluation-runner/knowledge-packager both depend on
+  # it), so declaring it directly here needs no new offline download — same
+  # precedent as `observability`/`security-policy` being declared directly
+  # even though other workspace packages also pull them in transitively.
+  "pyyaml>=6.0.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/portal_api"]
+
+[tool.uv.sources]
+ai-asset-schemas = { workspace = true }
+security-policy = { workspace = true }
+observability = { workspace = true }
+evaluation-runner = { workspace = true }

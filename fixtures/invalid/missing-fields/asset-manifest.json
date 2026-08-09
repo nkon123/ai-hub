@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655449001",
+  "name": "Missing Type Field",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL"
+}

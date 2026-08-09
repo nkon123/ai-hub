@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "type": "source_manifest",
+  "knowledge_asset_version_id": "invalid-version-id",
+  "documents": [
+    {
+      "document_id": "invalid-version-id:doc.md",
+      "display_name": "doc",
+      "relative_source_path": "doc.md",
+      "source_hash": "미기재",
+      "source_version": "미기재",
+      "owner": "알 수 없음",
+      "classification": "미기재",
+      "license_or_usage_basis": "미기재",
+      "effective_date": "미기재",
+      "status": "미기재",
+      "parser_identity": "미기재"
+    }
+  ]
+}

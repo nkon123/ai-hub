@@ -1,0 +1,26 @@
+{
+  "schema_version": "1.0",
+  "id": "550e8400-e29b-41d4-a716-446655449002",
+  "type": "knowledge",
+  "name": "Invalid Version Format",
+  "version": "v1.0",
+  "owner": {
+    "org": "miracom",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "source": {
+    "type": "local_files",
+    "documents": [
+      {
+        "path": "documents/sample.md",
+        "mime_type": "text/markdown",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    ]
+  },
+  "indexing_profile_ref": {
+    "name": "default",
+    "version": "1.0.0"
+  }
+}
