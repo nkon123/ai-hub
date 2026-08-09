@@ -334,6 +334,56 @@ export function Modal({
   );
 }
 
+/** Shared labeled text input — used by D01(SetupWizardScreen)/D10(SettingsScreen)
+ * so both screens' forms look and behave identically (CLAUDE.md: 모든 Form
+ * Field에 Label을 제공한다). */
+export function LabeledInput({
+  id,
+  label,
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  disabled = false,
+}: {
+  id: string;
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  type?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <div>
+      <label htmlFor={id} className="mb-1 block text-caption font-semibold text-text-muted">
+        {label}
+      </label>
+      <input
+        id={id}
+        type={type}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        disabled={disabled}
+        className="h-10 w-full rounded-lg border border-border px-3 text-sm text-text-primary disabled:bg-slate-50 disabled:text-text-muted"
+      />
+    </div>
+  );
+}
+
+/** Read-only field row for D10 values fixed by policy — CLAUDE.md/spec §D10:
+ * "정책으로 고정된 값은 읽기 전용으로 표시하고 출처 정책명을 보여준다." */
+export function ReadOnlyField({ label, value, policyNote }: { label: string; value: string; policyNote?: string }) {
+  return (
+    <div>
+      <p className="mb-1 text-caption font-semibold text-text-muted">{label}</p>
+      <p className="text-body text-text-primary">{value}</p>
+      {policyNote && <p className="mt-0.5 text-caption text-text-muted">{policyNote}</p>}
+    </div>
+  );
+}
+
 export function CheckRow({ label, status, message }: { label: string; status: CheckStatus; message: string }) {
   return (
     <div className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 ${STATUS_ROW_TONE[status]}`}>

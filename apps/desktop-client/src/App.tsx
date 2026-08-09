@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Database, FileText, Home, MessageSquare, Package, RefreshCcw, Store, Wifi } from "lucide-react";
+import { Database, FileText, Home, MessageSquare, Package, RefreshCcw, Settings as SettingsIcon, Sparkles, Store, Wifi } from "lucide-react";
 import { HomeScreen } from "./screens/HomeScreen";
 import { ImportScreen } from "./screens/ImportScreen";
 import { StoreScreen } from "./screens/StoreScreen";
@@ -8,8 +8,10 @@ import { ChatScreen } from "./screens/ChatScreen";
 import { AssetsScreen } from "./screens/AssetsScreen";
 import { UpdateScreen } from "./screens/UpdateScreen";
 import { LogsScreen } from "./screens/LogsScreen";
+import { SetupWizardScreen } from "./screens/SetupWizardScreen";
+import { SettingsScreen } from "./screens/SettingsScreen";
 
-type Tab = "home" | "store" | "import" | "chat" | "assets" | "update" | "connections" | "logs";
+type Tab = "home" | "store" | "import" | "chat" | "assets" | "update" | "connections" | "logs" | "setup" | "settings";
 
 const TABS: Array<{ id: Tab; label: string; icon: typeof Home }> = [
   { id: "home", label: "홈", icon: Home },
@@ -20,6 +22,8 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Home }> = [
   { id: "update", label: "업데이트/복구", icon: RefreshCcw },
   { id: "connections", label: "연결 상태", icon: Wifi },
   { id: "logs", label: "로그/진단", icon: FileText },
+  { id: "setup", label: "최초 설정", icon: Sparkles },
+  { id: "settings", label: "설정", icon: SettingsIcon },
 ];
 
 export default function App() {
@@ -76,6 +80,8 @@ export default function App() {
           {tab === "update" && <UpdateScreen onGoToImport={() => setTab("import")} />}
           {tab === "connections" && <ConnectionsScreen />}
           {tab === "logs" && <LogsScreen />}
+          {tab === "setup" && <SetupWizardScreen onCompleted={() => setTab("home")} />}
+          {tab === "settings" && <SettingsScreen />}
         </main>
       </div>
     </div>

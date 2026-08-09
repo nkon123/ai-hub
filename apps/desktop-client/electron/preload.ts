@@ -8,12 +8,17 @@ import type {
   ChecksumVerification,
   ConnectionStatus,
   DesktopBridge,
+  DesktopSettingsInput,
+  DesktopSettingsPublic,
+  DesktopSettingsUpdateResult,
   DiagnosticBundle,
+  DiskSpaceInfo,
   ImportProgressEvent,
   ImportResult,
   InstalledAssetWithStatus,
   LogEntry,
   LogFilters,
+  OllamaModelsResult,
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
   PortalSettingsPublic,
@@ -106,6 +111,19 @@ const bridge: DesktopBridge = {
   },
 
   cancelStoreInstall: (): Promise<void> => ipcRenderer.invoke("store:cancelInstall"),
+
+  // --- D01 최초 설정 Wizard / D10 설정 ----------------------------------------
+  getDesktopSettings: (): Promise<DesktopSettingsPublic> => ipcRenderer.invoke("settings:get"),
+
+  updateDesktopSettings: (patch: DesktopSettingsInput): Promise<DesktopSettingsUpdateResult> =>
+    ipcRenderer.invoke("settings:update", patch),
+
+  markSetupCompleted: (): Promise<DesktopSettingsPublic> => ipcRenderer.invoke("settings:markSetupCompleted"),
+
+  getDiskSpace: (): Promise<DiskSpaceInfo> => ipcRenderer.invoke("settings:getDiskSpace"),
+
+  listOllamaModels: (ollamaBaseUrl: string): Promise<OllamaModelsResult> =>
+    ipcRenderer.invoke("settings:listOllamaModels", ollamaBaseUrl),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

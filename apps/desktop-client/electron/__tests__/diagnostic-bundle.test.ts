@@ -154,4 +154,31 @@ describe("buildDiagnosticBundle — sanitization guarantee", () => {
     expect(bundle.sanitizedSettings.portalTokenConfigured).toBe("false");
     expect(bundle.sanitizedSettings.portalBaseUrl).toBe("미설정");
   });
+
+  // D01/D10(desktop-settings.ts) — Ollama Base URL is no longer hardcoded;
+  // the diagnostic Bundle must reflect whatever was actually configured, not
+  // a stale constant, so support can tell which endpoint the client was
+  // really pointed at.
+  it("reflects the configured Ollama Base URL, not the hardcoded default, once Desktop settings are provided", async () => {
+    const desktopSettings = {
+      clientDisplayName: "본사",
+      siteId: "headquarters",
+      ollamaBaseUrl: "http://127.0.0.1:22222",
+      ollamaAllowNonLoopback: true,
+      chatModelAlias: "default-chat",
+      embeddingModelAlias: "default-embedding",
+      mcpServerAlias: "oracle-connector",
+      mcpServerUrl: "http://127.0.0.1:8500",
+      maxConcurrentRuns: { value: 1, enforced: false, reason: "테스트" },
+      setupCompletedAt: null,
+      updatedAt: null,
+    };
+    const bundle = await buildDiagnosticBundle(layout, store, [], {}, null, desktopSettings);
+    expect(bundle.sanitizedSettings.ollamaBaseUrl).toBe("http://127.0.0.1:22222");
+  });
+
+  it("falls back to the documented default Ollama Base URL when no Desktop settings are passed", async () => {
+    const bundle = await buildDiagnosticBundle(layout, store, [], {});
+    expect(bundle.sanitizedSettings.ollamaBaseUrl).toBe("http://127.0.0.1:11434");
+  });
 });

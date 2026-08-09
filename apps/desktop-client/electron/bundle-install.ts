@@ -129,7 +129,10 @@ export function resolveInstallRoot(userDataPath: string): InstallRootLayout {
   return layout;
 }
 
-function freeBytesAt(dir: string): number {
+// Exported for D01 최초 설정 Wizard 1단계("설치 경로와 여유 공간") reuse —
+// the same formula that already gates D04/D05's `DISK_SPACE` check, so the
+// two screens can never disagree about how much free space is available.
+export function freeBytesAt(dir: string): number {
   const stat = fs.statfsSync(dir);
   return stat.bavail * stat.bsize;
 }

@@ -145,9 +145,11 @@ cd apps\desktop-client
 pnpm dev
 ```
 
-`package.json`의 `dev` 스크립트는 `tsc -p tsconfig.electron.json && concurrently -k -n vite,electron "vite" "electron ."`이다 — Vite 개발 서버(Renderer)와 Electron 앱(Main)을 동시에 띄운다. Electron 창이 뜨면 앱 내 연결 상태 화면(`connections.ts`)이 Ollama(`127.0.0.1:11434`)와 Local Agent Runtime(`127.0.0.1:8100`)을 각각 Health-check한다 — 5절에서 agent-runtime을 먼저 띄워 두어야 정상으로 표시된다.
+`package.json`의 `dev` 스크립트는 `tsc -p tsconfig.electron.json && concurrently -k -n vite,electron "vite" "electron ."`이다 — Vite 개발 서버(Renderer)와 Electron 앱(Main)을 동시에 띄운다. Electron 창이 처음 뜨면 왼쪽 메뉴의 **"최초 설정"**(D01 Wizard)에서 Client 표시명·사업장 ID·Ollama Endpoint·기본 Chat/Embedding Model Alias·Office MCP Server Alias/URL을 확인·저장한다 — 아무것도 입력하지 않아도 이 문서 5절의 기본 포트(Ollama `127.0.0.1:11434`, Office MCP Server `127.0.0.1:8500`)로 동작한다(설정 전 기존 동작과 동일). 이후에는 **"설정"**(D10) 메뉴에서 언제든 같은 값을 다시 바꿀 수 있다. 앱 내 연결 상태 화면(`connections.ts`)은 이 설정값(미설정 시 기본값)을 사용해 Ollama·Local Agent Runtime(`127.0.0.1:8100`, 이 값은 설정 화면에 없음)·Office MCP Server를 각각 Health-check한다 — 5절에서 agent-runtime과 office-mcp-server를 먼저 띄워 두어야 정상으로 표시된다.
 
-- **이 PoC 세션(macOS)에서는 Electron 앱을 한 번도 실제로 기동한 적이 없다**(사내 정책상 서명되지 않은 바이너리가 macOS Gatekeeper/XProtect에 격리됨, `progress-log.md` M04 항목 참고). 따라서 `pnpm dev`가 Windows에서 실제로 Electron 창을 띄우는지는 **미검증**이며, 지금까지의 M04 검증은 전부 코드/단위 테스트(`pnpm --filter desktop-client test`, 263개 통과) 수준이다.
+**보안 규칙**: Ollama Base URL은 기본적으로 loopback 주소(127.0.0.1/localhost)만 저장할 수 있다 — 원격 Ollama를 쓰려면 설정 화면에서 "외부 Ollama 허용"을 명시적으로 켜야 한다(사내 보안 정책상 권장하지 않음). "최대 동시 Run 수" 필드는 오늘 이 값을 바꿔도 실제 동작이 달라지지 않아(단일 창·단일 대화, Local Agent Runtime에 동시성 제한 없음) 읽기 전용으로 고정 표시된다 — 상세 사유는 `open-decisions.md` D-074 참고.
+
+- **이 PoC 세션(macOS)에서는 Electron 앱을 한 번도 실제로 기동한 적이 없다**(사내 정책상 서명되지 않은 바이너리가 macOS Gatekeeper/XProtect에 격리됨, `progress-log.md` M04 항목 참고). 따라서 `pnpm dev`가 Windows에서 실제로 Electron 창을 띄우는지는 **미검증**이며, 지금까지의 M04 검증은 전부 코드/단위 테스트(`pnpm --filter desktop-client test`) 수준이다.
 - Windows 설치 패키지(NSIS)를 만들려면 `pnpm run dist:win`(electron-builder)을 사용한다 — 코드 서명 관련 세부사항은 `docs/implementation-spec/11-desktop-packaging-and-distribution.md` 참고.
 
 ## 8. 문제 해결

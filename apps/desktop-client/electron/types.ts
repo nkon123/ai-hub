@@ -304,7 +304,7 @@ export interface DiagnosticBundle {
   logs: LogEntry[];
 }
 
-export type ConnectionId = "runtime" | "ollama";
+export type ConnectionId = "runtime" | "ollama" | "mcp";
 
 export interface ConnectionStatus {
   id: ConnectionId;
@@ -314,6 +314,74 @@ export interface ConnectionStatus {
   checkedAt: string;
   latencyMs: number | null;
   recoveryHint: string | null;
+}
+
+/** Ollama에 실제 설치된 모델 이름 목록 — D01 4단계("설치된 Chat/Embedding
+ * 모델 확인")가 쓴다. Desktop은 "Alias -> 실제 model_id" 매핑을 모른다(그
+ * 매핑은 agent-runtime이 로드하는 Office Profile에만 있고, Desktop에는 아직
+ * Office Profile 가져오기 기능이 없다 — open-decisions.md 참고) — 그래서
+ * Alias별 PASS/FAIL을 단정하지 않고, Ollama가 보고하는 설치된 모델 이름을
+ * 그대로 보여주는 정직한 목록에 그친다. */
+export interface OllamaModelsResult {
+  ok: boolean;
+  models: string[];
+  error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// D01 최초 설정 Wizard / D10 설정
+// ---------------------------------------------------------------------------
+
+/** "최대 동시 Run 수"는 오늘 Desktop이 실제로 강제할 수 없다(단일 창·단일
+ * 대화, Local Agent Runtime에 동시성 제한 없음) — 편집 가능한 숫자가 아니라
+ * 이 구조로만 노출해 "바꿔도 아무 효과 없는 설정"을 만들지 않는다
+ * (`electron/desktop-settings.ts`, open-decisions.md D-074). */
+export interface MaxConcurrentRunsInfo {
+  value: number;
+  enforced: boolean;
+  reason: string;
+}
+
+/** D01/D10이 공유하는 설정 저장소(`electron/desktop-settings.ts`)의
+ * 렌더러/IPC 노출 형태. 이 안에는 실제 Secret이 없다(Ollama/MCP 모두 이
+ * PoC에서는 인증이 없음) — 그래서 `PortalSettingsPublic`과 달리 모든 필드가
+ * 그대로 노출된다. */
+export interface DesktopSettingsPublic {
+  clientDisplayName: string | null;
+  siteId: string | null;
+  ollamaBaseUrl: string;
+  ollamaAllowNonLoopback: boolean;
+  chatModelAlias: string;
+  embeddingModelAlias: string;
+  mcpServerAlias: string;
+  mcpServerUrl: string;
+  maxConcurrentRuns: MaxConcurrentRunsInfo;
+  setupCompletedAt: string | null;
+  updatedAt: string | null;
+}
+
+/** 부분 업데이트 입력 — 제공된 필드만 검증·반영된다(All-or-nothing: 하나라도
+ * 검증에 실패하면 아무것도 저장되지 않는다). */
+export interface DesktopSettingsInput {
+  clientDisplayName?: string;
+  siteId?: string;
+  ollamaBaseUrl?: string;
+  ollamaAllowNonLoopback?: boolean;
+  chatModelAlias?: string;
+  embeddingModelAlias?: string;
+  mcpServerAlias?: string;
+  mcpServerUrl?: string;
+}
+
+export interface DesktopSettingsUpdateResult {
+  ok: boolean;
+  error: string | null;
+  settings: DesktopSettingsPublic;
+}
+
+export interface DiskSpaceInfo {
+  path: string;
+  freeBytes: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -474,4 +542,19 @@ export interface DesktopBridge {
    * Job 자체를 서버에서 중단시키는 API는 없으므로(문서화된 계약 없음), 이
    * Desktop이 더 이상 폴링/다운로드를 진행하지 않도록만 한다. */
   cancelStoreInstall(): Promise<void>;
+
+  // --- D01 최초 설정 Wizard / D10 설정 ----------------------------------------
+  getDesktopSettings(): Promise<DesktopSettingsPublic>;
+  /** All-or-nothing: 포함된 필드 중 하나라도 검증 실패면 아무것도 저장하지
+   * 않고 `ok:false`+사유를 반환한다(Ollama URL의 loopback 규칙 등은 Main
+   * Process에서 다시 검증된다 — 방어적 이중 검사). */
+  updateDesktopSettings(patch: DesktopSettingsInput): Promise<DesktopSettingsUpdateResult>;
+  /** D01 7단계 "전체 진단 결과와 저장" 완료 시점에 한 번 호출한다. */
+  markSetupCompleted(): Promise<DesktopSettingsPublic>;
+  /** D01 1단계 "설치 경로와 여유 공간". */
+  getDiskSpace(): Promise<DiskSpaceInfo>;
+  /** D01 4단계 "설치된 Chat/Embedding 모델 확인" — 지금 저장된(또는 아직
+   * 저장 전인) Ollama Base URL을 인자로 받아, 마법사가 저장 전에도 방금 입력한
+   * 값으로 확인할 수 있게 한다. */
+  listOllamaModels(ollamaBaseUrl: string): Promise<OllamaModelsResult>;
 }

@@ -10,13 +10,12 @@ import os from "node:os";
 import path from "node:path";
 import type { InstallRootLayout } from "./bundle-install";
 import type { InstalledAssetsStore } from "./installed-assets-store";
-import { checkAllConnections } from "./connections";
+import { checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "./connections";
 import { filterLogEntries } from "./log-filter";
 import { sanitizeText } from "./log-sanitizer";
-import type { DiagnosticBundle, LogEntry, LogFilters, PortalSettingsPublic } from "./types";
+import type { DesktopSettingsPublic, DiagnosticBundle, LogEntry, LogFilters, PortalSettingsPublic } from "./types";
 
 const AGENT_RUNTIME_HEALTH_URL = "http://127.0.0.1:8100/health";
-const OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 
 /** Finds this app's own `package.json` (for `clientVersion`) by walking up
  * from `__dirname` — a fixed relative depth breaks between a Vitest run
@@ -77,11 +76,12 @@ const PYTHON_VERSION_NOTE =
 function collectSanitizedSettings(
   layout: InstallRootLayout,
   portalSettings: PortalSettingsPublic | null,
+  desktopSettings: DesktopSettingsPublic | null,
 ): Record<string, string> {
   const settings: Record<string, string> = {
     installRoot: layout.root,
     agentRuntimeBaseUrl: "http://127.0.0.1:8100",
-    ollamaBaseUrl: OLLAMA_BASE_URL,
+    ollamaBaseUrl: desktopSettings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
     portalBaseUrl: portalSettings?.baseUrl ?? "미설정",
     portalTokenConfigured: String(portalSettings?.tokenConfigured ?? false),
   };
@@ -98,9 +98,14 @@ export async function buildDiagnosticBundle(
   allLogs: LogEntry[],
   filters: LogFilters,
   portalSettings: PortalSettingsPublic | null = null,
+  desktopSettings: DesktopSettingsPublic | null = null,
 ): Promise<DiagnosticBundle> {
   const { version: runtimeVersion, note: runtimeVersionNote } = await readRuntimeVersion();
-  const health = await checkAllConnections();
+  const health = await checkAllConnections({
+    ollamaBaseUrl: desktopSettings?.ollamaBaseUrl,
+    mcpServerUrl: desktopSettings?.mcpServerUrl,
+    mcpServerAlias: desktopSettings?.mcpServerAlias,
+  });
 
   const filteredLogs = filterLogEntries(allLogs, filters);
   const sanitizedLogs: LogEntry[] = filteredLogs.map((entry) => ({
@@ -132,7 +137,7 @@ export async function buildDiagnosticBundle(
     os: { platform: os.platform(), release: os.release(), arch: os.arch() },
     pythonVersion: null,
     pythonVersionNote: PYTHON_VERSION_NOTE,
-    sanitizedSettings: collectSanitizedSettings(layout, portalSettings),
+    sanitizedSettings: collectSanitizedSettings(layout, portalSettings, desktopSettings),
     installedAssets,
     health,
     logs: sanitizedLogs,

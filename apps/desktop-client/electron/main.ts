@@ -2,10 +2,11 @@ import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { importBundle, resolveInstallRoot, type InstallRootLayout } from "./bundle-install";
+import { freeBytesAt, importBundle, resolveInstallRoot, type InstallRootLayout } from "./bundle-install";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
-import { checkAllConnections } from "./connections";
+import { checkAllConnections, listOllamaModels } from "./connections";
+import { DesktopSettingsStore } from "./desktop-settings";
 import {
   activateAssetVersion,
   assetInstallDir,
@@ -30,11 +31,16 @@ import type {
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
+  DesktopSettingsInput,
+  DesktopSettingsPublic,
+  DesktopSettingsUpdateResult,
   DiagnosticBundle,
+  DiskSpaceInfo,
   ImportProgressEvent,
   InstalledAssetWithStatus,
   LogEntry,
   LogFilters,
+  OllamaModelsResult,
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
   PortalSettingsPublic,
@@ -55,6 +61,7 @@ let mainWindow: BrowserWindow | null = null;
 let installLayout: InstallRootLayout | null = null;
 let appLogger: AppLogger | null = null;
 let portalSettingsStore: PortalSettingsStore | null = null;
+let desktopSettingsStore: DesktopSettingsStore | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
@@ -72,6 +79,13 @@ function getPortalSettingsStore(): PortalSettingsStore {
     portalSettingsStore = new PortalSettingsStore(getLayout().stateDir);
   }
   return portalSettingsStore;
+}
+
+function getDesktopSettingsStore(): DesktopSettingsStore {
+  if (!desktopSettingsStore) {
+    desktopSettingsStore = new DesktopSettingsStore(getLayout().stateDir);
+  }
+  return desktopSettingsStore;
 }
 
 /** D11's only log source — see `app-logger.ts`'s module docstring for why
@@ -345,7 +359,12 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("connections:check", async () => {
-    const results = await checkAllConnections();
+    const desktopSettings = getDesktopSettingsStore().getPublic();
+    const results = await checkAllConnections({
+      ollamaBaseUrl: desktopSettings.ollamaBaseUrl,
+      mcpServerUrl: desktopSettings.mcpServerUrl,
+      mcpServerAlias: desktopSettings.mcpServerAlias,
+    });
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0) {
       getLogger().warn("connections", `연결 확인 실패: ${failed.map((f) => f.label).join(", ")}`, {
@@ -373,6 +392,7 @@ function registerIpcHandlers(): void {
         getLogger().readAll(),
         filters ?? {},
         getPortalSettingsStore().getPublic(),
+        getDesktopSettingsStore().getPublic(),
       );
       const savedPath = saveDiagnosticBundle(layout, bundle);
       getLogger().info("diagnostic-bundle", `진단 Bundle 생성 완료 (Log ${bundle.logs.length}건 포함)`);
@@ -494,6 +514,46 @@ function registerIpcHandlers(): void {
       currentStoreInstallCancelToken.cancelled = true;
     }
   });
+
+  // --- D01 최초 설정 Wizard / D10 설정 ----------------------------------------
+  ipcMain.handle("settings:get", async (): Promise<DesktopSettingsPublic> => {
+    return getDesktopSettingsStore().getPublic();
+  });
+
+  ipcMain.handle(
+    "settings:update",
+    async (_event, patch: DesktopSettingsInput): Promise<DesktopSettingsUpdateResult> => {
+      const result = getDesktopSettingsStore().update(patch ?? {});
+      if (result.ok) {
+        // 값 자체(URL/Alias)는 운영 Secret이 아니라 설정된 사실만 기록한다 —
+        // portal-settings의 "갱신되었습니다"류 로그와 같은 원칙.
+        getLogger().info("desktop-settings", "Desktop 설정이 갱신되었습니다.");
+      } else {
+        getLogger().warn("desktop-settings", `Desktop 설정 갱신 거부: ${result.error ?? "알 수 없는 오류"}`, {
+          errorCode: "DESKTOP_SETTINGS_INVALID",
+        });
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle("settings:markSetupCompleted", async (): Promise<DesktopSettingsPublic> => {
+    const result = getDesktopSettingsStore().markSetupCompleted();
+    getLogger().info("desktop-settings", "최초 설정 Wizard 완료");
+    return result;
+  });
+
+  ipcMain.handle("settings:getDiskSpace", async (): Promise<DiskSpaceInfo> => {
+    const layout = getLayout();
+    return { path: layout.root, freeBytes: freeBytesAt(layout.root) };
+  });
+
+  ipcMain.handle(
+    "settings:listOllamaModels",
+    async (_event, ollamaBaseUrl: string): Promise<OllamaModelsResult> => {
+      return listOllamaModels(ollamaBaseUrl || getDesktopSettingsStore().getPublic().ollamaBaseUrl);
+    },
+  );
 }
 
 app.whenReady().then(() => {
