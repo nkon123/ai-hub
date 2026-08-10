@@ -12,7 +12,9 @@
     실패한다(크래시 아님).
 #>
 
+. "$PSScriptRoot\_uv.ps1"
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\indexing-runtime")
 
-uv run uvicorn indexing_runtime.main:app --reload --port 8200
+Invoke-Uv run uvicorn indexing_runtime.main:app --reload --port 8200

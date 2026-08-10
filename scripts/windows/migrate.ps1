@@ -12,7 +12,9 @@
     대신 Alembic을 사용한다).
 #>
 
+. "$PSScriptRoot\_uv.ps1"
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "apps\portal-api")
 
-uv run alembic upgrade head
+Invoke-Uv run alembic upgrade head

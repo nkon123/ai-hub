@@ -108,6 +108,47 @@ pip install -e apps/portal-api
 - `uv.lock`이 고정한 정확한 버전이 아니라 각 `pyproject.toml`의 범위(`>=`)로 해석되므로, uv를 쓸 때와 **의존성 버전이 달라질 수 있다**. 재현성이 떨어지므로 어디까지나 최후 수단이다.
 - **이 대체 절차는 실행해 검증하지 않았다**(개발 머신은 네트워크 설치가 금지되어 있음). 위 의존 순서는 각 `pyproject.toml`의 `[tool.uv.sources]`를 읽어 도출한 것이다.
 
+## 2.6 uv 를 설치했는데 `uv` 명령이 없다고 나오는 경우
+
+`pip install uv` 는 성공했는데 `uv --version` 이 "찾을 수 없음"으로 실패하는 경우다. **실제로 이 PoC 반입 과정에서 발생했다.** uv 자체는 설치되어 있고, pip 이 실행 파일을 넣은 `Scripts\` 디렉터리가 PATH 에 없을 뿐이다.
+
+**① 즉시 우회 — 항상 동작한다**
+
+```powershell
+python -m uv --version
+python -m uv sync --all-packages
+```
+
+이 문서의 모든 `uv <명령>` 은 `python -m uv <명령>` 으로 바꿔 실행해도 동일하다.
+
+`scripts/windows/` 의 PowerShell 스크립트들은 **이 상황을 자동으로 처리한다.** `uv` 가 PATH 에 없으면 `python -m uv` 로 자동 전환하고 안내 메시지를 출력하므로, 스크립트를 쓰는 한 별도 조치 없이 그대로 실행된다(`scripts/windows/_uv.ps1`).
+
+**② PATH 에 추가 — 현재 세션만**
+
+```powershell
+$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+$env:PATH = "$scripts;$env:PATH"
+uv --version
+```
+
+`pip install --user` 로 설치했다면 위 경로 대신 아래를 쓴다.
+
+```powershell
+$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts','nt_user'))"
+```
+
+**③ PATH 에 영구 등록**
+
+```powershell
+$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
+$current = [Environment]::GetEnvironmentVariable("PATH", "User")
+[Environment]::SetEnvironmentVariable("PATH", "$scripts;$current", "User")
+```
+
+**등록 후 PowerShell 창을 새로 열어야 반영된다.** 기존 창에서는 계속 안 잡힌다.
+
+> 참고: `scripts/windows/*.ps1` 은 Windows 기본인 **Windows PowerShell 5.1** 에서 동작하도록 작성했다(PowerShell 7 전용 문법 미사용). 다만 실제 Windows 에서 실행해 검증하지는 못했다 — 개발 머신이 macOS 다.
+
 ## 3. 저장소 설치
 
 ```powershell

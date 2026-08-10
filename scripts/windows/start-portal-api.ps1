@@ -10,7 +10,9 @@
     있어야 한다.
 #>
 
+. "$PSScriptRoot\_uv.ps1"
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "apps\portal-api")
 
-uv run uvicorn portal_api.main:app --reload --port 8000
+Invoke-Uv run uvicorn portal_api.main:app --reload --port 8000

@@ -9,7 +9,9 @@
     정상 동작한다 (docs/implementation-spec/13-windows-local-setup.md 참고).
 #>
 
+. "$PSScriptRoot\_uv.ps1"
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\agent-runtime")
 
-uv run uvicorn agent_runtime.main:app --reload --port 8100
+Invoke-Uv run uvicorn agent_runtime.main:app --reload --port 8100
