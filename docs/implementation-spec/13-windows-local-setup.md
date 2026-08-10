@@ -109,6 +109,17 @@ python -m pip install -e apps/portal-api             --no-deps
 
 ### 설치 확인
 
+가장 빠른 방법은 점검 스크립트다. 아무것도 바꾸지 않고 상태만 보고한다.
+
+```powershell
+.\scripts\windows\doctor.ps1
+```
+
+Python / .venv / 파이썬 패키지 / 워크스페이스 패키지 / Node / pnpm / portal-web 의존성 / Ollama 서버와 모델 / 서비스 포트를 한 번에 확인하고, 빠진 항목마다 무엇을 실행해야 하는지 알려준다.
+
+수동으로 확인하려면:
+
+
 ```powershell
 python -c "import fastapi, chromadb, sqlalchemy; print('외부 OK')"
 python -c "import ai_asset_schemas, security_policy, observability, portal_api; print('워크스페이스 OK')"
@@ -131,6 +142,7 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
+| `.venv\\Scripts\\` 에 `uvicorn.exe`/`next` 가 안 보임 | **정상일 수 있다.** 기동 스크립트는 `python -m uvicorn`, `pnpm --filter portal-web dev` 로 부르므로 실행 파일(.exe)이 없어도 동작한다. 실제로 확인할 것은 `python -c "import uvicorn"` 이 되는지다 |
 
 ## 3. 저장소 설치
 
