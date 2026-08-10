@@ -149,6 +149,68 @@ $current = [Environment]::GetEnvironmentVariable("PATH", "User")
 
 > 참고: `scripts/windows/*.ps1` 은 Windows 기본인 **Windows PowerShell 5.1** 에서 동작하도록 작성했다(PowerShell 7 전용 문법 미사용). 다만 실제 Windows 에서 실행해 검증하지는 못했다 — 개발 머신이 macOS 다.
 
+## 2.7 `pip install` 은 되는데 `uv sync` 만 실패하는 경우
+
+**실제로 이 PoC 반입 과정에서 발생했다** — `chromadb` 가 uv 로는 실패하고 `pip install` 로는 받아졌고, 이후 `ecdsa` 에서 다시 실패했다.
+
+### 왜 갈리는가
+
+**uv 는 내부적으로 pip 을 쓰지 않는다.** Rust 로 새로 구현한 별도의 리졸버·다운로더·TLS 스택이다. 그래서 pip 이 참조하는 설정을 uv 는 보지 않는다. 특히:
+
+| 항목 | pip | uv |
+|---|---|---|
+| `pip.ini` / `pip.conf` 의 `index-url` | 읽는다 | **읽지 않는다** |
+| 기본 인덱스 | `pip.ini` 설정값 | `https://pypi.org/simple` (`UV_DEFAULT_INDEX` 로 변경) |
+| TLS 루트 인증서 | 보통 시스템 저장소 | **자체 번들 루트**(`UV_NATIVE_TLS=1` 로 시스템 저장소 사용) |
+
+이 저장소의 `uv.lock` 은 각 패키지의 출처를 `source = { registry = "https://pypi.org/simple" }` 로 기록하고 있고, `pyproject.toml` 에 별도 인덱스 설정이 없다. 따라서 **사내 미러가 `pip.ini` 에만 설정되어 있으면 pip 은 성공하고 uv 는 공용 PyPI 로 나가려다 실패한다.** 어떤 패키지는 되고 어떤 패키지는 안 되는 것처럼 보이는 이유는 캐시·프록시 상태에 따라 달라지기 때문이다.
+
+두 번째 원인은 **사내 프록시의 자체 서명 인증서**다. pip 은 Windows 인증서 저장소를 타는데 uv 는 기본적으로 자체 번들 루트를 쓰므로, 같은 네트워크에서 pip 만 성공할 수 있다.
+
+### 해결
+
+**① pip 이 실제로 쓰는 인덱스를 확인한다**
+
+```powershell
+pip config list
+pip config debug   # 어떤 파일에서 읽었는지까지 표시
+```
+
+`global.index-url` 또는 `install.index-url` 값이 사내 미러 주소다.
+
+**② 같은 값을 uv 에 알려준다**
+
+```powershell
+$env:UV_DEFAULT_INDEX = "<위에서 확인한 index-url>"
+$env:UV_NATIVE_TLS = "1"          # 사내 프록시 인증서를 쓰는 경우
+uv sync --all-packages
+```
+
+`trusted-host` 를 pip 에 설정해 두었다면 uv 에는 `$env:UV_INSECURE_HOST = "<호스트>"` 로 준다.
+
+**③ 매번 설정하지 않으려면** — 저장소 루트에 `uv.toml` 을 만든다. **이 파일은 사내 미러 주소를 담으므로 커밋하지 않는다**(`.gitignore` 에 추가할 것).
+
+```toml
+[[index]]
+url = "<사내 미러 index-url>"
+default = true
+```
+
+또는 사용자 환경 변수로 영구 등록한다.
+
+```powershell
+[Environment]::SetEnvironmentVariable("UV_DEFAULT_INDEX", "<index-url>", "User")
+[Environment]::SetEnvironmentVariable("UV_NATIVE_TLS", "1", "User")
+```
+
+> 등록 후 PowerShell 창을 새로 열어야 반영된다.
+
+### `pip install` 로 개별 설치한 패키지는 어떻게 되나
+
+동작은 하지만 **권장하지 않는다.** `uv.lock` 은 그 사실을 모르므로, 이후 `uv sync` 가 잠금 파일 기준으로 환경을 다시 맞추면서 해당 패키지를 교체하거나 제거할 수 있다. 인덱스 설정을 고쳐 uv 가 전부 설치하도록 하는 편이 재현성 면에서 낫다.
+
+> 이 절의 원인 분석은 `uv.lock` 의 registry 값과 `uv sync --help` 의 환경 변수 목록을 실제로 확인해 작성했다(uv 0.12.1). 다만 **사내망에서 위 해결 절차를 실행해 검증하지는 못했다** — 개발 머신이 macOS 이고 사내 미러에 접근할 수 없다.
+
 ## 3. 저장소 설치
 
 ```powershell

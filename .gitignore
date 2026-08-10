@@ -57,3 +57,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+# 사내 미러 주소를 담을 수 있으므로 커밋하지 않는다 (13-windows-local-setup.md §2.7)
+uv.toml
