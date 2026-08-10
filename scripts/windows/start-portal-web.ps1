@@ -9,6 +9,18 @@
     `pnpm install`이 끝나 있어야 한다.
 #>
 
+. "$PSScriptRoot\_preflight.ps1"
+
+Assert-PnpmReady
+Warn-IfPortInUse -Port 3000 -ServiceName "portal-web"
+
+# portal-web 은 브라우저 요청을 :8000 으로 넘긴다(next.config.mjs rewrite).
+# portal-api 가 없으면 화면은 뜨지만 데이터가 비어 보이므로 미리 알린다.
+if (-not (Get-NetTCPConnection -LocalPort 8000 -State Listen -ErrorAction SilentlyContinue)) {
+    Write-Host "[경고] portal-api(:8000)가 아직 기동되지 않았습니다." -ForegroundColor Yellow
+    Write-Host "       화면은 뜨지만 데이터가 비어 보입니다 — start-portal-api.ps1 을 먼저 실행하세요." -ForegroundColor DarkGray
+}
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $RepoRoot
 

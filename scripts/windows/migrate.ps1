@@ -12,9 +12,13 @@
     대신 Alembic을 사용한다).
 #>
 
-. "$PSScriptRoot\_python.ps1"
+. "$PSScriptRoot\_preflight.ps1"
+
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "alembic" -Purpose "DB 마이그레이션"
+Assert-WorkspaceModule -Python $Python -Module "portal_api"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "apps\portal-api")
 
-Invoke-Py -m alembic upgrade head
+& $Python -m alembic upgrade head

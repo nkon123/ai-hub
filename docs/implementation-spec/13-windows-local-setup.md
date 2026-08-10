@@ -142,6 +142,24 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
+
+### 스크립트가 알아서 알려준다
+
+`scripts/windows/` 의 기동 스크립트들은 실행 전에 사전 점검을 한다(`_preflight.ps1`). 빠진 것이 있으면 원시 오류(`ModuleNotFoundError`, `'pnpm'을 찾을 수 없습니다`) 대신 **원인과 실행할 명령**을 한국어로 출력하고 멈춘다.
+
+| 점검 | 어떻게 판단하나 | 없으면 |
+|---|---|---|
+| Python / `.venv` | `.venv\Scripts\python.exe` 우선, 없으면 현재 환경 | 설치 안내 후 종료 |
+| 파이썬 패키지 | `python -c "import X"` — **실행 파일(.exe) 존재 여부가 아니다** | `install-pip.ps1` 안내 후 종료 |
+| 워크스페이스 패키지 | 동일 | `--no-deps` 설명과 함께 안내 후 종료 |
+| pnpm / portal-web 의존성 | `pnpm` 명령과 `node_modules\.bin\next` | `corepack enable` / `pnpm install` 안내 후 종료 |
+| 포트 중복 | 해당 포트 LISTEN 여부 | **경고만** (이미 떠 있을 수 있으므로 판단은 사용자 몫) |
+| Ollama·모델 | `:11434/api/tags` | **경고만** (서비스는 기동되고 실제 대화/색인에서 실패) |
+
+`start-all.ps1` 은 7개 창을 띄우기 **전에** 한 번 점검한다 — 창 7개가 전부 같은 이유로 실패하는 것을 막기 위해서다.
+
+`start-portal-web.ps1` 은 portal-api(:8000)가 아직 없으면 경고한다. Next 가 브라우저 요청을 :8000 으로 넘기므로(§ next.config.mjs rewrite), portal-api 가 없으면 화면은 뜨지만 데이터가 비어 보이기 때문이다.
+
 | `.venv\\Scripts\\` 에 `uvicorn.exe`/`next` 가 안 보임 | **정상일 수 있다.** 기동 스크립트는 `python -m uvicorn`, `pnpm --filter portal-web dev` 로 부르므로 실행 파일(.exe)이 없어도 동작한다. 실제로 확인할 것은 `python -c "import uvicorn"` 이 되는지다 |
 
 ## 3. 저장소 설치

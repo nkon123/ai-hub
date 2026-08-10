@@ -23,6 +23,18 @@
     프로세스이기 때문) — 필요하면 작업 관리자에서 개별 종료한다.
 #>
 
+. "$PSScriptRoot\_preflight.ps1"
+
+# 7개 창을 띄운 뒤 전부 같은 이유로 실패하는 일을 막기 위해 먼저 한 번 점검한다.
+Write-Host "사전 점검 중..." -ForegroundColor Cyan
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "uvicorn" -Purpose "서비스 기동"
+Assert-WorkspaceModule -Python $Python -Module "portal_api"
+Assert-PnpmReady
+Warn-IfOllamaMissing
+Write-Host "사전 점검 통과." -ForegroundColor Green
+Write-Host ""
+
 $ScriptDir = $PSScriptRoot
 
 $Services = @(

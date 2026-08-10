@@ -10,9 +10,14 @@
     있어야 한다.
 #>
 
-. "$PSScriptRoot\_python.ps1"
+. "$PSScriptRoot\_preflight.ps1"
+
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "uvicorn" -Purpose "서비스 기동"
+Assert-WorkspaceModule -Python $Python -Module "portal_api"
+Warn-IfPortInUse -Port 8000 -ServiceName "portal-api"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "apps\portal-api")
 
-Invoke-Py -m uvicorn portal_api.main:app --reload --port 8000
+& $Python -m uvicorn portal_api.main:app --reload --port 8000

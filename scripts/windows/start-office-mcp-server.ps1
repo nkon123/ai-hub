@@ -9,9 +9,14 @@
     참고).
 #>
 
-. "$PSScriptRoot\_python.ps1"
+. "$PSScriptRoot\_preflight.ps1"
+
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "uvicorn" -Purpose "서비스 기동"
+Assert-WorkspaceModule -Python $Python -Module "office_mcp_server"
+Warn-IfPortInUse -Port 8500 -ServiceName "office-mcp-server"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\office-mcp-server")
 
-Invoke-Py -m uvicorn office_mcp_server.main:app --reload --port 8500
+& $Python -m uvicorn office_mcp_server.main:app --reload --port 8500

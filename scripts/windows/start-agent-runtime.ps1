@@ -9,9 +9,15 @@
     정상 동작한다 (docs/implementation-spec/13-windows-local-setup.md 참고).
 #>
 
-. "$PSScriptRoot\_python.ps1"
+. "$PSScriptRoot\_preflight.ps1"
+
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "uvicorn" -Purpose "서비스 기동"
+Assert-WorkspaceModule -Python $Python -Module "agent_runtime"
+Warn-IfPortInUse -Port 8100 -ServiceName "agent-runtime"
+Warn-IfOllamaMissing
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\agent-runtime")
 
-Invoke-Py -m uvicorn agent_runtime.main:app --reload --port 8100
+& $Python -m uvicorn agent_runtime.main:app --reload --port 8100

@@ -12,9 +12,15 @@
     실패한다(크래시 아님).
 #>
 
-. "$PSScriptRoot\_python.ps1"
+. "$PSScriptRoot\_preflight.ps1"
+
+$Python = Resolve-Python
+Assert-PythonModule -Python $Python -Module "uvicorn" -Purpose "서비스 기동"
+Assert-WorkspaceModule -Python $Python -Module "indexing_runtime"
+Warn-IfPortInUse -Port 8200 -ServiceName "indexing-runtime"
+Warn-IfOllamaMissing
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\indexing-runtime")
 
-Invoke-Py -m uvicorn indexing_runtime.main:app --reload --port 8200
+& $Python -m uvicorn indexing_runtime.main:app --reload --port 8200
