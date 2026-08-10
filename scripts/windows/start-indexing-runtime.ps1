@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     indexing-runtime (M07, Knowledge Indexing)을 :8200 포트에서 기동한다.
 

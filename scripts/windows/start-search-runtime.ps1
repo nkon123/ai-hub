@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     search-runtime (M08, Knowledge Search)을 :8300 포트에서 기동한다.
 

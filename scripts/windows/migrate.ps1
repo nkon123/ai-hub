@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     portal-api DB(SQLite, portal.db) 스키마를 최신 마이그레이션까지
     적용한다.

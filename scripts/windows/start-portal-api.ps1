@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     portal-api (M02)를 :8000 포트에서 기동한다.
 

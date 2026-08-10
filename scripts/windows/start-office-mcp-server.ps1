@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     office-mcp-server (M10, 읽기 전용 MCP Tool 서버)를 :8500 포트에서
     기동한다.

@@ -1,0 +1,33 @@
+# PowerShell 스크립트는 CRLF 로 유지한다.
+#
+# Windows PowerShell 5.1(Windows 기본)은 `.ps1` 파일에 UTF-8 BOM 이 없으면
+# 시스템 코드페이지(한국어 Windows 는 CP949)로 읽는다. 그래서 파일 안의 한글
+# 문자열이 깨진다. 저장소의 `.ps1` 은 모두 **UTF-8 BOM + CRLF** 로 저장되어
+# 있으며, 아래 설정은 체크아웃 시 그 상태가 유지되도록 한다.
+#
+# BOM 자체는 파일 내용이므로 git 이 건드리지 않지만, eol 정규화로 CRLF 가
+# LF 로 바뀌는 것은 막아야 한다.
+*.ps1 text eol=crlf
+
+# Windows 배치 파일도 동일
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 나머지 텍스트는 LF 로 통일 (서비스는 macOS/Linux 에서도 개발한다)
+*.py   text eol=lf
+*.ts   text eol=lf
+*.tsx  text eol=lf
+*.js   text eol=lf
+*.mjs  text eol=lf
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+*.md   text eol=lf
+*.toml text eol=lf
+
+# 바이너리는 정규화하지 않는다
+*.png  binary
+*.zip  binary
+*.pkl  binary
+*.db   binary
+*.xlsx binary

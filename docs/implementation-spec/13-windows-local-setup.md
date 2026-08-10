@@ -143,6 +143,26 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
 
+### PowerShell 출력의 한글이 깨질 때
+
+`.ps1` 파일은 모두 **UTF-8 BOM + CRLF** 로 저장되어 있다. Windows PowerShell 5.1(Windows 기본)은 BOM 이 없으면 파일을 시스템 코드페이지(한국어 Windows 는 CP949)로 읽어 한글 문자열이 깨지기 때문이다. `.gitattributes` 가 체크아웃 시 이 상태를 유지한다.
+
+그래도 깨진다면 **콘솔 쪽** 문제다. 순서대로 확인한다.
+
+```powershell
+# 1) 현재 코드페이지 확인 (949 = CP949, 65001 = UTF-8)
+chcp
+
+# 2) UTF-8 로 전환 — 현재 창에만 적용된다
+chcp 65001
+```
+
+`chcp 65001` 후에도 네모(□)나 물음표로 보인다면 **콘솔 글꼴**이 한글을 지원하지 않는 것이다. 창 제목 우클릭 → 속성 → 글꼴에서 `맑은 고딕`, `굴림체`, `NanumGothicCoding` 등으로 바꾼다(`Consolas` 는 한글 글리프가 없다).
+
+**Windows Terminal** 을 쓰면 위 문제가 대부분 발생하지 않는다. 사내 PC 에 설치할 수 있다면 그쪽을 권한다.
+
+> 파일을 편집할 때 주의: 메모장 등으로 `.ps1` 을 열어 저장하면 BOM 이 사라질 수 있다. 그러면 다시 한글이 깨진다. VS Code 에서는 하단 상태바의 인코딩을 `UTF-8 with BOM` 으로 유지한다.
+
 ### 스크립트가 알아서 알려준다
 
 `scripts/windows/` 의 기동 스크립트들은 실행 전에 사전 점검을 한다(`_preflight.ps1`). 빠진 것이 있으면 원시 오류(`ModuleNotFoundError`, `'pnpm'을 찾을 수 없습니다`) 대신 **원인과 실행할 명령**을 한국어로 출력하고 멈춘다.

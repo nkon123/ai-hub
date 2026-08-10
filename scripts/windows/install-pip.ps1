@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     pip 만으로 Python 의존성을 설치한다 (uv 불필요).
 

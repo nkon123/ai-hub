@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     7개 서비스(+선택적으로 Ollama)의 Health Check 엔드포인트를 확인한다.
 
