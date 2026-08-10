@@ -4,17 +4,17 @@
     적용한다.
 
 .DESCRIPTION
-    Makefile의 `migrate` 타겟(`cd apps/portal-api && uv run alembic upgrade
-    head`)과 동일한 명령. 새로 반입한 저장소에서 처음 기동하기 전, 또는
+    apps/portal-api 에서 `alembic upgrade head` 를 실행한다.
+    새로 반입한 저장소에서 처음 기동하기 전, 또는
     코드 업데이트 후 모델 컬럼이 추가됐을 때 실행한다
     (docs/implementation-spec/progress-log.md "스키마 변경 절차",
     project_no_db_migrations 메모 참고 — 이 프로젝트는 수동 ALTER TABLE
     대신 Alembic을 사용한다).
 #>
 
-. "$PSScriptRoot\_uv.ps1"
+. "$PSScriptRoot\_python.ps1"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "apps\portal-api")
 
-Invoke-Uv run alembic upgrade head
+Invoke-Py -m alembic upgrade head

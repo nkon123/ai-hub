@@ -8,7 +8,7 @@
     스크립트가 그 대체 진입점이다.
 
     사전 준비(한 번만):
-      1. `uv sync --all-packages`
+      1. `.\scripts\windows\install-pip.ps1`
       2. `pnpm install`
       3. `.\scripts\windows\migrate.ps1` (portal.db 스키마 최신화)
       4. `ollama serve`가 이미 실행 중이고, exaone3.5:7.8b /

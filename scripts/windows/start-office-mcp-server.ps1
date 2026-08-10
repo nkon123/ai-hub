@@ -9,9 +9,9 @@
     참고).
 #>
 
-. "$PSScriptRoot\_uv.ps1"
+. "$PSScriptRoot\_python.ps1"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\office-mcp-server")
 
-Invoke-Uv run uvicorn office_mcp_server.main:app --reload --port 8500
+Invoke-Py -m uvicorn office_mcp_server.main:app --reload --port 8500

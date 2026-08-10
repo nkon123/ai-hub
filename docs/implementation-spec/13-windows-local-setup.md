@@ -8,7 +8,7 @@
 
 - `docs/implementation-spec/README.md`, `07-data-api-contracts.md`, `open-decisions.md`를 먼저 읽는다(CLAUDE.md 지침).
 - 이 문서는 macOS 개발 머신에서 **Windows 대상 PC에 무엇이 필요한지**를 코드/설정을 근거로 정리한 것이며, 실제 Windows 실행 세션에서 발견되는 차이는 이 문서와 `open-decisions.md`에 반영해야 한다.
-- **회사 정책상 이 저장소를 준비한 macOS 개발 머신에서는 새 패키지 다운로드가 금지되어 있다.** 아래 절차 중 `uv sync`/`pnpm install`이 실제로 네트워크 설치를 수행하는 검증은 **Windows 대상 PC에서 처음 실행하는 사람이 직접 확인**해야 한다.
+- **회사 정책상 이 저장소를 준비한 macOS 개발 머신에서는 새 패키지 다운로드가 금지되어 있다.** 아래 절차 중 `install-pip.ps1`/`pnpm install`이 실제로 네트워크 설치를 수행하는 검증은 **Windows 대상 PC에서 처음 실행하는 사람이 직접 확인**해야 한다.
 
 ## 1. 사전 준비물
 
@@ -16,7 +16,7 @@
 |---|---|---|
 | Windows | 10/11 x64 | `open-decisions.md` D-005 |
 | Python | **3.11 이상** | 루트 `pyproject.toml` `requires-python = ">=3.11"`. 개발 환경(macOS)은 3.14로 검증했으나, Windows에서의 3.11~3.14 사이 호환성은 **미검증** — 문제가 생기면 우선 3.12 LTS 계열로 시도 |
-| uv | 개발 환경에서 검증한 버전: **0.12.1** | Python 패키지 관리(D-031). `pip install uv` 또는 공식 설치 스크립트로 설치. Windows용 정확한 설치 절차는 이 문서 작성 시점에 실행해 확인하지 않았음 — **미검증**, `uv`의 Windows 공식 문서를 따를 것 |
+| pip | Python 에 기본 포함 | Python 의존성 설치. **Windows 로컬 실행에 uv 는 필요하지 않다** — 사유는 §2.5 참고. `uv` 는 개발 머신에서 `requirements.txt` 를 재생성할 때만 쓴다 |
 | Node.js | 개발 환경에서 검증한 버전: **v24.18.0** | 루트 `package.json`/`apps/*/package.json`에 `engines` 고정이 없어 정확한 하한은 명세되어 있지 않다. Next.js 15/React 19 계열 요구사항을 만족하는 LTS(18.18+ 또는 20+)면 동작할 것으로 예상하나 **Windows에서의 실행은 미검증** |
 | pnpm | **9.0.0** | 루트 `package.json`의 `packageManager: "pnpm@9.0.0"`으로 고정됨. `corepack enable` 후 `corepack prepare pnpm@9.0.0 --activate` 권장 |
 | Ollama (Windows) | 최신 안정판 | 로컬 LLM 서버. Windows 네이티브 설치본(.exe) 사용 — WSL 불필요 |
@@ -52,175 +52,94 @@ ollama pull qwen3-embedding:0.6b
 - `12-poc-acceptance-report.md`는 이 두 모델 외에 `qwen2.5-coder:3b`도 개발 세션에서 확인된 적이 있다고 기록하지만, 현재 `office-profile.json`이 참조하는 것은 위 두 모델뿐이다 — 추가로 pull할 필요는 없다.
 - **폐쇄망에서 `ollama pull`이 동작하려면 Ollama 자체가 외부 레지스트리에 접근해야 한다.** 완전히 외부 연동이 차단된 PC라면, 모델을 접근 가능한 다른 경로(사내 미러, 이동식 매체로 받은 모델 파일)로 먼저 받아 `ollama create`/모델 디렉터리 복사 등으로 반입해야 한다 — 이 저장소는 그 반입 절차 자체를 제공하지 않는다(Ollama 자체의 기능 범위 밖).
 
-## 2.5 uv 설치 (Windows에 uv가 없는 경우)
+## 2.5 Python 의존성 설치 (pip)
 
-현장에서 실제로 마주친 상황이다 — Windows PC에 `uv`가 설치되어 있지 않다. 아래 순서로 시도한다.
+**Windows 로컬 실행은 pip 만 쓴다.** uv 는 필요하지 않다.
 
-**① `pip install uv` (권장)**
+> 왜 pip 인가: uv 는 pip 을 내부적으로 호출하지 않는 별도 구현이라 `pip.ini` 의
+> 사내 미러 설정을 읽지 않고, 기본적으로 자체 번들 루트 인증서를 쓴다. 실제
+> 반입 과정에서 `chromadb`·`ecdsa` 가 uv 로만 실패하고 pip 으로는 설치되는
+> 현상이 있었다. 사내망에서는 pip 이 이미 미러·인증서 설정을 갖고 있으므로
+> 그 경로를 그대로 쓰는 편이 확실하다.
+
+### 한 줄 설치
 
 ```powershell
-python -m pip install uv
-uv --version
+.\scripts\windows\install-pip.ps1
 ```
 
-`uv`는 PyPI에 배포되므로, **Python 패키지를 받을 수 있는 환경이면 이 경로가 가장 확실하다** — 다른 의존성과 같은 인덱스/미러를 그대로 쓴다. 설치 후 `uv` 명령이 PATH에서 잡히지 않으면 `python -m uv`로 대체할 수 있다.
+이 스크립트가 하는 일:
 
-**② 그 외 경로** (①이 막혔을 때)
+1. `.venv` 생성 (이미 있으면 재사용)
+2. `pip` 업그레이드
+3. `requirements.txt` 설치 — 외부 패키지 108개, **버전 고정**
+4. 워크스페이스 내부 패키지 11개를 `pip install -e ... --no-deps` 로 설치
 
-| 방법 | 명령 | 필요한 접근 |
-|---|---|---|
-| winget | `winget install --id=astral-sh.uv -e` | Microsoft 저장소 |
-| 공식 스크립트 | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` | `astral.sh` |
-| 단독 실행 파일 | GitHub Releases의 `uv-x86_64-pc-windows-msvc.zip` | `github.com` |
+설치 후 가상환경을 활성화한다.
 
-**③ uv를 전혀 설치할 수 없는 경우 — pip 대체 절차**
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
 
-이 저장소의 Python 패키지들은 서로를 **이름으로만** 참조하고(`ai-asset-schemas`, `security-policy`, `observability`), 그 이름은 `[tool.uv.sources] workspace = true`로 해석된다. 이건 **uv 전용 기능**이라, 그냥 `pip install -r`을 하면 pip이 `ai-asset-schemas`를 PyPI에서 찾다가 실패한다.
-
-따라서 로컬 패키지를 **의존 순서대로 먼저 editable 설치**해야 한다.
+### 수동으로 하려면
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 
-# 1단계 — 다른 워크스페이스 패키지에 의존하지 않는 것
-pip install -e packages/schemas
-pip install -e packages/observability
-
-# 2단계 — schemas에만 의존
-pip install -e packages/security-policy
-pip install -e packages/evaluation-runner
-pip install -e packages/knowledge-packager
-
-# 3단계 — 위 패키지들에 의존
-pip install -e services/agent-runtime
-pip install -e services/indexing-runtime
-pip install -e services/search-runtime
-pip install -e services/distribution-service
-pip install -e services/office-mcp-server
-pip install -e apps/portal-api
+# 워크스페이스 내부 패키지 — PyPI 에 없으므로 로컬 경로에서 설치한다.
+# --no-deps 가 필요하다: 이 패키지들은 서로를 이름으로만 참조하는데
+# (portal-api 가 `ai-asset-schemas` 를 요구) 그 이름은 PyPI 에 없으므로,
+# --no-deps 없이 설치하면 pip 이 PyPI 에서 찾다가 실패한다. 외부 의존성은
+# 위 requirements.txt 에서 이미 전부 설치되므로 건너뛰어도 빠지는 것이 없다.
+python -m pip install -e packages/schemas            --no-deps
+python -m pip install -e packages/observability      --no-deps
+python -m pip install -e packages/security-policy    --no-deps
+python -m pip install -e packages/evaluation-runner  --no-deps
+python -m pip install -e packages/knowledge-packager --no-deps
+python -m pip install -e services/agent-runtime      --no-deps
+python -m pip install -e services/indexing-runtime   --no-deps
+python -m pip install -e services/search-runtime     --no-deps
+python -m pip install -e services/distribution-service --no-deps
+python -m pip install -e services/office-mcp-server  --no-deps
+python -m pip install -e apps/portal-api             --no-deps
 ```
 
-주의할 점:
-
-- 순서를 지키지 않으면 pip이 워크스페이스 패키지 이름을 PyPI에서 찾다가 실패한다.
-- 이후 문서의 모든 `uv run <명령>`은 가상환경을 활성화한 상태에서 `<명령>`으로 바꿔 실행한다(예: `uv run alembic upgrade head` → `alembic upgrade head`).
-- `uv.lock`이 고정한 정확한 버전이 아니라 각 `pyproject.toml`의 범위(`>=`)로 해석되므로, uv를 쓸 때와 **의존성 버전이 달라질 수 있다**. 재현성이 떨어지므로 어디까지나 최후 수단이다.
-- **이 대체 절차는 실행해 검증하지 않았다**(개발 머신은 네트워크 설치가 금지되어 있음). 위 의존 순서는 각 `pyproject.toml`의 `[tool.uv.sources]`를 읽어 도출한 것이다.
-
-## 2.6 uv 를 설치했는데 `uv` 명령이 없다고 나오는 경우
-
-`pip install uv` 는 성공했는데 `uv --version` 이 "찾을 수 없음"으로 실패하는 경우다. **실제로 이 PoC 반입 과정에서 발생했다.** uv 자체는 설치되어 있고, pip 이 실행 파일을 넣은 `Scripts\` 디렉터리가 PATH 에 없을 뿐이다.
-
-**① 즉시 우회 — 항상 동작한다**
+### 설치 확인
 
 ```powershell
-python -m uv --version
-python -m uv sync --all-packages
+python -c "import fastapi, chromadb, sqlalchemy; print('외부 OK')"
+python -c "import ai_asset_schemas, security_policy, observability, portal_api; print('워크스페이스 OK')"
+python -c "import pypdf, docx; print('PDF/DOCX 로더 OK')"
 ```
 
-이 문서의 모든 `uv <명령>` 은 `python -m uv <명령>` 으로 바꿔 실행해도 동일하다.
+### requirements.txt 를 다시 만들어야 할 때
 
-`scripts/windows/` 의 PowerShell 스크립트들은 **이 상황을 자동으로 처리한다.** `uv` 가 PATH 에 없으면 `python -m uv` 로 자동 전환하고 안내 메시지를 출력하므로, 스크립트를 쓰는 한 별도 조치 없이 그대로 실행된다(`scripts/windows/_uv.ps1`).
+의존성을 바꾼 뒤에는 uv 가 있는 개발 머신에서 아래로 재생성한다. 사내 PC 에서는 필요 없다.
 
-**② PATH 에 추가 — 현재 세션만**
-
-```powershell
-$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
-$env:PATH = "$scripts;$env:PATH"
-uv --version
+```bash
+uv export --format requirements-txt --all-packages --no-emit-workspace --no-hashes > requirements.txt
 ```
 
-`pip install --user` 로 설치했다면 위 경로 대신 아래를 쓴다.
+### 설치가 실패하면
 
-```powershell
-$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts','nt_user'))"
-```
-
-**③ PATH 에 영구 등록**
-
-```powershell
-$scripts = python -c "import sysconfig; print(sysconfig.get_path('scripts'))"
-$current = [Environment]::GetEnvironmentVariable("PATH", "User")
-[Environment]::SetEnvironmentVariable("PATH", "$scripts;$current", "User")
-```
-
-**등록 후 PowerShell 창을 새로 열어야 반영된다.** 기존 창에서는 계속 안 잡힌다.
-
-> 참고: `scripts/windows/*.ps1` 은 Windows 기본인 **Windows PowerShell 5.1** 에서 동작하도록 작성했다(PowerShell 7 전용 문법 미사용). 다만 실제 Windows 에서 실행해 검증하지는 못했다 — 개발 머신이 macOS 다.
-
-## 2.7 `pip install` 은 되는데 `uv sync` 만 실패하는 경우
-
-**실제로 이 PoC 반입 과정에서 발생했다** — `chromadb` 가 uv 로는 실패하고 `pip install` 로는 받아졌고, 이후 `ecdsa` 에서 다시 실패했다.
-
-### 왜 갈리는가
-
-**uv 는 내부적으로 pip 을 쓰지 않는다.** Rust 로 새로 구현한 별도의 리졸버·다운로더·TLS 스택이다. 그래서 pip 이 참조하는 설정을 uv 는 보지 않는다. 특히:
-
-| 항목 | pip | uv |
-|---|---|---|
-| `pip.ini` / `pip.conf` 의 `index-url` | 읽는다 | **읽지 않는다** |
-| 기본 인덱스 | `pip.ini` 설정값 | `https://pypi.org/simple` (`UV_DEFAULT_INDEX` 로 변경) |
-| TLS 루트 인증서 | 보통 시스템 저장소 | **자체 번들 루트**(`UV_NATIVE_TLS=1` 로 시스템 저장소 사용) |
-
-이 저장소의 `uv.lock` 은 각 패키지의 출처를 `source = { registry = "https://pypi.org/simple" }` 로 기록하고 있고, `pyproject.toml` 에 별도 인덱스 설정이 없다. 따라서 **사내 미러가 `pip.ini` 에만 설정되어 있으면 pip 은 성공하고 uv 는 공용 PyPI 로 나가려다 실패한다.** 어떤 패키지는 되고 어떤 패키지는 안 되는 것처럼 보이는 이유는 캐시·프록시 상태에 따라 달라지기 때문이다.
-
-두 번째 원인은 **사내 프록시의 자체 서명 인증서**다. pip 은 Windows 인증서 저장소를 타는데 uv 는 기본적으로 자체 번들 루트를 쓰므로, 같은 네트워크에서 pip 만 성공할 수 있다.
-
-### 해결
-
-**① pip 이 실제로 쓰는 인덱스를 확인한다**
-
-```powershell
-pip config list
-pip config debug   # 어떤 파일에서 읽었는지까지 표시
-```
-
-`global.index-url` 또는 `install.index-url` 값이 사내 미러 주소다.
-
-**② 같은 값을 uv 에 알려준다**
-
-```powershell
-$env:UV_DEFAULT_INDEX = "<위에서 확인한 index-url>"
-$env:UV_NATIVE_TLS = "1"          # 사내 프록시 인증서를 쓰는 경우
-uv sync --all-packages
-```
-
-`trusted-host` 를 pip 에 설정해 두었다면 uv 에는 `$env:UV_INSECURE_HOST = "<호스트>"` 로 준다.
-
-**③ 매번 설정하지 않으려면** — 저장소 루트에 `uv.toml` 을 만든다. **이 파일은 사내 미러 주소를 담으므로 커밋하지 않는다**(`.gitignore` 에 추가할 것).
-
-```toml
-[[index]]
-url = "<사내 미러 index-url>"
-default = true
-```
-
-또는 사용자 환경 변수로 영구 등록한다.
-
-```powershell
-[Environment]::SetEnvironmentVariable("UV_DEFAULT_INDEX", "<index-url>", "User")
-[Environment]::SetEnvironmentVariable("UV_NATIVE_TLS", "1", "User")
-```
-
-> 등록 후 PowerShell 창을 새로 열어야 반영된다.
-
-### `pip install` 로 개별 설치한 패키지는 어떻게 되나
-
-동작은 하지만 **권장하지 않는다.** `uv.lock` 은 그 사실을 모르므로, 이후 `uv sync` 가 잠금 파일 기준으로 환경을 다시 맞추면서 해당 패키지를 교체하거나 제거할 수 있다. 인덱스 설정을 고쳐 uv 가 전부 설치하도록 하는 편이 재현성 면에서 낫다.
-
-> 이 절의 원인 분석은 `uv.lock` 의 registry 값과 `uv sync --help` 의 환경 변수 목록을 실제로 확인해 작성했다(uv 0.12.1). 다만 **사내망에서 위 해결 절차를 실행해 검증하지는 못했다** — 개발 머신이 macOS 이고 사내 미러에 접근할 수 없다.
+| 증상 | 확인 |
+|---|---|
+| 특정 패키지에서 연결 실패 | `pip config list` 로 사내 미러 인덱스가 설정되어 있는지 확인 |
+| 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
+| `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
+| `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
 
 ## 3. 저장소 설치
 
 ```powershell
-# 저장소 루트에서
-uv sync --all-packages
+# 저장소 루트에서 — Python 은 §2.5 에서 이미 설치했다
 pnpm install
 ```
 
-- `uv sync --all-packages`는 `pyproject.toml`의 uv workspace 전체(apps/portal-api, services/*, packages/*)를 설치한다.
-- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 이 두 패키지는 **개발 macOS 머신에서는 한 번도 설치/lock되지 않았다**(정책상 네트워크 설치 금지) — Windows PC에서 `uv sync --all-packages`를 실행하는 시점이 **최초로 lock이 갱신되는 시점**이다. 사내 PyPI 미러/인덱스가 `uv`의 기본 인덱스 URL과 다르면 `UV_INDEX_URL` 환경 변수(또는 `pip.ini`/`uv.toml`의 index 설정)로 미러를 가리켜야 한다 — 이 설정 방법은 사내 미러의 실제 구성에 따라 달라지므로 이 문서에서 구체적 값을 지어내지 않는다.
+- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있지만, **개발 macOS 머신에서는 정책상 실제로 설치된 적이 없다** — Windows PC 에서 `install-pip.ps1` 을 실행하는 시점이 **최초로 설치되는 시점**이다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
   - `pypdf`: 순수 Python, BSD-3-Clause, OS/아키텍처 무관 단일 wheel.
   - `python-docx`: 순수 Python, MIT. 유일한 런타임 의존성 `lxml`은 win_amd64용 사전 빌드 wheel을 제공하므로 별도 C 빌드 도구 없이 설치 가능하다(미러에 lxml wheel도 함께 반입되어 있어야 함).
   - 두 패키지가 없어도 indexing-runtime 자체는 정상 기동하고 Markdown/Text Knowledge는 그대로 색인된다 — PDF/DOCX 파일을 실제로 색인하려 할 때만 "PDF 로더에 필요한 pypdf가 설치되어 있지 않습니다" 같은 명확한 한국어 오류로 실패한다(크래시가 아님). 상세: `services/indexing-runtime/src/indexing_runtime/loaders/`.
@@ -232,7 +151,7 @@ pnpm install
 .\scripts\windows\migrate.ps1
 ```
 
-Makefile의 `migrate` 타겟(`cd apps/portal-api && uv run alembic upgrade head`)과 동일하다. 저장소를 처음 반입했을 때, 또는 이후 코드 업데이트로 `apps/portal-api`의 모델이 바뀌었을 때 실행한다. `apps/portal-api/portal.db`(SQLite)가 없으면 새로 생성된다.
+apps/portal-api 에서 `alembic upgrade head` 를 실행한다. 저장소를 처음 반입했을 때, 또는 이후 코드 업데이트로 `apps/portal-api`의 모델이 바뀌었을 때 실행한다. `apps/portal-api/portal.db`(SQLite)가 없으면 새로 생성된다.
 
 ## 5. 서비스 기동
 
@@ -264,7 +183,7 @@ ollama serve
 
 개별 서비스만 띄우거나 재시작하고 싶으면 위 스크립트를 개별 실행해도 된다(`start-all.ps1`은 이 7개를 순서대로 새 창에서 호출하는 것뿐, 특별한 조율 로직은 없다).
 
-`uv run uvicorn ... --reload`는 파일 변경 감지를 위해 `watchfiles`를 사용한다 — uvicorn/watchfiles 모두 Windows를 공식 지원하지만, **이 PoC에서 Windows상 `--reload` 동작 자체를 실행해 확인하지는 않았다**. 문제가 있으면 `--reload` 플래그를 빼고 실행해도 개발 편의성만 잃을 뿐 기능에는 영향 없다.
+`uvicorn ... --reload`는 파일 변경 감지를 위해 `watchfiles`를 사용한다 — uvicorn/watchfiles 모두 Windows를 공식 지원하지만, **이 PoC에서 Windows상 `--reload` 동작 자체를 실행해 확인하지는 않았다**. 문제가 있으면 `--reload` 플래그를 빼고 실행해도 개발 편의성만 잃을 뿐 기능에는 영향 없다.
 
 ### 5.3 종료
 
@@ -319,8 +238,8 @@ pnpm dev
 | `health-check.ps1`에서 한 서비스만 계속 실패 | 그 서비스가 기동 중 예외로 멈춰 있음("wedged") | 해당 서비스 창의 로그 확인. 재현 불가한 뻗음이면 그 창만 `Ctrl+C` 후 스크립트 재실행 — 다른 서비스는 건드릴 필요 없음(서비스 간 독립 프로세스) |
 | 챗봇 Preview가 답변을 못 받아옴/느림 | Ollama 모델 미설치, 또는 Ollama 자체가 안 떠 있음 | `.\scripts\windows\health-check.ps1 -IncludeOllama`로 모델 두 개(`exaone3.5:7.8b`, `qwen3-embedding:0.6b`)가 모두 확인되는지 점검. 없으면 §2의 `ollama pull` 재실행 |
 | 지식 등록 후 색인이 영영 "처리 중"으로 안 바뀜 | indexing-runtime이 죽었거나(뻗음), INDEX_BASE 문제 | indexing-runtime 창 로그 확인. `INDEX_BASE` 환경 변수를 별도로 설정하지 않았다면 저장소 루트의 `data\indexes`가 기본값이다(D-073으로 수정 — 이전에는 이 값이 특정 macOS 개발자의 절대경로로 하드코딩되어 있어 다른 PC에서는 반드시 `INDEX_BASE`를 수동 지정해야 했던 결함이 있었다. 지금은 기본값 자체가 저장소 상대경로라 별도 지정 없이도 동작해야 한다) |
-| PDF/DOCX 파일을 색인하면 "pypdf가 설치되어 있지 않습니다"/"python-docx가 설치되어 있지 않습니다" 오류 | §3에서 `uv sync --all-packages`가 그 패키지를 실제로 설치하지 못함(미러 인덱스 미설정 등) | `uv pip list`(또는 indexing-runtime의 가상환경에서 `python -c "import pypdf, docx"`)로 실제 설치 여부 확인 후, 사내 미러 인덱스 설정을 재점검 |
-| `portal.db` 관련 컬럼 오류(`no such column`) | 마이그레이션 미적용 | `.\scripts\windows\migrate.ps1` 실행. 그래도 안 되면 `uv run alembic current`/`uv run alembic heads`로 현재 리비전과 최신 리비전이 일치하는지 비교(`Makefile`의 `migrate-status` 타겟과 동일) |
+| PDF/DOCX 파일을 색인하면 "pypdf가 설치되어 있지 않습니다"/"python-docx가 설치되어 있지 않습니다" 오류 | §2.5 의 설치가 그 패키지를 실제로 설치하지 못함(미러 인덱스 미설정 등) | `python -c "import pypdf, docx"`로 실제 설치 여부 확인 후, 사내 미러 인덱스 설정을 재점검 |
+| `portal.db` 관련 컬럼 오류(`no such column`) | 마이그레이션 미적용 | `.\scripts\windows\migrate.ps1` 실행. 그래도 안 되면 `alembic current`/`alembic heads`로 현재 리비전과 최신 리비전이 일치하는지 비교(가상환경 활성화 후 apps/portal-api 에서 실행) |
 | PowerShell에서 `.ps1` 실행이 거부됨(빨간 오류) | 실행 정책이 `Restricted` | §1.1 참고. 조직 정책상 `Set-ExecutionPolicy`가 막혀 있으면 `powershell -ExecutionPolicy Bypass -File <script>.ps1`로 개별 실행 |
 | Desktop Electron 창이 뜨지 않음 | §7 참고 — 이 경로는 이번 세션 기준 미검증 | `pnpm dev`의 콘솔 출력(Vite/Electron 각각의 로그, `-n vite,electron` 접두사로 구분됨)을 그대로 공유해 원인 분석 필요 |
 
