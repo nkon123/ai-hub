@@ -50,8 +50,18 @@ def patch_chroma(monkeypatch: Any, pipeline_module: Any) -> FakeChromaClient:
     return fake_client
 
 
-def patch_embed_batch(monkeypatch: Any, pipeline_module: Any, dim: int = 3) -> None:
-    async def fake_embed_batch(texts: list[str], model: str = "") -> list[list[float]]:  # noqa: ARG001
+def patch_embed_batch(monkeypatch: Any, pipeline_module: Any, dim: int = 3) -> list[dict[str, Any]]:
+    """Fake `embed_batch` so no Ollama call happens, and record every call's
+    arguments (currently just `model`) so a test can assert on which model
+    `run_pipeline` actually passed through — e.g. that it honors the
+    `EMBED_MODEL` setting/`INDEXING_EMBED_MODEL` env var end to end instead
+    of a hardcoded literal. Callers that don't need the calls list (most
+    existing tests) can simply ignore the return value."""
+    calls: list[dict[str, Any]] = []
+
+    async def fake_embed_batch(texts: list[str], model: str = "") -> list[list[float]]:
+        calls.append({"model": model, "text_count": len(texts)})
         return [[0.1, 0.2, 0.3][:dim] for _ in texts]
 
     monkeypatch.setattr(pipeline_module, "embed_batch", fake_embed_batch)
+    return calls

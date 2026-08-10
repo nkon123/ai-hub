@@ -52,6 +52,25 @@ ollama pull qwen3-embedding:0.6b
 - `12-poc-acceptance-report.md`는 이 두 모델 외에 `qwen2.5-coder:3b`도 개발 세션에서 확인된 적이 있다고 기록하지만, 현재 `office-profile.json`이 참조하는 것은 위 두 모델뿐이다 — 추가로 pull할 필요는 없다.
 - **폐쇄망에서 `ollama pull`이 동작하려면 Ollama 자체가 외부 레지스트리에 접근해야 한다.** 완전히 외부 연동이 차단된 PC라면, 모델을 접근 가능한 다른 경로(사내 미러, 이동식 매체로 받은 모델 파일)로 먼저 받아 `ollama create`/모델 디렉터리 복사 등으로 반입해야 한다 — 이 저장소는 그 반입 절차 자체를 제공하지 않는다(Ollama 자체의 기능 범위 밖).
 
+### 2.1 임베딩 모델을 바꾸고 싶을 때 (D-075)
+
+기본 임베딩 모델(`qwen3-embedding:0.6b`)은 indexing-runtime과 search-runtime 양쪽에 각각 환경 변수로 설정되어 있다 — 코드에 하드코딩되어 있지 않다.
+
+| 서비스 | 환경 변수 | 기본값 | 의미 |
+|---|---|---|---|
+| indexing-runtime | `INDEXING_EMBED_MODEL` | `qwen3-embedding:0.6b` | **새로** 색인할 때 문서 청크를 임베딩할 모델. 색인이 끝나면 이 값이 그 색인의 `index-meta.json`(`embed_model` 필드)에 그대로 기록된다 |
+| search-runtime | `SEARCH_EMBED_MODEL` | `qwen3-embedding:0.6b` | **폴백 전용.** 검색 대상 색인이 `index-meta.json`에 `embed_model`을 기록하지 않은(이 필드가 생기기 전에 만들어진) 구버전 색인일 때만 쓰인다 |
+
+**반드시 알아야 할 것 — 검색은 색인 자체가 기록한 모델을 우선 사용하지, `SEARCH_EMBED_MODEL`을 강제로 쓰지 않는다.** search-runtime이 질의를 임베딩할 때 실제로 쓰는 모델은 `services/search-runtime/src/search_runtime/hybrid.py`의 `resolve_embed_model()`이 대상 Knowledge 색인의 `index-meta.json`을 읽어 결정한다 — `SEARCH_EMBED_MODEL`은 그 파일이 없거나 `embed_model` 필드가 없는 옛날 색인에만 쓰이는 폴백이다. 이렇게 나눈 이유: 오래 떠 있는 search-runtime 프로세스 하나가 서로 다른 시점/설정으로 만들어진 여러 Knowledge 색인을 동시에 서비스할 수 있기 때문에, "지금 이 순간 설정된 기본값"이 "이 색인이 실제로 만들어질 때 쓰인 모델"과 같다고 가정할 수 없다.
+
+**모델을 바꾸는 절차:**
+
+1. `ollama pull <새 모델>`로 새 임베딩 모델을 준비한다.
+2. `INDEXING_EMBED_MODEL=<새 모델>`을 설정하고 indexing-runtime을 재기동한다. **이 시점부터 새로 색인되는 Knowledge만** 새 모델을 쓴다 — 기존 색인은 자기 `index-meta.json`에 기록된 원래 모델을 그대로 유지한다.
+3. 기존 Knowledge를 새 모델로 옮기려면 **재색인이 필요하다**(Portal에서 해당 Knowledge를 다시 업로드/색인). 임베딩이 다른 모델 사이에는 비교할 수 없으므로, `index-meta.json`만 고쳐 쓰는 방법은 없다 — 벡터 자체를 새로 만들어야 한다.
+4. search-runtime은 재기동이 필요 없다 — 다음 검색 요청부터 바뀐 색인의 `embed_model`을 자동으로 읽어 그 모델로 질의를 임베딩한다. (다만 `SEARCH_EMBED_MODEL` 폴백값도 새 기본과 맞춰 두는 것을 권장 — §8의 "임베딩 모델 불일치" 행 참고)
+5. **`SEARCH_QUERY_INSTRUCT_PREFIX`도 함께 검토한다.** 기본값은 Qwen3-Embedding 전용 관례(D-046)로 튜닝되어 있다. Qwen3 계열이 아닌 모델로 바꾸면 이 접두사가 오히려 검색 품질을 해칠 수 있으므로, `services/search-runtime/src/search_runtime/settings.py`의 `EMBED_MODEL`/`DEFAULT_QUERY_INSTRUCT_PREFIX` 문서 주석을 읽고 필요하면 `SEARCH_QUERY_INSTRUCT_PREFIX=""`(또는 새 모델에 맞는 값)로 함께 바꾼다. 두 설정은 서로 다른 환경 변수이며 코드가 자동으로 연동해주지 않는다.
+
 ## 2.5 Python 의존성 설치 (pip)
 
 **Windows 로컬 실행은 pip 만 쓴다.** uv 는 필요하지 않다.
@@ -321,6 +340,7 @@ pnpm dev
 | `portal.db` 관련 컬럼 오류(`no such column`) | 마이그레이션 미적용 | `.\scripts\windows\migrate.ps1` 실행. 그래도 안 되면 `alembic current`/`alembic heads`로 현재 리비전과 최신 리비전이 일치하는지 비교(가상환경 활성화 후 apps/portal-api 에서 실행) |
 | PowerShell에서 `.ps1` 실행이 거부됨(빨간 오류) | 실행 정책이 `Restricted` | §1.1 참고. 조직 정책상 `Set-ExecutionPolicy`가 막혀 있으면 `powershell -ExecutionPolicy Bypass -File <script>.ps1`로 개별 실행 |
 | Desktop Electron 창이 뜨지 않음 | §7 참고 — 이 경로는 이번 세션 기준 미검증 | `pnpm dev`의 콘솔 출력(Vite/Electron 각각의 로그, `-n vite,electron` 접두사로 구분됨)을 그대로 공유해 원인 분석 필요 |
+| 챗봇 답변의 근거(citation)가 이상하게 관련 없어 보임(오류는 없음) | 임베딩 모델 불일치(D-075) — Knowledge 색인을 만든 모델과 검색이 실제로 쓴 모델이 다르면 코사인 유사도 자체가 의미를 잃어 조용히 품질만 나빠진다 | search-runtime 로그에서 `search.embed_model.fallback`(색인에 `embed_model` 기록이 없어 `SEARCH_EMBED_MODEL` 폴백을 썼음) 또는 `search.embed_model.mismatch`(색인 기록과 `SEARCH_EMBED_MODEL` 설정이 서로 다름 — 색인 쪽이 우선 적용됨) 로그 라인을 확인. `POST /search/v1/query` 응답의 `embed_model_applied`/`embed_model_source` 필드로도 실제 적용된 모델을 바로 확인할 수 있다. §2.1 절차대로 재색인했는지 점검 |
 
 ## 8.1 외부 연동 점검 결과 (실측)
 
@@ -353,3 +373,4 @@ npx next telemetry status   # Status: Disabled 이어야 한다
 ## 10. 관련 결정 기록
 
 - D-073 (`open-decisions.md`): indexing-runtime `INDEX_BASE` 하드코딩 수정, PDF/DOCX Loader 추가, Windows 실행 스크립트 신설 — 이 문서와 함께 기록됨.
+- D-075 (`open-decisions.md`): 임베딩 모델을 `INDEXING_EMBED_MODEL`/`SEARCH_EMBED_MODEL` 설정으로 분리, search-runtime이 검색 시 자기 설정이 아니라 대상 색인의 `index-meta.json`에 기록된 `embed_model`을 우선 사용하도록 수정 — §2.1 참고.

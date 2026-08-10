@@ -14,6 +14,7 @@ from observability import bind_trace_id, configure_logging
 from pydantic import BaseModel
 
 from indexing_runtime.pipeline import run_pipeline
+from indexing_runtime.settings import EMBED_MODEL
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn.
@@ -39,7 +40,7 @@ class IndexJobRequest(BaseModel):
     version_id: str
     storage_path: str
     job_id: str
-    embed_model: str = "qwen3-embedding:0.6b"
+    embed_model: str = EMBED_MODEL
     index_base: str | None = None
     # Additive/optional (D-052-style compromise): portal-api's asset-upload
     # endpoint knows its own request trace_id and now passes it through
@@ -95,7 +96,7 @@ async def create_indexing_job(req: IndexJobRequest) -> JSONResponse:
 @click.command()
 @click.argument("manifest_path")
 @click.option("--output-dir", default="./indexes")
-@click.option("--model", default="qwen3-embedding:0.6b")
+@click.option("--model", default=EMBED_MODEL)
 def main(manifest_path: str, output_dir: str, model: str) -> None:
     """CLI: Index a Knowledge package directly."""
     import json

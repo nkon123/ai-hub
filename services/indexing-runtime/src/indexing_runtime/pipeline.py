@@ -15,13 +15,14 @@ from indexing_runtime.chunkers.ids import make_document_id
 from indexing_runtime.embedders import embed_batch
 from indexing_runtime.loaders import LOADED_SUFFIXES, load_document
 from indexing_runtime.profile import resolve_profile
+from indexing_runtime.settings import EMBED_MODEL
 
 
 async def run_pipeline(
     storage_path: str,
     knowledge_id: str,
     index_base: str = "./indexes",
-    embed_model: str = "qwen3-embedding:0.6b",
+    embed_model: str = EMBED_MODEL,
     profile: dict | None = None,
     classification: str | None = None,
 ) -> dict:

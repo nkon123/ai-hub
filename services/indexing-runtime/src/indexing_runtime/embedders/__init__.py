@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import httpx
 
+from indexing_runtime.settings import EMBED_MODEL as DEFAULT_EMBED_MODEL
+
 OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
-DEFAULT_EMBED_MODEL = "qwen3-embedding:0.6b"
 
 
 async def embed_texts(texts: list[str], model: str = DEFAULT_EMBED_MODEL) -> list[list[float]]:

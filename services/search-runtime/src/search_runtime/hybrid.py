@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import pickle
 from collections.abc import Callable
@@ -12,18 +13,70 @@ from typing import Any
 import httpx
 
 from search_runtime.chroma_client_cache import get_chroma_client
-from search_runtime.settings import DEFAULT_MIN_RELEVANCE_SCORE, DEFAULT_QUERY_INSTRUCT_PREFIX
+from search_runtime.settings import (
+    DEFAULT_MIN_RELEVANCE_SCORE,
+    DEFAULT_QUERY_INSTRUCT_PREFIX,
+    EMBED_MODEL,
+)
 
 INDEX_BASE = os.environ.get(
     "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
 )
 OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
-DEFAULT_EMBED_MODEL = "qwen3-embedding:0.6b"
+
+_logger = logging.getLogger("search_runtime")
+
+
+def resolve_embed_model(
+    index_base: str, knowledge_id: str, configured_default: str = EMBED_MODEL
+) -> tuple[str, str]:
+    """Resolve which embedding model to embed a query with for `knowledge_id`'s
+    index — the correctness-critical step this module used to skip entirely
+    (it embedded every query with its own constant, regardless of what the
+    target index was actually built with).
+
+    The index's own recorded `embed_model` (stamped into `index-meta.json` by
+    indexing-runtime's `pipeline.run_pipeline` at build time) always wins
+    over `configured_default` (search-runtime's `SEARCH_EMBED_MODEL`
+    setting). Embeddings from different models are not comparable: querying
+    an index with any model other than the one it was built with does not
+    raise an error, it silently returns low-relevance/meaningless nearest
+    neighbors, because cosine similarity between mismatched embedding spaces
+    carries no meaning. Trusting the index's own record, instead of assuming
+    this service's configured default always matches, is what prevents that
+    silent failure.
+
+    Returns `(model, source)`:
+      - `(recorded_model, "index_meta")` — `index-meta.json` exists and has
+        a non-empty `embed_model` field. The normal case for every index
+        built after this field was introduced.
+      - `(configured_default, "fallback_default")` — the index has no
+        `index-meta.json`, the file is unreadable, or it omits `embed_model`
+        (an index built before indexing-runtime started stamping it). The
+        caller MUST log this: silently guessing is exactly the failure mode
+        this function exists to close off.
+
+    Never raises: any I/O/parse problem resolves to the fallback rather than
+    propagating, so a search against an unindexed/partially-built
+    `knowledge_id` degrades the same way it always has (`hybrid_search`'s
+    `bm25_path.exists()` check already returns `[]` for that case)."""
+    meta_path = Path(index_base) / knowledge_id / "index-meta.json"
+    if meta_path.exists():
+        try:
+            with open(meta_path, encoding="utf-8") as f:
+                meta = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            meta = None
+        if isinstance(meta, dict):
+            recorded = meta.get("embed_model")
+            if isinstance(recorded, str) and recorded:
+                return recorded, "index_meta"
+    return configured_default, "fallback_default"
 
 
 async def embed_query(
     query: str,
-    model: str = DEFAULT_EMBED_MODEL,
+    model: str = EMBED_MODEL,
     instruct_prefix: str = DEFAULT_QUERY_INSTRUCT_PREFIX,
 ) -> list[float]:
     """Embed a query for vector search.
@@ -54,7 +107,7 @@ async def hybrid_search(
     top_k: int = 5,
     alpha: float = 0.5,
     index_base: str = INDEX_BASE,
-    embed_model: str = DEFAULT_EMBED_MODEL,
+    embed_model: str = EMBED_MODEL,
     min_relevance_score: float = DEFAULT_MIN_RELEVANCE_SCORE,
     query_instruct_prefix: str = DEFAULT_QUERY_INSTRUCT_PREFIX,
     metadata_predicate: Callable[[dict[str, Any]], bool] | None = None,
@@ -62,6 +115,13 @@ async def hybrid_search(
     """Hybrid search using RRF fusion of vector + BM25 results.
 
     alpha: weight for vector scores (0=BM25 only, 1=vector only).
+    embed_model: FALLBACK embedding model only — used to embed the query
+        exclusively when the target index's own `index-meta.json` has no
+        recorded `embed_model` (see `resolve_embed_model`, called
+        internally). Does not force a model onto an index that already
+        records one; the index's own recorded model always takes priority,
+        because embeddings from a different model than the index was built
+        with are not comparable (silently meaningless results, no error).
     min_relevance_score: D-046 relevance floor, evaluated on cosine
         similarity (1 - Chroma distance) of each chunk's best vector match,
         AFTER RRF fusion picks the top_k candidates — never on the fused RRF
@@ -105,6 +165,29 @@ async def hybrid_search(
     if not bm25_path.exists():
         return []
 
+    # Resolve which model to embed the query with — the index's own recorded
+    # `embed_model` always wins over `embed_model` (the fallback default), so
+    # a query is never embedded with a model different from the one the
+    # target index was actually built with (see resolve_embed_model's
+    # docstring for why that silently ruins relevance rather than erroring).
+    resolved_embed_model, embed_model_source = resolve_embed_model(
+        index_base, knowledge_id, configured_default=embed_model
+    )
+    if embed_model_source == "fallback_default":
+        _logger.warning(
+            "search.embed_model.fallback knowledge_id=%s model=%s "
+            "reason=index_meta_missing_or_no_embed_model",
+            knowledge_id,
+            resolved_embed_model,
+        )
+    elif resolved_embed_model != embed_model:
+        _logger.info(
+            "search.embed_model.mismatch knowledge_id=%s index_model=%s configured_default=%s",
+            knowledge_id,
+            resolved_embed_model,
+            embed_model,
+        )
+
     # Load BM25
     with open(bm25_path, "rb") as f:
         bm25_data = pickle.load(f)
@@ -135,7 +218,7 @@ async def hybrid_search(
     similarity_map: dict[str, float] = {}
     try:
         collection = chroma_client.get_collection(collection_name)
-        query_embedding = await embed_query(query, embed_model, query_instruct_prefix)
+        query_embedding = await embed_query(query, resolved_embed_model, query_instruct_prefix)
         vector_results = collection.query(
             query_embeddings=[query_embedding],
             n_results=min(top_k * 2, collection.count()),

@@ -10,6 +10,41 @@ from __future__ import annotations
 
 import os
 
+EMBED_MODEL: str = os.environ.get("INDEXING_EMBED_MODEL", "qwen3-embedding:0.6b")
+"""Ollama embedding model indexing-runtime uses to embed document chunks
+(`embedders.embed_batch`, `pipeline.run_pipeline`'s default). Also the value
+`run_pipeline` stamps into each freshly-built index's `index-meta.json`
+(`embed_model` field) — this is how a later search knows which model an
+index was actually built with.
+
+Changing this env var only affects NEW indexing jobs going forward. It does
+NOT retroactively change what any existing index was built with, and it does
+NOT make search-runtime use a different model — search-runtime never reads
+this setting. Instead, `search_runtime.hybrid.resolve_embed_model` reads the
+`embed_model` recorded on the specific index being queried
+(`search_runtime.settings.EMBED_MODEL` is only its fallback for indexes that
+predate that field). This split is deliberate, not an oversight: a single
+long-running search-runtime process serves many Knowledge indexes that may
+have been built by different indexing-runtime deployments/versions/settings
+over time, so "whatever indexing-runtime is configured with right now" is
+not a safe assumption for "what any given index was built with".
+
+Mismatch hazard (docs/implementation-spec/open-decisions.md D-075):
+embeddings from different models are not comparable — if this were used to
+override search's embedding model instead of index-meta.json, an index
+built under model A queried with model B would silently return
+low-relevance results with no error (cosine similarity between mismatched
+embedding spaces carries no meaning). Moving an existing Knowledge asset to
+a new model requires re-indexing it (or running `stamp_classification`-style
+tooling only if you are also correcting the recorded metadata to match
+embeddings that were already rebuilt) — never just flipping this env var and
+restarting.
+
+Default `qwen3-embedding:0.6b` matches
+`search_runtime.settings.EMBED_MODEL`'s default and
+`SEARCH_QUERY_INSTRUCT_PREFIX`'s Qwen3-tuned default (see that module) — all
+three must be considered together when switching model families."""
+
 CHROMA_CLIENT_CACHE_MAX_SIZE: int = int(
     os.environ.get("INDEXING_CHROMA_CLIENT_CACHE_MAX_SIZE", "32")
 )

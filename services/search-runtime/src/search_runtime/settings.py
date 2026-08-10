@@ -29,6 +29,43 @@ from __future__ import annotations
 
 import os
 
+EMBED_MODEL: str = os.environ.get("SEARCH_EMBED_MODEL", "qwen3-embedding:0.6b")
+"""Fallback query-embedding model — used ONLY when the Knowledge index being
+searched has no `embed_model` recorded in its own `index-meta.json` (an
+index built before indexing-runtime started stamping that field). See
+`search_runtime.hybrid.resolve_embed_model`, which is the actual model
+resolution logic and always prefers the index's own recorded model over
+this setting.
+
+This is deliberately a fallback, not a forced override, because of a
+mismatch hazard this codebase was already bitten by in class (cf. the CORS
+setting that existed but was shadowed by a hardcoded literal in
+agent-runtime — a setting nobody actually reads is worse than no setting).
+Embeddings from different models are not comparable: a Knowledge index built
+with model A, queried with model B, does not raise an error — it silently
+returns low-relevance/meaningless nearest neighbors, because cosine
+similarity between two different embedding spaces carries no meaning. If
+this setting disagreed with indexing-runtime's `INDEXING_EMBED_MODEL` and
+search-runtime blindly trusted its own configured value instead of asking
+the index what it was actually built with, every query against a
+differently-built index would silently degrade with no error surfaced
+anywhere. `resolve_embed_model` logs the fallback (and any disagreement
+between this default and an index's recorded model) precisely so that does
+not happen silently — see that function's docstring.
+
+Default `qwen3-embedding:0.6b` matches indexing-runtime's own
+`INDEXING_EMBED_MODEL` default (`indexing_runtime.settings.EMBED_MODEL`) so
+a freshly-bootstrapped deployment has both sides agreeing out of the box.
+
+Coupling with SEARCH_QUERY_INSTRUCT_PREFIX below: the default prefix is a
+Qwen3-Embedding-specific convention (D-046) measured to matter a lot for
+that model family's retrieval quality. If you change EMBED_MODEL (here or
+via INDEXING_EMBED_MODEL for new indexes) to a non-Qwen3 model, you almost
+certainly also need to change or clear SEARCH_QUERY_INSTRUCT_PREFIX — the
+two env vars are independent knobs but not independent in effect, and
+neither this module nor `hybrid.py` derives one from the other automatically
+(docs/implementation-spec/open-decisions.md D-075)."""
+
 DEFAULT_MIN_RELEVANCE_SCORE: float = float(
     os.environ.get("SEARCH_MIN_RELEVANCE_SCORE", "0.42")
 )
@@ -42,7 +79,12 @@ DEFAULT_QUERY_INSTRUCT_PREFIX: str = os.environ.get(
 """Prepended to the query text (query side only) before embedding for vector
 search. Indexed document text is never prefixed — no re-indexing required.
 Set SEARCH_QUERY_INSTRUCT_PREFIX="" to disable for models that don't use
-this convention."""
+this convention.
+
+Coupled to EMBED_MODEL above, not derived from it: this default is tuned for
+Qwen3-Embedding specifically. Switching EMBED_MODEL to a different model
+family without revisiting this value risks silently reintroducing the
+overlap D-046 measured (see EMBED_MODEL's docstring, D-075)."""
 
 ALLOW_UNKNOWN_CLASSIFICATION: bool = os.environ.get(
     "SEARCH_ALLOW_UNKNOWN_CLASSIFICATION", "false"

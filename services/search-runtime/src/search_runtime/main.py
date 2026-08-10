@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from search_runtime import access_control
 from search_runtime.errors import error_envelope, status_for
-from search_runtime.hybrid import hybrid_search
+from search_runtime.hybrid import INDEX_BASE, hybrid_search, resolve_embed_model
 from search_runtime.settings import (
     ALLOW_UNKNOWN_CLASSIFICATION,
     DEFAULT_MIN_RELEVANCE_SCORE,
@@ -142,6 +142,13 @@ async def query(req: SearchRequest) -> JSONResponse:
         metadata_predicate=_visible,
     )
 
+    # Same resolution hybrid_search already applied internally to choose the
+    # query embedding model (see hybrid.resolve_embed_model) — recomputed
+    # here (cheap: one small JSON read) purely to echo it in the response
+    # trace below, the same additive-field pattern as
+    # min_relevance_score_applied.
+    embed_model_applied, embed_model_source = resolve_embed_model(INDEX_BASE, req.knowledge_id)
+
     latency_ms = int((time.monotonic() - start) * 1000)
     _logger.info(
         "search.query.completed citation_count=%d latency_ms=%d",
@@ -162,4 +169,14 @@ async def query(req: SearchRequest) -> JSONResponse:
         # evaluation_runner.search_client.SearchResponse.from_dict) only
         # read known keys and ignore unrecognized ones.
         "min_relevance_score_applied": req.min_relevance_score,
+        # Correctness fix: the model actually used to embed this query, and
+        # whether it came from the target index's own index-meta.json
+        # ("index_meta", the normal/expected case) or from this service's
+        # SEARCH_EMBED_MODEL fallback ("fallback_default" — an index built
+        # before embed_model was recorded; see
+        # search_runtime.hybrid.resolve_embed_model). A fallback here is
+        # worth an operator's attention: it means relevance quality rests on
+        # an assumption instead of a recorded fact.
+        "embed_model_applied": embed_model_applied,
+        "embed_model_source": embed_model_source,
     })
