@@ -22,10 +22,11 @@ _EMBED_DIM = 4
 
 
 class _FakeBM25:
-    """Stand-in for `rank_bm25.BM25Okapi` in test fixtures. Never unpickled
-    by production code (see `knowledge_packager.bm25_inspect`) — its exact
-    class identity does not matter, only that `bm25.pkl` is a normally
-    produced pickle whose top-level dict has the expected keys."""
+    """Stand-in for `rank_bm25.BM25Okapi` in `bm25_format="pickle"` test
+    fixtures (D-054 legacy path). Never unpickled by production code (see
+    `knowledge_packager.bm25_inspect`) — its exact class identity does not
+    matter, only that `bm25.pkl` is a normally produced pickle whose
+    top-level dict has the expected keys."""
 
     def __init__(self, corpus_size: int) -> None:
         self.corpus_size = corpus_size
@@ -55,13 +56,20 @@ def make_index_dir(
     parents_per_doc: int = 2,
     embed_model: str = "qwen3-embedding:0.6b",
     absolute_source_path_prefix: str = "/Users/testbuilder/repo/storage/knowledge",
+    bm25_format: str = "json",
 ) -> FixtureIndex:
     """Writes a minimal but structurally realistic parent_child index dir.
 
     `legacy=True` reproduces the pre-D-053 generation actually seen in
     `data/indexes/a038442d-.../`: `chunk-<16hex>` ids, no `document_id` key
-    in metadata, and no `chunking_strategy` key in index-meta.json.
-    """
+    in metadata, and no `chunking_strategy` key in index-meta.json. This is
+    an ID-generation concern, orthogonal to `bm25_format`.
+
+    `bm25_format` (D-054): `"json"` (default — matches what
+    `indexing_runtime.pipeline.run_pipeline` writes today, a plain
+    non-executable `bm25.json`) or `"pickle"` (the legacy `bm25.pkl` format,
+    for tests that specifically exercise the not-yet-migrated fallback
+    path knowledge_packager still supports)."""
     index_dir = root / knowledge_id
     index_dir.mkdir(parents=True)
     collection_name = f"knowledge_{knowledge_id.replace('-', '_')}"
@@ -144,14 +152,29 @@ def make_index_dir(
         ids=child_ids, embeddings=child_embeddings, documents=child_texts, metadatas=child_metadatas
     )
 
-    bm25_data = {
-        "bm25": _FakeBM25(corpus_size=len(child_ids)),
-        "chunk_ids": list(child_ids),
-        "chunk_texts": list(child_texts),
-        "chunk_metadata": list(child_metadatas),
-    }
-    with (index_dir / "bm25.pkl").open("wb") as f:
-        pickle.dump(bm25_data, f)
+    if bm25_format == "json":
+        bm25_document = {
+            "schema_version": "1.0",
+            "tokenizer": "whitespace_split",
+            "tokenized_corpus": [t.split() for t in child_texts],
+            "chunk_ids": list(child_ids),
+            "chunk_texts": list(child_texts),
+            "chunk_metadata": list(child_metadatas),
+        }
+        (index_dir / "bm25.json").write_text(
+            json.dumps(bm25_document, ensure_ascii=False), encoding="utf-8"
+        )
+    elif bm25_format == "pickle":
+        bm25_data = {
+            "bm25": _FakeBM25(corpus_size=len(child_ids)),
+            "chunk_ids": list(child_ids),
+            "chunk_texts": list(child_texts),
+            "chunk_metadata": list(child_metadatas),
+        }
+        with (index_dir / "bm25.pkl").open("wb") as f:
+            pickle.dump(bm25_data, f)
+    else:
+        raise ValueError(f"알 수 없는 bm25_format: {bm25_format!r}")
 
     return FixtureIndex(
         index_dir=index_dir,

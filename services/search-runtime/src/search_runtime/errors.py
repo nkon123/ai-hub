@@ -19,11 +19,20 @@ from enum import StrEnum
 class ErrorCode(StrEnum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
     KNOWLEDGE_ACCESS_DENIED = "KNOWLEDGE_ACCESS_DENIED"
+    # D-054: the target index's bm25.pkl is a not-yet-migrated legacy pickle
+    # and this deployment refuses to unpickle it
+    # (settings.ALLOW_LEGACY_PICKLE_BM25=False) — reusing this existing
+    # central code (07-data-api-contracts.md §8 "Knowledge") rather than
+    # inventing a new one (CLAUDE.md 구현 원칙: "오류코드는 중앙 정의를
+    # 사용한다"): from the caller's perspective, an index artifact this
+    # service will not load is indistinguishable from one it cannot parse.
+    KNOWLEDGE_INDEX_CORRUPT = "KNOWLEDGE_INDEX_CORRUPT"
 
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.VALIDATION_ERROR: 400,
     ErrorCode.KNOWLEDGE_ACCESS_DENIED: 403,
+    ErrorCode.KNOWLEDGE_INDEX_CORRUPT: 500,
 }
 
 

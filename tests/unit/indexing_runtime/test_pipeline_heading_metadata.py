@@ -23,7 +23,6 @@ Only Ollama (`embed_batch`) is faked (no network); Chroma is real.
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 
 import pytest
@@ -84,8 +83,9 @@ async def _run_pipeline(tmp_path: Path, monkeypatch, content: str) -> Path:
 
 
 def _load_bm25_metadata(index_dir: Path) -> list[dict]:
-    with open(index_dir / "bm25.pkl", "rb") as f:
-        data = pickle.load(f)
+    """D-054: pipeline.run_pipeline now writes bm25.json (plain, non-
+    executable JSON), not bm25.pkl."""
+    data = json.loads((index_dir / "bm25.json").read_text(encoding="utf-8"))
     return data["chunk_metadata"]
 
 

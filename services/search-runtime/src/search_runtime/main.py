@@ -11,7 +11,8 @@ from observability import bind_run_id, bind_trace_id, configure_logging
 from pydantic import BaseModel
 
 from search_runtime import access_control
-from search_runtime.errors import error_envelope, status_for
+from search_runtime.bm25_store import LegacyPickleBm25Refused
+from search_runtime.errors import ErrorCode, error_envelope, status_for
 from search_runtime.hybrid import INDEX_BASE, hybrid_search, resolve_embed_model
 from search_runtime.settings import (
     ALLOW_UNKNOWN_CLASSIFICATION,
@@ -132,15 +133,37 @@ async def query(req: SearchRequest) -> JSONResponse:
             business_filters=business_filters,
         )
 
-    citations = await hybrid_search(
-        query=req.query,
-        knowledge_id=req.knowledge_id,
-        top_k=req.top_k,
-        alpha=req.alpha,
-        min_relevance_score=req.min_relevance_score,
-        query_instruct_prefix=req.query_instruct_prefix,
-        metadata_predicate=_visible,
-    )
+    try:
+        citations = await hybrid_search(
+            query=req.query,
+            knowledge_id=req.knowledge_id,
+            top_k=req.top_k,
+            alpha=req.alpha,
+            min_relevance_score=req.min_relevance_score,
+            query_instruct_prefix=req.query_instruct_prefix,
+            metadata_predicate=_visible,
+        )
+    except LegacyPickleBm25Refused as exc:
+        # D-054: the target index's bm25.pkl has not been migrated to
+        # bm25.json and this deployment refuses to unpickle it
+        # (settings.ALLOW_LEGACY_PICKLE_BM25=False). A real, actionable
+        # refusal — must never collapse into a silent 0-citation response
+        # (that would look identical to "no relevant evidence found").
+        _logger.error(
+            "search.query.bm25_legacy_pickle_refused knowledge_id=%s trace_id=%s",
+            req.knowledge_id,
+            trace_id,
+        )
+        return JSONResponse(
+            status_code=status_for(ErrorCode.KNOWLEDGE_INDEX_CORRUPT),
+            content=error_envelope(
+                ErrorCode.KNOWLEDGE_INDEX_CORRUPT,
+                "이 Knowledge 색인의 BM25 파일이 아직 변환되지 않은 legacy 형식(pickle)이며, "
+                "이 배포는 해당 형식을 불러오지 않습니다 — convert-bm25-format으로 변환하세요.",
+                trace_id,
+                details={"knowledge_id": req.knowledge_id, "reason": str(exc)},
+            ),
+        )
 
     # Same resolution hybrid_search already applied internally to choose the
     # query embedding model (see hybrid.resolve_embed_model) — recomputed

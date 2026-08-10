@@ -15,18 +15,27 @@ feature was built to avoid.
 
 This CLI is the sanctioned way to migrate an existing index without
 re-embedding: it patches `classification` into `index-meta.json` and every
-chunk metadata record in `bm25.pkl` (search-runtime's actual read path —
-see hybrid.py) and, best-effort, into the Chroma collection's stored
-metadata for consistency. It is idempotent — running it twice with the same
-`--classification` value is a no-op the second time; running it again with a
-*different* value re-stamps everything (last write wins, logged either way).
+chunk metadata record in `bm25.json`/`bm25.pkl` (search-runtime's actual
+read path — see hybrid.py) and, best-effort, into the Chroma collection's
+stored metadata for consistency. It is idempotent — running it twice with
+the same `--classification` value is a no-op the second time; running it
+again with a *different* value re-stamps everything (last write wins,
+logged either way).
+
+D-054 update: since indexing-runtime started writing `bm25.json` (a plain,
+non-executable JSON file — see `bm25_store.py`) instead of `bm25.pkl`, this
+command prefers `bm25.json` when present and never needs `pickle` for it.
+An index directory not yet migrated (`bm25.pkl` only — run
+`convert-bm25-format` first, or let this command fall back automatically)
+is still supported via the legacy pickle path below, unchanged.
 
 Trust boundary note: unlike `packages/knowledge-packager`'s deliberate
 "never `pickle.load` an untrusted `bm25.pkl`" rule (D-054, that boundary is a
 *distributed* package coming from outside the building), this CLI operates
 on an index directory the operator already controls locally — the same
 trust boundary indexing-runtime's own `pipeline.py` writer already assumes.
-`pickle.load` is used here for exactly that reason.
+`pickle.load` (only reached for a not-yet-converted `bm25.pkl`) is used
+here for exactly that reason — see `bm25_store.load_bm25_legacy_pickle`.
 
 Usage:
     stamp-classification <index_dir> --classification INTERNAL
@@ -44,12 +53,19 @@ exists to remove, not to (re-)apply).
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 from typing import Any
 
 import click
 from security_policy import Classification
+
+from indexing_runtime.bm25_store import (
+    BM25_JSON_FILENAME,
+    BM25_PICKLE_FILENAME,
+    load_bm25_json,
+    load_bm25_legacy_pickle,
+    write_bm25_document,
+)
 
 _REAL_LEVELS = [c.value for c in Classification if c is not Classification.UNKNOWN]
 
@@ -71,11 +87,13 @@ def stamp_index_classification(index_dir: Path, classification: str) -> dict[str
         )
 
     meta_path = index_dir / "index-meta.json"
-    bm25_path = index_dir / "bm25.pkl"
-    if not meta_path.exists() or not bm25_path.exists():
+    json_path = index_dir / BM25_JSON_FILENAME
+    pkl_path = index_dir / BM25_PICKLE_FILENAME
+    bm25_format = "json" if json_path.is_file() else "legacy_pickle" if pkl_path.is_file() else None
+    if not meta_path.exists() or bm25_format is None:
         raise StampClassificationError(
             f"{index_dir} does not look like an index directory "
-            "(missing index-meta.json or bm25.pkl)"
+            f"(missing index-meta.json or {BM25_JSON_FILENAME}/{BM25_PICKLE_FILENAME})"
         )
 
     # 1. index-meta.json
@@ -84,16 +102,26 @@ def stamp_index_classification(index_dir: Path, classification: str) -> dict[str
     meta["classification"] = classification
     meta_path.write_text(json.dumps(meta, indent=2))
 
-    # 2. bm25.pkl chunk_metadata — this is what search-runtime's hybrid.py
+    # 2. bm25 chunk_metadata — this is what search-runtime's hybrid.py
     # actually reads at query time (not Chroma's stored metadata; see this
-    # module's docstring).
-    with open(bm25_path, "rb") as f:
-        bm25_data = pickle.load(f)
-    chunk_metadata: list[dict[str, Any]] = bm25_data.get("chunk_metadata", [])
-    for entry in chunk_metadata:
-        entry["classification"] = classification
-    with open(bm25_path, "wb") as f:
-        pickle.dump(bm25_data, f)
+    # module's docstring). Prefers bm25.json (D-054: plain JSON, no pickle
+    # ever touched); falls back to the legacy bm25.pkl path unchanged for an
+    # index not yet migrated by `convert-bm25-format`.
+    if bm25_format == "json":
+        bm25_data = load_bm25_json(json_path)
+        chunk_metadata: list[dict[str, Any]] = bm25_data.get("chunk_metadata", [])
+        for entry in chunk_metadata:
+            entry["classification"] = classification
+        write_bm25_document(json_path, bm25_data)
+    else:
+        import pickle  # local import: legacy-only path, see module docstring
+
+        bm25_data = load_bm25_legacy_pickle(pkl_path)
+        chunk_metadata = bm25_data.get("chunk_metadata", [])
+        for entry in chunk_metadata:
+            entry["classification"] = classification
+        with open(pkl_path, "wb") as f:
+            pickle.dump(bm25_data, f)
 
     # 3. Chroma collection metadata — best-effort, for consistency with
     # anything that reads the vector store's own metadata directly (e.g. a

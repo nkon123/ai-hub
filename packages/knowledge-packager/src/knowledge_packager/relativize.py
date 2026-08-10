@@ -38,16 +38,20 @@ override:
     FATAL to WARNING by policy rather than either lying about the package
     being clean or blocking the build over something this tool cannot fix.
 
-`bm25.pkl` carries the *same* leak in its embedded `chunk_metadata` list,
-and for a different reason is not even attempted: rewriting it would
-require unpickling it, which `knowledge_packager.bm25_inspect`'s module
-docstring explains this package refuses to do (arbitrary code execution
-risk).
+`bm25.json` (D-054's resolution — see `knowledge_packager.bm25_inspect`
+module docstring) carries the *same* `source_path` field inside its
+`chunk_metadata` list, but since it is plain JSON, `rewrite_bm25_json`
+below fixes it exactly the way `rewrite_parents_json` fixes `parents.json`
+— no residual leak, no pickle involved. A package built from an index not
+yet migrated to `bm25.json` still ships a legacy `bm25.pkl`, which for a
+different reason is still not attempted: rewriting it would require
+unpickling it, which `knowledge_packager.bm25_inspect`'s module docstring
+explains this package refuses to do (arbitrary code execution risk) —
+`bm25.pkl` therefore remains in `package-policy.yaml`'s
+`known_residual_leak_artifacts` for exactly that (and only that) case.
 
-See open-decisions.md D-054 for both residual-leak cases and the proposed
-real fixes (a non-executable BM25 serialization format, and either a
-Chroma-side queue-purge/compaction step or accepting the residue as an
-inherent property of Chroma's storage model).
+See open-decisions.md D-054 for the Chroma residual-leak case and why it
+remains only partially fixable.
 
 For `parents.json`, the original absolute value is never retained anywhere
 in the package (not even hashed) after rewriting — "레코드 부재를 정직하게
@@ -176,3 +180,42 @@ def rewrite_chroma_metadata(
     if changed_ids:
         collection.update(ids=changed_ids, metadatas=changed_metadatas)
     return len(changed_ids)
+
+
+def rewrite_bm25_json(
+    bm25_json_path: Path, knowledge_id: str, relative_source_path_by_document_id: dict[str, str]
+) -> int:
+    """Rewrite `source_path` in-place on a package-owned copy of
+    `bm25.json`'s `chunk_metadata` entries. Returns the number of entries
+    changed. Mirrors `rewrite_parents_json` exactly (same lookup-by-
+    `derive_document_id` logic, same "only touch values that actually look
+    like a leaking absolute path" guard) — the only reason this was not
+    possible before D-054 is that the old `bm25.pkl` format required
+    unpickling to edit, which this package refuses to do (see module
+    docstring). A no-op (returns 0, does not touch the file) if
+    `bm25_json_path` does not exist — e.g. a package built from an index
+    not yet migrated off `bm25.pkl`, where this function is simply not
+    called."""
+    import json
+
+    from knowledge_packager.source_manifest import derive_document_id
+
+    if not bm25_json_path.is_file():
+        return 0
+
+    data: dict[str, Any] = json.loads(bm25_json_path.read_text(encoding="utf-8"))
+    chunk_metadata = data.get("chunk_metadata", [])
+    rewritten = 0
+    for metadata in chunk_metadata:
+        document_id = derive_document_id(knowledge_id, metadata)
+        replacement = relative_source_path_by_document_id.get(document_id)
+        if replacement is None:
+            continue
+        original = metadata.get("source_path")
+        if looks_like_leaking_absolute_path(original):
+            metadata["source_path"] = replacement
+            metadata["source_path_relativized"] = True
+            rewritten += 1
+    if rewritten:
+        bm25_json_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    return rewritten

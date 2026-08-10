@@ -42,6 +42,8 @@ def _write_index(tmp_path, *, embed_model: str | None, monkeypatch) -> None:
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     if embed_model is not None:

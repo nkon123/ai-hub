@@ -46,6 +46,7 @@ dependencies = [
 [project.scripts]
 index-knowledge = "indexing_runtime.main:main"
 stamp-classification = "indexing_runtime.stamp_classification:main"
+convert-bm25-format = "indexing_runtime.convert_bm25_format:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/indexing_runtime"]

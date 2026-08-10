@@ -63,10 +63,17 @@ forbidden_content_patterns:
 # values even after "path relativization" runs, for two different reasons
 # (both documented in open-decisions.md D-054):
 #
-#   - bm25.pkl: a Python pickle. Loading a pickle received over a
+#   - bm25.pkl: a Python pickle, present only for a package built from an
+#     index NOT yet migrated to bm25.json by indexing-runtime's
+#     convert-bm25-format CLI. Loading a pickle received over a
 #     distribution channel is arbitrary code execution, so knowledge_packager
 #     never unpickles it — including to clean it. The pre-relativization
-#     absolute path stays embedded in the pickle bytes.
+#     absolute path stays embedded in the pickle bytes. bm25.json (the
+#     current, non-executable format) is NOT listed here — it is plain
+#     JSON, so knowledge_packager.relativize.rewrite_bm25_json fully scrubs
+#     it exactly like parents.json; any absolute-path match still found
+#     inside a bm25.json after relativization is a real, unfixed leak and
+#     correctly stays FATAL.
 #
 #   - chroma.sqlite3: NOT a pickle, but Chroma's internal `embeddings_queue`
 #     table is an append-only write-ahead log of every add/update operation.

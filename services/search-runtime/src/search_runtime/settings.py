@@ -115,6 +115,47 @@ decided un-stamped legacy content is safe to treat as visible to everyone —
 but it must be made here, on purpose, not fallen into by omission.
 """
 
+ALLOW_LEGACY_PICKLE_BM25: bool = os.environ.get(
+    "SEARCH_ALLOW_LEGACY_PICKLE_BM25", "true"
+).strip().lower() in {"1", "true", "yes"}
+"""D-054 (open-decisions.md): whether this service may `pickle.load` a
+Knowledge index's `bm25.pkl` when that index has not yet been migrated to
+`bm25.json` (the non-executable format `indexing_runtime.pipeline` now
+writes — see `search_runtime.bm25_store` module docstring). A pickle is
+executable content; unpickling one from an untrusted source is arbitrary
+code execution.
+
+Defaults to `True` — matching this codebase's only currently-wired-up
+deployment shape, where `INDEX_BASE` points at the central `data/indexes/`
+tree written exclusively by `services/indexing-runtime` (a trusted local
+writer, the same trust boundary `indexing_runtime.stamp_classification`
+already documents). This default exists so an index directory not yet
+converted by the `convert-bm25-format` operator CLI keeps working exactly
+as before, with the fallback itself logged
+(`search.bm25.legacy_pickle_fallback`, WARNING) rather than happening
+silently forever.
+
+**This must be set to `False`** for any search-runtime instance whose
+`INDEX_BASE` could ever point at content that arrived over a distribution
+channel rather than being built locally by this deployment's own
+indexing-runtime — e.g. an index directory populated by installing a
+Desktop Offline Bundle (`services/distribution-service` zips an index
+directory's files verbatim into the bundle, unchanged, so an unconverted
+`bm25.pkl` travels with it byte-for-byte). When `False`, a query against an
+index that only has `bm25.pkl` raises
+`search_runtime.bm25_store.LegacyPickleBm25Refused` instead of unpickling
+it — `main.py` turns this into a `KNOWLEDGE_INDEX_CORRUPT` error response,
+never a silent empty result (which would be indistinguishable from "no
+relevant evidence" and hide an actionable, security-relevant refusal).
+
+Honesty note (recorded in D-054): as of this change, no live component in
+this codebase actually runs a search-runtime instance against a
+Desktop-installed bundle's index directory — Desktop's local
+runtime/search wiring is still incomplete (see D-059/D-060). This setting
+is the mechanism a future such deployment MUST engage; it cannot itself be
+end-to-end verified against a real Desktop-facing search-runtime instance
+until that wiring exists."""
+
 CHROMA_CLIENT_CACHE_MAX_SIZE: int = int(
     os.environ.get("SEARCH_CHROMA_CLIENT_CACHE_MAX_SIZE", "32")
 )

@@ -5,15 +5,21 @@ from __future__ import annotations
 import json
 import logging
 import os
-import pickle
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 
+from search_runtime.bm25_store import (
+    BM25_JSON_FILENAME,
+    BM25_PICKLE_FILENAME,
+    load_bm25_document,
+    rebuild_bm25,
+)
 from search_runtime.chroma_client_cache import get_chroma_client
 from search_runtime.settings import (
+    ALLOW_LEGACY_PICKLE_BM25,
     DEFAULT_MIN_RELEVANCE_SCORE,
     DEFAULT_QUERY_INSTRUCT_PREFIX,
     EMBED_MODEL,
@@ -111,6 +117,7 @@ async def hybrid_search(
     min_relevance_score: float = DEFAULT_MIN_RELEVANCE_SCORE,
     query_instruct_prefix: str = DEFAULT_QUERY_INSTRUCT_PREFIX,
     metadata_predicate: Callable[[dict[str, Any]], bool] | None = None,
+    allow_legacy_pickle_bm25: bool = ALLOW_LEGACY_PICKLE_BM25,
 ) -> list[dict]:
     """Hybrid search using RRF fusion of vector + BM25 results.
 
@@ -154,15 +161,29 @@ async def hybrid_search(
         wider vector scan would have found more. Acceptable for a PoC-scale
         corpus; a real deployment should push the `classification`
         (and any business) filter into Chroma's `where=` clause instead.
+    allow_legacy_pickle_bm25: D-054. When the target index has not yet been
+        migrated to `bm25.json` (only a legacy `bm25.pkl` exists), this
+        controls whether that pickle may be loaded at all. True (the
+        default, from `settings.ALLOW_LEGACY_PICKLE_BM25`) preserves prior
+        behavior for this codebase's only wired-up deployment shape
+        (trusted, locally-built `data/indexes/`). False raises
+        `search_runtime.bm25_store.LegacyPickleBm25Refused` instead of
+        unpickling — callers (see `main.py`) must not swallow that into an
+        empty result, since that would be indistinguishable from "no
+        relevant evidence".
     Returns list of citation dicts sorted by fused score. Each citation
     includes a `similarity` field (cosine similarity, or None when no vector
     match exists for that chunk and filtering is disabled).
+
+    Raises `search_runtime.bm25_store.LegacyPickleBm25Refused` — see
+    `allow_legacy_pickle_bm25` above.
     """
     index_path = Path(index_base) / knowledge_id
-    bm25_path = index_path / "bm25.pkl"
+    bm25_json_path = index_path / BM25_JSON_FILENAME
+    bm25_pkl_path = index_path / BM25_PICKLE_FILENAME
     parents_path = index_path / "parents.json"
 
-    if not bm25_path.exists():
+    if not bm25_json_path.exists() and not bm25_pkl_path.exists():
         return []
 
     # Resolve which model to embed the query with — the index's own recorded
@@ -188,13 +209,23 @@ async def hybrid_search(
             embed_model,
         )
 
-    # Load BM25
-    with open(bm25_path, "rb") as f:
-        bm25_data = pickle.load(f)
-    bm25 = bm25_data["bm25"]
-    chunk_ids = bm25_data["chunk_ids"]
-    chunk_texts = bm25_data["chunk_texts"]
-    chunk_metadata = bm25_data["chunk_metadata"]
+    # Load BM25 (D-054: bm25.json preferred, non-executable; bm25.pkl is a
+    # gated legacy fallback for indexes not yet migrated — see
+    # bm25_store.load_bm25_document and allow_legacy_pickle_bm25 above).
+    # Let LegacyPickleBm25Refused propagate to the caller — never silently
+    # degrade to an empty result, that would hide a real refusal.
+    bm25_document, bm25_source = load_bm25_document(
+        index_path, allow_legacy_pickle=allow_legacy_pickle_bm25
+    )
+    if bm25_source == "legacy_pickle":
+        _logger.warning(
+            "search.bm25.legacy_pickle_fallback knowledge_id=%s reason=bm25_json_missing",
+            knowledge_id,
+        )
+    bm25 = rebuild_bm25(bm25_document["tokenized_corpus"])
+    chunk_ids = bm25_document["chunk_ids"]
+    chunk_texts = bm25_document["chunk_texts"]
+    chunk_metadata = bm25_document["chunk_metadata"]
     id_to_idx = {cid: i for i, cid in enumerate(chunk_ids)}
 
     def _passes(idx: int) -> bool:

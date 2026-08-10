@@ -67,6 +67,8 @@ async def test_confidential_chunk_withheld_from_internal_clearance_even_when_top
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     patch_embed_query(monkeypatch, hybrid)
@@ -96,6 +98,8 @@ async def test_confidential_clearance_sees_the_confidential_chunk(
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     patch_embed_query(monkeypatch, hybrid)
@@ -126,6 +130,8 @@ async def test_no_predicate_reproduces_unfiltered_behavior(
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     patch_embed_query(monkeypatch, hybrid)

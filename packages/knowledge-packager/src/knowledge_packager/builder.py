@@ -31,7 +31,7 @@ from typing import Any
 from ai_asset_schemas.validator import SchemaType, ValidationError, validate
 
 from knowledge_packager import index_reader, relativize, source_manifest
-from knowledge_packager.bm25_inspect import peek_bm25_pickle
+from knowledge_packager.bm25_inspect import peek_bm25_artifact
 from knowledge_packager.checksums import render_checksums_file, sha256_bytes
 from knowledge_packager.index_reader import IndexReadError
 from knowledge_packager.models import CheckResult, VerificationReport
@@ -50,7 +50,7 @@ from knowledge_packager.verification import (
     run_all_checks,
 )
 
-_INDEX_ARTIFACT_FILES = ("index-meta.json", "parents.json", "bm25.pkl")
+_INDEX_ARTIFACT_FILES = ("index-meta.json", "parents.json", "bm25.json", "bm25.pkl")
 
 # The five §4.1 checks that need parsed index content (Chroma opened via the
 # `chromadb` API, `bm25.pkl` opcode-peeked, `index-meta.json`/`parents.json`
@@ -238,6 +238,7 @@ def build(
         shutil.copytree(chroma_src, index_out / "chroma")
 
     relativized = relativize.RelativizeResult(parents_rewritten=0, chroma_rewritten=0)
+    bm25_json_rewritten = 0
     if relativize_source_paths:
         relative_map = source_manifest.relative_source_path_by_document_id(knowledge_id, parents)
         parents_rewritten = relativize.rewrite_parents_json(
@@ -250,6 +251,13 @@ def build(
             )
         relativized = relativize.RelativizeResult(
             parents_rewritten=parents_rewritten, chroma_rewritten=chroma_rewritten
+        )
+        # D-054: bm25.json (unlike the legacy bm25.pkl it replaces) is plain
+        # JSON, so its source_path leak is fully fixable — no-op if the
+        # index hasn't been migrated off bm25.pkl yet (see
+        # relativize.rewrite_bm25_json docstring).
+        bm25_json_rewritten = relativize.rewrite_bm25_json(
+            index_out / "bm25.json", knowledge_id, relative_map
         )
 
     # --- Source Manifest (§4.2), derived from the pre-copy parents dict ---
@@ -292,9 +300,7 @@ def build(
         chroma_snapshot = index_reader.read_chroma_snapshot(
             index_out, copied_index_meta.collection_name
         )
-        bm25_pkl_path = index_out / "bm25.pkl"
-        bm25_bytes = bm25_pkl_path.read_bytes() if bm25_pkl_path.is_file() else b""
-        bm25_summary = peek_bm25_pickle(bm25_bytes)
+        bm25_summary, bm25_format = peek_bm25_artifact(index_out)
     except Exception as exc:
         # Never let a third-party read failure (chromadb, JSON, pickle
         # opcodes) escape as an unhandled exception/traceback — same
@@ -348,22 +354,7 @@ def build(
             "bm25_record_count": bm25_summary.record_count,
         },
         "files": files_entries,
-        "artifact_notes": {
-            "bm25_pkl_is_pickle": True,
-            "bm25_pkl_relativized": False,
-            "notes": (
-                "bm25.pkl은 Python pickle입니다 — package-knowledge는 이를 절대 "
-                "unpickle하지 않습니다(임의 코드 실행 위험, open-decisions.md D-054). "
-                "이 파일에 내장된 source_path 절대경로는 path relativization 대상이 "
-                "아니며(같은 이유), scanner가 이를 발견하면 정책의 "
-                "residual_leak_severity_override 수준으로 보고됩니다. "
-                "index/chroma/chroma.sqlite3도 동일한 수준으로 보고될 수 있습니다 — "
-                "Chroma의 내부 embeddings_queue 테이블은 add/update를 모두 보존하는 "
-                "append-only 로그이므로, relativization이 Collection.update()로 "
-                "조회 결과는 정정하지만 원본 add() 시점의 절대경로 기록 자체는 파일에 "
-                "물리적으로 남습니다(VACUUM으로도 제거되지 않음, D-054)."
-            ),
-        },
+        "artifact_notes": _artifact_notes(bm25_format, bm25_json_rewritten),
         "verification": report.to_dict(),
         "path_relativization_applied": relativize_source_paths,
         "path_relativization_details": {
@@ -388,6 +379,47 @@ def build(
     )
 
     return BuildResult(package_dir=out_dir, manifest=manifest, verification=report), warnings
+
+
+def _artifact_notes(bm25_format: str, bm25_json_rewritten: int) -> dict[str, Any]:
+    """D-054: `artifact_notes` now reflects whichever BM25 format the
+    packaged index actually had (`peek_bm25_artifact`'s second return
+    value) — `bm25_pkl_is_pickle`/`bm25_pkl_relativized` field NAMES are
+    kept for schema/reader compatibility, but their meaning is now
+    conditional on the format actually present, not a hardcoded True/False."""
+    if bm25_format == "json":
+        return {
+            "bm25_pkl_is_pickle": False,
+            "bm25_pkl_relativized": bm25_json_rewritten > 0,
+            "notes": (
+                "index/bm25.json은 비실행 JSON 포맷입니다(open-decisions.md D-054 해소) — "
+                "BM25Okapi 객체를 저장하지 않고 tokenized corpus만 저장하며, 검색 시점에 "
+                "결정적으로 재구성됩니다. chunk_metadata의 source_path 절대경로는 "
+                "parents.json과 동일하게 relativization 대상입니다(성공 시 잔존 유출 없음). "
+                "index/chroma/chroma.sqlite3는 여전히 정책의 "
+                "residual_leak_severity_override 수준으로 보고될 수 있습니다 — Chroma의 "
+                "내부 embeddings_queue 테이블은 add/update를 모두 보존하는 append-only "
+                "로그이므로, relativization이 Collection.update()로 조회 결과는 정정하지만 "
+                "원본 add() 시점의 절대경로 기록 자체는 파일에 물리적으로 남습니다"
+                "(VACUUM으로도 제거되지 않음, D-054)."
+            ),
+        }
+    return {
+        "bm25_pkl_is_pickle": True,
+        "bm25_pkl_relativized": False,
+        "notes": (
+            "index/bm25.pkl은 아직 bm25.json으로 변환되지 않은 legacy Python pickle입니다"
+            "(indexing-runtime의 convert-bm25-format CLI로 변환 가능, open-decisions.md D-054) "
+            "— package-knowledge는 이를 절대 unpickle하지 않습니다(임의 코드 실행 위험). "
+            "이 파일에 내장된 source_path 절대경로는 path relativization 대상이 아니며"
+            "(같은 이유), scanner가 이를 발견하면 정책의 residual_leak_severity_override "
+            "수준으로 보고됩니다. index/chroma/chroma.sqlite3도 동일한 수준으로 보고될 수 "
+            "있습니다 — Chroma의 내부 embeddings_queue 테이블은 add/update를 모두 보존하는 "
+            "append-only 로그이므로, relativization이 Collection.update()로 조회 결과는 "
+            "정정하지만 원본 add() 시점의 절대경로 기록 자체는 파일에 물리적으로 남습니다"
+            "(VACUUM으로도 제거되지 않음, D-054)."
+        ),
+    }
 
 
 def _classify_role(relative_path: str) -> str:
@@ -492,9 +524,7 @@ def verify(
         index_meta = index_reader.read_index_meta(index_dir)
         parents = index_reader.read_parents(index_dir)
         chroma_snapshot = index_reader.read_chroma_snapshot(index_dir, index_meta.collection_name)
-        bm25_path = index_dir / "bm25.pkl"
-        bm25_bytes = bm25_path.read_bytes() if bm25_path.is_file() else b""
-        bm25_summary = peek_bm25_pickle(bm25_bytes)
+        bm25_summary, _bm25_format = peek_bm25_artifact(index_dir)
     except Exception as exc:
         reason = f"Package 내용을 읽는 중 오류가 발생했습니다: {sanitize_text(str(exc), policy)}"
         failed_checks = [_content_check_read_error(name, reason) for name in _CONTENT_CHECK_NAMES]

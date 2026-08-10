@@ -76,7 +76,30 @@ def test_build_happy_path_produces_valid_package(tmp_path: Path) -> None:
     manifest = json.loads((out_dir / "package-manifest.json").read_text(encoding="utf-8"))
     assert manifest["knowledge_asset_version_id"] == "kid-build"
     assert manifest["counts"]["chunk_count"] == len(fx.chunk_ids)
-    assert manifest["artifact_notes"]["bm25_pkl_is_pickle"] is True
+    # D-054: the default fixture format is bm25.json (non-executable) now —
+    # see test_build_happy_path_with_legacy_pickle_bm25 for the legacy case.
+    assert manifest["artifact_notes"]["bm25_pkl_is_pickle"] is False
+
+
+def test_build_happy_path_with_legacy_pickle_bm25(tmp_path: Path) -> None:
+    """A package built from an index not yet migrated by
+    indexing-runtime's convert-bm25-format CLI still builds and verifies
+    successfully — bm25.pkl is copied through as-is, never unpickled."""
+    fx = make_index_dir(
+        tmp_path / "source",
+        "kid-build-legacy",
+        absolute_source_path_prefix="source",
+        bm25_format="pickle",
+    )
+    out_dir = tmp_path / "out" / "pkg"
+
+    result, warnings = build(index_dir=fx.index_dir, out_dir=out_dir, policy=_policy())
+
+    assert warnings == []
+    assert result.verification.passed, [c.to_dict() for c in result.verification.failed_checks]
+    assert (out_dir / "index" / "bm25.pkl").is_file()
+    assert not (out_dir / "index" / "bm25.json").exists()
+    assert result.manifest["artifact_notes"]["bm25_pkl_is_pickle"] is True
 
 
 def test_build_legacy_generation_round_trip(tmp_path: Path) -> None:
@@ -181,6 +204,9 @@ def test_build_without_relativization_reports_fatal_absolute_path_leak(tmp_path:
 
 def test_build_with_relativization_cleans_the_leak(tmp_path: Path) -> None:
     # default prefix is /Users/testbuilder/... (a real leak, cleaned below).
+    # default bm25_format is "json" — D-054's whole point: this is now ALSO
+    # fully relativized, unlike the legacy bm25.pkl case covered separately
+    # below.
     fx = make_index_dir(tmp_path / "source", "kid-clean")
     out_dir = tmp_path / "out"
 
@@ -191,18 +217,49 @@ def test_build_with_relativization_cleans_the_leak(tmp_path: Path) -> None:
     scanner_check = next(
         c for c in result.verification.checks if c.name == "forbidden_files_and_secret_patterns"
     )
-    # No FATAL leak survives relativization: parents.json is genuinely
-    # clean; the residual leaks in bm25.pkl (never unpickled) and
-    # chroma.sqlite3 (Chroma's embeddings_queue retains the original add()
-    # metadata even after Collection.update() — see relativize.py module
-    # docstring) are both downgraded to WARNING by policy and do not fail
-    # the check.
+    # No FATAL leak survives relativization: parents.json and bm25.json are
+    # both genuinely clean; the residual leak in chroma.sqlite3 (Chroma's
+    # embeddings_queue retains the original add() metadata even after
+    # Collection.update() — see relativize.py module docstring) is
+    # downgraded to WARNING by policy and does not fail the check.
     assert scanner_check.passed, scanner_check.details
     assert result.manifest["path_relativization_applied"] is True
     assert result.manifest["path_relativization_details"]["parents_rewritten"] == len(fx.parent_ids)
     assert result.manifest["path_relativization_details"]["chroma_rewritten"] == len(fx.chunk_ids)
 
-    # bm25.pkl is explicitly still flagged as an unresolved pickle risk.
+    # D-054: bm25.json IS relativized now — the whole point of the fix.
+    assert result.manifest["artifact_notes"]["bm25_pkl_relativized"] is True
+    warning_findings = {
+        (f["pattern_id"], f["relative_path"].rsplit("/", 1)[-1])
+        for f in scanner_check.details["warning"]
+    }
+    assert ("absolute_path_unix_users", "chroma.sqlite3") in warning_findings
+    # bm25.json and parents.json must both carry NO finding at all (fully clean).
+    assert not any(
+        f["relative_path"].endswith(("parents.json", "bm25.json"))
+        for f in scanner_check.details["warning"]
+    )
+    bm25_document = json.loads((out_dir / "index" / "bm25.json").read_text(encoding="utf-8"))
+    assert all(
+        not m.get("source_path", "").startswith("/Users/")
+        for m in bm25_document["chunk_metadata"]
+    )
+
+
+def test_build_with_relativization_legacy_pickle_bm25_is_not_relativized(tmp_path: Path) -> None:
+    """A not-yet-migrated index still has the legacy bm25.pkl residual-leak
+    behavior — relativization cannot touch it without unpickling."""
+    fx = make_index_dir(tmp_path / "source", "kid-clean-legacy", bm25_format="pickle")
+    out_dir = tmp_path / "out"
+
+    result, _ = build(
+        index_dir=fx.index_dir, out_dir=out_dir, policy=_policy(), relativize_source_paths=True
+    )
+
+    scanner_check = next(
+        c for c in result.verification.checks if c.name == "forbidden_files_and_secret_patterns"
+    )
+    assert scanner_check.passed, scanner_check.details
     assert result.manifest["artifact_notes"]["bm25_pkl_relativized"] is False
     warning_findings = {
         (f["pattern_id"], f["relative_path"].rsplit("/", 1)[-1])
@@ -210,10 +267,6 @@ def test_build_with_relativization_cleans_the_leak(tmp_path: Path) -> None:
     }
     assert ("absolute_path_unix_users", "bm25.pkl") in warning_findings
     assert ("absolute_path_unix_users", "chroma.sqlite3") in warning_findings
-    # parents.json itself must carry NO finding at all (fully clean).
-    assert not any(
-        f["relative_path"].endswith("parents.json") for f in scanner_check.details["warning"]
-    )
 
 
 def test_build_with_asset_manifest_populates_owner_classification(tmp_path: Path) -> None:
@@ -480,11 +533,11 @@ def test_verify_content_read_failure_after_integrity_passes_is_a_reported_fail(
 ) -> None:
     """Distinct from the integrity-gate-skip case above: if the bytes on
     disk ARE byte-for-byte what the Manifest declares (checksum_integrity
-    passes) but the artifact still cannot be parsed/opened — e.g. bm25.pkl
+    passes) but the artifact still cannot be parsed/opened — e.g. bm25.json
     replaced with equal-length garbage that happens to still hash to a
     *different* stale declared value is not representable without breaking
     the checksum; instead we simulate the "well-formed bytes, malformed
-    content" case directly: corrupt bm25.pkl AND re-declare its checksum in
+    content" case directly: corrupt bm25.json AND re-declare its checksum in
     package-manifest.json so checksum_integrity still passes, matching what
     a legitimately-signed-but-buggy build could produce. This must surface
     as a real FAIL (content_check_error), not NOT_RUN and not a crash."""
@@ -494,14 +547,14 @@ def test_verify_content_read_failure_after_integrity_passes_is_a_reported_fail(
     out_dir = tmp_path / "out"
     build(index_dir=fx.index_dir, out_dir=out_dir, policy=_policy())
 
-    bm25_path = out_dir / "index" / "bm25.pkl"
-    garbage = b"\xff" * len(bm25_path.read_bytes())  # same length, not a valid pickle stream
+    bm25_path = out_dir / "index" / "bm25.json"
+    garbage = b"\xff" * len(bm25_path.read_bytes())  # same length, not valid JSON/UTF-8
     bm25_path.write_bytes(garbage)
 
     manifest_path = out_dir / "package-manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     for entry in manifest["files"]:
-        if entry["relative_path"] == "index/bm25.pkl":
+        if entry["relative_path"] == "index/bm25.json":
             entry["sha256"] = hashlib.sha256(garbage).hexdigest()
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     checksums_path = out_dir / "checksums.sha256"

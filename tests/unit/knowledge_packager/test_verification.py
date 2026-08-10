@@ -34,14 +34,24 @@ def _inputs_for(tmp_path: Path, **kwargs) -> tuple[VerificationInputs, dict]:
     index_meta = read_index_meta(fx.index_dir)
     parents = read_parents(fx.index_dir)
     chroma = read_chroma_snapshot(fx.index_dir, fx.collection_name)
-    import pickle
+    import json
 
-    bm25_data = pickle.loads((fx.index_dir / "bm25.pkl").read_bytes())
+    # D-054: make_index_dir's default bm25_format is "json" (bm25.json, non
+    # executable — see indexing_runtime.bm25_store) — legacy "pickle" fixtures
+    # are opted into explicitly via bm25_format="pickle" for the few tests
+    # that specifically exercise that fallback.
+    bm25_filename = "bm25.json" if (fx.index_dir / "bm25.json").is_file() else "bm25.pkl"
+    if bm25_filename == "bm25.json":
+        bm25_data = json.loads((fx.index_dir / "bm25.json").read_text(encoding="utf-8"))
+    else:
+        import pickle
+
+        bm25_data = pickle.loads((fx.index_dir / "bm25.pkl").read_bytes())
 
     actual_files = {
         "index/index-meta.json": (fx.index_dir / "index-meta.json").read_bytes(),
         "index/parents.json": (fx.index_dir / "parents.json").read_bytes(),
-        "index/bm25.pkl": (fx.index_dir / "bm25.pkl").read_bytes(),
+        f"index/{bm25_filename}": (fx.index_dir / bm25_filename).read_bytes(),
     }
     declared_files = {k: sha256_bytes(v) for k, v in actual_files.items()}
 

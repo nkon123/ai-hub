@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 import json
-import pickle
 from pathlib import Path
 
-from rank_bm25 import BM25Okapi
 from security_policy import parse_classification
 
+from indexing_runtime.bm25_store import BM25_JSON_FILENAME, write_bm25_json
 from indexing_runtime.chroma_client_cache import get_chroma_client
 from indexing_runtime.chunkers import chunk_documents
 from indexing_runtime.chunkers.ids import make_document_id
@@ -116,18 +115,17 @@ async def run_pipeline(
         metadatas=[c["metadata"] for c in children],
     )
 
-    # 5. Build BM25 index on child chunks
-    tokenized = [text.split() for text in child_texts]
-    bm25 = BM25Okapi(tokenized)
-
-    bm25_data = {
-        "bm25": bm25,
-        "chunk_ids": [c["id"] for c in children],
-        "chunk_texts": child_texts,
-        "chunk_metadata": [c["metadata"] for c in children],
-    }
-    with open(index_path / "bm25.pkl", "wb") as f:
-        pickle.dump(bm25_data, f)
+    # 5. Build the BM25 index artifact on child chunks — a plain JSON file
+    # (D-054, see indexing_runtime.bm25_store module docstring), never a
+    # pickle. Only the tokenized corpus is persisted; `rank_bm25.BM25Okapi`
+    # is rebuilt deterministically at query time by search-runtime, so no
+    # executable object is ever written to disk.
+    write_bm25_json(
+        index_path / BM25_JSON_FILENAME,
+        chunk_ids=[c["id"] for c in children],
+        chunk_texts=child_texts,
+        chunk_metadata=[c["metadata"] for c in children],
+    )
 
     # 6. Save parent map for parent expansion (empty for recursive/markdown —
     # those strategies have no Parent Store, see chunkers/recursive.py).

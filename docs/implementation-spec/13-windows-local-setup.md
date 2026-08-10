@@ -71,6 +71,29 @@ ollama pull qwen3-embedding:0.6b
 4. search-runtime은 재기동이 필요 없다 — 다음 검색 요청부터 바뀐 색인의 `embed_model`을 자동으로 읽어 그 모델로 질의를 임베딩한다. (다만 `SEARCH_EMBED_MODEL` 폴백값도 새 기본과 맞춰 두는 것을 권장 — §8의 "임베딩 모델 불일치" 행 참고)
 5. **`SEARCH_QUERY_INSTRUCT_PREFIX`도 함께 검토한다.** 기본값은 Qwen3-Embedding 전용 관례(D-046)로 튜닝되어 있다. Qwen3 계열이 아닌 모델로 바꾸면 이 접두사가 오히려 검색 품질을 해칠 수 있으므로, `services/search-runtime/src/search_runtime/settings.py`의 `EMBED_MODEL`/`DEFAULT_QUERY_INSTRUCT_PREFIX` 문서 주석을 읽고 필요하면 `SEARCH_QUERY_INSTRUCT_PREFIX=""`(또는 새 모델에 맞는 값)로 함께 바꾼다. 두 설정은 서로 다른 환경 변수이며 코드가 자동으로 연동해주지 않는다.
 
+### 2.2 기존 색인의 BM25 파일을 안전한 포맷으로 변환하기 (D-054)
+
+`services/indexing-runtime`이 Knowledge를 색인할 때 만드는 `bm25.json`(BM25 검색용 통계 파일)은 2026-08-10부터 실행 불가능한 plain JSON이다. 그 이전에 만들어진 색인은 `bm25.pkl`이라는 **Python pickle**을 대신 갖고 있는데, pickle은 그 자체로 실행 가능한 코드다 — 신뢰할 수 없는 곳에서 온 `bm25.pkl`을 `pickle.load`하면 임의 코드 실행으로 이어질 수 있다(자세한 배경은 `open-decisions.md` D-054).
+
+**운영자가 해야 할 일** — 기존 `data/indexes/` 아래의 각 Knowledge 색인 디렉터리에 대해, 재임베딩 없이 제자리에서 변환한다:
+
+```powershell
+# data/indexes/ 아래 각 색인 디렉터리(= AssetVersion id)에 대해 1회 실행
+uv run --project services/indexing-runtime convert-bm25-format data\indexes\<AssetVersion id>
+```
+
+- **Idempotent** — 이미 변환된 색인(=이미 `bm25.json`만 있는 경우)에 다시 실행해도 안전하며, `"action": "already_converted"`로 보고하고 아무것도 바꾸지 않는다.
+- 변환은 원본 `bm25.pkl`의 BM25 점수와 재구성된 결과를 대조 확인한 뒤에만 원본을 지운다 — 검증에 실패하면 `bm25.pkl`은 그대로 남고 명령이 오류로 종료된다(파일이 훼손된 채 방치되지 않는다).
+- 변환 후에는 **재색인이 필요 없다** — 검색 결과(citation·score)는 변환 전후 완전히 동일하다.
+- **이 변환 전에는 search-runtime이 여전히 `bm25.pkl`을 읽을 수 있다**(`SEARCH_ALLOW_LEGACY_PICKLE_BM25` 기본값 `true` — 매 요청마다 `search.bm25.legacy_pickle_fallback` WARNING 로그를 남긴다). 즉 이 절차를 당장 실행하지 않아도 검색은 계속 동작하지만, `data/indexes/`가 이후 Offline Bundle로 반출될 가능성이 있다면 반출 전에 변환해 두는 것을 권장한다 — `services/distribution-service`는 색인 디렉터리를 있는 그대로 Bundle에 복사하므로, 변환해 두면 그 이후 만들어지는 모든 Bundle이 자동으로 안전한 포맷을 갖는다.
+- 게시된 4개 데모 챗봇을 포함해 오늘 존재하는 모든 색인에 대해 이 절차를 실행하는 것은 세션 소유자(운영자)의 몫이다 — 이 저장소의 개발 세션은 `data/indexes/`를 읽기 전용으로 취급했다.
+
+같은 방식으로, D-062(§3.8 접근 통제)의 `stamp-classification` CLI를 아직 실행하지 않은 색인이 있다면 두 CLI 모두 재임베딩 없이 순서 상관없이 실행할 수 있다(`stamp-classification`은 `bm25.json`이 있으면 그것을, 없으면 여전히 `bm25.pkl`을 안전하게 다룬다):
+
+```powershell
+uv run --project services/indexing-runtime stamp-classification data\indexes\<AssetVersion id> --classification INTERNAL
+```
+
 ## 2.5 Python 의존성 설치 (pip)
 
 **Windows 로컬 실행은 pip 만 쓴다.** uv 는 필요하지 않다.
@@ -375,3 +398,4 @@ npx next telemetry status   # Status: Disabled 이어야 한다
 
 - D-073 (`open-decisions.md`): indexing-runtime `INDEX_BASE` 하드코딩 수정, PDF/DOCX Loader 추가, Windows 실행 스크립트 신설 — 이 문서와 함께 기록됨.
 - D-075 (`open-decisions.md`): 임베딩 모델을 `INDEXING_EMBED_MODEL`/`SEARCH_EMBED_MODEL` 설정으로 분리, search-runtime이 검색 시 자기 설정이 아니라 대상 색인의 `index-meta.json`에 기록된 `embed_model`을 우선 사용하도록 수정 — §2.1 참고.
+- D-054 (`open-decisions.md`): `bm25.pkl`(Python pickle, 실행 가능한 포맷)을 `bm25.json`(비실행 JSON)으로 교체 — §2.2 참고. 기존 색인은 `convert-bm25-format`으로 운영자가 직접 변환해야 한다.

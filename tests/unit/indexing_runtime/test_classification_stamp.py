@@ -10,7 +10,6 @@ No Ollama/Chroma/live service is used — embed_batch and chromadb are faked
 from __future__ import annotations
 
 import json
-import pickle
 
 import pytest
 from indexing_runtime import pipeline
@@ -40,8 +39,9 @@ async def _run(tmp_path, monkeypatch, *, classification: str | None) -> dict:
 
 
 def _load_bm25_metadata(index_dir) -> list[dict]:
-    with open(index_dir / "bm25.pkl", "rb") as f:
-        data = pickle.load(f)
+    """D-054: pipeline.run_pipeline now writes bm25.json (plain, non-
+    executable JSON), not bm25.pkl."""
+    data = json.loads((index_dir / "bm25.json").read_text(encoding="utf-8"))
     return data["chunk_metadata"]
 
 

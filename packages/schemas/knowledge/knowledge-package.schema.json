@@ -63,11 +63,11 @@
       "properties": {
         "bm25_pkl_is_pickle": {
           "type": "boolean",
-          "description": "Always true today — flags that index/bm25.pkl is a Python pickle and was never unpickled by the packager (open-decisions.md D-054)"
+          "description": "D-054 (resolved): false when the packaged index's BM25 artifact is index/bm25.json (the current, non-executable format — a tokenized corpus, never a pickled BM25Okapi). true only for a package built from an index not yet migrated off the legacy index/bm25.pkl (a Python pickle, never unpickled by the packager)."
         },
         "bm25_pkl_relativized": {
           "type": "boolean",
-          "description": "Always false today — absolute source_path leaks embedded inside the pickle cannot be fixed without unpickling it"
+          "description": "true when index/bm25.json's chunk_metadata source_path fields were rewritten by path relativization (fully fixable — it is plain JSON). Always false for a legacy index/bm25.pkl artifact — its embedded source_path leaks cannot be fixed without unpickling it, which the packager refuses to do."
         },
         "notes": { "type": "string" }
       }

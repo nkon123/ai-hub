@@ -47,6 +47,8 @@ def _setup(tmp_path, monkeypatch) -> list[dict]:
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     patch_embed_query(monkeypatch, hybrid)
@@ -138,6 +140,8 @@ async def test_bm25_only_chunk_dropped_even_if_top_ranked(
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, ids=[], distances=[])  # vector store returns nothing
     patch_embed_query(monkeypatch, hybrid)
@@ -176,6 +180,8 @@ async def test_query_instruct_prefix_is_plumbed_to_embed_query(
         chunk_ids=CHUNK_IDS,
         chunk_texts=CHUNK_TEXTS,
         chunk_metadata=CHUNK_METADATA,
+        monkeypatch=monkeypatch,
+        hybrid_module=hybrid,
     )
     patch_chroma(monkeypatch, hybrid, VECTOR_IDS, VECTOR_DISTANCES)
     calls = patch_embed_query(monkeypatch, hybrid)

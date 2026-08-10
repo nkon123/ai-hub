@@ -84,9 +84,10 @@ def main() -> None:
 @click.option(
     "--relativize-source-paths", is_flag=True, default=False,
     help=(
-        "parents.json/Chroma metadata의 build-host 절대경로(source_path)를 "
+        "parents.json/Chroma metadata/bm25.json의 build-host 절대경로(source_path)를 "
         "패키지 상대경로로 재작성합니다(§4.1 금지 패턴 FATAL을 해소). "
-        "bm25.pkl 내부 값은 unpickle 없이 재작성할 수 없어 대상에서 제외됩니다."
+        "아직 bm25.json으로 변환되지 않은 legacy bm25.pkl 내부 값은 unpickle 없이 "
+        "재작성할 수 없어 대상에서 제외됩니다(D-054, convert-bm25-format으로 먼저 변환 권장)."
     ),
 )
 def build_cmd(

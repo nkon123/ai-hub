@@ -1,46 +1,72 @@
-"""Safe, non-executing introspection of `bm25.pkl` (D-054, see
-docs/implementation-spec/open-decisions.md).
+"""Safe, non-executing introspection of a Knowledge index's BM25 artifact
+(D-054, see docs/implementation-spec/open-decisions.md).
 
-`services/indexing-runtime/src/indexing_runtime/pipeline.py` writes
-`bm25.pkl` as `pickle.dump({"bm25": BM25Okapi(...), "chunk_ids": [...],
-"chunk_texts": [...], "chunk_metadata": [...]}, f)`. A Knowledge Package may
-travel over `services/distribution-service` to an untrusted destination
-before anyone runs `package-knowledge verify` against it — `pickle.load` on
-that file would import whatever module the GLOBAL/STACK_GLOBAL opcodes name
-and call whatever callable the REDUCE/NEWOBJ/BUILD opcodes reference. That
-is arbitrary code execution by design (the same primitive `pickle` docs
-themselves warn about), so this package NEVER calls `pickle.load`/
-`pickle.loads` on package content, anywhere, including here.
+Two formats coexist in the wild:
 
-Instead, this module walks the pickle's *opcode stream* with
-`pickletools.genops` — a pure disassembler that decodes each opcode's
-literal argument (an int, a string, a float, ...) without importing
-anything or invoking any callable — and reconstructs only the JSON-safe
-parts of the object graph (dict/list/tuple/str/int/float/bool/None).
-Anything that would require executing code to produce (GLOBAL,
-STACK_GLOBAL, REDUCE, NEWOBJ, NEWOBJ_EX, BUILD, INST, OBJ, PERSID,
-BINPERSID, EXT1/2/4) is instead represented by an inert `_Opaque`
-placeholder that carries only a human-readable label — the interpreter
-below never imports the named module/class and never calls the named
-callable. This makes `peek_bm25_pickle_ids` safe to run on a `bm25.pkl`
-from a package of unknown provenance.
+  - `bm25.json` (current, since D-054's resolution): a plain JSON file
+    written by `indexing_runtime.pipeline.run_pipeline` — a tokenized
+    corpus plus `chunk_ids`/`chunk_texts`/`chunk_metadata`. Reading it is a
+    trivial `json.loads`; there is no way for JSON to execute code, so
+    `peek_bm25_json` needs none of this module's pickle-opcode machinery.
 
-Scope note: this is deliberately narrow — it is a "safe peek", not a
-general sandboxed unpickler. It handles every opcode in `pickletools.
-opcodes` (the complete pickle protocol 0-5 opcode set), so it will not
-crash on a normally-produced pickle, but it makes no attempt to be a
-hardened parser against a maliciously malformed pickle stream (e.g. it
-trusts `pickletools.genops`'s own parsing and does not defend against
-crafted memo/stack-depth attacks meant to exhaust memory). That is an
-acceptable PoC-scope limitation given `package-knowledge verify` is a local
-developer tool, not a network-facing service — the real fix (§ D-054's
-recommendation) is to stop shipping BM25 as a pickle at all.
+  - `bm25.pkl` (legacy — an index not yet migrated by indexing-runtime's
+    `convert-bm25-format` CLI): a Python pickle written the old way,
+    `pickle.dump({"bm25": BM25Okapi(...), "chunk_ids": [...], "chunk_texts":
+    [...], "chunk_metadata": [...]}, f)`. A Knowledge Package may travel
+    over `services/distribution-service` to an untrusted destination before
+    anyone runs `package-knowledge verify` against it — `pickle.load` on
+    that file would import whatever module the GLOBAL/STACK_GLOBAL opcodes
+    name and call whatever callable the REDUCE/NEWOBJ/BUILD opcodes
+    reference. That is arbitrary code execution by design (the same
+    primitive `pickle` docs themselves warn about), so this package NEVER
+    calls `pickle.load`/`pickle.loads` on package content, anywhere,
+    including here — regardless of whether the package's *source* index was
+    built locally or not. `packages/knowledge_packager`'s trust boundary is
+    always "the package's bytes are untrusted," unlike
+    `indexing_runtime`/`search_runtime`'s narrower "an operator-controlled
+    local index directory is trusted" carve-outs.
+
+    For this legacy case, this module walks the pickle's *opcode stream*
+    with `pickletools.genops` — a pure disassembler that decodes each
+    opcode's literal argument (an int, a string, a float, ...) without
+    importing anything or invoking any callable — and reconstructs only the
+    JSON-safe parts of the object graph
+    (dict/list/tuple/str/int/float/bool/None). Anything that would require
+    executing code to produce (GLOBAL, STACK_GLOBAL, REDUCE, NEWOBJ,
+    NEWOBJ_EX, BUILD, INST, OBJ, PERSID, BINPERSID, EXT1/2/4) is instead
+    represented by an inert `_Opaque` placeholder that carries only a
+    human-readable label — the interpreter below never imports the named
+    module/class and never calls the named callable. This makes
+    `peek_bm25_pickle` safe to run on a `bm25.pkl` from a package of unknown
+    provenance.
+
+    Scope note: this is deliberately narrow — it is a "safe peek", not a
+    general sandboxed unpickler. It handles every opcode in
+    `pickletools.opcodes` (the complete pickle protocol 0-5 opcode set), so
+    it will not crash on a normally-produced pickle, but it makes no
+    attempt to be a hardened parser against a maliciously malformed pickle
+    stream (e.g. it trusts `pickletools.genops`'s own parsing and does not
+    defend against crafted memo/stack-depth attacks meant to exhaust
+    memory). That is an acceptable PoC-scope limitation given
+    `package-knowledge verify` is a local developer tool, not a
+    network-facing service. Kept (not retired) specifically to still
+    support packages built from an index directory an operator has not yet
+    run `convert-bm25-format` against — retiring it outright would make
+    `package-knowledge build/verify` unable to handle any not-yet-migrated
+    index at all.
+
+`peek_bm25_artifact(index_dir)` is the one entry point `builder.py` uses —
+it resolves which file is actually present (`bm25.json` preferred) and
+returns a summary plus which format it read, so callers never need to know
+which of the two code paths above ran.
 """
 
 from __future__ import annotations
 
+import json
 import pickletools
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 
@@ -274,3 +300,51 @@ def peek_bm25_pickle(data: bytes) -> Bm25PickleSummary:
     if not isinstance(chunk_ids, list) or not all(isinstance(c, str) for c in chunk_ids):
         raise UnsafePickleError("bm25.pkl의 chunk_ids가 문자열 리스트가 아닙니다")
     return Bm25PickleSummary(chunk_ids=chunk_ids, record_count=len(chunk_ids))
+
+
+BM25_JSON_FILENAME = "bm25.json"
+BM25_PICKLE_FILENAME = "bm25.pkl"
+
+
+def peek_bm25_json(data: bytes) -> Bm25PickleSummary:
+    """Extract `chunk_ids` (and its length) from a `bm25.json` byte string —
+    a plain `json.loads`, since the file cannot contain executable content
+    by construction (D-054). Named/shaped to match `peek_bm25_pickle` so
+    `peek_bm25_artifact` can treat both formats identically.
+
+    Raises `UnsafePickleError` (reused, not a new exception type, so callers
+    that already catch it for the legacy path do not need a second except
+    clause) if the shape does not match."""
+    try:
+        top = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise UnsafePickleError(f"bm25.json 파싱 실패: {exc}") from exc
+    if not isinstance(top, dict) or "chunk_ids" not in top:
+        raise UnsafePickleError(
+            "bm25.json의 최상위 구조가 예상({'chunk_ids': [...], ...})과 다릅니다"
+        )
+    chunk_ids = top["chunk_ids"]
+    if not isinstance(chunk_ids, list) or not all(isinstance(c, str) for c in chunk_ids):
+        raise UnsafePickleError("bm25.json의 chunk_ids가 문자열 리스트가 아닙니다")
+    return Bm25PickleSummary(chunk_ids=chunk_ids, record_count=len(chunk_ids))
+
+
+def peek_bm25_artifact(index_dir: Path) -> tuple[Bm25PickleSummary, str]:
+    """Resolve and safely peek whichever BM25 artifact is actually present
+    under `index_dir` — `bm25.json` preferred, `bm25.pkl` as a legacy
+    fallback (both read the same way regardless of the package's/index's
+    provenance — see module docstring). Returns `(summary, format)` where
+    `format` is `"json"` or `"pickle"`.
+
+    Raises `UnsafePickleError` if neither file exists or the one found does
+    not parse — callers report this as a verification failure, never a
+    silent empty summary."""
+    json_path = index_dir / BM25_JSON_FILENAME
+    pkl_path = index_dir / BM25_PICKLE_FILENAME
+    if json_path.is_file():
+        return peek_bm25_json(json_path.read_bytes()), "json"
+    if pkl_path.is_file():
+        return peek_bm25_pickle(pkl_path.read_bytes()), "pickle"
+    raise UnsafePickleError(
+        f"{BM25_JSON_FILENAME}/{BM25_PICKLE_FILENAME} 둘 다 없습니다: {index_dir}"
+    )
