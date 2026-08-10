@@ -81,6 +81,10 @@ ollama pull qwen3-embedding:0.6b
 .\.venv\Scripts\Activate.ps1
 ```
 
+### 스크립트 없이 pip 만으로 (권장 대안)
+
+**스크립트는 편의 도구일 뿐이다.** 아래 명령을 직접 실행해도 결과는 같고, 스크립트에서 문제가 생기면 이쪽이 더 확실하다.
+
 ### 수동으로 하려면
 
 ```powershell

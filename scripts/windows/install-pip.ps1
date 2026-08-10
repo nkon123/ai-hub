@@ -44,7 +44,12 @@ param(
     [switch]$Loose
 )
 
-$ErrorActionPreference = "Stop"
+# 주의: $ErrorActionPreference = "Stop" 을 쓰지 않는다.
+# pip 은 성공했을 때도 경고(새 pip 버전 알림 등)를 stderr 로 내보내는데,
+# "Stop" 에서는 PowerShell 이 그것만으로 스크립트를 중단시킬 수 있다.
+# 실제로 "단독 pip install 은 되는데 이 스크립트로는 실패한다"는 보고가 있었다.
+# 성공/실패는 아래에서 $LASTEXITCODE 로만 판정한다.
+$ErrorActionPreference = "Continue"
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $RepoRoot
@@ -65,6 +70,7 @@ if (-not $SkipVenv) {
     if (-not (Test-Path ".venv")) {
         Write-Host "[1/4] 가상환경 생성 (.venv)" -ForegroundColor Cyan
         python -m venv .venv
+        if ($LASTEXITCODE -ne 0) { throw "가상환경 생성 실패 (python -m venv .venv)" }
     } else {
         Write-Host "[1/4] 기존 .venv 사용" -ForegroundColor Cyan
     }
@@ -79,6 +85,10 @@ if (-not $SkipVenv) {
 
 Write-Host "[2/4] pip 업그레이드" -ForegroundColor Cyan
 & $Python -m pip install --upgrade pip
+# 업그레이드 실패는 치명적이지 않다 — 기존 pip 으로도 설치가 가능한 경우가 많다.
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "      pip 업그레이드에 실패했지만 계속 진행합니다." -ForegroundColor Yellow
+}
 
 if ($Loose) {
     Write-Host "[3/4] 외부 의존성 설치 (-Loose: 고정 버전 대신 pyproject 범위)" -ForegroundColor Cyan
