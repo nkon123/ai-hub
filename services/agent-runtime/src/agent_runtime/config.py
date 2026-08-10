@@ -52,6 +52,31 @@ class AgentRuntimeSettings(BaseSettings):
     # (D-001 Test Identity Adapter fixed dev token, not a secret — see that
     # adapter's docstring) until a real service-identity mechanism exists.
     portal_api_token: str = "dev-user-token"
+    # Desktop 대화 고도화 (multi-turn) — `StartRunRequest.input.history` is
+    # additive/optional (agent_runtime.conversation.bound_history). These two
+    # bound its growth server-side regardless of what a caller sends, so a
+    # long-lived Desktop conversation can never make the prompt grow without
+    # limit — settings, not literals in conversation.py, for the same reason
+    # `mcp_confirmation_timeout_seconds` above is a setting: this file already
+    # documents the CORS-hardcoding lesson this repo was bitten by once.
+    # Omitting `history` entirely (every caller today except the new Desktop
+    # persistence work) reproduces prior behavior exactly — `bound_history`
+    # returns `[]` for `None` input regardless of these values.
+    # Prior user/assistant turn pairs kept, most-recent-first — beyond this
+    # the oldest turns are dropped first (oldest-first eviction).
+    max_history_turns: int = 6
+    # Approximate character budget for the rendered history block (question +
+    # answer text summed across kept turns). No LLM tokenizer dependency is
+    # wired into this PoC, so this is a conservative proxy, not an exact
+    # token count — mirrors 04-knowledge-platform.md §3.11's Context Budget
+    # "안전 여유를 둔다" (safety margin) philosophy for its own token budget.
+    max_history_chars: int = 4000
+    # 04-knowledge-platform.md §3.4 Query Rewrite — only invoked when history
+    # is non-empty (agent_runtime.conversation.rewrite_query_for_search).
+    # "Timeout 또는 Output 오류 시 원문 Fallback" is a hard §3.4 rule; this
+    # bounds how long a run waits before falling back, so a stuck Ollama call
+    # cannot hang a Run indefinitely just to rewrite a search query.
+    query_rewrite_timeout_seconds: float = 8.0
 
     class Config:
         env_prefix = "AGENT_RUNTIME_"

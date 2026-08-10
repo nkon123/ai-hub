@@ -225,6 +225,14 @@ async def start_run(
             "confirmed": bool(body.input.get("mcp_confirmed", False)),
         }
 
+    # Desktop 대화 고도화 — additive/optional (local-runtime-api.yaml
+    # StartRunRequest.input.history). Not validated/shaped here beyond "is it
+    # a list at all" — workflow.py's `bound_history` normalizes and bounds
+    # it, and treats a malformed list defensively (skips non-dict entries)
+    # rather than rejecting the whole run.
+    raw_history = body.input.get("history")
+    history = raw_history if isinstance(raw_history, list) else None
+
     asyncio.create_task(
         run_knowledge_chat(
             run_id=record.id,
@@ -246,6 +254,7 @@ async def start_run(
             # D-062, §3.8 step 1: the Run's own trusted context, never
             # `body.input` — see workflow.run_knowledge_chat's docstring.
             user_context=body.user_context,
+            history=history,
         )
     )
 

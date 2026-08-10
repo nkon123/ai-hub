@@ -5,6 +5,7 @@ import crypto from "node:crypto";
 import { freeBytesAt, importBundle, resolveInstallRoot, type InstallRootLayout } from "./bundle-install";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
+import { ConversationStore } from "./conversation-store";
 import { checkAllConnections, listOllamaModels } from "./connections";
 import { DesktopSettingsStore } from "./desktop-settings";
 import {
@@ -33,6 +34,9 @@ import type {
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
+  ConversationRecord,
+  ConversationSummary,
+  ConversationTurnStatus,
   DesktopSettingsInput,
   DesktopSettingsPublic,
   DesktopSettingsUpdateResult,
@@ -66,6 +70,7 @@ let installLayout: InstallRootLayout | null = null;
 let appLogger: AppLogger | null = null;
 let portalSettingsStore: PortalSettingsStore | null = null;
 let desktopSettingsStore: DesktopSettingsStore | null = null;
+let conversationStore: ConversationStore | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
@@ -90,6 +95,13 @@ function getDesktopSettingsStore(): DesktopSettingsStore {
     desktopSettingsStore = new DesktopSettingsStore(getLayout().stateDir);
   }
   return desktopSettingsStore;
+}
+
+function getConversationStore(): ConversationStore {
+  if (!conversationStore) {
+    conversationStore = new ConversationStore(getLayout().stateDir);
+  }
+  return conversationStore;
 }
 
 /** D11's only log source — see `app-logger.ts`'s module docstring for why
@@ -573,6 +585,62 @@ function registerIpcHandlers(): void {
   ipcMain.handle("system:getInfo", async (): Promise<SystemInfoView> => {
     return buildSystemInfo(getLayout());
   });
+
+  // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) — 질문/답변 원문은
+  // 민감 데이터다(`conversation-store.ts` 모듈 docstring). 아래 핸들러는
+  // 구조적 이벤트만 로깅하고 절대 질문/답변 내용을 `getLogger()`에 넘기지
+  // 않는다 — 예외는 삭제 "사유"뿐이며, `assets:remove`가 이미 확립한 선례를
+  // 그대로 따른다(운영자가 직접 입력한 짧은 정당화 텍스트는 로깅해도
+  // 안전하다).
+  ipcMain.handle("conversations:list", async (): Promise<ConversationSummary[]> => {
+    return getConversationStore().list();
+  });
+
+  ipcMain.handle(
+    "conversations:get",
+    async (_event, id: string): Promise<ConversationRecord | null> => {
+      return getConversationStore().get(id);
+    },
+  );
+
+  ipcMain.handle(
+    "conversations:create",
+    async (_event, knowledgeId: string, knowledgeLabel: string): Promise<ConversationRecord> => {
+      const record = getConversationStore().create(knowledgeId, knowledgeLabel);
+      getLogger().info("conversation-store", `대화 생성됨: ${record.id}`);
+      return record;
+    },
+  );
+
+  ipcMain.handle(
+    "conversations:appendTurn",
+    async (
+      _event,
+      conversationId: string,
+      turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+    ): Promise<ConversationRecord | null> => {
+      const updated = getConversationStore().appendTurn(conversationId, turn);
+      getLogger().info(
+        "conversation-store",
+        `대화 턴 추가됨: ${conversationId} (status=${turn.status}, citation_count=${turn.citationCount})`,
+      );
+      return updated;
+    },
+  );
+
+  ipcMain.handle(
+    "conversations:delete",
+    async (_event, id: string, reason: string): Promise<{ ok: boolean; error: string | null }> => {
+      // CLAUDE.md: 삭제는 확인과 사유를 요구한다 — 렌더러(`ReasonConfirmDialog`)가
+      // 이미 빈 사유를 막지만, `assets:remove`와 동일하게 여기서도 다시
+      // 검증한다(방어적 이중 검사).
+      const result = getConversationStore().remove(id, reason);
+      if (result.ok) {
+        getLogger().info("conversation-store", `대화 삭제됨: ${id} (사유: ${reason.trim()})`);
+      }
+      return result;
+    },
+  );
 }
 
 app.whenReady().then(() => {

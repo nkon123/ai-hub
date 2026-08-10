@@ -67,13 +67,28 @@ class FakeLLMAdapter(LLMAdapter):
     - aclose_called: set True only when the underlying generator is closed
       early (GeneratorExit), i.e. the caller cancelled mid-stream — not on
       normal exhaustion.
+    - calls: every `messages` list this adapter was invoked with, in order —
+      lets a test inspect exactly what was sent to the "model" (e.g. to
+      confirm a history block is/isn't present).
+    - responses: when given, each successive generate() call yields the next
+      entry (clamped to the last once exhausted) instead of `tokens` — added
+      so a single test can distinguish workflow.py's two possible generate()
+      calls (§3.4 Query Rewrite, then ANSWER_GENERATE) with different canned
+      output for each.
     """
 
-    def __init__(self, tokens: list[str] | None = None, delay: float = 0.0) -> None:
+    def __init__(
+        self,
+        tokens: list[str] | None = None,
+        delay: float = 0.0,
+        responses: list[list[str]] | None = None,
+    ) -> None:
         self.tokens = tokens if tokens is not None else ["안녕", "하세요"]
         self.delay = delay
+        self.responses = responses
         self.call_count = 0
         self.aclose_called = False
+        self.calls: list[list[dict[str, Any]]] = []
 
     async def generate(
         self,
@@ -81,9 +96,15 @@ class FakeLLMAdapter(LLMAdapter):
         model_alias: str,
         stream: bool = True,
     ) -> AsyncIterator[str]:
+        self.calls.append(messages)
+        call_index = self.call_count
         self.call_count += 1
+        if self.responses:
+            tokens = self.responses[min(call_index, len(self.responses) - 1)]
+        else:
+            tokens = self.tokens
         try:
-            for token in self.tokens:
+            for token in tokens:
                 if self.delay:
                     await asyncio.sleep(self.delay)
                 yield token
@@ -98,9 +119,15 @@ class FakeKnowledgeAdapter(KnowledgeAdapter):
     def __init__(self, citations: list[dict[str, Any]] | None = None) -> None:
         self.citations = citations if citations is not None else list(DEFAULT_CITATIONS)
         self.call_count = 0
+        # Records every request dict this adapter was called with — added
+        # for the multi-turn/Query Rewrite tests (test_runs.py), which need
+        # to assert *what query text* was actually searched for, not just
+        # that a search happened.
+        self.calls: list[dict[str, Any]] = []
 
     async def search(self, request: dict[str, Any]) -> dict[str, Any]:
         self.call_count += 1
+        self.calls.append(request)
         return {
             "citations": self.citations,
             "total_chunks_searched": len(self.citations),

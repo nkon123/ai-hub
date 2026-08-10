@@ -650,6 +650,41 @@ export interface StoreInstallResult {
   retryable: boolean;
 }
 
+// --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
+// `electron/conversation-store.ts`의 renderer 쪽 거울(mirror) 타입 — 그
+// 파일의 모듈 docstring 참고: 질문/답변 원문은 민감 데이터로 취급하고,
+// 진단 Bundle에는 절대 포함하지 않는다.
+export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled";
+
+export interface ConversationTurnRecord {
+  id: string;
+  question: string;
+  answer: string;
+  status: ConversationTurnStatus;
+  citationCount: number;
+  createdAt: string;
+}
+
+export interface ConversationRecord {
+  id: string;
+  knowledgeId: string;
+  knowledgeLabel: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  turns: ConversationTurnRecord[];
+}
+
+export interface ConversationSummary {
+  id: string;
+  knowledgeId: string;
+  knowledgeLabel: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  turnCount: number;
+}
+
 /** Renderer-facing surface exposed via `contextBridge` in `preload.ts`. */
 export interface DesktopBridge {
   pickBundleFile(): Promise<string | null>;
@@ -738,4 +773,20 @@ export interface DesktopBridge {
 
   // --- D13 정보/보안 -----------------------------------------------------------
   getSystemInfo(): Promise<SystemInfoView>;
+
+  // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
+  listConversations(): Promise<ConversationSummary[]>;
+  getConversation(id: string): Promise<ConversationRecord | null>;
+  /** 첫 턴이 완료된 시점에만 호출된다(빈 대화를 목록에 남기지 않기 위해) —
+   * `knowledgeLabel`은 화면에 이미 표시 중인 이름을 그대로 넘긴다(별도
+   * 조회 없이). */
+  createConversation(knowledgeId: string, knowledgeLabel: string): Promise<ConversationRecord>;
+  appendConversationTurn(
+    conversationId: string,
+    turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+  ): Promise<ConversationRecord | null>;
+  /** CLAUDE.md: 삭제는 확인과 사유를 요구한다 — `reason`이 비어 있으면
+   * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
+   * 이중 검사). */
+  deleteConversation(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
 }

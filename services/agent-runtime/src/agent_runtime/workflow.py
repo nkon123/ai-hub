@@ -6,10 +6,21 @@ OUTPUT_VALIDATE -> COMPLETE
 
 (stage list per 02-desktop-and-agent-runtime.md §5.2.)
 
-Never call the LLM when there is no evidence at all — neither Knowledge
-citations nor MCP Tool results (hallucination guard, D-036, extended here to
-also cover the MCP-capable agent's tool-only answers) — terminate with
-INSUFFICIENT_EVIDENCE instead.
+Never call the LLM to *answer* when there is no evidence at all — neither
+Knowledge citations nor MCP Tool results (hallucination guard, D-036,
+extended here to also cover the MCP-capable agent's tool-only answers) —
+terminate with INSUFFICIENT_EVIDENCE instead, without ever reaching
+ANSWER_GENERATE. Desktop 대화 고도화 (multi-turn/`history`) does not weaken
+this: `history` can influence KNOWLEDGE_SEARCH's query (§3.4 Query Rewrite,
+agent_runtime.conversation.rewrite_query_for_search — itself one *search-
+shaping* LLM call, made before citations are known, whose output never
+reaches the end user) and can be shown to the model as labeled, non-
+evidentiary context once ANSWER_GENERATE is reached — but it is never
+consulted by the guard itself, and a run with history but zero citations
+(and zero Tool results) still terminates at INSUFFICIENT_EVIDENCE exactly as
+it always has, one asyncio task earlier than the answer-generation call. See
+`tests/integration/agent_runtime/test_runs.py`'s
+`test_history_does_not_bypass_hallucination_guard` for the regression proof.
 
 ANALYZE (the tool-selection decision) is deterministic, not model-driven:
 the caller declares `mcp_tool_request` explicitly — an explicit field on the
@@ -53,6 +64,7 @@ from agent_runtime.adapters import KnowledgeAdapter, LLMAdapter, MCPAdapter
 from agent_runtime.adapters.mcp import MCPCallError
 from agent_runtime.adapters.search import KnowledgeSearchError
 from agent_runtime.config import settings
+from agent_runtime.conversation import bound_history, rewrite_query_for_search
 from agent_runtime.manifests import StandardKnowledgeChatConfig
 from agent_runtime.prompt_renderer import build_messages
 from agent_runtime.run_store import PendingConfirmation, RunRecord, RunStore
@@ -446,6 +458,7 @@ async def run_knowledge_chat(
     mcp_tool_request: dict[str, Any] | None = None,
     mcp_confirmation_timeout_seconds: float | None = None,
     user_context: dict[str, Any] | None = None,
+    history: list[dict[str, Any]] | None = None,
 ) -> None:
     """`mcp_adapter`/`mcp_tool_request` are additive/optional — the
     Knowledge-only standard-agent path (both always None/omitted, exactly
@@ -467,7 +480,22 @@ async def run_knowledge_chat(
     build the search request's `access_context` (04-knowledge-platform.md
     §3.8 step 1). Omitted/missing `clearance` falls back to
     `settings.default_search_clearance` — see that setting's docstring for
-    why INTERNAL and its explicit no-real-identity caveat."""
+    why INTERNAL and its explicit no-real-identity caveat.
+
+    `history` (Desktop 대화 고도화, additive/optional) is prior conversation
+    turns off `input` — `[{"question": ..., "answer": ...}, ...]`, any order
+    — the same trust boundary `question` itself already is (an end user
+    fully controls this, so it MUST NEVER be allowed to influence the D-036
+    hallucination guard below, only what gets searched for and what the
+    prompt shows as labeled context; see `agent_runtime.conversation`'s
+    module docstring for the full guarantee). Omitting it (every caller
+    today except the new Desktop persistence work) reproduces the exact
+    prior behavior: `bound_history(None, ...)` is `[]`,
+    `rewrite_query_for_search` no-ops on empty history, and `build_messages`
+    renders no history block at all."""
+    bounded_history = bound_history(
+        history, max_turns=settings.max_history_turns, max_chars=settings.max_history_chars
+    )
     confirmation_timeout = (
         mcp_confirmation_timeout_seconds
         if mcp_confirmation_timeout_seconds is not None
@@ -500,7 +528,10 @@ async def run_knowledge_chat(
             },
         )
         logger.info(
-            "run.input_validate run_id=%s question_len=%d", run_id, len(question or "")
+            "run.input_validate run_id=%s question_len=%d history_turns=%d",
+            run_id,
+            len(question or ""),
+            len(bounded_history),
         )
 
         if not question or not question.strip():
@@ -566,10 +597,29 @@ async def run_knowledge_chat(
                 run_id, "knowledge.search.started", {"knowledge_id": knowledge_id}
             )
 
+            # §3.4 Query Rewrite — only when there is bounded history to
+            # rewrite with (a first turn pays no extra LLM call and searches
+            # on `question` unchanged, exactly as before this feature
+            # existed). A bare follow-up like "그럼 신청은 어떻게 해?" carries
+            # almost no retrievable signal on its own; rewriting it into a
+            # standalone query using recent turns is what makes the follow-up
+            # actually retrieve anything relevant (see this module's
+            # docstring reference to the measurement backing this choice).
+            search_query = question
+            if bounded_history:
+                search_query, rewrite_meta = await rewrite_query_for_search(
+                    question,
+                    bounded_history,
+                    llm_adapter,
+                    model_alias="default-chat",
+                    timeout_seconds=settings.query_rewrite_timeout_seconds,
+                )
+                run_store.append_event(run_id, "knowledge.query_rewritten", rewrite_meta)
+
             try:
                 search_result = await knowledge_adapter.search(
                     {
-                        "query": question,
+                        "query": search_query,
                         "knowledge_id": knowledge_id,
                         "knowledge_version": "latest",
                         "top_k": 5,
@@ -667,7 +717,12 @@ async def run_knowledge_chat(
 
         system_prompt = config.prompt_manifest["template"]["system"]
         messages = build_messages(
-            system_prompt, config.prompt_template, citations, question, tool_results=tool_results
+            system_prompt,
+            config.prompt_template,
+            citations,
+            question,
+            tool_results=tool_results,
+            history=bounded_history,
         )
 
         answer_parts: list[str] = []

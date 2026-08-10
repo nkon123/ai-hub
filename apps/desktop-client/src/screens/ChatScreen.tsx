@@ -21,11 +21,12 @@
 // 자체(승인/거부, 만료 시간)를 실제로 검증할 수 있게 한다 — 정식 제품
 // UI가 아님을 라벨과 경고문으로 항상 명시한다.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, FileSearch, ListChecks, RefreshCw, Send, Square } from "lucide-react";
-import type { ConnectionStatus, InstalledAssetWithStatus } from "../../electron/types";
+import { AlertTriangle, Check, Copy, Download, FileSearch, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
+import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, InstalledAssetWithStatus } from "../../electron/types";
 import { checkAllConnections } from "../../electron/connections";
 import { getDesktopBridge } from "../bridge";
-import { Button, Card, EmptyState, ErrorBanner, LoadingState, PageHeader } from "../ui";
+import { formatDateTime } from "../format";
+import { Button, Card, EmptyState, ErrorBanner, LoadingState, PageHeader, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
   type RunEventLogItem,
@@ -39,7 +40,9 @@ import { applyRuntimeEvent, initialStages } from "../runStages";
 import {
   type ChatMessage,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
+  buildHistoryFromMessages,
   buildMarkdown,
+  chatMessageFromStoredTurn,
   downloadMarkdown,
   hasLowConfidenceCitation,
   mergeCitations,
@@ -47,6 +50,18 @@ import {
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
+
+// D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
+// 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
+// 동일한 경계: 실패/취소된 턴은 후속 질문의 맥락(history)으로 보내지 않지만
+// (chatTypes.ts의 `buildHistoryFromMessages` 참고), 사용자가 무엇을
+// 시도했는지는 대화 기록에 남긴다.
+const TERMINAL_CONVERSATION_STATUSES: ReadonlySet<ConversationTurnStatus> = new Set([
+  "succeeded",
+  "insufficient_evidence",
+  "failed",
+  "cancelled",
+]);
 
 // D-034(Registry 생략)과 동일한 이유로 실제 Service Registry가 없다 — 선택된
 // Knowledge별로 안정적인 문자열을 만들어 agent-runtime의
@@ -153,6 +168,35 @@ export function ChatScreen() {
   // 간섭하지 않는다.
   const [confirmingMessageId, setConfirmingMessageId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<Record<string, string>>({});
+
+  // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron 브릿지가 있을
+  // 때만 동작한다(Main Process 저장소, `conversation-store.ts`). 브릿지가
+  // 없는 개발용 Browser 검증 경로(devKnowledgeId)는 이 세션 전체가
+  // in-memory로만 존재한다 — 오늘 동작과 동일하며, 회귀가 아니다.
+  const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
+  const [conversationsError, setConversationsError] = useState<string | null>(null);
+  const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
+  const [deletingConversation, setDeletingConversation] = useState<ConversationSummary | null>(null);
+  const [deleteConversationBusy, setDeleteConversationBusy] = useState(false);
+  const [deleteConversationError, setDeleteConversationError] = useState<string | null>(null);
+  // 이미 저장소에 반영한 턴을 다시 반영하지 않기 위한 표시 — 화면이 다시
+  // 렌더링될 때마다 같은 턴을 중복 저장하지 않는다.
+  const persistedTurnIdsRef = useRef<Set<string>>(new Set());
+
+  const loadConversations = useCallback(async () => {
+    if (!bridge) return;
+    setConversationsError(null);
+    try {
+      setConversations(await bridge.listConversations());
+    } catch (err) {
+      setConversationsError(err instanceof Error ? err.message : "대화 목록을 불러오지 못했습니다.");
+      setConversations([]);
+    }
+  }, [bridge]);
+
+  useEffect(() => {
+    void loadConversations();
+  }, [loadConversations]);
 
   const closeStreamRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
@@ -301,6 +345,102 @@ export function ChatScreen() {
     finishRun(messageId);
   }
 
+  // 완료된(터미널 상태) 턴을 Main Process 저장소에 반영한다 — SSE 이벤트
+  // 처리(`handleStreamEvent`)와 분리된 별도 effect인 이유: 취소
+  // (`handleCancel`)·연결 끊김(`handleConnectionDropped`) 등 터미널 상태로
+  // 가는 경로가 여러 곳이라, "메시지가 실제로 터미널 상태가 되었는가"라는
+  // 하나의 조건만 지켜보는 편이 각 경로마다 저장 호출을 중복해 넣는 것보다
+  // 안전하다. 대화당 동시 Run은 최대 1개뿐이므로(D-074, `MAX_CONCURRENT_
+  // RUNS_VALUE`) 같은 렌더링에서 두 턴이 동시에 터미널이 되어 `currentConversationId`
+  // 생성 경쟁이 생길 걱정은 없다.
+  useEffect(() => {
+    if (!bridge) return;
+    for (const m of messages) {
+      if (m.restored) continue; // 이미 저장소에서 읽어온 턴 — 다시 쓸 필요 없음
+      if (!TERMINAL_CONVERSATION_STATUSES.has(m.status as ConversationTurnStatus)) continue;
+      if (persistedTurnIdsRef.current.has(m.id)) continue;
+      persistedTurnIdsRef.current.add(m.id);
+      void persistTurn(m);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, bridge]);
+
+  async function persistTurn(m: ChatMessage): Promise<void> {
+    if (!bridge) return;
+    try {
+      let conversationId = currentConversationId;
+      if (!conversationId) {
+        const created = await bridge.createConversation(m.knowledgeIdUsed, m.knowledgeLabelUsed);
+        conversationId = created.id;
+        setCurrentConversationId(created.id);
+      }
+      await bridge.appendConversationTurn(conversationId, {
+        question: m.question,
+        answer: m.answer,
+        status: m.status as ConversationTurnStatus,
+        citationCount: m.citations.length,
+      });
+      await loadConversations();
+    } catch {
+      // 저장 실패가 진행 중인 대화 자체를 막지 않는다(CLAUDE.md: Runtime/상태
+      // 장애 시 종료되지 않고 복구 안내) — 이 세션 안에서는 메시지가 여전히
+      // 화면에 남아 있으므로 사용자는 대화를 계속할 수 있다. 다음 저장
+      // 성공 시(또는 다음 대화 목록 새로고침 시) 자연히 다시 시도된다.
+      setConversationsError("최근 대화를 저장하지 못했습니다 — 이 세션 안에서는 계속 사용할 수 있습니다.");
+    }
+  }
+
+  async function handleSelectConversation(id: string): Promise<void> {
+    if (!bridge) return;
+    setSendError(null);
+    try {
+      const record = await bridge.getConversation(id);
+      if (!record) {
+        // 다른 경로에서 이미 삭제된 대화 — 목록을 새로고침해 정리한다.
+        await loadConversations();
+        return;
+      }
+      persistedTurnIdsRef.current = new Set(record.turns.map((t) => t.id));
+      setMessages(record.turns.map((t) => chatMessageFromStoredTurn(t, record)));
+      setCurrentConversationId(record.id);
+    } catch (err) {
+      setConversationsError(err instanceof Error ? err.message : "대화를 불러오지 못했습니다.");
+    }
+  }
+
+  function handleNewConversation(): void {
+    setCurrentConversationId(null);
+    setMessages([]);
+    setSendError(null);
+  }
+
+  function requestDeleteConversation(c: ConversationSummary): void {
+    setDeletingConversation(c);
+    setDeleteConversationError(null);
+  }
+
+  async function handleConfirmDeleteConversation(reason: string): Promise<void> {
+    if (!bridge || !deletingConversation) return;
+    setDeleteConversationBusy(true);
+    setDeleteConversationError(null);
+    try {
+      const result = await bridge.deleteConversation(deletingConversation.id, reason);
+      if (!result.ok) {
+        setDeleteConversationError(result.error ?? "대화를 삭제하지 못했습니다.");
+        return;
+      }
+      if (currentConversationId === deletingConversation.id) {
+        handleNewConversation();
+      }
+      setDeletingConversation(null);
+      await loadConversations();
+    } catch (err) {
+      setDeleteConversationError(err instanceof Error ? err.message : "대화를 삭제하지 못했습니다.");
+    } finally {
+      setDeleteConversationBusy(false);
+    }
+  }
+
   async function handleSend(text?: string) {
     const q = (text ?? question).trim();
     // 개발 확인용 MCP 모드는 knowledge_required=false Agent를 쓰므로
@@ -313,6 +453,13 @@ export function ChatScreen() {
     const id = crypto.randomUUID();
     const serviceId = `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
     const agentProfile: ChatMessage["agentProfile"] = mcpDevActive ? "standard-db-agent" : "standard-agent";
+    // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
+    // `input.history`로 함께 보낸다(additive/optional, local-runtime-api.yaml
+    // ConversationTurnInput). Electron 브릿지 유무와 무관하게 항상 동작한다
+    // — 대화 "보존"(재시작 후 복원)은 Electron 전용이지만, 멀티턴 자체는
+    // agent-runtime의 기능이라 브릿지 없는 개발용 Browser 검증 경로에서도
+    // 그대로 작동해야 한다.
+    const history = buildHistoryFromMessages(messages);
     const newMessage: ChatMessage = {
       id,
       question: q,
@@ -340,6 +487,7 @@ export function ChatScreen() {
         serviceId,
         knowledgeId,
         question: q,
+        ...(history.length > 0 ? { history } : {}),
         ...(mcpDevActive
           ? {
               agentProfile: "standard-db-agent" as const,
@@ -425,9 +573,16 @@ export function ChatScreen() {
         title="Knowledge 대화"
         description="등록·설치된 Knowledge를 바탕으로 실시간 대화를 실행합니다."
         actions={
-          <Button variant="secondary" size="sm" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
-            <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} /> 연결 다시 확인
-          </Button>
+          <div className="flex gap-2">
+            {bridge && (
+              <Button variant="secondary" size="sm" onClick={handleNewConversation} disabled={isRunning}>
+                <MessageSquarePlus size={13} /> 새 대화
+              </Button>
+            )}
+            <Button variant="secondary" size="sm" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
+              <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} /> 연결 다시 확인
+            </Button>
+          </div>
         }
       />
 
@@ -466,6 +621,48 @@ export function ChatScreen() {
           </div>
         </div>
       </Card>
+
+      {/* D06 대화 보존 — Electron 브릿지가 있을 때만(대화 저장은 Main
+          Process 전용). 대화가 하나도 없으면 카드 자체를 숨긴다(빈 목록을
+          위해 화면 공간을 차지하지 않는다). */}
+      {bridge && (conversations === null || conversations.length > 0 || conversationsError) && (
+        <Card className="mb-4 shrink-0 p-4">
+          <p className="mb-2 text-caption font-medium text-text-secondary">저장된 대화</p>
+          {conversationsError && <ErrorBanner message={conversationsError} />}
+          {conversations === null && !conversationsError && <LoadingState label="대화 목록을 불러오는 중..." />}
+          {conversations !== null && conversations.length > 0 && (
+            <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
+              {conversations.map((c) => (
+                <li key={c.id} className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void handleSelectConversation(c.id)}
+                    disabled={isRunning}
+                    className={`flex-1 rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                      currentConversationId === c.id
+                        ? "border-brand-500 bg-brand-50 text-brand-700"
+                        : "border-border bg-white text-text-secondary hover:bg-slate-50"
+                    }`}
+                  >
+                    <span className="block font-medium">{c.title}</span>
+                    <span className="text-[11px] text-text-muted">
+                      {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
+                    </span>
+                  </button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => requestDeleteConversation(c)}
+                    title="이 대화 삭제"
+                  >
+                    <Trash2 size={13} />
+                  </Button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      )}
 
       {/* Knowledge 선택 */}
       <Card className="mb-4 shrink-0 p-4">
@@ -675,6 +872,22 @@ export function ChatScreen() {
 
       {citationDetail && <CitationDetailModal citation={citationDetail} onClose={() => setCitationDetail(null)} />}
       {detailMessage && <RunDetailPanel message={detailMessage} onClose={() => setDetailMessageId(null)} />}
+
+      <ReasonConfirmDialog
+        open={deletingConversation !== null}
+        title={`'${deletingConversation?.title ?? ""}' 대화를 삭제할까요?`}
+        description="삭제된 대화는 복구할 수 없습니다."
+        confirmLabel="삭제"
+        reasonLabel="삭제 사유"
+        reasonPlaceholder="예: 더 이상 필요하지 않은 대화 정리"
+        submitting={deleteConversationBusy}
+        error={deleteConversationError}
+        onConfirm={(reason) => void handleConfirmDeleteConversation(reason)}
+        onCancel={() => {
+          setDeletingConversation(null);
+          setDeleteConversationError(null);
+        }}
+      />
     </div>
   );
 }
@@ -717,6 +930,9 @@ function ChatTurn({
       <div className="ml-auto max-w-[80%] rounded-xl bg-brand-600 px-4 py-2.5 text-sm text-white">{message.question}</div>
 
       <div className="max-w-[90%] space-y-2">
+        {message.restored && (
+          <p className="text-[11px] text-text-muted">저장된 대화에서 복원됨 · 실행 상세 정보는 보존되지 않습니다.</p>
+        )}
         <StageIndicator stages={message.stages} />
 
         {message.status === "running" && (
@@ -768,6 +984,12 @@ function ChatTurn({
           <p className="flex items-start gap-1.5 text-caption text-warning">
             <AlertTriangle size={13} className="mt-0.5 shrink-0" />
             관련성이 낮은 근거가 포함되어 있어 답변의 정확도가 낮을 수 있습니다.
+          </p>
+        )}
+
+        {message.restored && (message.restoredCitationCount ?? 0) > 0 && (
+          <p className="text-caption text-text-muted">
+            출처 {message.restoredCitationCount}건 (복원된 대화에는 출처 상세 내용이 저장되지 않습니다)
           </p>
         )}
 

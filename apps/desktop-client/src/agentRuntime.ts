@@ -63,6 +63,16 @@ export interface RunResponse {
   pending_confirmation?: PendingConfirmation | null;
 }
 
+/** Wire shape for `input.history` (local-runtime-api.yaml
+ * `ConversationTurnInput`) — Desktop 대화 고도화. Both fields are the same
+ * trust boundary `question` itself already is; agent-runtime bounds growth
+ * server-side (`AgentRuntimeSettings.max_history_turns`/`max_history_chars`)
+ * regardless of how many turns this client sends. */
+export interface ConversationTurnInput {
+  question: string;
+  answer: string;
+}
+
 export interface StartRunParams {
   /** No Service Registry exists yet (D-034) — this is an opaque string the
    * Runtime hashes into a stable UUID for audit correlation, not a real
@@ -79,6 +89,10 @@ export interface StartRunParams {
   mcpTool?: string;
   mcpToolInput?: Record<string, unknown>;
   mcpConfirmed?: boolean;
+  /** Desktop 대화 고도화 (additive/optional) — prior turns of this same
+   * conversation, oldest first. Omitting it (every call site that predates
+   * this feature) reproduces the exact prior single-turn request body. */
+  history?: ConversationTurnInput[];
 }
 
 async function parseErrorBody(res: Response): Promise<string> {
@@ -106,6 +120,9 @@ export async function startRun(params: StartRunParams): Promise<RunResponse> {
     input.mcp_tool = params.mcpTool;
     input.mcp_tool_input = params.mcpToolInput ?? {};
     input.mcp_confirmed = params.mcpConfirmed ?? false;
+  }
+  if (params.history && params.history.length > 0) {
+    input.history = params.history;
   }
   const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs`, {
     method: "POST",
@@ -176,6 +193,7 @@ const KNOWN_EVENT_NAMES = [
   "preflight.completed",
   "knowledge.search.started",
   "knowledge.search.completed",
+  "knowledge.query_rewritten",
   "citation.added",
   "mcp.call.started",
   "mcp.call.completed",

@@ -7,6 +7,8 @@ import json
 from typing import Any
 
 import httpx
+import pytest
+from agent_runtime.config import settings as agent_runtime_settings
 
 from tests.integration.agent_runtime.conftest import FakeKnowledgeAdapter, FakeLLMAdapter
 
@@ -229,3 +231,169 @@ async def test_cancel_unknown_run_returns_404(client: httpx.AsyncClient) -> None
 async def test_get_unknown_run_returns_404(client: httpx.AsyncClient) -> None:
     resp = await client.get("/local/v1/runs/does-not-exist")
     assert resp.status_code == 404
+
+
+# --- Desktop 대화 고도화 (multi-turn / `input.history`) ---------------------
+
+
+async def test_history_omitted_reproduces_prior_behavior_exactly(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """The 4 published Hosted chatbots (and every caller that predates this
+    feature) never send `history` — proves that path is untouched: exactly
+    one LLM call (answer generation — no Query Rewrite call at all), the
+    search adapter receives the raw question unchanged, and no history block
+    appears anywhere in the prompt sent to the model."""
+    fake_llm_adapter.tokens = ["답변", "입니다"]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"knowledge_id": "hr-policy-knowledge", "question": "연차는 며칠인가요?"},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+
+    assert "knowledge.query_rewritten" not in [e["event"] for e in events]
+    assert fake_llm_adapter.call_count == 1  # no Query Rewrite call
+    assert len(fake_knowledge_adapter.calls) == 1
+    assert fake_knowledge_adapter.calls[0]["query"] == "연차는 며칠인가요?"
+    sent_user_content = fake_llm_adapter.calls[0][-1]["content"]
+    assert "이전 대화" not in sent_user_content
+
+
+async def test_history_is_used_for_query_rewrite_and_shown_as_prompt_context(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """A bare follow-up ("그럼 신청은 어떻게 해?") is rewritten into a
+    standalone search query using the given history before Knowledge search
+    runs (§3.4 Query Rewrite), and the bounded history is shown to the model
+    — labeled as context, not evidence — when generating the answer."""
+    fake_llm_adapter.responses = [
+        ["재택근무 신청 절차"],  # 1st generate() call: Query Rewrite
+        ["신청", "은", " 팀장", " 승인", "으로"],  # 2nd call: ANSWER_GENERATE
+    ]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "그럼 신청은 어떻게 해?",
+                "history": [
+                    {
+                        "question": "재택근무는 주 며칠까지 가능한가요?",
+                        "answer": "주 3회까지 가능합니다.",
+                    }
+                ],
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert "knowledge.query_rewritten" in event_names
+    rewrite_event = next(e for e in events if e["event"] == "knowledge.query_rewritten")
+    assert rewrite_event["data"]["rewritten"] is True
+    assert rewrite_event["data"]["rewritten_query"] == "재택근무 신청 절차"
+
+    assert fake_llm_adapter.call_count == 2
+    assert len(fake_knowledge_adapter.calls) == 1
+    # The rewritten query — not the bare follow-up — is what was searched.
+    assert fake_knowledge_adapter.calls[0]["query"] == "재택근무 신청 절차"
+
+    answer_generation_user_content = fake_llm_adapter.calls[1][-1]["content"]
+    assert "이전 대화" in answer_generation_user_content
+    assert "재택근무는 주 며칠까지 가능한가요?" in answer_generation_user_content
+    assert "근거로 사용하지 마세요" in answer_generation_user_content
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+
+
+async def test_history_is_bounded_by_settings(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Growth is bounded server-side (AgentRuntimeSettings), regardless of
+    how many turns a caller sends — proves "cap by turns" is a real setting,
+    not something a caller can grow unboundedly."""
+    monkeypatch.setattr(agent_runtime_settings, "max_history_turns", 1)
+    fake_llm_adapter.responses = [["재작성된 Query"], ["답", "변"]]
+
+    long_history = [{"question": f"질문{i}", "answer": f"답변{i}"} for i in range(10)]
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "새 질문",
+                "history": long_history,
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    await _read_all_sse_events(client, run_id)
+
+    answer_generation_user_content = fake_llm_adapter.calls[1][-1]["content"]
+    # Only the single most recent turn (max_history_turns=1) is present.
+    assert "질문9" in answer_generation_user_content
+    assert "질문0" not in answer_generation_user_content
+
+
+async def test_history_does_not_bypass_hallucination_guard(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """The core guarantee this feature must not weaken: a follow-up question
+    with history but NO Knowledge evidence for the current question still
+    terminates at INSUFFICIENT_EVIDENCE — never an answer synthesised from
+    conversation history. The Query Rewrite step (a search-shaping LLM call
+    made before citations are known — see workflow.py's module docstring)
+    still runs once, but ANSWER_GENERATE — the only LLM call whose output
+    ever reaches the user — is never reached."""
+    fake_knowledge_adapter.citations = []
+    fake_llm_adapter.responses = [["존재하지 않는 주제에 대한 재작성"]]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "완전히 무관한 새 질문",
+                "history": [
+                    {
+                        "question": "이전 질문",
+                        "answer": "이전 답변으로 답할 수 있는 상세한 내용입니다.",
+                    }
+                ],
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert "answer.delta" not in event_names  # ANSWER_GENERATE never reached
+    completed_event = next(e for e in events if e["event"] == "run.completed")
+    assert completed_event["data"]["status"] == "INSUFFICIENT_EVIDENCE"
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "INSUFFICIENT_EVIDENCE"
+    assert final.json()["output"]["citations"] == []
+
+    # Only the Query Rewrite call happened — never a second (answer) call.
+    assert fake_llm_adapter.call_count == 1

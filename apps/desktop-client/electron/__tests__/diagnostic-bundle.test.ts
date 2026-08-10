@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveInstallRoot, type InstallRootLayout } from "../bundle-install";
 import { InstalledAssetsStore } from "../installed-assets-store";
 import { PortalSettingsStore } from "../portal-settings";
+import { ConversationStore } from "../conversation-store";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "../diagnostic-bundle";
 import type { InstalledAsset, LogEntry } from "../types";
 
@@ -147,6 +148,40 @@ describe("buildDiagnosticBundle — sanitization guarantee", () => {
     const savedPath = saveDiagnosticBundle(layout, bundle);
     const onDisk = fs.readFileSync(savedPath, "utf-8");
     expect(onDisk).not.toContain(RAW_PORTAL_TOKEN);
+  });
+
+  // Desktop 대화 고도화(멀티턴 대화 보존, `conversation-store.ts`) — 그 파일의
+  // 모듈 docstring이 명시하듯, 대화의 질문/답변 원문은 CLAUDE.md가 민감하다고
+  // 지정한 종류의 데이터다. `buildDiagnosticBundle`은 `ConversationStore`를
+  // import조차 하지 않으므로(Allow-list 원칙 — 이 파일 최상단 docstring)
+  // 오늘은 구조적으로 leak이 불가능하지만, 이 테스트는 그 사실을 회귀
+  // 테스트로 고정한다 — 나중에 누군가 "최근 대화도 진단에 포함하면
+  // 좋겠다"며 이 파일에 필드를 추가하는 순간 실패해야 한다. Portal Token
+  // 테스트와 정확히 같은 패턴(실제로 저장한 뒤, 직렬화된 Bundle 전체에서
+  // 원문을 검색)이다.
+  it("never lets a stored conversation's question/answer text survive into the diagnostic Bundle", async () => {
+    const conversationStore = new ConversationStore(layout.stateDir);
+    const RAW_QUESTION = "연봉 인상률과 인사 평가 기준을 구체적으로 알려줘";
+    const RAW_ANSWER = "2026년도 인사 평가는 팀장 1차 평가 후 인사위원회가 최종 확정하며 등급별 인상률은 S 8%, A 5%이다";
+
+    const conversation = conversationStore.create("know-1", "인사 정책");
+    conversationStore.appendTurn(conversation.id, {
+      question: RAW_QUESTION,
+      answer: RAW_ANSWER,
+      status: "succeeded",
+      citationCount: 2,
+    });
+
+    const bundle = await buildDiagnosticBundle(layout, store, [], {});
+    const serialized = JSON.stringify(bundle);
+
+    expect(serialized).not.toContain(RAW_QUESTION);
+    expect(serialized).not.toContain(RAW_ANSWER);
+
+    const savedPath = saveDiagnosticBundle(layout, bundle);
+    const onDisk = fs.readFileSync(savedPath, "utf-8");
+    expect(onDisk).not.toContain(RAW_QUESTION);
+    expect(onDisk).not.toContain(RAW_ANSWER);
   });
 
   it("reports Portal as unconfigured when no settings are passed — never fabricates a value", async () => {

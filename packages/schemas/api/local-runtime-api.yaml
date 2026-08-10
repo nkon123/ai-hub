@@ -249,6 +249,24 @@ components:
           format: uuid
         input:
           type: object
+          description: >
+            Free-form run input (`knowledge_id`, `question`, and the
+            agent/MCP selection fields documented in workflow.py/routers/
+            runs.py remain undocumented here for now — this schema is
+            intentionally not `additionalProperties: false`). `history` is
+            documented explicitly below (Desktop 대화 고도화, additive/
+            optional) because it is new: prior conversation turns, oldest
+            or newest first (server-side bounding does not depend on
+            order), so a follow-up question can be answered/searched with
+            context. Omitting it reproduces the exact single-turn behavior
+            every existing caller already gets — growth is bounded
+            server-side (`AgentRuntimeSettings.max_history_turns`/
+            `max_history_chars`), not by anything the caller sends.
+          properties:
+            history:
+              type: array
+              items:
+                $ref: "#/components/schemas/ConversationTurnInput"
         trace_id:
           type: string
         user_context:
@@ -300,6 +318,20 @@ components:
           type: string
           enum: [approve, deny]
 
+    ConversationTurnInput:
+      type: object
+      description: >
+        One prior turn of a conversation (Desktop 대화 고도화). Both fields
+        are treated as untrusted end-user-controlled text — same trust
+        boundary as `input.question` itself — and NEVER influence the
+        Hallucination Guard (0 Knowledge citations still yields
+        INSUFFICIENT_EVIDENCE regardless of history).
+      properties:
+        question:
+          type: string
+        answer:
+          type: string
+
     RuntimeSSEEvent:
       type: object
       required: [event, data]
@@ -311,6 +343,7 @@ components:
             - preflight.completed
             - knowledge.search.started
             - knowledge.search.completed
+            - knowledge.query_rewritten
             - mcp.call.started
             - mcp.call.completed
             - mcp.confirmation_required

@@ -3,9 +3,9 @@
 // panel can be derived purely from client state without a second round trip
 // (it does make one: a `getRun` refresh right after the terminal SSE event,
 // to record the server's authoritative `completed_at`).
-import type { Citation, PendingConfirmation, RunEventLogItem, RunResponse } from "../agentRuntime";
+import type { Citation, ConversationTurnInput, PendingConfirmation, RunEventLogItem, RunResponse } from "../agentRuntime";
 import type { StageMap } from "../runStages";
-import type { InstalledAsset } from "../../electron/types";
+import type { ConversationRecord, InstalledAsset } from "../../electron/types";
 
 export type ChatMessageStatus =
   | "running"
@@ -51,6 +51,16 @@ export interface ChatMessage {
    * after a terminal SSE event — D07 prefers these timestamps/status/output
    * over the client-observed ones above whenever present. */
   serverRun: RunResponse | null;
+  /** True only for a turn rehydrated from a saved conversation
+   * (`chatMessageFromStoredTurn`) — this Run's own eventLog/citations/stages
+   * were never persisted (only question+answer text was, see
+   * `conversation-store.ts`), so D06/D07 must not offer actions that assume
+   * a live Run exists (재시도/취소/상세 실행 보기's event timeline). */
+  restored?: boolean;
+  /** Only set on a restored turn — the number of citations the original
+   * (unpersisted) Run had, shown as a plain count since the citations
+   * themselves were not saved. */
+  restoredCitationCount?: number;
 }
 
 // D-060: an installed Knowledge from a Bundle built before the fix has no
@@ -81,6 +91,70 @@ export function resolveKnowledgeSelection(asset: InstalledAsset | null): Knowled
     return { knowledgeId: "", disabledReason: LEGACY_BUNDLE_KNOWLEDGE_ID_REASON };
   }
   return { knowledgeId: asset.assetVersionId, disabledReason: null };
+}
+
+// --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
+
+/** Builds the `history` sent to agent-runtime (`input.history`, additive/
+ * optional — 04-knowledge-platform.md §3.4) from this screen's in-memory
+ * turns. Only turns with status "succeeded" AND non-empty answer text count
+ * as usable conversational context — a failed/cancelled/insufficient-
+ * evidence turn has no real answer a follow-up could sensibly build on, and
+ * including it would only add noise (or, worse, an explicit "근거를 찾지
+ * 못했습니다" line) to what the model sees as prior context. Growth is
+ * bounded server-side regardless of how many turns are sent (agent-runtime's
+ * `AgentRuntimeSettings.max_history_turns`/`max_history_chars`) — this
+ * function deliberately does not also cap it client-side, to keep the
+ * bounding policy in exactly one place.
+ */
+export function buildHistoryFromMessages(messages: ChatMessage[]): ConversationTurnInput[] {
+  return messages
+    .filter((m) => m.status === "succeeded" && m.answer.trim().length > 0)
+    .map((m) => ({ question: m.question, answer: m.answer }));
+}
+
+/** Reconstructs a read-only, terminal `ChatMessage` from a persisted
+ * conversation turn (`ConversationStore`'s on-disk shape) — used to restore
+ * a saved conversation into this screen's `messages` state on selection.
+ * Deliberately minimal: citations/eventLog/stages are NOT persisted (see
+ * `conversation-store.ts`'s module docstring for why — only question+answer
+ * text is kept), so a restored turn shows its answer text but not its
+ * original citation list or step timeline; `citationCount` is shown as a
+ * plain count instead. `knowledgeIdUsed`/`agentProfile` are filled from the
+ * conversation's own record, since a restored turn is never re-sent as-is. */
+const RESTORED_STAGES: StageMap = {
+  ready: "done",
+  analyze: "done",
+  knowledge_search: "done",
+  tool_call: "skipped",
+  answer_generate: "done",
+};
+
+export function chatMessageFromStoredTurn(
+  turn: ConversationRecord["turns"][number],
+  conversation: Pick<ConversationRecord, "knowledgeId" | "knowledgeLabel">,
+): ChatMessage {
+  return {
+    id: turn.id,
+    question: turn.question,
+    knowledgeIdUsed: conversation.knowledgeId,
+    knowledgeLabelUsed: conversation.knowledgeLabel,
+    serviceId: "",
+    agentProfile: "standard-agent",
+    status: turn.status,
+    answer: turn.answer,
+    citations: [],
+    stages: RESTORED_STAGES,
+    eventLog: [],
+    pendingConfirmation: null,
+    runId: null,
+    traceId: null,
+    startedAt: turn.createdAt,
+    completedAt: turn.createdAt,
+    serverRun: null,
+    restored: true,
+    restoredCitationCount: turn.citationCount,
+  };
 }
 
 export function mergeCitations(existing: Citation[], incoming: Citation[]): Citation[] {

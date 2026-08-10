@@ -7,6 +7,9 @@ import type {
   AssetVersionDiffResponse,
   ChecksumVerification,
   ConnectionStatus,
+  ConversationRecord,
+  ConversationSummary,
+  ConversationTurnStatus,
   DesktopBridge,
   DesktopSettingsInput,
   DesktopSettingsPublic,
@@ -133,6 +136,23 @@ const bridge: DesktopBridge = {
 
   // --- D13 정보/보안 -----------------------------------------------------------
   getSystemInfo: (): Promise<SystemInfoView> => ipcRenderer.invoke("system:getInfo"),
+
+  // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
+  listConversations: (): Promise<ConversationSummary[]> => ipcRenderer.invoke("conversations:list"),
+
+  getConversation: (id: string): Promise<ConversationRecord | null> =>
+    ipcRenderer.invoke("conversations:get", id),
+
+  createConversation: (knowledgeId: string, knowledgeLabel: string): Promise<ConversationRecord> =>
+    ipcRenderer.invoke("conversations:create", knowledgeId, knowledgeLabel),
+
+  appendConversationTurn: (
+    conversationId: string,
+    turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+  ): Promise<ConversationRecord | null> => ipcRenderer.invoke("conversations:appendTurn", conversationId, turn),
+
+  deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("conversations:delete", id, reason),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);
