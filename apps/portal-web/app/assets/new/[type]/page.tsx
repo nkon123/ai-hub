@@ -40,6 +40,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   ChevronRight,
+  Download,
   FileEdit,
   Loader2,
   Lock,
@@ -53,6 +54,7 @@ import {
   EmptyState,
   ErrorBanner,
   FormField,
+  LoadingState,
   PageHeader,
   inputClass,
 } from "../../../_components/ui";
@@ -85,25 +87,67 @@ const STEPS = [
   { id: 5, label: "제출" },
 ] as const;
 
-const TYPE_FIELD_HINTS: Record<WizardType, string[]> = {
+interface FieldNote {
+  field: string;
+  desc: string;
+}
+
+// 모든 유형 공통 — asset-manifest.schema.json의 공통 Header 필드.
+const COMMON_FIELD_NOTES: FieldNote[] = [
+  { field: "id", desc: "자산의 영구 식별자(UUID). 예시로 채우면 자동으로 새 값이 들어가므로 직접 만들 필요는 없습니다." },
+  { field: "version", desc: "major.minor.patch 형식(예: 1.0.0). 최초 등록은 보통 1.0.0으로 시작합니다." },
+  { field: "owner.org / owner.creator_id", desc: "소유 조직과 담당자. 1단계 기본정보 값이 자동으로 채워집니다." },
+  { field: "classification", desc: "보안 등급 — PUBLIC_INTERNAL(사내 공개) / INTERNAL(사내 한정) / CONFIDENTIAL(기밀) 중 선택합니다." },
+];
+
+// 유형별 — 각 manifest schema(packages/schemas/manifests/*.schema.json)의
+// 필수/핵심 필드만 짧게 설명. 전체 정의는 SCHEMA_DOC_BY_TYPE 참고.
+const TYPE_FIELD_NOTES: Record<WizardType, FieldNote[]> = {
   agent: [
-    "workflow.entry_role — 시작 Role id",
-    "workflow.roles[] — Role 목록(각 id/type 필수)",
-    "capabilities.knowledge_required — Knowledge 필요 여부",
-    "capabilities.mcp_allowed — MCP 호출 허용 여부",
+    { field: "workflow.entry_role", desc: "실행이 시작되는 Role id. workflow.roles[] 항목 중 하나와 정확히 일치해야 합니다." },
+    { field: "workflow.roles[].type", desc: "Role 유형 — planner / retriever / answerer / validator 중 하나." },
+    { field: "capabilities.knowledge_required", desc: "이 Agent가 Knowledge 검색을 필요로 하는지 여부." },
+    { field: "capabilities.mcp_allowed", desc: "이 Agent가 MCP Tool 호출을 허용받는지 여부." },
   ],
   prompt: [
-    "template.system — System Prompt 본문",
-    "template.file — 3단계에서 업로드할 Template 파일명",
-    "variables[] — 각 항목은 name/type 필수",
+    { field: "template.system", desc: "System Prompt 본문 텍스트." },
+    { field: "template.file", desc: "3단계에서 업로드할 Template 파일명 — 이 이름과 정확히 일치하는 파일을 올려야 합니다(예: template.md)." },
+    { field: "variables[]", desc: "Prompt가 사용하는 변수 목록. 각 항목은 name과 type(string/integer/boolean/array)이 필수입니다." },
   ],
   mcp_tool: [
-    "server_alias — Office Profile에 등록된 MCP 서버 식별자",
-    "tool_name — 식별자 형식(예: db_metadata.get_tables)",
-    "risk_level — PoC 정책상 \"READ_ONLY\"만 허용",
-    "input_schema — Tool 입력 파라미터 JSON Schema",
+    { field: "server_alias", desc: "Office Profile에 등록된 MCP 서버 식별자." },
+    { field: "tool_name", desc: "식별자 형식(점으로 구분한 네임스페이스 허용, 예: db_metadata.get_tables)." },
+    { field: "risk_level", desc: "PoC 정책상 \"READ_ONLY\"만 허용됩니다." },
+    { field: "input_schema", desc: "Tool 입력 파라미터를 정의하는 JSON Schema 객체." },
   ],
 };
+
+const SCHEMA_DOC_BY_TYPE: Record<WizardType, string> = {
+  agent: "packages/schemas/manifests/agent-manifest.schema.json",
+  prompt: "packages/schemas/manifests/prompt-manifest.schema.json",
+  mcp_tool: "packages/schemas/manifests/mcp-tool-manifest.schema.json",
+};
+
+interface WizardExample {
+  sourceFixture: string;
+  manifest: Record<string, unknown>;
+  companionFiles: { name: string; content: string }[];
+}
+
+type ExampleState =
+  | { status: "loading" }
+  | { status: "ok"; data: WizardExample }
+  | { status: "error"; message: string };
+
+function downloadTextFile(name: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  URL.revokeObjectURL(url);
+}
 
 interface BasicInfo {
   name: string;
@@ -309,6 +353,45 @@ function Wizard({ type }: { type: WizardType }) {
   const [manifestGenerated, setManifestGenerated] = useState(false);
 
   const [files, setFiles] = useState<File[]>([]);
+
+  // 유형별 예시 Manifest/파일 — GET /assets/new/{type}/examples가
+  // fixtures/valid/*를 그대로 서버에서 읽어 돌려준다 (route.ts 참고). 실
+  // 사용자 피드백("어떤 파일을 올려야 하는지 모르겠다")에 대한 응답이라
+  // Wizard 진입과 함께 미리 불러와 둔다 — 2단계(Manifest)와 3단계(파일
+  // 업로드) 양쪽에서 같은 데이터를 쓴다.
+  const [example, setExample] = useState<ExampleState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    setExample({ status: "loading" });
+    fetch(`/assets/new/${type}/examples`)
+      .then(async (res) => {
+        const body = await safeJson(res);
+        if (cancelled) return;
+        if (!res.ok || !body?.manifest) {
+          setExample({
+            status: "error",
+            message: body?.error?.message ?? "예시를 불러오지 못했습니다.",
+          });
+          return;
+        }
+        setExample({
+          status: "ok",
+          data: {
+            sourceFixture: body.sourceFixture,
+            manifest: body.manifest,
+            companionFiles: body.companionFiles ?? [],
+          },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setExample({ status: "error", message: "예시를 불러오지 못했습니다. 네트워크 상태를 확인해 주세요." });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [type]);
 
   const [validateState, setValidateState] = useState<{
     status: "idle" | "loading" | "ok" | "invalid" | "error";
@@ -581,6 +664,7 @@ function Wizard({ type }: { type: WizardType }) {
             onChange={setManifestText}
             onReset={regenerateSkeleton}
             parsed={parsed}
+            example={example}
           />
         )}
 
@@ -592,6 +676,7 @@ function Wizard({ type }: { type: WizardType }) {
             expectedTemplateFileName={expectedTemplateFileName}
             templateFileMatched={templateFileMatched}
             manifestParsed={parsed.ok}
+            example={example}
           />
         )}
 
@@ -724,12 +809,14 @@ function StepManifest({
   onChange,
   onReset,
   parsed,
+  example,
 }: {
   type: WizardType;
   manifestText: string;
   onChange: (v: string) => void;
   onReset: () => void;
   parsed: ParseResult;
+  example: ExampleState;
 }) {
   return (
     <div className="space-y-4">
@@ -737,7 +824,7 @@ function StepManifest({
         <div>
           <h2 className="text-card-title font-semibold text-text-primary">Manifest 입력</h2>
           <p className="mt-1 text-body text-text-secondary">
-            기본정보에서 입력한 값이 자동으로 채워져 있습니다. 아래 유형별 필드를 채우거나 수정하세요.
+            기본정보에서 입력한 값이 자동으로 채워져 있습니다. 아래 예시와 필드 설명을 참고해 채우거나 수정하세요.
           </p>
         </div>
         <Button variant="secondary" size="sm" onClick={onReset}>
@@ -746,20 +833,29 @@ function StepManifest({
         </Button>
       </div>
 
+      <ExamplePanel type={type} example={example} onFill={onChange} />
+
       <div className="rounded-lg bg-slate-50 px-3 py-2.5 text-caption text-text-secondary">
-        <p className="mb-1 font-medium text-text-primary">이 유형에서 채워야 하는 필드</p>
-        <ul className="ml-4 list-disc space-y-0.5">
-          {TYPE_FIELD_HINTS[type].map((hint) => (
-            <li key={hint}>{hint}</li>
+        <p className="mb-1.5 font-medium text-text-primary">주요 필드 설명</p>
+        <dl className="space-y-1">
+          {[...COMMON_FIELD_NOTES, ...TYPE_FIELD_NOTES[type]].map((note) => (
+            <div key={note.field} className="flex flex-col gap-0.5 sm:flex-row sm:gap-2">
+              <dt className="shrink-0 font-mono text-[11px] text-brand-700 sm:w-64">{note.field}</dt>
+              <dd>{note.desc}</dd>
+            </div>
           ))}
-        </ul>
+        </dl>
+        <p className="mt-2 text-[11px] text-text-muted">
+          전체 필드 정의: <code>{SCHEMA_DOC_BY_TYPE[type]}</code> ·{" "}
+          <code>docs/implementation-spec/03-package-standards.md</code>
+        </p>
       </div>
 
       {manifestText.trim().length === 0 && (
         <EmptyState
           icon={<FileEdit size={32} strokeWidth={1.5} />}
           title="Manifest가 비어 있습니다."
-          description="기본값으로 재설정을 눌러 시작하세요."
+          description={'기본값으로 재설정을 누르거나, 위 예시의 "이 예시로 채우기"를 눌러 시작하세요.'}
         />
       )}
 
@@ -776,6 +872,68 @@ function StepManifest({
   );
 }
 
+function ExamplePanel({
+  type,
+  example,
+  onFill,
+}: {
+  type: WizardType;
+  example: ExampleState;
+  onFill: (manifestText: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (example.status === "loading") {
+    return (
+      <Card className="p-4">
+        <LoadingState label="예시 Manifest 불러오는 중..." />
+      </Card>
+    );
+  }
+
+  if (example.status === "error") {
+    return <ErrorBanner message={example.message} />;
+  }
+
+  const { data } = example;
+  const pretty = JSON.stringify(data.manifest, null, 2);
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-body font-semibold text-text-primary">예시 Manifest</p>
+          <p className="mt-0.5 text-caption text-text-secondary">
+            실제로 검증을 통과하는 fixture(<code>{data.sourceFixture}</code>)를 그대로 가져온 예시입니다. id만
+            새로 발급됩니다 — 이름/설명 등 나머지 값은 자산에 맞게 직접 수정하세요.
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setExpanded((v) => !v)}>
+            {expanded ? "예시 접기" : "예시 보기"}
+          </Button>
+          <Button size="sm" onClick={() => onFill(pretty)}>
+            이 예시로 채우기
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => downloadTextFile(`${type}-manifest.example.json`, pretty)}
+          >
+            <Download size={13} />
+            manifest.json
+          </Button>
+        </div>
+      </div>
+      {expanded && (
+        <pre className="mt-3 max-h-96 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-100">
+          {pretty}
+        </pre>
+      )}
+    </Card>
+  );
+}
+
 function StepFiles({
   type,
   files,
@@ -783,6 +941,7 @@ function StepFiles({
   expectedTemplateFileName,
   templateFileMatched,
   manifestParsed,
+  example,
 }: {
   type: WizardType;
   files: File[];
@@ -790,20 +949,49 @@ function StepFiles({
   expectedTemplateFileName: string | null;
   templateFileMatched: boolean;
   manifestParsed: boolean;
+  example: ExampleState;
 }) {
+  const exampleTemplate =
+    example.status === "ok"
+      ? example.data.companionFiles.find((f) => f.name === expectedTemplateFileName)
+      : undefined;
+
   return (
     <div className="space-y-4">
       <h2 className="text-card-title font-semibold text-text-primary">파일 업로드</h2>
       {type === "prompt" ? (
-        <p className="text-body text-text-secondary">
-          {manifestParsed && expectedTemplateFileName
-            ? `Manifest의 template.file에 지정된 "${expectedTemplateFileName}" 이름과 정확히 일치하는 파일을 업로드하세요.`
-            : "2단계에서 Manifest JSON을 먼저 확인하면 필요한 Template 파일명이 여기에 표시됩니다."}
-        </p>
+        <div className="space-y-3">
+          <p className="text-body text-text-secondary">
+            {manifestParsed && expectedTemplateFileName
+              ? `Manifest의 template.file에 지정된 "${expectedTemplateFileName}" 이름과 정확히 일치하는 파일을 업로드하세요.`
+              : "2단계에서 Manifest JSON을 먼저 확인하면 필요한 Template 파일명이 여기에 표시됩니다."}
+          </p>
+          {exampleTemplate && (
+            <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-white px-3 py-2.5">
+              <p className="text-caption text-text-secondary">
+                이름 그대로 시작하고 싶다면 예시 Template 파일을 내려받아 편집한 뒤 업로드하세요.
+              </p>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => downloadTextFile(exampleTemplate.name, exampleTemplate.content)}
+              >
+                <Download size={13} />
+                {exampleTemplate.name}
+              </Button>
+            </div>
+          )}
+        </div>
       ) : (
-        <p className="text-body text-text-secondary">
-          이 유형은 파일 업로드가 필수가 아닙니다. 참고 자료가 있다면 선택적으로 첨부할 수 있습니다.
-        </p>
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 rounded-lg border border-success/30 bg-success/5 px-4 py-3 text-body font-medium text-success">
+            <CheckCircle2 size={16} className="shrink-0" />이 유형은 별도 파일 업로드가 필요 없습니다. 아래는 건너뛰고
+            바로 다음(4단계 검증)으로 진행해도 됩니다.
+          </div>
+          <p className="text-caption text-text-muted">
+            참고 자료가 있다면 아래에 선택적으로 첨부할 수 있습니다(필수 아님).
+          </p>
+        </div>
       )}
 
       <div

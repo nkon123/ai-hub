@@ -1,0 +1,18 @@
+{
+  "$comment": "Single source of truth mapping each P05 registration wizard type (apps/portal-web/app/assets/new/[type]/) to the real fixtures/valid/* files it serves as an example. Read by two places that must stay in agreement: apps/portal-web/app/assets/new/[type]/examples/route.ts (serves the example to the browser) and tests/contract/test_wizard_examples.py (proves the served example still validates against packages/schemas). All paths are relative to this file's directory (fixtures/).",
+  "agent": {
+    "sourceFixture": "standard-agent",
+    "manifest": "valid/standard-agent/agent-manifest.json",
+    "companionFiles": []
+  },
+  "prompt": {
+    "sourceFixture": "standard-prompt",
+    "manifest": "valid/standard-prompt/prompt-manifest.json",
+    "companionFiles": ["valid/standard-prompt/template.md"]
+  },
+  "mcp_tool": {
+    "sourceFixture": "mcp-readonly-oracle",
+    "manifest": "valid/mcp-readonly-oracle/mcp-tool-manifest.json",
+    "companionFiles": []
+  }
+}
