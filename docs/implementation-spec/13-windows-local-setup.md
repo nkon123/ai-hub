@@ -148,6 +148,7 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2` | Windows 한국어 환경의 기본 인코딩(cp949)으로 UTF-8 파일을 읽어 발생한다. `alembic.ini` 는 순수 ASCII 로 유지하도록 수정했고, 스크립트는 `PYTHONUTF8=1` 을 설정한다. 스크립트 없이 직접 실행할 때 같은 오류가 나면 `$env:PYTHONUTF8 = "1"` 을 먼저 설정한다. (`.py` 소스는 PEP 3120 에 따라 항상 UTF-8 로 읽히므로 영향받지 않는다) |
+| `electron postinstall failed` / `RequestError: read ECONNRESET` | Electron 실행 바이너리(약 100MB)를 GitHub 에서 내려받다 막힌 것이다. **Portal 에는 Electron 이 필요 없다** - `.\\scripts\\windows\\install-node.ps1` 을 쓰거나 `$env:ELECTRON_SKIP_BINARY_DOWNLOAD = "1"` 설정 후 `pnpm install` 을 실행한다. Desktop 렌더러(Vite)는 이 상태에서도 동작하고, Electron 앱 자체를 띄울 때만 바이너리가 필요하다 |
 | `No module named pip` | venv 에 pip 이 없다. **네트워크 없이 복구된다**: `.venv\\Scripts\\python.exe -m ensurepip --upgrade`. 그래도 안 되면 `python -m venv --clear .venv` 로 재생성하고, 시스템 Python 에도 pip 이 없다면 Python 재설치 시 pip 포함 옵션을 확인한다 |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
 
@@ -193,9 +194,29 @@ chcp 65001
 ## 3. 저장소 설치
 
 ```powershell
-# 저장소 루트에서 — Python 은 §2.5 에서 이미 설치했다
+# 저장소 루트에서 - Python 은 §2.5 에서 이미 설치했다
+.\scripts\windows\install-node.ps1
+```
+
+**`pnpm install` 을 직접 실행하면 Electron 단계에서 막힐 수 있다.** `apps/desktop-client` 의 postinstall 이 Electron 실행 바이너리(약 100MB)를 GitHub Releases 에서 내려받는데, 사내망에서는 `RequestError: read ECONNRESET` 로 실패하는 경우가 많다.
+
+**Portal 을 띄우는 데 Electron 은 필요 없다.** 위 스크립트는 기본적으로 Electron 바이너리 내려받기를 건너뛰고 나머지를 모두 설치한다. Portal(:3000)과 Desktop 렌더러(Vite, :5174)는 그대로 동작하며, Electron 앱 자체를 띄울 때만 바이너리가 필요하다.
+
+직접 실행한다면 아래와 같다.
+
+```powershell
+# Electron 바이너리만 건너뛰고 전체 설치
+$env:ELECTRON_SKIP_BINARY_DOWNLOAD = "1"
+pnpm install
+
+# 또는 Portal 관련 패키지만 설치
+pnpm install --filter portal-web...
+
+# 사내에 Electron 미러가 있다면
+$env:ELECTRON_MIRROR = "https://<사내미러>/electron/"
 pnpm install
 ```
+
 
 - **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있지만, **개발 macOS 머신에서는 정책상 실제로 설치된 적이 없다** — Windows PC 에서 `install-pip.ps1` 을 실행하는 시점이 **최초로 설치되는 시점**이다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
   - `pypdf`: 순수 Python, BSD-3-Clause, OS/아키텍처 무관 단일 wheel.
