@@ -147,6 +147,7 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | 고정 버전이 미러에 없음 | 사내 미러가 PyPI 전체를 미러링하지 않으면 정확한 버전(`==`)이 없을 수 있다. `python -m pip index versions <패키지명>` 으로 확인하고, 없으면 `install-pip.ps1 -Loose` 로 버전 고정 없이 설치한다(재현성은 떨어진다) |
 | 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
+| `No module named pip` | venv 에 pip 이 없다. **네트워크 없이 복구된다**: `.venv\\Scripts\\python.exe -m ensurepip --upgrade`. 그래도 안 되면 `python -m venv --clear .venv` 로 재생성하고, 시스템 Python 에도 pip 이 없다면 Python 재설치 시 pip 포함 옵션을 확인한다 |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
 
 ### PowerShell 출력의 한글이 깨질 때

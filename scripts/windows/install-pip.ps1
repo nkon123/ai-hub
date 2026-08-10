@@ -83,6 +83,29 @@ if (-not $SkipVenv) {
     $Python = "python"
 }
 
+# venv 에 pip 이 없는 경우가 있다(python 배포판에 따라 ensurepip 이 함께
+# 실행되지 않거나, venv 생성이 중간에 실패한 경우). 이때 `python -m pip` 은
+# "No module named pip" 로 실패한다. ensurepip 은 Python 에 내장되어 있어
+# 네트워크 없이 복구할 수 있으므로 먼저 확인하고 자동으로 되살린다.
+& $Python -m pip --version *> $null
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "[2/4] pip 이 없습니다 - ensurepip 으로 복구합니다" -ForegroundColor Yellow
+    & $Python -m ensurepip --upgrade
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host ""
+        Write-Host "  ensurepip 으로도 pip 을 만들 수 없습니다." -ForegroundColor Red
+        Write-Host "  해결:" -ForegroundColor Yellow
+        Write-Host "    1) 가상환경을 다시 만든다" -ForegroundColor Yellow
+        Write-Host "         python -m venv --clear .venv" -ForegroundColor DarkGray
+        Write-Host "    2) 그래도 안 되면 시스템 Python 에 pip 이 있는지 확인" -ForegroundColor Yellow
+        Write-Host "         python -m pip --version" -ForegroundColor DarkGray
+        Write-Host "       없다면 Python 을 재설치한다(설치 시 pip 포함 옵션 확인)." -ForegroundColor DarkGray
+        Write-Host ""
+        throw "pip 을 사용할 수 없습니다."
+    }
+    Write-Host "      pip 복구 완료." -ForegroundColor Green
+}
+
 Write-Host "[2/4] pip 업그레이드" -ForegroundColor Cyan
 & $Python -m pip install --upgrade pip
 # 업그레이드 실패는 치명적이지 않다 — 기존 pip 으로도 설치가 가능한 경우가 많다.

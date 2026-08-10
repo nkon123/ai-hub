@@ -43,6 +43,11 @@ if ($hasVenv) {
     Write-Host ""
     Write-Host "=== Python 패키지 (.venv) ===" -ForegroundColor Cyan
 
+    # pip 자체가 없으면 이후 점검이 전부 무의미하므로 먼저 확인한다.
+    & $venvPython -m pip --version *> $null
+    Show-Result "pip" ($LASTEXITCODE -eq 0) $(if ($LASTEXITCODE -eq 0) { "사용 가능" } else { "No module named pip" }) `
+        ".venv\Scripts\python.exe -m ensurepip --upgrade  (네트워크 불필요)"
+
     # 실행 파일(.exe)이 아니라 import 가능 여부로 판단한다 —
     # 기동 스크립트는 `python -m <모듈>` 로 부르므로 .exe 는 없어도 된다.
     $modules = @(
