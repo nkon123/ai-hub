@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from observability import configure_logging
 from observability.middleware import TraceIdMiddleware
 
+from portal_api.config import settings
 from portal_api.database import init_db
 from portal_api.routers.admin import router as admin_router
 from portal_api.routers.assets import router as assets_router
@@ -41,7 +42,8 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    # 하드코딩하지 않고 설정을 읽는다 — 사유는 Settings.cors_origins 주석 참고.
+    allow_origins=settings.cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

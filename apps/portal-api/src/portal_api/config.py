@@ -8,6 +8,19 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-
 
 
 class Settings(BaseSettings):
+    # Portal Web(브라우저)이 이 API 를 직접 호출할 때 허용할 Origin 목록.
+    # `localhost` 와 `127.0.0.1` 은 브라우저 CORS 에서 **서로 다른 Origin** 이라,
+    # 하나만 허용하면 다른 주소로 접속한 사용자에게는 서버가 200 을 기록해도
+    # 브라우저가 응답을 버려 "Failed to fetch" 로 보인다(실제로 겪은 증상).
+    # 사내 PC 에서 호스트명이나 사설 IP 로 접속한다면 그 Origin 도 여기에
+    # 추가해야 한다 — 환경 변수 PORTAL_CORS_ORIGINS 로 덮어쓸 수 있다.
+    # main.py 에 하드코딩하지 않는 이유: 설정이 있는데 하드코딩이 그것을
+    # 가려 버리는 실수를 이 저장소가 agent-runtime 에서 이미 한 번 겪었다.
+    cors_origins: list[str] = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+    ]
+
     database_url: str = "sqlite+aiosqlite:///./portal.db"
     storage_root: Path = Path("./storage")
     index_base: Path = _REPO_ROOT / "data" / "indexes"

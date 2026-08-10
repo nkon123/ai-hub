@@ -168,6 +168,7 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `UnicodeDecodeError: 'cp949' codec can't decode byte 0xe2` | Windows 한국어 환경의 기본 인코딩(cp949)으로 UTF-8 파일을 읽어 발생한다. `alembic.ini` 는 순수 ASCII 로 유지하도록 수정했고, 스크립트는 `PYTHONUTF8=1` 을 설정한다. 스크립트 없이 직접 실행할 때 같은 오류가 나면 `$env:PYTHONUTF8 = "1"` 을 먼저 설정한다. (`.py` 소스는 PEP 3120 에 따라 항상 UTF-8 로 읽히므로 영향받지 않는다) |
 | `electron postinstall failed` / `RequestError: read ECONNRESET` | Electron 실행 바이너리(약 100MB)를 GitHub 에서 내려받다 막힌 것이다. **Portal 에는 Electron 이 필요 없다** - `.\\scripts\\windows\\install-node.ps1` 을 쓰거나 `$env:ELECTRON_SKIP_BINARY_DOWNLOAD = "1"` 설정 후 `pnpm install` 을 실행한다. Desktop 렌더러(Vite)는 이 상태에서도 동작하고, Electron 앱 자체를 띄울 때만 바이너리가 필요하다 |
+| 화면은 뜨는데 `Failed to fetch` (서버 로그에는 200) | 브라우저 접속 주소와 portal-api 의 CORS 허용 Origin 이 다르다. `localhost` 와 `127.0.0.1` 은 CORS 에서 **서로 다른 Origin** 이라, 서버는 200 을 기록해도 브라우저가 응답을 버린다. 기본 허용은 `http://localhost:3000` 과 `http://127.0.0.1:3000` 이다. 호스트명이나 사설 IP 로 접속한다면 `PORTAL_CORS_ORIGINS` 환경 변수에 그 주소를 추가한다 |
 | `No module named pip` | venv 에 pip 이 없다. **네트워크 없이 복구된다**: `.venv\\Scripts\\python.exe -m ensurepip --upgrade`. 그래도 안 되면 `python -m venv --clear .venv` 로 재생성하고, 시스템 Python 에도 pip 이 없다면 Python 재설치 시 pip 포함 옵션을 확인한다 |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
 
