@@ -23,8 +23,10 @@ import type {
   PortalCatalogResult,
   PortalSettingsPublic,
   RemoveAssetResult,
+  ServiceDetailResult,
   StoreInstallProgressEvent,
   StoreInstallResult,
+  SystemInfoView,
 } from "./types";
 
 // `contextIsolation: true` + `nodeIntegration: false` (set in main.ts) mean
@@ -124,6 +126,13 @@ const bridge: DesktopBridge = {
 
   listOllamaModels: (ollamaBaseUrl: string): Promise<OllamaModelsResult> =>
     ipcRenderer.invoke("settings:listOllamaModels", ollamaBaseUrl),
+
+  // --- D03 Service/Agent 상세 -------------------------------------------------
+  getServiceDetail: (assetType: string, assetId: string, version: string): Promise<ServiceDetailResult> =>
+    ipcRenderer.invoke("assets:getServiceDetail", assetType, assetId, version),
+
+  // --- D13 정보/보안 -----------------------------------------------------------
+  getSystemInfo: (): Promise<SystemInfoView> => ipcRenderer.invoke("system:getInfo"),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

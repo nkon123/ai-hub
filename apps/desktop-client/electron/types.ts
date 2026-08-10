@@ -385,6 +385,181 @@ export interface DiskSpaceInfo {
 }
 
 // ---------------------------------------------------------------------------
+// D03 Service/Agent 상세
+// ---------------------------------------------------------------------------
+
+/** service-definition.json's optional `description` — D03's "업무 목적". */
+export interface ServiceDetailPurpose {
+  available: boolean;
+  value: string | null;
+  source: string | null;
+  reason: string | null;
+}
+
+/** service-definition.json's optional `chatbot_config.suggested_questions` —
+ * D03's "사용 예". Present only for Knowledge Chatbot Quick Create services. */
+export interface ServiceDetailUsageExamples {
+  available: boolean;
+  values: string[];
+  source: string | null;
+  reason: string | null;
+}
+
+/** A field D03 wants to show but has no reliable local source for — instead
+ * of fabricating a plausible-looking value, this shape lets the UI render
+ * "미기재" + a stated reason (CLAUDE.md, open-decisions.md D-076). */
+export interface ServiceDetailGap {
+  available: false;
+  reason: string;
+}
+
+/** D03's "모델 정책과 현재 해석된 모델" — only the declared policy, since
+ * Desktop cannot resolve `modelAlias` to an actual model_id today (no Office
+ * Profile import, open-decisions.md D-074) — see `resolvedModelNote` on
+ * `ServiceDetailView` for why. */
+export interface ServiceDetailModelPolicy {
+  modelAlias: string;
+  fallbackAllowed: boolean;
+  maxContextTokens: number | null;
+}
+
+/** Installed Knowledge's own `index/index-meta.json` — the actual model an
+ * index was built with (same source `search_runtime.hybrid.resolve_embed_model`
+ * reads server-side, D-075), read locally since a Bundle's index files are
+ * installed as-is under the Knowledge asset's own folder. */
+export interface ServiceDetailKnowledgeIndexInfo {
+  available: boolean;
+  embedModel: string | null;
+  chunkingStrategy: string | null;
+  source: string | null;
+  reason: string | null;
+}
+
+/** One row of D03's "선택된 Agent, Knowledge, MCP Tool, Prompt" — built on
+ * top of `AssetDependencyView.forward` (`asset-management.ts`, already D08's
+ * source of truth for the same relationship) rather than re-deriving it. */
+export interface ServiceDetailBinding {
+  label: string;
+  refType: BindingKind;
+  assetId: string;
+  version: string;
+  installed: boolean;
+  /** Only present for `refType === "knowledge_bindings"`. */
+  indexInfo?: ServiceDetailKnowledgeIndexInfo;
+  /** Only present for `refType === "mcp_bindings"` — the literal declared
+   * `confirmation_policy` value from service-definition.json's mcp_bindings
+   * entry, or `null` if the Service didn't declare one (schema default is
+   * "always", but this shows the literal value rather than assuming it). */
+  confirmationPolicy?: string | null;
+}
+
+export interface ServiceDetailView {
+  assetId: string;
+  assetType: string;
+  name: string;
+  version: string;
+  status: AssetStatus;
+  checksumVerification: ChecksumVerification | null;
+  purpose: ServiceDetailPurpose;
+  usageExamples: ServiceDetailUsageExamples;
+  /** Always unavailable today — see `ServiceDetailGap` and the module
+   * docstring in `electron/service-detail.ts` for why (no schema field). */
+  inputFields: ServiceDetailGap;
+  bindings: ServiceDetailBinding[];
+  /** Non-null explanation when `bindings` is empty for a non-Service asset
+   * (mirrors `AssetDependencyView.forwardNote`). */
+  bindingsNote: string | null;
+  /** `null` when the asset has no manifest to read a model policy from
+   * (non-Service asset, or Manifest missing/unreadable). */
+  modelPolicy: ServiceDetailModelPolicy | null;
+  resolvedModelNote: string;
+  runtimeRequirements: ServiceDetailGap;
+  /** Always-true PoC-wide statement (CLAUDE.md 구현 원칙 8) plus how to read
+   * each binding's `confirmationPolicy` above. */
+  toolRiskNote: string;
+  approvalStatus: ServiceDetailGap;
+  /** This asset's own `sizeBytes` plus every `bindings` entry that is
+   * actually installed locally (`installed === true`) — not a claim about
+   * dependencies that are not installed. */
+  installSizeBytes: number;
+  installSizeNote: string;
+}
+
+export interface ServiceDetailResult {
+  available: boolean;
+  reason: string | null;
+  detail: ServiceDetailView | null;
+}
+
+// ---------------------------------------------------------------------------
+// D13 정보/보안
+// ---------------------------------------------------------------------------
+
+export interface OpenSourceNoticeEntry {
+  name: string;
+  declaredRange: string;
+  resolvedVersion: string | null;
+  license: string | null;
+}
+
+export interface OpenSourceNotices {
+  entries: OpenSourceNoticeEntry[];
+  /** Always `true` today — this lists Desktop's own direct runtime
+   * dependencies with resolved version/license only, not a full
+   * transitive-closure OSS notice with license texts (open-decisions.md
+   * D-076). */
+  incomplete: boolean;
+  incompleteReason: string;
+}
+
+/** D13's "Trust Store 상태" — always `NOT_IMPLEMENTED`: this PoC has no PKI
+ * (open-decisions.md D-016/D-048), so there is no Trust Store to report a
+ * status for. Never rendered as a green "신뢰됨" badge that would mean
+ * nothing. */
+export interface TrustStoreInfo {
+  status: "NOT_IMPLEMENTED";
+  message: string;
+}
+
+export interface RevocationListInfo {
+  knownEntryCount: number;
+  /** Local filesystem mtime of `state/revocation-list.json` — i.e. the last
+   * time THIS Desktop merged a Bundle's Revocation List into its local
+   * state. NOT an authoritative "list published at" timestamp (no such field
+   * exists on a Revocation entry — open-decisions.md D-076). `null` if no
+   * Bundle has ever carried Revocation entries. */
+  lastLocalUpdateAt: string | null;
+  note: string;
+}
+
+export interface SchemaVersionInfo {
+  supportedVersion: string;
+  source: string;
+}
+
+export interface DataLocationsInfo {
+  installRoot: string;
+  assetsDir: string;
+  stateDir: string;
+  logsDir: string;
+  quarantineDir: string;
+  profilesDir: string;
+  diagnosticsDir: string;
+}
+
+export interface SystemInfoView {
+  clientVersion: string;
+  runtimeVersion: string | null;
+  runtimeVersionNote: string | null;
+  schemaVersion: SchemaVersionInfo;
+  os: { platform: string; release: string; arch: string };
+  trustStore: TrustStoreInfo;
+  revocationList: RevocationListInfo;
+  openSourceNotices: OpenSourceNotices;
+  dataLocations: DataLocationsInfo;
+}
+
+// ---------------------------------------------------------------------------
 // 자산 스토어 — Portal 카탈로그 브라우징 + 설치 (VS Code Extension 스타일)
 // ---------------------------------------------------------------------------
 
@@ -557,4 +732,10 @@ export interface DesktopBridge {
    * 저장 전인) Ollama Base URL을 인자로 받아, 마법사가 저장 전에도 방금 입력한
    * 값으로 확인할 수 있게 한다. */
   listOllamaModels(ollamaBaseUrl: string): Promise<OllamaModelsResult>;
+
+  // --- D03 Service/Agent 상세 -------------------------------------------------
+  getServiceDetail(assetType: string, assetId: string, version: string): Promise<ServiceDetailResult>;
+
+  // --- D13 정보/보안 -----------------------------------------------------------
+  getSystemInfo(): Promise<SystemInfoView>;
 }

@@ -2,7 +2,7 @@
 // 관계 보기, 그리고 "제거 전 참조 중인 Service와 진행 중인 Run을 확인한다"
 // 하드 규칙을 실제로 적용하는 화면.
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Eye, FileSearch, Network, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FileSearch, Info, Network, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import type {
   AssetDependencyView,
   AssetManifestResult,
@@ -34,6 +34,7 @@ import {
   type AssetFilters,
   type AssetSortKey,
 } from "./assetsTypes";
+import type { ServiceDetailTarget } from "./ServiceDetailScreen";
 
 const BINDING_LABEL: Record<BindingKind, string> = {
   agent_ref: "Agent 참조",
@@ -76,7 +77,7 @@ function activateVersionDisabledReason(asset: InstalledAssetWithStatus): string 
   return null;
 }
 
-export function AssetsScreen() {
+export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceDetailTarget) => void }) {
   const bridge = getDesktopBridge();
   const [assets, setAssets] = useState<InstalledAssetWithStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -344,6 +345,13 @@ export function AssetsScreen() {
                 </div>
 
                 <div className="mt-4 flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => onOpenDetail({ assetType: asset.assetType, assetId: asset.assetId, version: asset.version })}
+                  >
+                    <Info size={14} /> 상세 보기
+                  </Button>
                   <Button variant="secondary" size="sm" onClick={() => void openManifest(asset)}>
                     <FileSearch size={14} /> 상세 Manifest
                   </Button>

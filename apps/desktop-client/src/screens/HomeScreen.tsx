@@ -1,13 +1,21 @@
 // D02 홈 / 설치된 자산 목록.
 import { useCallback, useEffect, useState } from "react";
-import { Package, RefreshCw, Trash2 } from "lucide-react";
+import { Info, Package, RefreshCw, Trash2 } from "lucide-react";
 import type { InstalledAssetWithStatus } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, EmptyState, ErrorBanner, LoadingState, PageHeader, ReasonConfirmDialog } from "../ui";
 import { assetTypeLabel, formatBytes, formatDateTime } from "../format";
 import { ASSET_STATUS_LABEL, ASSET_STATUS_TONE } from "./assetStatusLabels";
+import type { ServiceDetailTarget } from "./ServiceDetailScreen";
 
-export function HomeScreen({ onGoToImport }: { onGoToImport: () => void }) {
+export function HomeScreen({
+  onGoToImport,
+  onOpenDetail,
+}: {
+  onGoToImport: () => void;
+  /** D03 진입점 — "상세 보기" (§D02 행동 목록). */
+  onOpenDetail: (target: ServiceDetailTarget) => void;
+}) {
   const bridge = getDesktopBridge();
   // D12/D-068: `listInstalledAssets()` already returns the computed
   // Active/Inactive/Invalid/Revoked status — D02 now shows it (see
@@ -131,9 +139,18 @@ export function HomeScreen({ onGoToImport }: { onGoToImport: () => void }) {
                   설치일 {formatDateTime(asset.installedAt)} · {formatBytes(asset.sizeBytes)}
                 </p>
               </div>
-              <Button variant="secondary" size="sm" onClick={() => setPendingRemoval(asset)}>
-                <Trash2 size={14} /> 제거
-              </Button>
+              <div className="flex shrink-0 gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => onOpenDetail({ assetType: asset.assetType, assetId: asset.assetId, version: asset.version })}
+                >
+                  <Info size={14} /> 상세 보기
+                </Button>
+                <Button variant="secondary" size="sm" onClick={() => setPendingRemoval(asset)}>
+                  <Trash2 size={14} /> 제거
+                </Button>
+              </div>
             </Card>
           ))}
         </div>

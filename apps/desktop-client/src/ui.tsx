@@ -216,6 +216,7 @@ export function ReasonConfirmDialog({
   danger = true,
   submitting = false,
   error = null,
+  confirmDisabled = false,
   onConfirm,
   onCancel,
 }: {
@@ -235,6 +236,12 @@ export function ReasonConfirmDialog({
    * user retry without losing context — same pattern D08's removal Modal
    * already used for `removeError`. */
   error?: string | null;
+  /** Extra confirm-disabling condition beyond "reason is non-empty" —
+   * e.g. D03's removal dialog uses this so the button is never clickable
+   * while `checkAssetRemoval` reports the removal is blocked (CLAUDE.md:
+   * 호환되지 않는 선택지는 이유와 함께 비활성화). Defaults to `false` so
+   * every existing caller keeps its exact previous behavior. */
+  confirmDisabled?: boolean;
   onConfirm: (reason: string) => void;
   onCancel: () => void;
 }) {
@@ -253,7 +260,7 @@ export function ReasonConfirmDialog({
   if (!open) return null;
 
   const trimmed = reason.trim();
-  const canConfirm = trimmed.length > 0 && !submitting;
+  const canConfirm = trimmed.length > 0 && !submitting && !confirmDisabled;
 
   function handleConfirm() {
     if (!canConfirm) return;

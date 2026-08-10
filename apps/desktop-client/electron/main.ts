@@ -24,6 +24,8 @@ import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle
 import { PortalSettingsStore } from "./portal-settings";
 import { fetchCatalog, requestDistribution, getDistribution, downloadDistribution } from "./portal-client";
 import { installFromStore, defaultSleep, type CancelToken } from "./store-install";
+import { getServiceDetailView } from "./service-detail";
+import { buildSystemInfo } from "./system-info";
 import type {
   ActivateVersionResult,
   AssetDependencyView,
@@ -45,8 +47,10 @@ import type {
   PortalCatalogResult,
   PortalSettingsPublic,
   RemoveAssetResult,
+  ServiceDetailResult,
   StoreInstallProgressEvent,
   StoreInstallResult,
+  SystemInfoView,
 } from "./types";
 
 // `app.isPackaged` (Electron's own signal) is used instead of `NODE_ENV`:
@@ -554,6 +558,21 @@ function registerIpcHandlers(): void {
       return listOllamaModels(ollamaBaseUrl || getDesktopSettingsStore().getPublic().ollamaBaseUrl);
     },
   );
+
+  // --- D03 Service/Agent 상세 -------------------------------------------------
+  ipcMain.handle(
+    "assets:getServiceDetail",
+    async (_event, assetType: string, assetId: string, version: string): Promise<ServiceDetailResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      return getServiceDetailView(layout, store, { assetType, assetId, version });
+    },
+  );
+
+  // --- D13 정보/보안 -----------------------------------------------------------
+  ipcMain.handle("system:getInfo", async (): Promise<SystemInfoView> => {
+    return buildSystemInfo(getLayout());
+  });
 }
 
 app.whenReady().then(() => {

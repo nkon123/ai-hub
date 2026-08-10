@@ -24,7 +24,9 @@ const AGENT_RUNTIME_HEALTH_URL = "http://127.0.0.1:8100/health";
  * levels; returns `"0.0.0"` (never throws) if it somehow cannot be found —
  * a diagnostic Bundle must still be produced even if this one field is
  * degraded. */
-function readClientVersion(startDir: string): string {
+// Exported for D13(정보/보안)'s "Client 버전" reuse — `system-info.ts` must
+// never re-derive this from a second, hand-copied path-walk.
+export function readClientVersion(startDir: string): string {
   let dir = startDir;
   for (let i = 0; i < 8; i += 1) {
     const candidate = path.join(dir, "package.json");
@@ -45,7 +47,9 @@ function readClientVersion(startDir: string): string {
   return "0.0.0";
 }
 
-async function readRuntimeVersion(): Promise<{ version: string | null; note: string | null }> {
+// Exported for D13's "Runtime 버전" reuse — same reasoning as
+// `readClientVersion` above.
+export async function readRuntimeVersion(): Promise<{ version: string | null; note: string | null }> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2500);
