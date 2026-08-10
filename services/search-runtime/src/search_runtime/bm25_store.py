@@ -77,53 +77,77 @@ def load_bm25_json(path: Path) -> dict[str, Any]:
     return data
 
 
+def resolve_bm25_source(index_dir: Path) -> tuple[Path, str]:
+    """Return `(path, format)` for whichever BM25 artifact currently exists
+    for `index_dir` — `bm25.json` preferred, `bm25.pkl` fallback — WITHOUT
+    reading its contents. `format` is `"json"` or `"legacy_pickle"`, matching
+    `load_bm25_document`'s `source` return value 1:1.
+
+    Split out of `load_bm25_document` (which now delegates the "which file
+    wins" decision here) so a caller can `stat()` the resolved file — cheap,
+    no parsing — BEFORE paying the cost of reading+parsing it.
+    `search_runtime.bm25_cache.get_cached_bm25` is the motivating caller: it
+    needs the resolved file's path/mtime/size as a freshness cache key
+    without unconditionally re-reading the file on every call, which would
+    defeat the point of caching.
+
+    Raises `FileNotFoundError` if neither file exists — same contract as
+    `load_bm25_document`."""
+    json_path = index_dir / BM25_JSON_FILENAME
+    if json_path.is_file():
+        return json_path, "json"
+
+    pkl_path = index_dir / BM25_PICKLE_FILENAME
+    if pkl_path.is_file():
+        return pkl_path, "legacy_pickle"
+
+    raise FileNotFoundError(
+        f"{BM25_JSON_FILENAME}/{BM25_PICKLE_FILENAME} 둘 다 없습니다: {index_dir}"
+    )
+
+
 def load_bm25_document(index_dir: Path, *, allow_legacy_pickle: bool) -> tuple[dict[str, Any], str]:
     """Returns `(document, source)` where `document` has
     `tokenized_corpus`/`chunk_ids`/`chunk_texts`/`chunk_metadata` (a plain
-    dict — NOT a rebuilt `BM25Okapi`; `hybrid.py` calls `rebuild_bm25`
-    separately so tests can monkeypatch that one step independently of file
-    I/O, mirroring how `get_chroma_client` is already monkeypatched) and
-    `source` is `"json"` or `"legacy_pickle"`.
+    dict — NOT a rebuilt `BM25Okapi`; callers call `rebuild_bm25` separately
+    so tests can monkeypatch that one step independently of file I/O,
+    mirroring how `get_chroma_client` is already monkeypatched) and `source`
+    is `"json"` or `"legacy_pickle"`.
 
     Raises `LegacyPickleBm25Refused` if only `bm25.pkl` exists and
     `allow_legacy_pickle` is False. Raises `FileNotFoundError` if neither
     file exists (callers should check existence first for the common
     "index not built yet" case — see `hybrid.hybrid_search`)."""
-    json_path = index_dir / BM25_JSON_FILENAME
-    pkl_path = index_dir / BM25_PICKLE_FILENAME
+    path, fmt = resolve_bm25_source(index_dir)
 
-    if json_path.is_file():
-        return load_bm25_json(json_path), "json"
+    if fmt == "json":
+        return load_bm25_json(path), "json"
 
-    if pkl_path.is_file():
-        if not allow_legacy_pickle:
-            raise LegacyPickleBm25Refused(
-                f"{pkl_path}는 아직 {BM25_JSON_FILENAME}로 변환되지 않았고, 이 배포는 "
-                "legacy pickle 로딩을 허용하지 않습니다"
-                "(SEARCH_ALLOW_LEGACY_PICKLE_BM25=false) — indexing-runtime의 "
-                "convert-bm25-format CLI로 먼저 변환하세요."
-            )
-        import pickle  # local import: legacy-only, trusted-local path
+    # fmt == "legacy_pickle"
+    if not allow_legacy_pickle:
+        raise LegacyPickleBm25Refused(
+            f"{path}는 아직 {BM25_JSON_FILENAME}로 변환되지 않았고, 이 배포는 "
+            "legacy pickle 로딩을 허용하지 않습니다"
+            "(SEARCH_ALLOW_LEGACY_PICKLE_BM25=false) — indexing-runtime의 "
+            "convert-bm25-format CLI로 먼저 변환하세요."
+        )
+    import pickle  # local import: legacy-only, trusted-local path
 
-        with open(pkl_path, "rb") as f:
-            raw = pickle.load(f)  # noqa: S301 — gated by allow_legacy_pickle, see module docstring
-        chunk_texts = raw["chunk_texts"]
-        document = {
-            "chunk_ids": raw["chunk_ids"],
-            "chunk_texts": chunk_texts,
-            "chunk_metadata": raw["chunk_metadata"],
-            # Legacy pickles never stored a tokenized corpus explicitly —
-            # reconstruct it the same way `indexing_runtime.pipeline`
-            # always built it (`indexing_runtime.bm25_store.tokenize`:
-            # whitespace split, D-012). The pickled `BM25Okapi` object
-            # itself is intentionally discarded here, never returned — see
-            # `rebuild_bm25`, which both the json and legacy_pickle paths
-            # feed through identically so scoring code has one path, not
-            # two, past this function.
-            "tokenized_corpus": [text.split() for text in chunk_texts],
-        }
-        return document, "legacy_pickle"
-
-    raise FileNotFoundError(
-        f"{BM25_JSON_FILENAME}/{BM25_PICKLE_FILENAME} 둘 다 없습니다: {index_dir}"
-    )
+    with open(path, "rb") as f:
+        raw = pickle.load(f)  # noqa: S301 — gated by allow_legacy_pickle, see module docstring
+    chunk_texts = raw["chunk_texts"]
+    document = {
+        "chunk_ids": raw["chunk_ids"],
+        "chunk_texts": chunk_texts,
+        "chunk_metadata": raw["chunk_metadata"],
+        # Legacy pickles never stored a tokenized corpus explicitly —
+        # reconstruct it the same way `indexing_runtime.pipeline`
+        # always built it (`indexing_runtime.bm25_store.tokenize`:
+        # whitespace split, D-012). The pickled `BM25Okapi` object
+        # itself is intentionally discarded here, never returned — see
+        # `rebuild_bm25`, which both the json and legacy_pickle paths
+        # feed through identically so scoring code has one path, not
+        # two, past this function.
+        "tokenized_corpus": [text.split() for text in chunk_texts],
+    }
+    return document, "legacy_pickle"

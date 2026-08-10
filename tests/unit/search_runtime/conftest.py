@@ -9,15 +9,21 @@ and hybrid_search reads back in the same process.
 D-054: bm25.json (not bm25.pkl) is the format hybrid_search reads by
 default now — see `search_runtime.bm25_store`. `write_bm25_index` writes a
 real bm25.json (so `hybrid_search`'s file-existence/read-path plumbing is
-genuinely exercised) but ALSO monkeypatches `hybrid_search`'s
-`rebuild_bm25` step to return a fake object whose `get_scores()` always
-returns the caller-supplied `bm25_scores` regardless of the query — most
-tests in this package assert on exact fused rankings/relevance thresholds
-that depend on precisely controlling what BM25 "found", which a real
-BM25Okapi computed from these tiny fixture texts would not reproduce
-predictably. See `tests/unit/indexing_runtime/test_bm25_store.py` /
+genuinely exercised) but ALSO monkeypatches the `rebuild_bm25` step (now
+invoked from `search_runtime.bm25_cache.get_cached_bm25` — D-054 follow-up
+(b), NOT from `hybrid.py` directly since the BM25-rebuild cache moved that
+call — see that module's docstring) to return a fake object whose
+`get_scores()` always returns the caller-supplied `bm25_scores` regardless
+of the query — most tests in this package assert on exact fused
+rankings/relevance thresholds that depend on precisely controlling what
+BM25 "found", which a real BM25Okapi computed from these tiny fixture texts
+would not reproduce predictably. Every test in this package uses a fresh
+`tmp_path`, so the bm25_cache's (path, mtime, size) cache key never
+collides across tests/calls — each `write_bm25_index` call is always a
+genuine cache miss, so the monkeypatched `rebuild_bm25` is always the one
+actually invoked. See `tests/unit/indexing_runtime/test_bm25_store.py` /
 `test_convert_bm25_format.py` for tests that exercise the REAL BM25Okapi
-rebuild end to end."""
+rebuild end to end, and `test_bm25_cache.py` for the cache itself."""
 
 from __future__ import annotations
 
@@ -83,8 +89,13 @@ def write_bm25_index(
             json.dumps(document, ensure_ascii=False), encoding="utf-8"
         )
 
+    # rebuild_bm25 is invoked from search_runtime.bm25_cache (not from
+    # hybrid_module directly — see module docstring above), so that is
+    # where the fake must be installed for hybrid_search to see it.
+    from search_runtime import bm25_cache
+
     monkeypatch.setattr(
-        hybrid_module, "rebuild_bm25", lambda tokenized_corpus: FakeBM25(bm25_scores)  # noqa: ARG005
+        bm25_cache, "rebuild_bm25", lambda tokenized_corpus: FakeBM25(bm25_scores)  # noqa: ARG005
     )
 
 

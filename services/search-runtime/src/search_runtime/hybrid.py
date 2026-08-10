@@ -11,12 +11,8 @@ from typing import Any
 
 import httpx
 
-from search_runtime.bm25_store import (
-    BM25_JSON_FILENAME,
-    BM25_PICKLE_FILENAME,
-    load_bm25_document,
-    rebuild_bm25,
-)
+from search_runtime.bm25_cache import get_cached_bm25
+from search_runtime.bm25_store import BM25_JSON_FILENAME, BM25_PICKLE_FILENAME
 from search_runtime.chroma_client_cache import get_chroma_client
 from search_runtime.settings import (
     ALLOW_LEGACY_PICKLE_BM25,
@@ -214,7 +210,11 @@ async def hybrid_search(
     # bm25_store.load_bm25_document and allow_legacy_pickle_bm25 above).
     # Let LegacyPickleBm25Refused propagate to the caller — never silently
     # degrade to an empty result, that would hide a real refusal.
-    bm25_document, bm25_source = load_bm25_document(
+    # get_cached_bm25 (D-054 follow-up) reuses the rebuilt BM25Okapi across
+    # queries for an unchanged index instead of re-reading+re-rebuilding on
+    # every call — see bm25_cache.py for the freshness-key (path+mtime+size)
+    # design that keeps this safe against re-indexing/conversion/stamping.
+    bm25_document, bm25_source, bm25 = get_cached_bm25(
         index_path, allow_legacy_pickle=allow_legacy_pickle_bm25
     )
     if bm25_source == "legacy_pickle":
@@ -222,7 +222,6 @@ async def hybrid_search(
             "search.bm25.legacy_pickle_fallback knowledge_id=%s reason=bm25_json_missing",
             knowledge_id,
         )
-    bm25 = rebuild_bm25(bm25_document["tokenized_corpus"])
     chunk_ids = bm25_document["chunk_ids"]
     chunk_texts = bm25_document["chunk_texts"]
     chunk_metadata = bm25_document["chunk_metadata"]

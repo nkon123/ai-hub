@@ -171,3 +171,31 @@ in slope but still unbounded. 32 is a PoC-scale default (a handful of
 concurrently "hot" Knowledge indexes); raise it for a deployment that
 regularly serves more distinct indexes than that within one process's
 lifetime, at the cost of proportionally more idle threads/fds held open."""
+
+BM25_CACHE_MAX_SIZE: int = int(os.environ.get("SEARCH_BM25_CACHE_MAX_SIZE", "32"))
+"""D-054 follow-up (b) (open-decisions.md): max number of rebuilt
+`(document, source, BM25Okapi)` entries `search_runtime.bm25_cache` keeps
+alive at once, one per distinct (BM25 file path, mtime, size) key.
+
+`hybrid_search()` re-reads and re-parses the BM25 artifact
+(`bm25.json`/legacy `bm25.pkl`) and reconstructs a `BM25Okapi` from scratch
+on every single query — true even before D-054's pickle-to-JSON format
+change, but that change made the per-query cost ~10x worse at scale versus
+the old `pickle.load()` (measured on a synthetic corpus: 1,000 chunks
+30ms vs 3ms, 5,000 chunks 168ms vs 18ms, 20,000 chunks 697ms vs 68ms — see
+D-054's record). `bm25_cache.get_cached_bm25` closes that gap the same way
+`chroma_client_cache.get_chroma_client` closed the D-067 Chroma-client leak:
+a bounded, thread-safe, process-wide LRU. See `bm25_cache.py`'s module
+docstring for the freshness-key design (why mtime+size, not path alone) and
+why disposal here needs no `.close()` call (a `BM25Okapi` holds no native
+thread pool or file handle, unlike a Chroma client — plain refcounting is
+enough).
+
+Same default (32) and same reasoning as `CHROMA_CLIENT_CACHE_MAX_SIZE`
+above: an unbounded dict keyed by index path is itself a slow leak once a
+deployment has many Knowledge assets — each entry holds a full rebuilt
+`BM25Okapi` plus its source document (`chunk_ids`/`chunk_texts`/
+`chunk_metadata`), sized with the corpus, not a small object. Raise it for a
+deployment that regularly serves more distinct "hot" indexes than that
+within one process's lifetime, at the cost of proportionally more retained
+corpus memory."""
