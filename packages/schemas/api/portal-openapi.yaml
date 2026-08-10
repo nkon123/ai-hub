@@ -1462,6 +1462,73 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/admin/embedding-models:
+    get:
+      tags: [admin]
+      summary: >
+        P15 인덱싱 임베딩 모델 설정 — Ollama에 실제 설치된 모델 목록(indexing-runtime의
+        GET /indexing/v1/models를 그대로 proxy). portal-api는 모델을 직접 호출하지
+        않으므로(CLAUDE.md) indexing-runtime을 경유한다. Ollama에 연결할 수 없으면
+        빈 목록이 아니라 명확한 오류를 반환한다(D-075). ADMIN only.
+      operationId: list_embedding_models
+      responses:
+        "200":
+          description: Ollama에 설치된 모델 목록과 임베딩 가능 여부
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EmbeddingModelsOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: indexing-runtime 또는 Ollama에 연결할 수 없음 (MODEL_UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/admin/indexing-embedding-model:
+    put:
+      tags: [admin]
+      summary: >
+        신규 Knowledge 인덱싱에 사용할 임베딩 모델을 설정한다. portal.db의
+        platform_settings에 저장되며, 이미 만들어진 인덱스에는 영향을 주지 않는다
+        (각 인덱스는 index-meta.json에 기록된 자신의 embed_model로만 검색됨, D-075).
+        GET /api/v1/admin/embedding-models가 임베딩 가능으로 보고하지 않는 모델은
+        거부한다(VALIDATION_ERROR). ADMIN only, 감사 기록.
+      operationId: set_indexing_embedding_model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/IndexingEmbeddingModelUpdateRequest"
+      responses:
+        "200":
+          description: 저장된 설정
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IndexingEmbeddingModelSection"
+        "400":
+          description: 요청한 모델이 Ollama에서 임베딩 가능 모델로 확인되지 않음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: indexing-runtime 또는 Ollama에 연결할 수 없어 검증할 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
 components:
   parameters:
     AssetId:
@@ -3295,6 +3362,59 @@ components:
         not_implemented:
           $ref: "#/components/schemas/NotImplementedInfo"
 
+    IndexingEmbeddingModelSection:
+      type: object
+      description: >
+        P15의 유일한 편집 가능 하위 영역(D-065 UPDATE). configured_model이 null이면
+        indexing-runtime 자체 기본값(EMBED_MODEL 설정)이 적용된다. 이 설정을 바꿔도
+        이미 만들어진 인덱스는 바뀌지 않는다 — 각 인덱스는 index-meta.json에 기록된
+        자신의 embed_model로만 검색된다(search_runtime.hybrid.resolve_embed_model,
+        D-075). 기존 Knowledge에 새 모델을 적용하려면 재인덱싱이 필요하다.
+      required: [status, source, configured_model, note]
+      properties:
+        status: { type: string, enum: [AVAILABLE] }
+        source: { type: string }
+        configured_model:
+          type: string
+          nullable: true
+          description: null이면 indexing-runtime의 자체 기본값이 사용됨(미설정).
+        updated_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: string, nullable: true }
+        note: { type: string }
+
+    EmbeddingModelInfo:
+      type: object
+      required: [name, embedding_capable]
+      properties:
+        name: { type: string }
+        embedding_capable:
+          type: boolean
+          description: >
+            이름/Ollama family 메타데이터 기반 휴리스틱(Ollama API가 모델의 용도를
+            명시적으로 노출하지 않음) — indexing_runtime.main의 판정 로직 참고.
+        size: { type: integer, nullable: true }
+        modified_at: { type: string, nullable: true }
+
+    EmbeddingModelsOut:
+      type: object
+      required: [models, default_embed_model, source, trace_id]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/EmbeddingModelInfo"
+        default_embed_model:
+          type: string
+          description: indexing-runtime의 INDEXING_EMBED_MODEL 설정 현재값(미설정 시 적용될 값).
+        source: { type: string }
+        trace_id: { type: string }
+
+    IndexingEmbeddingModelUpdateRequest:
+      type: object
+      required: [model]
+      properties:
+        model: { type: string, minLength: 1 }
+
     AdminSettingsOut:
       type: object
       required:
@@ -3308,6 +3428,7 @@ components:
         - approval_workflow
         - security_classification_retention
         - package_trust_signature
+        - indexing_embedding_model
       properties:
         generated_at: { type: string, format: date-time }
         trace_id: { type: string }
@@ -3327,6 +3448,8 @@ components:
           $ref: "#/components/schemas/SecurityClassificationRetentionSection"
         package_trust_signature:
           $ref: "#/components/schemas/PackageTrustSignatureSection"
+        indexing_embedding_model:
+          $ref: "#/components/schemas/IndexingEmbeddingModelSection"
 
   securitySchemes:
     BearerAuth:

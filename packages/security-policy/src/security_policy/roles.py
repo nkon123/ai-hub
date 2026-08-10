@@ -77,6 +77,14 @@ class Permission(StrEnum):
     # (`PERMISSION_DENIED:ADMIN_SETTINGS_READ`) and the RBAC decision both
     # go through the same central matrix as every other endpoint.
     ADMIN_SETTINGS_READ = "ADMIN_SETTINGS_READ"
+    # D-065 UPDATE / D-075: the one P15 sub-area that is actually editable —
+    # the indexing embedding model (portal.db platform_settings, read back by
+    # `routers/assets.py::_trigger_indexing`). A separate permission from
+    # ADMIN_SETTINGS_READ (not reused) so the denial audit event name
+    # (`PERMISSION_DENIED:ADMIN_SETTINGS_WRITE`) is distinguishable from a
+    # plain read denial, same rationale as ADMIN_SETTINGS_READ's own
+    # docstring. ADMIN only, same as every other P15 permission.
+    ADMIN_SETTINGS_WRITE = "ADMIN_SETTINGS_WRITE"
 
 
 class PermissionDeniedError(Exception):

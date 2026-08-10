@@ -3,7 +3,7 @@
 /**
  * P15 관리자 설정 (01-portal-and-distribution.md §2 P15).
  *
- * Read-only "정책·구성 현황" — this PoC has no `users`/`sites`/`roles`
+ * Mostly read-only "정책·구성 현황" — this PoC has no `users`/`sites`/`roles`
  * tables, so several of the spec's 8 sub-areas have nothing to edit.
  * Building forms over storage that doesn't exist would look functional
  * while silently doing nothing, so this screen instead renders the
@@ -14,6 +14,22 @@
  * id, never an empty form). See open-decisions.md D-065 for the full
  * rationale.
  *
+ * **UPDATE (D-065 UPDATE / D-075): one sub-area now IS editable** — the
+ * indexing embedding model (`IndexingEmbeddingModelCard` below). It has
+ * real storage (`portal_api.platform_settings`) and is the only card on
+ * this page with a Save action. Two warnings are always visible next to it
+ * (never collapsed/hidden): changing it only affects newly-indexed
+ * Knowledge (existing indexes keep searching with the model recorded in
+ * their own index-meta.json — re-indexing is required to move them), and
+ * switching model *families* also requires revisiting search-runtime's
+ * SEARCH_QUERY_INSTRUCT_PREFIX (D-046/D-075) or the relevance threshold
+ * silently stops separating in-scope from out-of-scope questions. A model
+ * that `GET /api/v1/admin/embedding-models` doesn't report as
+ * `embedding_capable` cannot be selected (disabled option with a reason,
+ * not just omitted) and is rejected server-side too if attempted directly.
+ * Only ADMIN ever reaches this page (`ADMIN_SETTINGS_READ`), so no separate
+ * per-card Permission gate is needed for the Save action itself.
+ *
  * Secrets: the server never returns a live credential (redacted at the
  * source — see `security_policy.redact_if_secret`); this screen has no
  * "reveal" affordance for any field, matching the spec's "실제 Secret 값은
@@ -21,8 +37,18 @@
  */
 
 import { useEffect, useState } from "react";
-import { Lock, ShieldAlert } from "lucide-react";
-import { Badge, Card, EmptyState, ErrorBanner, LoadingState, PageHeader } from "../../_components/ui";
+import { AlertTriangle, Lock, RefreshCw, ShieldAlert } from "lucide-react";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  ErrorBanner,
+  FormField,
+  LoadingState,
+  PageHeader,
+  inputClass,
+} from "../../_components/ui";
 import type { BadgeTone } from "../../_components/ui";
 import { formatDateTime } from "../../_components/deployment-meta";
 import { useRole } from "../../_components/role-context";
@@ -129,6 +155,30 @@ interface PackageTrustSignatureSection {
   not_implemented: NotImplementedInfo;
 }
 
+// D-065 UPDATE / D-075 — the one editable P15 sub-area.
+interface IndexingEmbeddingModelSection {
+  status: "AVAILABLE";
+  source: string;
+  configured_model: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+  note: string;
+}
+
+interface EmbeddingModelInfo {
+  name: string;
+  embedding_capable: boolean;
+  size: number | null;
+  modified_at: string | null;
+}
+
+interface EmbeddingModelsResponse {
+  models: EmbeddingModelInfo[];
+  default_embed_model: string;
+  source: string;
+  trace_id: string;
+}
+
 interface AdminSettingsOut {
   generated_at: string;
   trace_id: string;
@@ -140,6 +190,7 @@ interface AdminSettingsOut {
   approval_workflow: ApprovalWorkflowSection;
   security_classification_retention: SecurityClassificationRetentionSection;
   package_trust_signature: PackageTrustSignatureSection;
+  indexing_embedding_model: IndexingEmbeddingModelSection;
 }
 
 type LoadState = "loading" | "ok" | "forbidden" | "error";
@@ -197,6 +248,214 @@ function Pill({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * 인덱싱 임베딩 모델 — P15의 유일한 편집 가능 하위 영역(D-065 UPDATE / D-075).
+ * ADMIN만 이 페이지에 진입할 수 있으므로(GET /api/v1/admin/settings 자체가
+ * ADMIN_SETTINGS_READ 전용) 별도의 Permission 배지는 필요 없다 — 이 카드가
+ * 렌더링된다는 사실 자체가 이미 ADMIN임을 보장한다.
+ */
+function IndexingEmbeddingModelCard({
+  section,
+  token,
+}: {
+  section: IndexingEmbeddingModelSection;
+  token: string;
+}) {
+  const [modelsState, setModelsState] = useState<"loading" | "ok" | "error">("loading");
+  const [models, setModels] = useState<EmbeddingModelInfo[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string>("");
+  const [modelsError, setModelsError] = useState<string | null>(null);
+
+  const [configuredModel, setConfiguredModel] = useState<string | null>(section.configured_model);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(section.updated_at);
+  const [updatedBy, setUpdatedBy] = useState<string | null>(section.updated_by);
+
+  const [selected, setSelected] = useState<string>(section.configured_model ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  async function loadModels() {
+    setModelsState("loading");
+    setModelsError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/embedding-models`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as EmbeddingModelsResponse;
+      setModels(body.models);
+      setDefaultModel(body.default_embed_model);
+      setModelsState("ok");
+    } catch (e) {
+      setModelsError(e instanceof Error ? e.message : String(e));
+      setModelsState("error");
+    }
+  }
+
+  useEffect(() => {
+    loadModels();
+    // 최초 1회만 — token은 이 페이지 진입 시점에 이미 ADMIN으로 고정됨.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSave() {
+    if (!selected) return;
+    setSaving(true);
+    setSaveError(null);
+    setSaveSuccess(false);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/indexing-embedding-model`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ model: selected }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      }
+      const updated = body as IndexingEmbeddingModelSection;
+      setConfiguredModel(updated.configured_model);
+      setUpdatedAt(updated.updated_at);
+      setUpdatedBy(updated.updated_by);
+      setSaveSuccess(true);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const noUsableModels = modelsState === "ok" && !models.some((m) => m.embedding_capable);
+
+  return (
+    <SectionCard title="인덱싱 임베딩 모델" status={section.status}>
+      <SourceCaption source={section.source} />
+
+      <div className="mb-4 flex flex-col gap-2">
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-body text-text-secondary">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
+          <p>
+            이 설정은 <strong>새로 인덱싱되는 Knowledge에만</strong> 적용됩니다. 이미 만들어진
+            인덱스는 각자 색인 시점에 기록된 임베딩 모델로만 검색되며 바뀌지 않습니다 — 기존
+            Knowledge에 새 모델을 적용하려면 재인덱싱이 필요합니다.
+          </p>
+        </div>
+        <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-body text-text-secondary">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
+          <p>
+            모델 계열을 바꾸면(예: Qwen3 → 다른 계열) search-runtime의
+            SEARCH_QUERY_INSTRUCT_PREFIX도 함께 재검토해야 합니다 — 그렇지 않으면 관련 있는
+            질문과 무관한 질문의 유사도 분포가 겹쳐 관련도 임계값이 더 이상 작동하지 않을 수
+            있습니다 (근거: D-046, D-075).
+          </p>
+        </div>
+      </div>
+
+      <dl className="mb-4 grid grid-cols-1 gap-x-4 gap-y-2 text-body sm:grid-cols-3">
+        <div>
+          <dt className="text-caption text-text-muted">현재 설정된 모델</dt>
+          <dd className="font-mono text-text-primary">
+            {configuredModel ?? (
+              <span className="font-sans text-text-muted">
+                미설정{defaultModel ? ` (기본값 ${defaultModel} 사용)` : ""}
+              </span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-caption text-text-muted">마지막 변경</dt>
+          <dd className="text-text-secondary">{updatedAt ? formatDateTime(updatedAt) : "-"}</dd>
+        </div>
+        <div>
+          <dt className="text-caption text-text-muted">변경자</dt>
+          <dd className="text-text-secondary">{updatedBy ?? "-"}</dd>
+        </div>
+      </dl>
+
+      {modelsState === "loading" && (
+        <LoadingState label="Ollama 설치 모델 목록을 불러오는 중..." />
+      )}
+
+      {modelsState === "error" && (
+        <div className="mb-3 flex flex-col gap-2">
+          <ErrorBanner message={`사용 가능한 모델 목록을 가져오지 못했습니다: ${modelsError}`} />
+          <Button variant="secondary" size="sm" onClick={loadModels} className="w-fit">
+            <RefreshCw size={14} /> 다시 시도
+          </Button>
+        </div>
+      )}
+
+      {modelsState === "ok" && (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <FormField label="새 임베딩 모델">
+                <select
+                  className={inputClass}
+                  value={selected}
+                  onChange={(e) => {
+                    setSelected(e.target.value);
+                    setSaveSuccess(false);
+                  }}
+                  disabled={models.length === 0}
+                >
+                  <option value="" disabled>
+                    모델을 선택하세요
+                  </option>
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name} disabled={!m.embedding_capable}>
+                      {m.name}
+                      {!m.embedding_capable ? " (임베딩 불가 모델로 판별됨)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <Button
+              onClick={handleSave}
+              disabled={saving || !selected || selected === configuredModel || noUsableModels}
+              title={
+                noUsableModels
+                  ? "Ollama에 임베딩 가능 모델로 판별된 모델이 없습니다."
+                  : selected === configuredModel
+                    ? "이미 적용된 모델입니다."
+                    : undefined
+              }
+            >
+              {saving ? "저장 중..." : "저장"}
+            </Button>
+          </div>
+
+          {noUsableModels && (
+            <p className="mt-2 text-caption text-danger">
+              Ollama에 설치된 모델 중 임베딩 가능으로 판별된 모델이 없습니다. 임베딩 모델을 먼저
+              설치하세요.
+            </p>
+          )}
+        </>
+      )}
+
+      {saveError && (
+        <div className="mt-3">
+          <ErrorBanner message={`저장하지 못했습니다: ${saveError}`} />
+        </div>
+      )}
+
+      {saveSuccess && (
+        <p className="mt-3 text-body text-success">
+          저장했습니다. 새로 인덱싱되는 Knowledge부터 적용됩니다.
+        </p>
+      )}
+
+      <p className="mt-3 text-caption text-text-muted">{section.note}</p>
+    </SectionCard>
+  );
+}
+
 export default function AdminSettingsPage() {
   const { role } = useRole();
   const [state, setState] = useState<LoadState>("loading");
@@ -242,7 +501,7 @@ export default function AdminSettingsPage() {
     <div>
       <PageHeader
         title="관리자 설정"
-        description="플랫폼에 실제 적용 중인 정책·구성 현황입니다. 저장소가 없는 항목은 편집 폼 대신 미구현 사유를 표시합니다."
+        description="플랫폼에 실제 적용 중인 정책·구성 현황입니다. 인덱싱 임베딩 모델을 제외한 나머지 항목은 저장소가 없어 편집 폼 대신 미구현 사유를 표시합니다."
       />
 
       {state === "loading" && <LoadingState label="설정 현황을 불러오는 중..." />}
@@ -525,6 +784,11 @@ export default function AdminSettingsPage() {
           <SectionCard title="Package Trust/Signature 설정" status={data.package_trust_signature.status}>
             <NotImplementedNote info={data.package_trust_signature.not_implemented} />
           </SectionCard>
+
+          <IndexingEmbeddingModelCard
+            section={data.indexing_embedding_model}
+            token={role.token}
+          />
         </div>
       )}
     </div>

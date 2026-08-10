@@ -1,24 +1,35 @@
 """P15 관리자 설정 router — M02
 (01-portal-and-distribution.md §2 P15).
 
-Deliberately a single read-only endpoint, not 8 editable sub-screens: this
+Mostly a read-only "정책·구성 현황" screen, not 8 editable sub-screens: this
 PoC has no `users`/`sites`/`roles` tables, so several P15 sub-areas ("사용자
 ·역할 매핑", "조직·사업장", "Package Trust/Signature 설정", 그리고 "보관기간"
 절반의 "보안등급과 보관기간") have no storage to edit. Building forms over
 storage that doesn't exist would render a screen that looks functional but
 silently does nothing — CLAUDE.md 원칙 5 ("테스트 증거 없는 기능은 완료로
-표시하지 않는다")와 정면으로 충돌한다. Instead this reports the *actually
+표시하지 않는다")와 정면으로 충돌한다. Most of this reports the *actually
 effective* configuration, read from its real source at request time, and
 reports each of the 8 sub-areas as either genuinely available or explicitly
 미구현 with a named reason + open-decisions.md id (D-065). See that entry
 for the full rationale and exactly which sub-areas are which.
 
-ADMIN only (`Permission.ADMIN_SETTINGS_READ`) — a denial is recorded as a
-DENIED `AuditEvent` by `rbac.require_permission`, same as every other
-endpoint. A *successful* read is not separately audited, mirroring
-`list_audit_events`/`list_asset_version_lifecycle` (no other GET-only
-admin/governance screen in this codebase writes a SUCCESS audit row for
-being viewed).
+**UPDATE (D-065 UPDATE / D-075): one sub-area now IS editable** — the
+indexing embedding model (`_build_indexing_embedding_model`,
+`list_embedding_models`, `set_indexing_embedding_model` below). It has real
+storage (`portal_api.platform_settings`, a `platform_settings` table added
+specifically for this) and portal-api's own `_trigger_indexing`
+(`routers/assets.py`) actually reads the value back and forwards it to
+indexing-runtime. Every other section in this file remains read-only for
+the same reason as before — this is not a general precedent for adding more
+editable forms without storage.
+
+ADMIN only. Reads use `Permission.ADMIN_SETTINGS_READ`; the one write uses
+a separate `Permission.ADMIN_SETTINGS_WRITE` so its denial audit event name
+is distinguishable. A denial is recorded as a DENIED `AuditEvent` by
+`rbac.require_permission`, same as every other endpoint. A *successful*
+read is not separately audited (mirrors `list_audit_events`), but a
+*successful write* to the embedding model setting is (a real state change,
+unlike every read-only section here).
 """
 
 from __future__ import annotations
@@ -27,8 +38,10 @@ import json
 import logging
 import os
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 
+import httpx
 import yaml
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
@@ -42,16 +55,25 @@ from security_policy import (
     Stage,
     redact_if_secret,
 )
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal_api.audit import record_audit
 from portal_api.auth import UserContext, get_current_user
 from portal_api.config import settings
 from portal_api.database import get_db
+from portal_api.errors import error_response
+from portal_api.models import PlatformSetting
+from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting, set_setting
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AdminSettingsOut,
     ApprovalWorkflowSectionOut,
     AssetSizeExtensionPolicySectionOut,
+    EmbeddingModelInfoOut,
+    EmbeddingModelsOut,
+    IndexingEmbeddingModelSectionOut,
+    IndexingEmbeddingModelUpdateIn,
     McpServerAliasSettingOut,
     ModelAliasSettingOut,
     ModelEndpointAliasSectionOut,
@@ -345,6 +367,189 @@ def _build_package_trust_signature() -> PackageTrustSignatureSectionOut:
     )
 
 
+async def _build_indexing_embedding_model(db: AsyncSession) -> IndexingEmbeddingModelSectionOut:
+    """D-065 UPDATE / D-075: the only P15 sub-area with real storage
+    (`portal_api.platform_settings`, `portal.db`'s `platform_settings`
+    table) — everything else in this router is read-only reporting. A
+    `None` `configured_model` means indexing-runtime's own
+    `INDEXING_EMBED_MODEL` default applies (see that setting's docstring);
+    this never guesses a value here."""
+    row = (
+        await db.execute(
+            select(PlatformSetting).where(PlatformSetting.key == INDEXING_EMBED_MODEL_KEY)
+        )
+    ).scalar_one_or_none()
+
+    return IndexingEmbeddingModelSectionOut(
+        source="portal.db platform_settings + services/indexing-runtime (GET /indexing/v1/models)",
+        configured_model=row.value if row is not None else None,
+        updated_at=row.updated_at if row is not None else None,
+        updated_by=row.updated_by_user_id if row is not None else None,
+        note=(
+            "값이 비어 있으면 indexing-runtime 자체 기본값(INDEXING_EMBED_MODEL 설정)이 "
+            "적용됩니다. 이 설정을 바꿔도 이미 만들어진 인덱스는 바뀌지 않습니다 — 각 "
+            "인덱스는 색인 시점에 index-meta.json에 기록된 자신의 임베딩 모델로만 "
+            "검색되며(D-075), 기존 Knowledge에 새 모델을 적용하려면 재인덱싱이 "
+            "필요합니다. 모델 계열을 바꾸는 경우 search-runtime의 "
+            "SEARCH_QUERY_INSTRUCT_PREFIX도 함께 재검토해야 합니다(D-046/D-075) — "
+            "그렇지 않으면 관련도 임계값이 더 이상 작동하지 않을 수 있습니다."
+        ),
+    )
+
+
+async def _call_indexing_runtime_models_http() -> tuple[list[dict], str | None, str | None]:
+    """Proxies indexing-runtime's `GET /indexing/v1/models` (the service
+    that actually owns the embedding relationship, D-075 — portal-api never
+    calls Ollama directly per CLAUDE.md).
+
+    Returns `(models, default_embed_model, error_message)`. Never raises —
+    `error_message` set (models empty) distinguishes "couldn't ask" from a
+    genuinely empty install (`error_message is None`, `models == []`)."""
+    url = f"{settings.indexing_runtime_url}/indexing/v1/models"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        return [], None, f"indexing-runtime({url})에 연결할 수 없습니다: {exc}"
+
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+            message = (body.get("error") or {}).get("message") or f"HTTP {resp.status_code}"
+        except ValueError:
+            message = f"HTTP {resp.status_code}"
+        return [], None, message
+
+    data = resp.json()
+    return list(data.get("models") or []), data.get("default_embed_model"), None
+
+
+EmbeddingModelsCaller = Callable[[], Awaitable[tuple[list[dict], str | None, str | None]]]
+
+
+def get_embedding_models_caller() -> EmbeddingModelsCaller:
+    """FastAPI dependency seam — overridden in integration tests
+    (`app.dependency_overrides[get_embedding_models_caller]`) so the suite
+    never needs a real indexing-runtime process running. Mirrors
+    `routers.distributions.get_distribution_caller` exactly (same
+    rationale, just for a synchronous in-request call rather than a
+    background task)."""
+    return _call_indexing_runtime_models_http
+
+
+@router.get("/embedding-models", response_model=None)
+async def list_embedding_models(
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+    embedding_models_caller: EmbeddingModelsCaller = Depends(get_embedding_models_caller),
+) -> EmbeddingModelsOut | JSONResponse:
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ADMIN_SETTINGS_READ, trace_id=trace_id, resource_type="ADMIN_SETTINGS"
+    )
+    if denial:
+        return denial
+
+    models, default_model, error = await embedding_models_caller()
+    if error:
+        return error_response(
+            503,
+            "MODEL_UNAVAILABLE",
+            f"사용 가능한 임베딩 모델 목록을 가져오지 못했습니다: {error}",
+            trace_id,
+        )
+
+    return EmbeddingModelsOut(
+        models=[
+            EmbeddingModelInfoOut(
+                name=m.get("name", ""),
+                embedding_capable=bool(m.get("embedding_capable")),
+                size=m.get("size"),
+                modified_at=m.get("modified_at"),
+            )
+            for m in models
+        ],
+        default_embed_model=default_model or "",
+        source=f"{settings.indexing_runtime_url}/indexing/v1/models",
+        trace_id=trace_id,
+    )
+
+
+@router.put("/indexing-embedding-model", response_model=None)
+async def set_indexing_embedding_model(
+    body: IndexingEmbeddingModelUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+    embedding_models_caller: EmbeddingModelsCaller = Depends(get_embedding_models_caller),
+) -> IndexingEmbeddingModelSectionOut | JSONResponse:
+    """ADMIN only (`Permission.ADMIN_SETTINGS_WRITE`, distinct from the read
+    permission so its denial audit event is separately identifiable). A
+    model that indexing-runtime doesn't report as `embedding_capable` is
+    rejected outright (D-065 UPDATE design decision 4) — accepting it would
+    surface as a confusing indexing failure much later instead of here,
+    now, with the actual list of usable models attached."""
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ADMIN_SETTINGS_WRITE, trace_id=trace_id, resource_type="ADMIN_SETTINGS"
+    )
+    if denial:
+        return denial
+
+    model_name = body.model.strip()
+    if not model_name:
+        return error_response(400, "VALIDATION_ERROR", "모델명을 입력하세요.", trace_id)
+
+    models, _default_model, error = await embedding_models_caller()
+    if error:
+        return error_response(
+            503,
+            "MODEL_UNAVAILABLE",
+            f"사용 가능한 임베딩 모델 목록을 가져오지 못해 저장할 수 없습니다: {error}",
+            trace_id,
+        )
+
+    usable = sorted({m.get("name", "") for m in models if m.get("embedding_capable")})
+    if model_name not in usable:
+        await record_audit(
+            db,
+            event_type="INDEXING_EMBEDDING_MODEL_UPDATE_REJECTED",
+            actor=user,
+            resource_type="ADMIN_SETTINGS",
+            resource_id="indexing_embedding_model",
+            result="FAILED",
+            trace_id=trace_id,
+            metadata={"requested_model": model_name, "available_embedding_models": usable},
+        )
+        return error_response(
+            400,
+            "VALIDATION_ERROR",
+            f"'{model_name}'은(는) Ollama에서 임베딩 가능 모델로 확인되지 않습니다.",
+            trace_id,
+            details={"requested_model": model_name, "available_embedding_models": usable},
+        )
+
+    previous_model = await get_setting(db, INDEXING_EMBED_MODEL_KEY)
+    await set_setting(
+        db,
+        INDEXING_EMBED_MODEL_KEY,
+        model_name,
+        updated_by_user_id=user.user_id,
+        trace_id=trace_id,
+    )
+    await record_audit(
+        db,
+        event_type="INDEXING_EMBEDDING_MODEL_UPDATED",
+        actor=user,
+        resource_type="ADMIN_SETTINGS",
+        resource_id="indexing_embedding_model",
+        result="SUCCESS",
+        trace_id=trace_id,
+        metadata={"previous_model": previous_model, "new_model": model_name},
+    )
+
+    return await _build_indexing_embedding_model(db)
+
+
 @router.get("/settings", response_model=None)
 async def get_admin_settings(
     db: AsyncSession = Depends(get_db),
@@ -373,4 +578,5 @@ async def get_admin_settings(
         approval_workflow=_build_approval_workflow(),
         security_classification_retention=_build_security_classification_retention(),
         package_trust_signature=_build_package_trust_signature(),
+        indexing_embedding_model=await _build_indexing_embedding_model(db),
     )

@@ -1,6 +1,7 @@
 from portal_api.models.asset import Asset, AssetVersion, IndexingJob
 from portal_api.models.distribution import DistributionRequest
 from portal_api.models.evaluation import EvaluationNote, EvaluationResultRecord
+from portal_api.models.platform_setting import PlatformSetting
 from portal_api.models.review import AuditEvent, ReviewDecision, ReviewRequest
 from portal_api.models.revocation import AssetVersionRevocation
 from portal_api.models.service import (
@@ -25,4 +26,5 @@ __all__ = [
     "EvaluationResultRecord",
     "EvaluationNote",
     "AssetVersionRevocation",
+    "PlatformSetting",
 ]

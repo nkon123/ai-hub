@@ -912,6 +912,36 @@ class PackageTrustSignatureSectionOut(BaseModel):
     not_implemented: NotImplementedInfoOut
 
 
+# --- D-065 UPDATE / D-075: 인덱싱 임베딩 모델 (P15의 유일한 편집 가능 영역) -------
+
+
+class IndexingEmbeddingModelSectionOut(BaseModel):
+    status: Literal["AVAILABLE"] = "AVAILABLE"
+    source: str
+    configured_model: str | None = None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+    note: str
+
+
+class EmbeddingModelInfoOut(BaseModel):
+    name: str
+    embedding_capable: bool
+    size: int | None = None
+    modified_at: str | None = None
+
+
+class EmbeddingModelsOut(BaseModel):
+    models: list[EmbeddingModelInfoOut]
+    default_embed_model: str
+    source: str
+    trace_id: str
+
+
+class IndexingEmbeddingModelUpdateIn(BaseModel):
+    model: str = Field(min_length=1)
+
+
 class AdminSettingsOut(BaseModel):
     generated_at: datetime
     trace_id: str
@@ -923,3 +953,4 @@ class AdminSettingsOut(BaseModel):
     approval_workflow: ApprovalWorkflowSectionOut
     security_classification_retention: SecurityClassificationRetentionSectionOut
     package_trust_signature: PackageTrustSignatureSectionOut
+    indexing_embedding_model: IndexingEmbeddingModelSectionOut

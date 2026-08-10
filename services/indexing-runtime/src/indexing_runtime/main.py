@@ -8,11 +8,18 @@ import os
 from pathlib import Path
 
 import click
+import httpx
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from observability import bind_trace_id, configure_logging
 from pydantic import BaseModel
 
+from indexing_runtime.embedders import (
+    OLLAMA_ENDPOINT,
+    is_embedding_capable,
+    list_ollama_models,
+)
+from indexing_runtime.errors import ErrorCode, error_envelope, status_for
 from indexing_runtime.pipeline import run_pipeline
 from indexing_runtime.settings import EMBED_MODEL
 
@@ -65,6 +72,54 @@ class IndexJobRequest(BaseModel):
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "version": "0.1.0"})
+
+
+@app.get("/indexing/v1/models")
+async def list_embedding_models() -> JSONResponse:
+    """Model discovery for portal-api's P15 admin screen
+    (open-decisions.md D-075 follow-up) — CLAUDE.md: "Portal API는 모델을
+    직접 호출하지 않는다", so indexing-runtime (the service that owns the
+    embedding relationship, D-075) is what actually talks to Ollama here;
+    portal-api's `routers.admin` calls this endpoint over HTTP.
+
+    Ollama unreachable is reported as a clear `MODEL_UNAVAILABLE` error, NOT
+    a 500 and NOT an empty `models: []` (which would be indistinguishable
+    from "Ollama is up with zero models installed", a real and different
+    state a caller must be able to tell apart from "couldn't ask at all")."""
+    import uuid
+
+    trace_id = str(uuid.uuid4())
+    bind_trace_id(trace_id)
+
+    try:
+        raw_models = await list_ollama_models()
+    except httpx.HTTPError as exc:
+        _logger.warning("indexing.models.ollama_unavailable error=%s", exc)
+        return JSONResponse(
+            status_code=status_for(ErrorCode.MODEL_UNAVAILABLE),
+            content=error_envelope(
+                ErrorCode.MODEL_UNAVAILABLE,
+                "Ollama에 연결할 수 없어 사용 가능한 모델 목록을 가져올 수 없습니다.",
+                trace_id,
+            ),
+        )
+
+    models = [
+        {
+            "name": name,
+            "embedding_capable": is_embedding_capable(m),
+            "size": m.get("size"),
+            "modified_at": m.get("modified_at"),
+        }
+        for m in raw_models
+        if (name := (m.get("name") or m.get("model")))
+    ]
+    return JSONResponse({
+        "models": models,
+        "default_embed_model": EMBED_MODEL,
+        "source": f"{OLLAMA_ENDPOINT}/api/tags",
+        "trace_id": trace_id,
+    })
 
 
 @app.post("/indexing/v1/jobs")

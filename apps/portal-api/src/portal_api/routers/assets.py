@@ -6,9 +6,11 @@ import hashlib
 import json
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 from ai_asset_schemas import SchemaType
 from ai_asset_schemas import ValidationError as SchemaValidationError
 from ai_asset_schemas import validate as validate_manifest
@@ -39,6 +41,7 @@ from portal_api.errors import error_response, not_found
 from portal_api.models import Asset, AssetVersion, AssetVersionRevocation, IndexingJob
 from portal_api.models.review import ReviewDecision, ReviewRequest
 from portal_api.models.revocation import effective_filter
+from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AssetListResponse,
@@ -85,6 +88,43 @@ _MANIFEST_TYPE_TO_SCHEMA: dict[str, SchemaType] = {
     "mcp_tool": SchemaType.MCP_TOOL,
     "service": SchemaType.SERVICE,
 }
+
+# DI seams for `_trigger_indexing`'s background task — mirrors
+# `routers.distributions.get_distribution_caller`/`get_session_factory`
+# exactly (same rationale: a background task outlives the request's
+# `Depends(get_db)` session and must not hardcode a real outbound HTTP call,
+# so integration tests can override both via `app.dependency_overrides`
+# instead of a real indexing-runtime process or the real `portal.db`).
+IndexingCaller = Callable[[dict], Awaitable[dict]]
+SessionFactory = Callable[[], AsyncSession]
+
+
+async def _call_indexing_runtime_http(payload: dict) -> dict:
+    async with httpx.AsyncClient(timeout=300) as client:
+        resp = await client.post(
+            f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload
+        )
+        # No raise_for_status() here, deliberately unchanged from this
+        # function's pre-DI-seam behavior: a non-2xx response body is still
+        # parsed and stored via IndexingJob.status = result.get("status",
+        # "COMPLETED") below, same as before this refactor.
+        return resp.json()
+
+
+def get_indexing_caller() -> IndexingCaller:
+    """FastAPI dependency seam — overridden in integration tests
+    (`app.dependency_overrides[get_indexing_caller]`) so the suite never
+    needs a real indexing-runtime process running."""
+    return _call_indexing_runtime_http
+
+
+def get_indexing_session_factory() -> SessionFactory:
+    """FastAPI dependency seam for `_trigger_indexing`'s own DB session —
+    see `routers.distributions.get_session_factory`'s docstring for why a
+    background task can't reuse the request's `Depends(get_db)` session."""
+    from portal_api.database import AsyncSessionLocal
+
+    return AsyncSessionLocal
 
 
 def _trace_id() -> str:
@@ -392,6 +432,8 @@ async def create_asset(
     background_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
     user: UserContext = Depends(get_current_user),
+    indexing_caller: IndexingCaller = Depends(get_indexing_caller),
+    indexing_session_factory: SessionFactory = Depends(get_indexing_session_factory),
 ) -> AssetVersionOut | JSONResponse:
     trace_id = _trace_id()
     denial = await require_permission(
@@ -509,6 +551,12 @@ async def create_asset(
         db.add(job)
         await db.commit()
         await db.refresh(job)
+        # D-065 UPDATE / D-075: the ADMIN-configured indexing embedding
+        # model, read once here (same request-scoped `db` session, before
+        # the background task runs) — `None` when unset, in which case
+        # `_trigger_indexing` omits the field entirely so indexing-runtime's
+        # own INDEXING_EMBED_MODEL default applies (unchanged behavior).
+        configured_embed_model = await get_setting(db, INDEXING_EMBED_MODEL_KEY)
         background_tasks.add_task(
             _trigger_indexing,
             job.id,
@@ -521,6 +569,9 @@ async def create_asset(
             # stamps UNKNOWN for a missing/unrecognized value — see
             # indexing_runtime.pipeline.run_pipeline's docstring.
             manifest_dict.get("classification"),
+            configured_embed_model,
+            indexing_caller,
+            indexing_session_factory,
         )
 
     return AssetVersionOut.model_validate(version)
@@ -1261,10 +1312,22 @@ async def _trigger_indexing(
     job_id: str,
     version_id: str,
     storage_path: str,
-    trace_id: str | None = None,
-    classification: str | None = None,
+    trace_id: str | None,
+    classification: str | None,
+    embed_model: str | None,
+    caller: IndexingCaller,
+    session_factory: SessionFactory,
 ) -> None:
     """Background task: call indexing-runtime to index the Knowledge package.
+
+    Mirrors `routers.distributions._run_bundle_job`'s shape exactly: mark
+    RUNNING via `session_factory` (never the module-level `AsyncSessionLocal`
+    directly — see `get_indexing_session_factory`'s docstring for why),
+    invoke `caller`, persist whatever comes back or mark FAILED on any
+    exception. Both `caller`/`session_factory` are DI seams
+    (`get_indexing_caller`/`get_indexing_session_factory`) so integration
+    tests can override them via `app.dependency_overrides` instead of
+    needing a real indexing-runtime process or the real `portal.db`.
 
     `trace_id` (the same id `record_audit`/the HTTP response for the upload
     request already used) is forwarded so indexing-runtime's own logs for
@@ -1274,15 +1337,18 @@ async def _trigger_indexing(
     own id in that case, unchanged from before.
 
     `classification` (D-062, additive/optional) is the raw manifest value —
-    see the call site's comment for why this is not `Asset.classification`."""
-    from datetime import datetime
+    see the call site's comment for why this is not `Asset.classification`.
 
-    import httpx
-
-    from portal_api.database import AsyncSessionLocal
-    from portal_api.models import IndexingJob
-
-    async with AsyncSessionLocal() as db:
+    `embed_model` (D-065 UPDATE / D-075, additive/optional) is the ADMIN-
+    configured value from `portal_api.platform_settings` at the moment
+    indexing was triggered (the call site reads it, not this function — see
+    that call site's comment). `None` means "no admin override configured";
+    the key is omitted entirely from the request body in that case (NOT
+    sent as an explicit JSON `null`) because indexing-runtime's
+    `IndexJobRequest.embed_model` is a non-Optional `str` field with its own
+    default — sending `null` would fail that field's validation instead of
+    falling through to it."""
+    async with session_factory() as db:
         job = (
             await db.execute(select(IndexingJob).where(IndexingJob.id == job_id))
         ).scalar_one_or_none()
@@ -1291,26 +1357,28 @@ async def _trigger_indexing(
         job.status = "RUNNING"
         await db.commit()
 
+    job_body: dict = {
+        "version_id": version_id,
+        "storage_path": storage_path,
+        "job_id": job_id,
+        "index_base": str(settings.index_base),
+        "trace_id": trace_id,
+        "classification": classification,
+    }
+    # D-065 UPDATE / D-075: omit the key (never send an explicit JSON null)
+    # when no admin override is configured — see this function's docstring
+    # for why. indexing-runtime's own IndexJobRequest.embed_model default
+    # then applies, exactly like every caller before this change.
+    if embed_model is not None:
+        job_body["embed_model"] = embed_model
+
     try:
-        from portal_api.config import settings as _s
-        async with httpx.AsyncClient(timeout=300) as client:
-            resp = await client.post(
-                f"{_s.indexing_runtime_url}/indexing/v1/jobs",
-                json={
-                    "version_id": version_id,
-                    "storage_path": storage_path,
-                    "job_id": job_id,
-                    "index_base": str(_s.index_base),
-                    "trace_id": trace_id,
-                    "classification": classification,
-                },
-            )
-            result = resp.json()
-    except Exception as e:
-        async with AsyncSessionLocal() as db:
+        result = await caller(job_body)
+    except Exception as e:  # noqa: BLE001 — must never crash the background task
+        async with session_factory() as db:
             job = (
-            await db.execute(select(IndexingJob).where(IndexingJob.id == job_id))
-        ).scalar_one_or_none()
+                await db.execute(select(IndexingJob).where(IndexingJob.id == job_id))
+            ).scalar_one_or_none()
             if job:
                 job.status = "FAILED"
                 job.error_message = str(e)
@@ -1318,7 +1386,7 @@ async def _trigger_indexing(
                 await db.commit()
         return
 
-    async with AsyncSessionLocal() as db:
+    async with session_factory() as db:
         job = (
             await db.execute(select(IndexingJob).where(IndexingJob.id == job_id))
         ).scalar_one_or_none()
