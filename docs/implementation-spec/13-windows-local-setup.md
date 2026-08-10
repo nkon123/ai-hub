@@ -52,6 +52,62 @@ ollama pull qwen3-embedding:0.6b
 - `12-poc-acceptance-report.md`는 이 두 모델 외에 `qwen2.5-coder:3b`도 개발 세션에서 확인된 적이 있다고 기록하지만, 현재 `office-profile.json`이 참조하는 것은 위 두 모델뿐이다 — 추가로 pull할 필요는 없다.
 - **폐쇄망에서 `ollama pull`이 동작하려면 Ollama 자체가 외부 레지스트리에 접근해야 한다.** 완전히 외부 연동이 차단된 PC라면, 모델을 접근 가능한 다른 경로(사내 미러, 이동식 매체로 받은 모델 파일)로 먼저 받아 `ollama create`/모델 디렉터리 복사 등으로 반입해야 한다 — 이 저장소는 그 반입 절차 자체를 제공하지 않는다(Ollama 자체의 기능 범위 밖).
 
+## 2.5 uv 설치 (Windows에 uv가 없는 경우)
+
+현장에서 실제로 마주친 상황이다 — Windows PC에 `uv`가 설치되어 있지 않다. 아래 순서로 시도한다.
+
+**① `pip install uv` (권장)**
+
+```powershell
+python -m pip install uv
+uv --version
+```
+
+`uv`는 PyPI에 배포되므로, **Python 패키지를 받을 수 있는 환경이면 이 경로가 가장 확실하다** — 다른 의존성과 같은 인덱스/미러를 그대로 쓴다. 설치 후 `uv` 명령이 PATH에서 잡히지 않으면 `python -m uv`로 대체할 수 있다.
+
+**② 그 외 경로** (①이 막혔을 때)
+
+| 방법 | 명령 | 필요한 접근 |
+|---|---|---|
+| winget | `winget install --id=astral-sh.uv -e` | Microsoft 저장소 |
+| 공식 스크립트 | `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 \| iex"` | `astral.sh` |
+| 단독 실행 파일 | GitHub Releases의 `uv-x86_64-pc-windows-msvc.zip` | `github.com` |
+
+**③ uv를 전혀 설치할 수 없는 경우 — pip 대체 절차**
+
+이 저장소의 Python 패키지들은 서로를 **이름으로만** 참조하고(`ai-asset-schemas`, `security-policy`, `observability`), 그 이름은 `[tool.uv.sources] workspace = true`로 해석된다. 이건 **uv 전용 기능**이라, 그냥 `pip install -r`을 하면 pip이 `ai-asset-schemas`를 PyPI에서 찾다가 실패한다.
+
+따라서 로컬 패키지를 **의존 순서대로 먼저 editable 설치**해야 한다.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+
+# 1단계 — 다른 워크스페이스 패키지에 의존하지 않는 것
+pip install -e packages/schemas
+pip install -e packages/observability
+
+# 2단계 — schemas에만 의존
+pip install -e packages/security-policy
+pip install -e packages/evaluation-runner
+pip install -e packages/knowledge-packager
+
+# 3단계 — 위 패키지들에 의존
+pip install -e services/agent-runtime
+pip install -e services/indexing-runtime
+pip install -e services/search-runtime
+pip install -e services/distribution-service
+pip install -e services/office-mcp-server
+pip install -e apps/portal-api
+```
+
+주의할 점:
+
+- 순서를 지키지 않으면 pip이 워크스페이스 패키지 이름을 PyPI에서 찾다가 실패한다.
+- 이후 문서의 모든 `uv run <명령>`은 가상환경을 활성화한 상태에서 `<명령>`으로 바꿔 실행한다(예: `uv run alembic upgrade head` → `alembic upgrade head`).
+- `uv.lock`이 고정한 정확한 버전이 아니라 각 `pyproject.toml`의 범위(`>=`)로 해석되므로, uv를 쓸 때와 **의존성 버전이 달라질 수 있다**. 재현성이 떨어지므로 어디까지나 최후 수단이다.
+- **이 대체 절차는 실행해 검증하지 않았다**(개발 머신은 네트워크 설치가 금지되어 있음). 위 의존 순서는 각 `pyproject.toml`의 `[tool.uv.sources]`를 읽어 도출한 것이다.
+
 ## 3. 저장소 설치
 
 ```powershell
