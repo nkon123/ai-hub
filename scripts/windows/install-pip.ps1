@@ -51,6 +51,9 @@ param(
 # 성공/실패는 아래에서 $LASTEXITCODE 로만 판정한다.
 $ErrorActionPreference = "Continue"
 
+# Windows 한국어 환경(cp949)에서의 UnicodeDecodeError 방지
+$env:PYTHONUTF8 = "1"
+
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location $RepoRoot
 

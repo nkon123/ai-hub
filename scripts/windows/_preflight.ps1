@@ -12,6 +12,13 @@
     명령을 출력한 뒤 스크립트를 종료한다(exit 1).
 #>
 
+# Windows 한국어 환경의 기본 인코딩은 cp949 다. Python 은 파일을 열 때
+# 로케일 인코딩을 쓰는 경우가 있어(예: configparser 가 alembic.ini 를 읽을 때)
+# UTF-8 문자가 들어 있으면 UnicodeDecodeError 로 죽는다.
+# PYTHONUTF8=1 은 Python 의 UTF-8 모드를 켜서 이 계열의 문제를 없앤다.
+# (`.py` 소스 자체는 PEP 3120 에 따라 항상 UTF-8 로 읽히므로 영향 없다.)
+$env:PYTHONUTF8 = "1"
+
 function Write-Fix {
     param([string]$Problem, [string[]]$Fixes)
 
