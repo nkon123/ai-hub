@@ -79,42 +79,59 @@ def parent_child_chunk_document(
                 continue
 
             parent_id = make_parent_id(document_id, p_index, anchor, parent_text)
+            parent_metadata: dict = {
+                "knowledge_id": knowledge_id,
+                "document_id": document_id,
+                "source_path": meta.get("source_path", ""),
+                "title": meta.get("title", ""),
+                "section": section_leaf,
+                "page": section_index + 1,
+                "chunk_type": "parent",
+            }
+            if title_path:
+                # Chroma's `collection.add` rejects an empty *list* metadata
+                # value outright ("Expected metadata list value for key
+                # 'title_path' to be non empty") — empty strings/None are
+                # fine, only empty lists are not. Content before the first
+                # heading (or a document with no headings at all) legitimately
+                # has no title path, so the key is omitted rather than stored
+                # as `[]`. `section`/`anchor` already degrade to `""` for this
+                # case and Chroma accepts empty strings, so this is the only
+                # field that needs the omit-when-empty treatment. No consumer
+                # (search-runtime's hybrid.py, parents.json readers) reads
+                # `title_path` today — it only ever travels into stored
+                # metadata — so omitting it is safe; heading-bearing documents
+                # are unaffected (title_path/IDs unchanged).
+                parent_metadata["title_path"] = title_path
             parents.append(
                 {
                     "id": parent_id,
                     "text": parent_text,
-                    "metadata": {
-                        "knowledge_id": knowledge_id,
-                        "document_id": document_id,
-                        "source_path": meta.get("source_path", ""),
-                        "title": meta.get("title", ""),
-                        "section": section_leaf,
-                        "title_path": title_path,
-                        "page": section_index + 1,
-                        "chunk_type": "parent",
-                    },
+                    "metadata": parent_metadata,
                 }
             )
 
             child_texts = recursive_split(parent_text, chunk_size, chunk_overlap, minimum_size)
             for c_index, child_text in enumerate(child_texts):
                 chunk_id = make_child_id(parent_id, c_index, anchor, child_text)
+                child_metadata: dict = {
+                    "knowledge_id": knowledge_id,
+                    "document_id": document_id,
+                    "source_path": meta.get("source_path", ""),
+                    "title": meta.get("title", ""),
+                    "section": section_leaf,
+                    "page": section_index + 1,
+                    "chunk_type": "child",
+                    "parent_id": parent_id,
+                }
+                if title_path:
+                    child_metadata["title_path"] = title_path
                 children.append(
                     {
                         "id": chunk_id,
                         "text": child_text,
                         "parent_id": parent_id,
-                        "metadata": {
-                            "knowledge_id": knowledge_id,
-                            "document_id": document_id,
-                            "source_path": meta.get("source_path", ""),
-                            "title": meta.get("title", ""),
-                            "section": section_leaf,
-                            "title_path": title_path,
-                            "page": section_index + 1,
-                            "chunk_type": "child",
-                            "parent_id": parent_id,
-                        },
+                        "metadata": child_metadata,
                     }
                 )
 

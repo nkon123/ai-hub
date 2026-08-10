@@ -49,20 +49,27 @@ def markdown_chunk_document(
 
         for piece in pieces:
             chunk_id = make_child_id(unit_id, child_index, anchor, piece)
+            piece_metadata: dict = {
+                "knowledge_id": knowledge_id,
+                "document_id": document_id,
+                "source_path": meta.get("source_path", ""),
+                "title": meta.get("title", ""),
+                "section": section_leaf,
+                "page": section_index + 1,
+                "chunk_type": "markdown_section",
+            }
+            if title_path:
+                # See chunkers/parent_child.py for why an empty title_path is
+                # omitted rather than stored as `[]` — Chroma's `collection.add`
+                # rejects empty *list* metadata values (empty strings are
+                # fine). Content before the first heading, or a document with
+                # no headings at all, legitimately has no title path.
+                piece_metadata["title_path"] = title_path
             children.append(
                 {
                     "id": chunk_id,
                     "text": piece,
-                    "metadata": {
-                        "knowledge_id": knowledge_id,
-                        "document_id": document_id,
-                        "source_path": meta.get("source_path", ""),
-                        "title": meta.get("title", ""),
-                        "section": section_leaf,
-                        "title_path": title_path,
-                        "page": section_index + 1,
-                        "chunk_type": "markdown_section",
-                    },
+                    "metadata": piece_metadata,
                 }
             )
             child_index += 1
