@@ -25,11 +25,24 @@
 .PARAMETER SkipVenv
     가상환경 생성을 건너뛰고 현재 활성화된 환경에 설치한다.
 
+.PARAMETER Loose
+    requirements.txt 의 고정 버전 대신 각 pyproject.toml 의 범위로 설치한다.
+    사내 미러에 정확한 고정 버전이 없을 때의 대안. 재현성은 떨어진다.
+
 .EXAMPLE
     .\scripts\windows\install-pip.ps1
+
+.EXAMPLE
+    .\scripts\windows\install-pip.ps1 -Loose
 #>
 
-param([switch]$SkipVenv)
+param(
+    [switch]$SkipVenv,
+    # 사내 미러에 고정된 정확한 버전이 없을 때 사용한다. requirements.txt 의
+    # `==` 고정을 무시하고 각 pyproject.toml 의 범위(`>=`)로 설치한다.
+    # 재현성이 떨어지므로 일괄 설치가 실패했을 때만 쓴다.
+    [switch]$Loose
+)
 
 $ErrorActionPreference = "Stop"
 
@@ -67,11 +80,69 @@ if (-not $SkipVenv) {
 Write-Host "[2/4] pip 업그레이드" -ForegroundColor Cyan
 & $Python -m pip install --upgrade pip
 
+if ($Loose) {
+    Write-Host "[3/4] 외부 의존성 설치 (-Loose: 고정 버전 대신 pyproject 범위)" -ForegroundColor Cyan
+    Write-Host "      재현성이 떨어집니다 - 미러에 고정 버전이 없을 때만 쓰세요." -ForegroundColor Yellow
+
+    # 워크스페이스 패키지를 --no-deps 없이 설치하면 pip 이 그 pyproject 의
+    # 외부 의존성을 범위(>=)대로 해석해 가져온다. 워크스페이스끼리의 참조는
+    # PyPI 에 없어 실패하므로, 의존 순서대로 설치해 앞선 것이 이미 환경에
+    # 있는 상태를 만든다.
+    foreach ($group in @($Layer1, $Layer2, $Layer3)) {
+        foreach ($pkg in $group) {
+            Write-Host "      - $pkg (의존성 포함)" -ForegroundColor DarkGray
+            & $Python -m pip install -e $pkg
+            if ($LASTEXITCODE -ne 0) { throw "-Loose 설치 실패: $pkg" }
+        }
+    }
+    Write-Host "      외부 의존성 설치 완료 (-Loose)." -ForegroundColor Green
+}
+else {
 Write-Host "[3/4] 외부 의존성 설치 (requirements.txt)" -ForegroundColor Cyan
 & $Python -m pip install -r requirements.txt
-if ($LASTEXITCODE -ne 0) { throw "requirements.txt 설치 실패 — 사내 미러 설정(pip config list)을 확인하세요." }
+if ($LASTEXITCODE -ne 0) {
+    Write-Host ""
+    Write-Host "일괄 설치가 실패했습니다. 어느 패키지가 문제인지 하나씩 확인합니다..." -ForegroundColor Yellow
+    Write-Host "(시간이 걸립니다. 이미 설치된 것은 건너뜁니다.)" -ForegroundColor DarkGray
+    Write-Host ""
+
+    # 어떤 줄에서 실패했는지 알려주지 않으면 사용자가 손쓸 방법이 없다.
+    # 한 줄씩 설치해 실패 목록을 모은다.
+    $failed = @()
+    foreach ($line in (Get-Content requirements.txt)) {
+        $spec = $line.Trim()
+        if (-not $spec -or $spec.StartsWith("#")) { continue }
+
+        & $Python -m pip install $spec --quiet 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            $failed += $spec
+            Write-Host "  실패: $spec" -ForegroundColor Red
+        }
+    }
+
+    Write-Host ""
+    if ($failed.Count -eq 0) {
+        Write-Host "개별 설치는 모두 성공했습니다. 일괄 설치만 실패한 경우로, 그대로 진행합니다." -ForegroundColor Green
+    } else {
+        Write-Host "설치하지 못한 패키지 $($failed.Count)개:" -ForegroundColor Red
+        foreach ($f in $failed) { Write-Host "  - $f" -ForegroundColor Red }
+        Write-Host ""
+        Write-Host "확인할 것:" -ForegroundColor Yellow
+        Write-Host "  1) 사내 미러에 해당 패키지가 있는가" -ForegroundColor Yellow
+        Write-Host "       python -m pip index versions <패키지명>" -ForegroundColor DarkGray
+        Write-Host "  2) 고정된 정확한 버전이 미러에 없을 수 있다." -ForegroundColor Yellow
+        Write-Host "     그럴 때는 버전 고정을 풀고 설치한다(재현성은 떨어진다):" -ForegroundColor Yellow
+        Write-Host "       .\scripts\windows\install-pip.ps1 -Loose" -ForegroundColor DarkGray
+        Write-Host "  3) 인덱스/인증서 설정 확인" -ForegroundColor Yellow
+        Write-Host "       python -m pip config list" -ForegroundColor DarkGray
+        Write-Host ""
+        throw "외부 의존성 설치 실패 — 위 목록을 확인하세요."
+    }
+}
+}
 
 Write-Host "[4/4] 워크스페이스 패키지 editable 설치 (의존 순서)" -ForegroundColor Cyan
+if ($Loose) { Write-Host "      -Loose 에서 이미 설치했으므로 --no-deps 로 다시 확정합니다." -ForegroundColor DarkGray }
 foreach ($group in @($Layer1, $Layer2, $Layer3)) {
     foreach ($pkg in $group) {
         Write-Host "      - $pkg" -ForegroundColor DarkGray

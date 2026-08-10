@@ -139,6 +139,8 @@ uv export --format requirements-txt --all-packages --no-emit-workspace --no-hash
 | 증상 | 확인 |
 |---|---|
 | 특정 패키지에서 연결 실패 | `pip config list` 로 사내 미러 인덱스가 설정되어 있는지 확인 |
+| `requirements.txt 설치 실패` | 스크립트가 자동으로 **한 줄씩 재시도해 실패한 패키지 목록**을 출력한다. 그 목록을 보고 아래를 판단한다 |
+| 고정 버전이 미러에 없음 | 사내 미러가 PyPI 전체를 미러링하지 않으면 정확한 버전(`==`)이 없을 수 있다. `python -m pip index versions <패키지명>` 으로 확인하고, 없으면 `install-pip.ps1 -Loose` 로 버전 고정 없이 설치한다(재현성은 떨어진다) |
 | 인증서 오류 | 사내 프록시 루트 CA 가 Windows 인증서 저장소에 있는지 확인 |
 | `lxml` 빌드 실패 | 미러에 win_amd64 사전 빌드 wheel 이 있는지 확인(소스 빌드 시 C 도구 필요) |
 | `ai-asset-schemas 를 찾을 수 없음` | 워크스페이스 패키지 설치에서 `--no-deps` 를 빠뜨렸는지 확인 |
