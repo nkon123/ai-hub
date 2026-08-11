@@ -8,7 +8,7 @@
 // 강제할 방법이 없어서 그런 것이고(open-decisions.md D-074), 나머지는 이
 // PoC의 폐쇄망 기본 정책 자체가 그렇게 고정했기 때문이다.
 import { useCallback, useEffect, useState } from "react";
-import { CheckCircle2, RefreshCw, Save } from "lucide-react";
+import { CheckCircle2, RefreshCw, Save, Sparkles } from "lucide-react";
 import type { ConnectionStatus, DesktopSettingsPublic } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, LabeledInput, LoadingState, PageHeader, ReadOnlyField } from "../ui";
@@ -18,7 +18,7 @@ function SectionHeader({ title }: { title: string }) {
   return <h2 className="mb-3 text-card-title font-semibold text-text-primary">{title}</h2>;
 }
 
-export function SettingsScreen() {
+export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => void }) {
   const bridge = getDesktopBridge();
 
   const [loading, setLoading] = useState(true);
@@ -136,6 +136,18 @@ export function SettingsScreen() {
   return (
     <div className="space-y-4">
       <PageHeader title="설정" description="Office Profile·모델·경로·로그 정책을 확인·변경합니다." />
+
+      {/* IA 재편: 최초 설정 Wizard(D01)는 더 이상 사이드바 탭이 아니다 —
+          여기서만 다시 실행할 수 있다. */}
+      <Card className="p-6">
+        <SectionHeader title="최초 설정" />
+        <p className="mb-3 text-body text-text-secondary">
+          Office Profile·Ollama·MCP·자산 경로를 처음부터 다시 안내받아 설정합니다.
+        </p>
+        <Button variant="secondary" onClick={onRunSetupWizard}>
+          <Sparkles size={14} /> 최초 설정 다시 실행
+        </Button>
+      </Card>
 
       <Card className="p-6">
         <SectionHeader title="Client 정보" />

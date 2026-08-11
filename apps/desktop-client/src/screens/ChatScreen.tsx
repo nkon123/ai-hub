@@ -26,7 +26,7 @@ import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, Ins
 import { checkAllConnections } from "../../electron/connections";
 import { getDesktopBridge } from "../bridge";
 import { formatDateTime } from "../format";
-import { Button, Card, EmptyState, ErrorBanner, LoadingState, PageHeader, ReasonConfirmDialog } from "../ui";
+import { Button, EmptyState, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
   type RunEventLogItem,
@@ -602,7 +602,7 @@ export function ChatScreen() {
     : !hasUsableKnowledge && !mcpDevActive
       ? bridge && installedKnowledge !== null && installedKnowledge.length > 0
         ? "설치된 Knowledge를 모두 사용할 수 없습니다 — 다시 반출·설치해야 대화할 수 있습니다."
-        : "대화할 수 있는 Knowledge가 없습니다 — 가져오기 화면에서 Knowledge를 먼저 설치하세요."
+        : "대화할 수 있는 Knowledge가 없습니다 — 자산 허브 > 가져오기에서 Knowledge를 먼저 설치하세요."
       : !question.trim()
         ? "질문을 입력하세요."
         : null;
@@ -615,316 +615,360 @@ export function ChatScreen() {
 
   const detailMessage = messages.find((m) => m.id === detailMessageId) ?? null;
 
+  // 연결이 끊겨 대화가 제한될 수 있을 때(CLAUDE.md: "Desktop은 Runtime 장애
+  // 시 종료되지 않고 복구 안내를 제공한다") — 상세 화면(설정 > 연결 상태)으로
+  // 밀어내지 않고, 대화가 실제로 일어나는 이 화면에서 바로 그 사실과 복구
+  // 힌트를 보여준다.
+  const failedConnections = connections?.filter((c) => !c.ok) ?? [];
+
+  // 상단 슬림 헤더용 — Ollama Desktop 앱처럼 모델/지식 상태를 한 줄로 요약한다.
+  const knowledgeSummaryText = bridge
+    ? installedKnowledge === null
+      ? "지식 확인 중..."
+      : knowledgeIds.length > 0
+        ? `지식 ${knowledgeIds.length}개 사용 중`
+        : installedKnowledge.length === 0
+          ? "설치된 지식 없음"
+          : "검색 가능한 지식 없음"
+    : devKnowledgeId.trim()
+      ? "개발용 Knowledge ID 사용 중"
+      : "지식 없음 (개발자 옵션)";
+
   return (
     <div className="flex h-full flex-col">
-      <PageHeader
-        title="Knowledge 대화"
-        description="등록·설치된 Knowledge를 바탕으로 실시간 대화를 실행합니다."
-        actions={
-          <div className="flex gap-2">
-            {bridge && (
-              <Button variant="secondary" size="sm" onClick={handleNewConversation} disabled={isRunning}>
-                <MessageSquarePlus size={13} /> 새 대화
-              </Button>
-            )}
-            <Button variant="secondary" size="sm" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
-              <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} /> 연결 다시 확인
-            </Button>
-          </div>
-        }
-      />
+      {/* 슬림 헤더 — Ollama Desktop 앱처럼 모델/지식 요약과 연결 상태만
+          한 줄로 보여준다. Service/버전/연결 배지 상세는 자산 허브 > 설치된
+          자산(D03 상세)과 설정 > 연결 상태로 옮겼다. */}
+      <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2 px-1">
+        <div className="flex min-w-0 items-center gap-2">
+          <h1 className="text-card-title font-semibold text-text-primary">채팅</h1>
+          <span className="text-caption text-text-muted">· {knowledgeSummaryText}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {connections === null ? (
+            <span className="text-caption text-text-muted">연결 확인 중...</span>
+          ) : (
+            <span
+              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
+                failedConnections.length === 0 ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
+              }`}
+              title={connections.map((c) => `${c.label}: ${c.ok ? "정상" : "오류"}`).join(" · ")}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${failedConnections.length === 0 ? "bg-success" : "bg-danger"}`} />
+              {failedConnections.length === 0 ? "연결 정상" : "연결 문제"}
+            </span>
+          )}
+          <Button variant="secondary" size="sm" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
+            <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} /> 연결 다시 확인
+          </Button>
+        </div>
+      </div>
 
-      {/* 상단: Service 이름·버전·현재 모델·연결 상태 (D06) */}
-      <Card className="mb-4 shrink-0 p-4">
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-body">
-          <div>
-            <span className="text-caption text-text-muted">Service</span>
-            <p className="font-medium text-text-primary">Knowledge 대화 (PoC)</p>
-          </div>
-          <div>
-            <span className="text-caption text-text-muted">버전</span>
-            <p className="font-medium text-text-primary">- (Service Registry 없음)</p>
-          </div>
-          <div>
-            <span className="text-caption text-text-muted">현재 모델</span>
-            <p className="font-medium text-text-primary">미기재</p>
-          </div>
-          <div className="ml-auto flex gap-2">
-            {connections === null ? (
-              <span className="text-caption text-text-muted">연결 상태 확인 중...</span>
-            ) : (
-              connections.map((c) => (
-                <span
-                  key={c.id}
-                  className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                    c.ok ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
-                  }`}
-                  title={c.detail}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${c.ok ? "bg-success" : "bg-danger"}`} />
-                  {c.label}
-                </span>
-              ))
-            )}
+      {/* 연결 장애 복구 안내(CLAUDE.md 필수) — 대화가 실제로 막힐 수 있는
+          상황이므로 배지 hover가 아니라 항상 보이는 배너로 보여준다. */}
+      {failedConnections.length > 0 && (
+        <div className="mb-3 shrink-0 rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
+          <div className="flex items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold">
+                {failedConnections.map((c) => c.label).join(", ")} 연결이 끊어져 있어 대화가 제한될 수 있습니다.
+              </p>
+              <ul className="mt-1 space-y-0.5 text-caption">
+                {failedConnections.map((c) => (
+                  <li key={c.id}>
+                    {c.label}: {c.detail}
+                    {c.recoveryHint ? ` — ${c.recoveryHint}` : ""}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-caption text-text-secondary">설정 &gt; 연결 상태에서 자세히 확인할 수 있습니다.</p>
+            </div>
           </div>
         </div>
-      </Card>
-
-      {/* D06 대화 보존 — Electron 브릿지가 있을 때만(대화 저장은 Main
-          Process 전용). 대화가 하나도 없으면 카드 자체를 숨긴다(빈 목록을
-          위해 화면 공간을 차지하지 않는다). */}
-      {bridge && (conversations === null || conversations.length > 0 || conversationsError) && (
-        <Card className="mb-4 shrink-0 p-4">
-          <p className="mb-2 text-caption font-medium text-text-secondary">저장된 대화</p>
-          {conversationsError && <ErrorBanner message={conversationsError} />}
-          {conversations === null && !conversationsError && <LoadingState label="대화 목록을 불러오는 중..." />}
-          {conversations !== null && conversations.length > 0 && (
-            <ul className="flex max-h-40 flex-col gap-1 overflow-y-auto">
-              {conversations.map((c) => (
-                <li key={c.id} className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void handleSelectConversation(c.id)}
-                    disabled={isRunning}
-                    className={`flex-1 rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
-                      currentConversationId === c.id
-                        ? "border-brand-500 bg-brand-50 text-brand-700"
-                        : "border-border bg-white text-text-secondary hover:bg-slate-50"
-                    }`}
-                  >
-                    <span className="block font-medium">{c.title}</span>
-                    <span className="text-[11px] text-text-muted">
-                      {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
-                    </span>
-                  </button>
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    onClick={() => requestDeleteConversation(c)}
-                    title="이 대화 삭제"
-                  >
-                    <Trash2 size={13} />
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
       )}
 
-      {/* 지식 검색 대상 — 지식 검색 자동화: 더 이상 하나만 수동으로 고르지
-          않는다. 설치된 모든 Knowledge(Active 버전)를 자동으로 검색 대상으로
-          쓰고, 그 개수만 안내한다(CLAUDE.md: 빈 상태를 별도로 안내). */}
-      <Card className="mb-4 shrink-0 p-4">
-        {bridge ? (
-          <div>
-            <p className="mb-1.5 text-caption font-medium text-text-secondary">지식 검색 대상</p>
-            {installedKnowledge === null && !installedError && <LoadingState label="설치된 Knowledge를 불러오는 중..." />}
-            {installedError && <ErrorBanner message={installedError} />}
-            {installedKnowledge !== null && installedKnowledge.length === 0 && !installedError && (
-              <EmptyState
-                title="설치된 Knowledge가 없습니다"
-                description="가져오기 화면에서 Knowledge가 포함된 Offline Bundle을 먼저 반입하세요."
-              />
-            )}
-            {installedKnowledge !== null && installedKnowledge.length > 0 && (
-              <>
-                {knowledgeIds.length > 0 ? (
-                  <p className="text-body text-text-primary">설치된 지식 자산 {knowledgeIds.length}개에서 검색합니다.</p>
-                ) : (
-                  <EmptyState
-                    title="검색 가능한 지식 자산이 없습니다"
-                    description="설치된 Knowledge가 모두 이전 형식의 Bundle입니다 — 다시 반출·설치해야 대화할 수 있습니다."
-                  />
-                )}
-                {installedKnowledge.some((a) => !a.assetVersionId) && (
-                  <p className="mt-2 flex items-start gap-1.5 text-caption text-warning">
-                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                    {LEGACY_BUNDLE_KNOWLEDGE_ID_REASON} 대상:{" "}
-                    {installedKnowledge
-                      .filter((a) => !a.assetVersionId)
-                      .map((a) => `${a.name} v${a.version}`)
-                      .join(", ")}
-                  </p>
-                )}
-              </>
-            )}
-          </div>
-        ) : (
-          <div>
-            <label className="mb-1.5 block text-caption font-medium text-warning" htmlFor="dev-knowledge-id">
-              개발 확인용 — Knowledge ID 직접 입력
-            </label>
-            <input
-              id="dev-knowledge-id"
-              value={devKnowledgeId}
-              onChange={(e) => setDevKnowledgeId(e.target.value)}
-              placeholder="AssetVersion UUID (예: d9e660b7-ca76-4f46-899e-2e1621bac139)"
-              className={`${fieldClass} border-warning/40`}
-            />
-            <p className="mt-1.5 text-caption text-text-muted">
-              Desktop(Electron) 런타임이 연결되어 있지 않을 때만 표시되는 개발용 입력입니다 — 실제 제품에는 노출되지
-              않습니다.
-            </p>
+      <div className="flex min-h-0 flex-1 gap-4">
+        {/* 좌측 대화 목록 패널(Ollama Desktop 앱과 같은 구성) — D06 대화
+            보존. Electron 브릿지가 있을 때만(대화 저장은 Main Process 전용). */}
+        {bridge && (
+          <div className="flex w-64 shrink-0 flex-col">
+            <Button
+              variant="secondary"
+              onClick={handleNewConversation}
+              disabled={isRunning}
+              className="mb-3 w-full justify-center"
+            >
+              <MessageSquarePlus size={14} /> 새 대화
+            </Button>
+            <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+              {conversationsError && <ErrorBanner message={conversationsError} />}
+              {conversations === null && !conversationsError && <LoadingState label="대화 목록을 불러오는 중..." />}
+              {conversations !== null && conversations.length === 0 && !conversationsError && (
+                <p className="px-1 py-6 text-center text-caption text-text-muted">아직 저장된 대화가 없습니다.</p>
+              )}
+              {conversations !== null &&
+                conversations.map((c) => (
+                  <div key={c.id} className="group flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => void handleSelectConversation(c.id)}
+                      disabled={isRunning}
+                      className={`min-w-0 flex-1 rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                        currentConversationId === c.id
+                          ? "border-brand-500 bg-brand-50 text-brand-700"
+                          : "border-border bg-white text-text-secondary hover:bg-slate-50"
+                      }`}
+                    >
+                      <span className="block truncate font-medium">{c.title}</span>
+                      <span className="block truncate text-[11px] text-text-muted">
+                        {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
+                      </span>
+                    </button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => requestDeleteConversation(c)}
+                      title="이 대화 삭제"
+                      className="shrink-0 px-2"
+                    >
+                      <Trash2 size={13} />
+                    </Button>
+                  </div>
+                ))}
+            </div>
           </div>
         )}
-      </Card>
 
-      {/* Tool 호출 확인 Panel(WAITING_FOR_USER) 검증용 — 개발 확인용, Electron
-          브릿지가 있으면(정식 빌드로 보이는 상태) 숨긴다. Service Registry가
-          없어 정식 Tool 선택 UI를 만들 근거가 없다(open-decisions.md D-058). */}
-      {!bridge && (
-        <Card className="mb-4 shrink-0 p-4">
-          <label className="flex items-center gap-2 text-caption font-medium text-warning">
-            <input
-              type="checkbox"
-              checked={mcpDevEnabled}
-              onChange={(e) => setMcpDevEnabled(e.target.checked)}
-              disabled={isRunning}
-            />
-            개발 확인용 — MCP Tool 호출 포함(Tool 확인 Panel 검증)
-          </label>
-          {mcpDevEnabled && (
-            <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
-              <div>
-                <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-tool">
-                  Tool
-                </label>
-                <select
-                  id="mcp-dev-tool"
-                  value={mcpDevTool}
-                  onChange={(e) => setMcpDevTool(e.target.value as typeof mcpDevTool)}
-                  className={fieldClass}
-                  disabled={isRunning}
-                >
-                  <option value="table_count.query">table_count.query (확인 필요)</option>
-                  <option value="db_metadata.get_columns">db_metadata.get_columns (자동 승인)</option>
-                </select>
-              </div>
-              <div>
-                <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-schema">
-                  Schema
-                </label>
-                <input
-                  id="mcp-dev-schema"
-                  value={mcpDevSchema}
-                  onChange={(e) => setMcpDevSchema(e.target.value)}
-                  className={`${fieldClass} border-warning/40`}
-                  disabled={isRunning}
-                />
-              </div>
-              <div>
-                <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-table">
-                  Table
-                </label>
-                <input
-                  id="mcp-dev-table"
-                  value={mcpDevTable}
-                  onChange={(e) => setMcpDevTable(e.target.value)}
-                  className={`${fieldClass} border-warning/40`}
-                  disabled={isRunning}
-                />
-              </div>
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {/* 지식 검색 대상 상태 — 지식 검색 자동화: 설치된 모든
+              Knowledge(Active 버전)를 자동으로 검색 대상으로 쓴다. 정상일
+              때는 위 슬림 헤더 한 줄로 충분하므로, 여기서는 안내가 필요한
+              경우(Loading/Empty/Error/경고)만 배너로 보여준다(CLAUDE.md:
+              Loading/Empty/Error 상태 유지 — 다만 화면의 주인공은 메시지
+              스레드와 입력창이어야 하므로 정상 상태에는 카드를 띄우지 않는다). */}
+          {bridge && installedKnowledge === null && !installedError && (
+            <div className="mb-3 shrink-0">
+              <LoadingState label="설치된 Knowledge를 불러오는 중..." />
             </div>
           )}
-          <p className="mt-2 text-caption text-text-muted">
-            {mcpDevTool === "table_count.query"
-              ? "table_count.query는 §8.4 ON_PARAMETER 정책 — 실행 전 확인 Panel(승인/거부)이 표시됩니다."
-              : "db_metadata.get_columns는 §8.4 NEVER 정책 — 확인 없이 바로 실행됩니다."}
-            {" "}실제 제품에는 노출되지 않는 개발용 입력입니다.
-          </p>
-        </Card>
-      )}
-
-      {/* 대화 */}
-      <div className="flex flex-1 flex-col overflow-hidden">
-        {sendError && (
-          <div className="mb-3 shrink-0">
-            <ErrorBanner message={sendError} />
-          </div>
-        )}
-
-        <div className="flex-1 space-y-4 overflow-y-auto pr-1">
-          {messages.length === 0 && (
-            <EmptyState
-              title="아직 대화가 없습니다"
-              description={
-                hasUsableKnowledge || mcpDevActive
-                  ? "질문을 입력해 대화를 시작하세요."
-                  : "대화할 수 있는 Knowledge가 없습니다. 먼저 Knowledge를 설치하세요."
-              }
-            />
+          {bridge && installedError && (
+            <div className="mb-3 shrink-0">
+              <ErrorBanner message={installedError} />
+            </div>
           )}
-
-          {messages.map((m) => (
-            <ChatTurn
-              key={m.id}
-              message={m}
-              onCancel={() => void handleCancel(m)}
-              onRerun={() => void handleSend(m.question)}
-              onCopy={() => handleCopy(m)}
-              onDownload={() => handleDownload(m)}
-              onApprove={() => void handleConfirmDecision(m, "approve")}
-              onDeny={() => void handleConfirmDecision(m, "deny")}
-              confirmBusy={confirmingMessageId === m.id}
-              confirmError={confirmError[m.id] || null}
-              copied={copiedId === m.id}
-              rerunDisabled={isRunning}
-              onCitationClick={setCitationDetail}
-              onOpenDetail={() => setDetailMessageId(m.id)}
-            />
-          ))}
-        </div>
-
-        <div className="mt-4 shrink-0 border-t border-border pt-4">
-          {/* 허브 조회 동의(Stage 2) — 기본 꺼짐, 세션마다 초기화(저장하지
-              않음). "로컬에서 조회하는 데이터를 허브에 넘기면 안 돼": 이 동의는
-              편의를 위한 묵시적 허용이 아니라 매번 다시 확인하는 명시적 선택.
-              켜져 있을 때만 실제 전송될 질의를 미리 보여준다(사전 가시성) —
-              사후 가시성은 "hub.query_sent" 이벤트(ChatTurn 대화 내 안내문)가
-              보완한다. */}
-          <div className="mb-3">
-            <label className="flex items-center gap-2 text-caption font-medium text-text-secondary">
-              <input
-                type="checkbox"
-                checked={allowHubLookup}
-                onChange={(e) => setAllowHubLookup(e.target.checked)}
-                disabled={isRunning}
+          {bridge && installedKnowledge !== null && installedKnowledge.length === 0 && !installedError && (
+            <div className="mb-3 shrink-0">
+              <EmptyState
+                title="설치된 Knowledge가 없습니다"
+                description="자산 허브 > 가져오기에서 Knowledge가 포함된 Offline Bundle을 먼저 반입하세요."
               />
-              허브에도 물어보기 (로컬에서 찾지 못한 경우에만)
-            </label>
-            <p className="mt-1 text-caption text-text-muted">
-              기본적으로 꺼져 있습니다. 켜면 로컬에서 답을 찾지 못했을 때만, 사용자가 입력한 질문 텍스트만 허브로
-              전송됩니다 — 로컬 문서 내용은 전송되지 않습니다.
-            </p>
-            {allowHubLookup && (
-              <p className="mt-1.5 text-caption text-text-secondary">
-                허브로 전송될 질의 미리보기: &quot;{hubQueryPreview}&quot;
-              </p>
-            )}
-          </div>
-          <div className="flex gap-2">
-            <textarea
-              value={question}
-              onChange={(e) => setQuestion(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  void handleSend();
-                }
-              }}
-              placeholder="질문을 입력하세요..."
-              rows={2}
-              className={`${fieldClass} resize-none`}
-              disabled={isRunning}
-            />
-            <Button onClick={() => void handleSend()} disabled={!canSend} title={sendDisabledReason ?? undefined}>
-              <Send size={15} /> 실행
-            </Button>
-          </div>
-          {sendDisabledReason && !isRunning && (
-            <p className="mt-1.5 text-caption text-text-muted">{sendDisabledReason}</p>
+            </div>
           )}
+          {bridge && installedKnowledge !== null && installedKnowledge.length > 0 && knowledgeIds.length === 0 && (
+            <div className="mb-3 shrink-0">
+              <EmptyState
+                title="검색 가능한 지식 자산이 없습니다"
+                description="설치된 Knowledge가 모두 이전 형식의 Bundle입니다 — 다시 반출·설치해야 대화할 수 있습니다."
+              />
+            </div>
+          )}
+          {bridge && installedKnowledge !== null && installedKnowledge.some((a) => !a.assetVersionId) && (
+            <p className="mb-3 flex shrink-0 items-start gap-1.5 text-caption text-warning">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+              {LEGACY_BUNDLE_KNOWLEDGE_ID_REASON} 대상:{" "}
+              {installedKnowledge
+                .filter((a) => !a.assetVersionId)
+                .map((a) => `${a.name} v${a.version}`)
+                .join(", ")}
+            </p>
+          )}
+
+          {/* 개발 확인용 입력 — Service Registry가 아직 없어(D-034/D-058) 정식
+              Knowledge/Tool 선택 UI를 만들 근거가 없다. 메인 흐름에서 빼고
+              접이식 "개발자 옵션"으로 옮겼다(기본 접힘). Electron 브릿지가
+              있으면(정식 빌드로 보이는 상태) 이 영역 자체가 없다 — 기존과
+              동일한 노출 조건. */}
+          {!bridge && (
+            <details className="mb-4 shrink-0 rounded-card border border-warning/30 bg-warning/5">
+              <summary className="cursor-pointer select-none px-4 py-2.5 text-caption font-semibold text-warning">
+                개발자 옵션 — 실제 제품에는 노출되지 않습니다
+              </summary>
+              <div className="space-y-4 border-t border-warning/20 p-4">
+                <div>
+                  <label className="mb-1.5 block text-caption font-medium text-warning" htmlFor="dev-knowledge-id">
+                    개발 확인용 — Knowledge ID 직접 입력
+                  </label>
+                  <input
+                    id="dev-knowledge-id"
+                    value={devKnowledgeId}
+                    onChange={(e) => setDevKnowledgeId(e.target.value)}
+                    placeholder="AssetVersion UUID (예: d9e660b7-ca76-4f46-899e-2e1621bac139)"
+                    className={`${fieldClass} border-warning/40`}
+                  />
+                  <p className="mt-1.5 text-caption text-text-muted">
+                    Desktop(Electron) 런타임이 연결되어 있지 않을 때만 표시되는 개발용 입력입니다.
+                  </p>
+                </div>
+
+                {/* Tool 호출 확인 Panel(WAITING_FOR_USER) 검증용. Service
+                    Registry가 없어 정식 Tool 선택 UI를 만들 근거가 없다
+                    (open-decisions.md D-058). */}
+                <div>
+                  <label className="flex items-center gap-2 text-caption font-medium text-warning">
+                    <input
+                      type="checkbox"
+                      checked={mcpDevEnabled}
+                      onChange={(e) => setMcpDevEnabled(e.target.checked)}
+                      disabled={isRunning}
+                    />
+                    개발 확인용 — MCP Tool 호출 포함(Tool 확인 Panel 검증)
+                  </label>
+                  {mcpDevEnabled && (
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-3">
+                      <div>
+                        <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-tool">
+                          Tool
+                        </label>
+                        <select
+                          id="mcp-dev-tool"
+                          value={mcpDevTool}
+                          onChange={(e) => setMcpDevTool(e.target.value as typeof mcpDevTool)}
+                          className={fieldClass}
+                          disabled={isRunning}
+                        >
+                          <option value="table_count.query">table_count.query (확인 필요)</option>
+                          <option value="db_metadata.get_columns">db_metadata.get_columns (자동 승인)</option>
+                        </select>
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-schema">
+                          Schema
+                        </label>
+                        <input
+                          id="mcp-dev-schema"
+                          value={mcpDevSchema}
+                          onChange={(e) => setMcpDevSchema(e.target.value)}
+                          className={`${fieldClass} border-warning/40`}
+                          disabled={isRunning}
+                        />
+                      </div>
+                      <div>
+                        <label className="mb-1 block text-caption text-text-muted" htmlFor="mcp-dev-table">
+                          Table
+                        </label>
+                        <input
+                          id="mcp-dev-table"
+                          value={mcpDevTable}
+                          onChange={(e) => setMcpDevTable(e.target.value)}
+                          className={`${fieldClass} border-warning/40`}
+                          disabled={isRunning}
+                        />
+                      </div>
+                    </div>
+                  )}
+                  <p className="mt-2 text-caption text-text-muted">
+                    {mcpDevTool === "table_count.query"
+                      ? "table_count.query는 §8.4 ON_PARAMETER 정책 — 실행 전 확인 Panel(승인/거부)이 표시됩니다."
+                      : "db_metadata.get_columns는 §8.4 NEVER 정책 — 확인 없이 바로 실행됩니다."}
+                  </p>
+                </div>
+              </div>
+            </details>
+          )}
+
+          {/* 대화 — 메시지 스레드와 입력창이 화면의 주인공이다. */}
+          <div className="flex flex-1 flex-col overflow-hidden">
+            {sendError && (
+              <div className="mb-3 shrink-0">
+                <ErrorBanner message={sendError} />
+              </div>
+            )}
+
+            <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+              {messages.length === 0 && (
+                <EmptyState
+                  title="아직 대화가 없습니다"
+                  description={
+                    hasUsableKnowledge || mcpDevActive
+                      ? "질문을 입력해 대화를 시작하세요."
+                      : "대화할 수 있는 Knowledge가 없습니다. 먼저 Knowledge를 설치하세요."
+                  }
+                />
+              )}
+
+              {messages.map((m) => (
+                <ChatTurn
+                  key={m.id}
+                  message={m}
+                  onCancel={() => void handleCancel(m)}
+                  onRerun={() => void handleSend(m.question)}
+                  onCopy={() => handleCopy(m)}
+                  onDownload={() => handleDownload(m)}
+                  onApprove={() => void handleConfirmDecision(m, "approve")}
+                  onDeny={() => void handleConfirmDecision(m, "deny")}
+                  confirmBusy={confirmingMessageId === m.id}
+                  confirmError={confirmError[m.id] || null}
+                  copied={copiedId === m.id}
+                  rerunDisabled={isRunning}
+                  onCitationClick={setCitationDetail}
+                  onOpenDetail={() => setDetailMessageId(m.id)}
+                />
+              ))}
+            </div>
+
+            <div className="mt-4 shrink-0 border-t border-border pt-4">
+              {/* 허브 조회 동의(Stage 2, D-078) — 절대 제거·축소·기본값
+                  변경 금지. 기본 꺼짐, 세션마다 초기화(저장하지 않음).
+                  "로컬에서 조회하는 데이터를 허브에 넘기면 안 돼": 이 동의는
+                  편의를 위한 묵시적 허용이 아니라 매번 다시 확인하는 명시적
+                  선택. 켜져 있을 때만 실제 전송될 질의를 미리 보여준다(사전
+                  가시성) — 사후 가시성은 "hub.query_sent" 이벤트(ChatTurn
+                  대화 내 안내문)가 보완한다. */}
+              <div className="mb-3">
+                <label className="flex items-center gap-2 text-caption font-medium text-text-secondary">
+                  <input
+                    type="checkbox"
+                    checked={allowHubLookup}
+                    onChange={(e) => setAllowHubLookup(e.target.checked)}
+                    disabled={isRunning}
+                  />
+                  허브에도 물어보기 (로컬에서 찾지 못한 경우에만)
+                </label>
+                <p className="mt-1 text-caption text-text-muted">
+                  기본적으로 꺼져 있습니다. 켜면 로컬에서 답을 찾지 못했을 때만, 사용자가 입력한 질문 텍스트만 허브로
+                  전송됩니다 — 로컬 문서 내용은 전송되지 않습니다.
+                </p>
+                {allowHubLookup && (
+                  <p className="mt-1.5 text-caption text-text-secondary">
+                    허브로 전송될 질의 미리보기: &quot;{hubQueryPreview}&quot;
+                  </p>
+                )}
+              </div>
+              <div className="flex gap-2">
+                <textarea
+                  value={question}
+                  onChange={(e) => setQuestion(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      void handleSend();
+                    }
+                  }}
+                  placeholder="질문을 입력하세요..."
+                  rows={2}
+                  className={`${fieldClass} resize-none`}
+                  disabled={isRunning}
+                />
+                <Button onClick={() => void handleSend()} disabled={!canSend} title={sendDisabledReason ?? undefined}>
+                  <Send size={15} /> 실행
+                </Button>
+              </div>
+              {sendDisabledReason && !isRunning && (
+                <p className="mt-1.5 text-caption text-text-muted">{sendDisabledReason}</p>
+              )}
+            </div>
+          </div>
         </div>
       </div>
 

@@ -1,6 +1,8 @@
 // D03 Service/Agent 상세 (`02-desktop-and-agent-runtime.md` §D03) — a
-// drill-down entered from D02(HomeScreen)/D08(AssetsScreen)'s "상세" button,
-// not a top-level nav tab. Shows every §D03 field this PoC can honestly
+// drill-down entered from 자산 허브 > 설치된 자산(D08, AssetsScreen)'s "상세
+// 보기" button, not a top-level nav tab. (Formerly also entered from
+// D02/HomeScreen before the desktop-ia-restructure merged D02 into D08 —
+// HomeScreen.tsx no longer exists.) Shows every §D03 field this PoC can honestly
 // source locally; fields with no source render "미기재" + a stated reason
 // instead of a guess (see `electron/service-detail.ts`'s module docstring
 // for exactly which fields those are and why, and open-decisions.md D-076).

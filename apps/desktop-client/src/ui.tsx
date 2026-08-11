@@ -391,6 +391,41 @@ export function ReadOnlyField({ label, value, policyNote }: { label: string; val
   );
 }
 
+// D-IA02 IA 재편(11개 사이드바 탭 -> 3개 + 하위 탭)에서 도입. 하위 탭(자산
+// 허브의 스토어/가져오기/설치된 자산/업데이트·복구, 설정의 일반/연결
+// 상태/로그·진단/정보·보안)을 위한 공용 primitive. 시각 언어는
+// apps/portal-web/app/_components/ui.tsx의 `Tabs`를 그대로 미러링한다(같은
+// 제품처럼 보이게) — 하지만 그 파일을 import하지 않는다(모듈 경계 위반,
+// CLAUDE.md 구현 원칙 2).
+export interface TabItem {
+  id: string;
+  label: string;
+}
+
+export function Tabs({ tabs, activeId, onChange }: { tabs: TabItem[]; activeId: string; onChange: (id: string) => void }) {
+  return (
+    <div role="tablist" className="mb-6 flex gap-1 overflow-x-auto border-b border-border">
+      {tabs.map((tab) => {
+        const active = tab.id === activeId;
+        return (
+          <button
+            key={tab.id}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            onClick={() => onChange(tab.id)}
+            className={`shrink-0 whitespace-nowrap border-b-2 px-4 py-2.5 text-body font-medium transition-colors ${
+              active ? "border-brand-500 text-brand-700" : "border-transparent text-text-secondary hover:text-text-primary"
+            }`}
+          >
+            {tab.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 export function CheckRow({ label, status, message }: { label: string; status: CheckStatus; message: string }) {
   return (
     <div className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 ${STATUS_ROW_TONE[status]}`}>

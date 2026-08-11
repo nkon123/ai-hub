@@ -1,8 +1,17 @@
-// D08 로컬 자산 관리 — 설치된 자산의 필터·상세 Manifest·Checksum 재검사·의존
-// 관계 보기, 그리고 "제거 전 참조 중인 Service와 진행 중인 Run을 확인한다"
-// 하드 규칙을 실제로 적용하는 화면.
+// D08 로컬 자산 관리(자산 허브 > 설치된 자산) — 설치된 자산의 필터·상세
+// Manifest·Checksum 재검사·의존 관계 보기, 그리고 "제거 전 참조 중인
+// Service와 진행 중인 Run을 확인한다" 하드 규칙을 실제로 적용하는 화면.
+//
+// IA 재편(desktop-ia-restructure): 이전 D02(HomeScreen, "홈/설치된 자산")를
+// 이 화면으로 통합했다 — HomeScreen은 이 화면의 진짜 부분집합이었다(필터·
+// 정렬·상세 Manifest·Checksum 재검사·의존 관계·Active Version 전환이 전부
+// 없었고, 목록 표시·상세 보기·제거만 있었다). HomeScreen에만 있던 두 가지는
+// 이 화면으로 옮겨왔다: (1) 헤더의 설치 위치(`installRoot`) 표시, (2) 자산이
+// *하나도* 없을 때(필터로 걸러진 게 아니라 정말 0개일 때) 빈 상태에 "Package
+// 가져오기"로 바로 이동하는 액션 버튼. HomeScreen.tsx는 더 이상 쓰이지
+// 않아 삭제했다(App.tsx가 더 이상 참조하지 않음).
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Eye, FileSearch, Info, Network, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FileSearch, Info, Network, Package, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import type {
   AssetDependencyView,
   AssetManifestResult,
@@ -77,12 +86,22 @@ function activateVersionDisabledReason(asset: InstalledAssetWithStatus): string 
   return null;
 }
 
-export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceDetailTarget) => void }) {
+export function AssetsScreen({
+  onOpenDetail,
+  onGoToImport,
+}: {
+  onOpenDetail: (target: ServiceDetailTarget) => void;
+  /** HomeScreen(D02)에서 옮겨온 빈 상태 빠른 진입 — 반입된 자산이 하나도
+   * 없을 때 "Package 가져오기"로 바로 이동한다. */
+  onGoToImport: () => void;
+}) {
   const bridge = getDesktopBridge();
   const [assets, setAssets] = useState<InstalledAssetWithStatus[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [filters, setFilters] = useState<AssetFilters>(emptyAssetFilters());
   const [sortKey, setSortKey] = useState<AssetSortKey>("installedAt");
+  // HomeScreen(D02)에서 옮겨온 설치 위치 표시.
+  const [installRoot, setInstallRoot] = useState<string | null>(null);
 
   const [manifestTarget, setManifestTarget] = useState<InstalledAssetWithStatus | null>(null);
   const [manifestResult, setManifestResult] = useState<AssetManifestResult | null>(null);
@@ -126,6 +145,11 @@ export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceD
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!bridge) return;
+    bridge.getInstallRootPath().then(setInstallRoot).catch(() => setInstallRoot(null));
+  }, [bridge]);
 
   const visibleAssets = useMemo(() => {
     if (!assets) return [];
@@ -241,7 +265,7 @@ export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceD
   if (!bridge) {
     return (
       <div>
-        <PageHeader title="로컬 자산 관리" />
+        <PageHeader title="설치된 자산" />
         <BridgeUnavailableState detail="설치된 자산의 상세 관리(Manifest 보기, Checksum 재검사, 제거)는 Desktop(Electron) 앱에서 실행할 때만 사용할 수 있습니다." />
       </div>
     );
@@ -250,8 +274,12 @@ export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceD
   return (
     <div>
       <PageHeader
-        title="로컬 자산 관리"
-        description="설치된 Service/Agent/Knowledge/Prompt/MCP 설정을 확인하고 관리합니다."
+        title="설치된 자산"
+        description={
+          installRoot
+            ? `설치된 Service/Agent/Knowledge/Prompt/MCP 설정을 확인하고 관리합니다. 설치 위치: ${installRoot}`
+            : "설치된 Service/Agent/Knowledge/Prompt/MCP 설정을 확인하고 관리합니다."
+        }
         actions={
           <Button variant="secondary" onClick={() => void load()}>
             <RefreshCw size={14} /> 새로고침
@@ -297,7 +325,15 @@ export function AssetsScreen({ onOpenDetail }: { onOpenDetail: (target: ServiceD
       {assets === null && <LoadingState label="설치된 자산을 확인하는 중..." />}
 
       {assets !== null && assets.length === 0 && (
-        <EmptyState title="반입된 자산이 없습니다" description="Offline Bundle을 반입하면 이곳에 표시됩니다." />
+        <EmptyState
+          title="반입된 자산이 없습니다"
+          description="Offline Bundle을 반입하면 이곳에 표시됩니다."
+          action={
+            <Button onClick={onGoToImport}>
+              <Package size={14} /> Package 가져오기
+            </Button>
+          }
+        />
       )}
 
       {assets !== null && assets.length > 0 && visibleAssets.length === 0 && (
