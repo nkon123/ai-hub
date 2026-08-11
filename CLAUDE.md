@@ -37,7 +37,7 @@
 | M01 | `apps/portal-web` | Portal UI, Catalog, Service Composer |
 | M02 | `apps/portal-api` | Registry, Version, Review, Service/Deployment API |
 | M03 | `services/distribution-service` | Repository, Download, Offline Bundle, Hosted Deployment Job |
-| M04 | `apps/desktop-client` | PySide6 Desktop UI, Import, Installer |
+| M04 | `apps/desktop-client` | Electron Desktop UI, Import, Installer (D-006) |
 | M05 | `services/agent-runtime` | Local/Hosted Workflow, Streaming, LLM, Knowledge, MCP 조정 |
 | M06 | `packages/schemas` | Manifest/Profile/Service Schema와 Validator |
 | M07 | `services/indexing-runtime` | Knowledge Indexing |
@@ -48,6 +48,17 @@
 | M12 | `tests`, CI, 문서 | 계약·통합·E2E·릴리스 |
 
 다른 모듈의 변경이 필요하면 먼저 Contract 변경을 별도 PR로 제안한다.
+
+### 모듈별 CLAUDE.md
+
+각 모듈 루트에 그 모듈 전용 `CLAUDE.md`가 있다(예: `apps/portal-api/CLAUDE.md`,
+`services/agent-runtime/CLAUDE.md`, `tests/CLAUDE.md`). 해당 모듈의 파일을
+다룰 때 자동으로 함께 읽힌다. 코드 배치, 모듈 경계, 실행·테스트 명령, 그리고
+그 모듈에서 실제로 반복해 틀렸던 것이 정리되어 있다.
+
+이 파일(루트)의 규칙은 모듈 파일에 복사하지 않는다. 제품 언어, 구현 원칙,
+코드 규칙, UI 구현 규칙, 완료 전 확인은 여기에만 두고 모듈 파일은 참조만
+한다 — 양쪽에 같은 규칙을 두면 반드시 갈라진다.
 
 ## 구현 순서
 
