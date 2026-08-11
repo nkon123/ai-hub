@@ -4,8 +4,8 @@
 작성자/일자: 설계·검증 세션 / 2026-08-11
 선행 조건: 없음 (커밋 `c51da51` IA 재편 이후 상태 기준)
 
-작업 전에 [`apps/desktop-client/CLAUDE.md`](../../../apps/desktop-client/CLAUDE.md)와
-루트 [`/CLAUDE.md`](../../../CLAUDE.md)를 읽는다. 이 문서는 그 규칙을 반복하지 않는다.
+작업 전에 [`../CLAUDE.md`](../CLAUDE.md)를 읽는다. 이 문서는 그 규칙을 반복하지 않는다.
+이 디렉터리(`apps/desktop-client/`)만 열고 작업하면 되며, 바깥 경로는 참조하지 않는다.
 
 ## 1. 문제
 
@@ -19,7 +19,7 @@
 
 1. agent-runtime을 8100이 아닌 포트로 띄운다. 예: 8102.
 2. `apps/desktop-client/.env.local`에 `VITE_AGENT_RUNTIME_BASE_URL=http://127.0.0.1:8102`.
-3. `pnpm --filter desktop-client exec vite` → 브라우저에서 `http://localhost:5174`.
+3. `pnpm exec vite` → 브라우저에서 `http://localhost:5174`.
 4. 개발자 옵션에서 Knowledge ID를 넣고 질문한다 → **답변과 Citation이 정상 출력된다.**
 5. 그런데 상단 배너는 계속 "연결이 끊어져 있어 대화가 제한될 수 있습니다"를 표시한다.
 
@@ -94,7 +94,7 @@ Ollama/MCP 주소도 Electron에서는 저장된 설정을 쓴다. 브라우저 
 |---|---|---|
 | **D-078** — 로컬 조회 데이터를 허브로 보내지 않는다 | 이 저장소의 최우선 보안 경계 | 이 작업은 `hub_query`/`chatTypes.ts`/허브 토글을 건드릴 이유가 없다. `git diff`에 `buildHubQueryPreview`, `allowHubLookup`, `hub.query_sent`, Citation 배지가 나타나면 설계 이탈이다 |
 | 허브 동의 토글 기본값 `false` | 사용자가 명시적으로 켜야 허브로 나간다 | 화면에서 육안 확인(§6.3-4) |
-| `connections.ts`가 순수 모듈로 남는다 | Electron 메인·렌더러 양쪽이 import한다 | `grep -n "import.meta" electron/connections.ts` → 0건. `pnpm --filter desktop-client typecheck`가 `tsconfig.electron.json`까지 돌아 깨짐을 잡는다 |
+| `connections.ts`가 순수 모듈로 남는다 | Electron 메인·렌더러 양쪽이 import한다 | `grep -n "import.meta" electron/connections.ts` → 0건. `pnpm typecheck`가 `tsconfig.electron.json`까지 돌아 깨짐을 잡는다 |
 | `checkAllConnections`의 기존 3개 호출부가 계속 동작 | `main.ts:379`, `diagnostic-bundle.ts:108`, SetupWizard | 기존 `connections.test.ts` 통과 유지 |
 | 진짜 장애 시 복구 안내가 사라지지 않는다 | 루트 CLAUDE.md 요구사항 | §6.3-3에서 강제 재현 |
 
@@ -103,15 +103,15 @@ Ollama/MCP 주소도 Electron에서는 저장된 설정을 쓴다. 브라우저 
 ### 6.1 실행할 명령과 기대 결과
 
 ```
-$ pnpm --filter desktop-client typecheck
+$ pnpm typecheck
 (오류 없음 — tsconfig.json과 tsconfig.electron.json 둘 다)
 
-$ pnpm --filter desktop-client test
+$ pnpm test
 Test Files  27 passed (27)
      Tests  349 passed (349)      ← 기준선. §6.2 추가분만큼 늘어야 하고 줄면 안 된다.
 ```
 
-`pnpm --filter desktop-client lint`는 실행하지 않아도 된다 — 저장소에 eslint 설정 파일이 없어 항상 실패한다(기존 공백, 이 작업과 무관).
+`pnpm lint`는 실행하지 않아도 된다 — 저장소에 eslint 설정 파일이 없어 항상 실패한다(기존 공백, 이 작업과 무관).
 
 ### 6.2 반드시 존재해야 할 테스트
 
@@ -139,8 +139,8 @@ ChatScreen 자체의 렌더링 테스트는 만들지 않는다 — 이 프로�
 
 - **포트 5173/5174 불일치** — `vite.config.ts:16`과 `electron/main.ts:145`가 5173 하드코딩인데 문서·운영은 5174. 별개 결함이다.
 - **eslint 설정 파일 부재** — 인프라 공백.
-- **`services/search-runtime/src/search_runtime/hybrid.py:24`의 `INDEX_BASE` 개인 절대경로 하드코딩** — 다른 모듈이고 Codex 담당 범위 밖이다.
-- office-mcp-server / agent-runtime(8100)의 CORS 설정 — `services/` 쪽 변경이다. 이 작업은 Desktop만 건드린다.
+- **search-runtime의 인덱스 기본 경로 하드코딩** — 이 디렉터리 밖의 서비스 코드이며 담당 범위 밖이다.
+- office-mcp-server / agent-runtime(8100)의 CORS 설정 — 이 디렉터리 밖의 서비스 코드다. 이 작업은 Desktop만 건드린다.
 
 ## 8. 열린 질문
 
