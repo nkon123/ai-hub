@@ -34,6 +34,26 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
 - `pnpm --filter desktop-client test`(vitest, `vitest.config.ts` — `environment: "node"`, `electron/**/*.test.ts` + `src/**/*.test.ts`만 포함, jsdom/React 렌더링 없음). Main 전용/순수 모듈 테스트는 `electron/__tests__/*.test.ts`(21개 파일, `fixtures/` 포함), 렌더러 순수 로직 테스트는 `src/**/*.test.ts`(예: `runStages.test.ts`, `screens/*Types.test.ts`)에 있다.
 - React 컴포넌트(`ChatScreen.tsx` 등) 자체의 렌더링 테스트는 없다 — `environment: "node"`라 DOM이 없다.
 
+## 개발 환경 — 실행 전에 알아야 할 것
+
+- **Electron 바이너리가 없을 수 있다.** 사내망에서는 GitHub Releases 다운로드가 막히고, macOS에서는 XProtect가 받은 바이너리를 격리·삭제한다. **Gatekeeper/XProtect를 우회하지 마라**(`xattr -d com.apple.quarantine`, `spctl` 변경 금지). 우회 없이 확인하는 방법은 아래 "렌더러만 띄우기"다.
+- **렌더러만 띄우기**: `pnpm --filter desktop-client exec vite` → 브라우저에서 `http://localhost:5174`. 반드시 `localhost`로 연다 — `127.0.0.1`은 agent-runtime CORS에서 걸린다. 이 경로에서는 `window.desktop`이 없어 `bridge.ts`가 `null`을 반환하므로, 파일시스템에 의존하는 화면(스토어/가져오기/설치된 자산/업데이트·복구/로그·진단/설정)은 "Desktop 런타임 필요"로 표시되고 **대화 화면만 실제로 동작한다**. 대화 화면의 "개발자 옵션 > Knowledge ID 직접 입력"이 이때 쓰는 경로다.
+- **포트 불일치(미해결)**: `vite.config.ts`와 `electron/main.ts:145`는 `5173`으로 하드코딩되어 있는데 문서·실운영 세션은 `5174`를 쓴다. 5173이 점유된 상태에서 vite가 5174로 밀리면 Electron은 엉뚱한 5173을 로드한다. 실행 전 실제 포트를 확인한다.
+- **연결 판정 오탐(미해결)**: `electron/connections.ts:17`의 `DEFAULT_RUNTIME_BASE_URL`이 `http://127.0.0.1:8100`으로 하드코딩되어 있어, 대화가 실제로 쓰는 `VITE_AGENT_RUNTIME_BASE_URL`을 무시한다. 그 결과 대화가 멀쩡히 되는데도 채팅 화면에 빨간 "연결 끊김" 배너가 뜬다.
+- **`.env.local`은 개인 로컬 설정이다.** 커밋 대상이 아니고, 남의 세션 값을 임의로 덮어쓰지 않는다.
+- 함께 떠 있어야 하는 것: agent-runtime(기본 8100), search-runtime(8300), Ollama(11434). MCP Tool을 쓸 때만 office-mcp-server(8500).
+
+## 검증 (변경 후 반드시 실행)
+
+```
+pnpm --filter desktop-client typecheck   # tsconfig.json + tsconfig.electron.json 둘 다
+pnpm --filter desktop-client test        # vitest — 기준선 349개 통과
+```
+
+- **테스트 수가 기준선보다 줄면 안 된다.** 화면을 옮기다 깨진 테스트를 지우지 말고 새 구조에 맞게 고친다.
+- `pnpm --filter desktop-client lint`는 **현재 항상 실패한다** — 저장소에 eslint 설정 파일 자체가 없다(`.eslintrc*`/`eslint.config.*` 부재). 사전부터 있던 공백이며 네 변경 탓이 아니다.
+- 렌더링(jsdom/React) 테스트는 이 프로젝트에 없다(`vitest.config.ts`가 `environment: "node"`). 따라서 **레이아웃/화면 변경은 자동 테스트로 증명되지 않는다** — 반드시 위 "렌더러만 띄우기"로 실제 화면을 열어 눈으로 확인한다.
+
 ## 완료 전 확인
 
 - 새 IPC 채널을 추가했다면 `types.ts`/`main.ts`/`preload.ts` 세 곳을 모두 갱신했는가.
