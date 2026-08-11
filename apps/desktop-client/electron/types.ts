@@ -328,6 +328,16 @@ export interface OllamaModelsResult {
   error: string | null;
 }
 
+export interface OllamaChatInput {
+  question: string;
+  history: Array<{ question: string; answer: string }>;
+}
+
+export interface OllamaChatResult {
+  answer: string;
+  model: string;
+}
+
 // ---------------------------------------------------------------------------
 // D01 최초 설정 Wizard / D10 설정
 // ---------------------------------------------------------------------------
@@ -767,6 +777,10 @@ export interface DesktopBridge {
    * 저장 전인) Ollama Base URL을 인자로 받아, 마법사가 저장 전에도 방금 입력한
    * 값으로 확인할 수 있게 한다. */
   listOllamaModels(ollamaBaseUrl: string): Promise<OllamaModelsResult>;
+  /** Knowledge 자산이 없을 때 설정된 Ollama 채팅 모델로 일반 대화한다. */
+  chatWithOllama(input: OllamaChatInput): Promise<OllamaChatResult>;
+  /** 진행 중인 Ollama 일반 대화를 취소한다. */
+  cancelOllamaChat(): Promise<void>;
 
   // --- D03 Service/Agent 상세 -------------------------------------------------
   getServiceDetail(assetType: string, assetId: string, version: string): Promise<ServiceDetailResult>;

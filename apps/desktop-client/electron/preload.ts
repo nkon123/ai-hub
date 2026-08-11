@@ -21,6 +21,8 @@ import type {
   InstalledAssetWithStatus,
   LogEntry,
   LogFilters,
+  OllamaChatInput,
+  OllamaChatResult,
   OllamaModelsResult,
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
@@ -129,6 +131,10 @@ const bridge: DesktopBridge = {
 
   listOllamaModels: (ollamaBaseUrl: string): Promise<OllamaModelsResult> =>
     ipcRenderer.invoke("settings:listOllamaModels", ollamaBaseUrl),
+
+  chatWithOllama: (input: OllamaChatInput): Promise<OllamaChatResult> => ipcRenderer.invoke("chat:ollama", input),
+
+  cancelOllamaChat: (): Promise<void> => ipcRenderer.invoke("chat:ollamaCancel"),
 
   // --- D03 Service/Agent 상세 -------------------------------------------------
   getServiceDetail: (assetType: string, assetId: string, version: string): Promise<ServiceDetailResult> =>

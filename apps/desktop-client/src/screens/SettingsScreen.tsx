@@ -9,17 +9,20 @@
 // PoC의 폐쇄망 기본 정책 자체가 그렇게 고정했기 때문이다.
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, RefreshCw, Save, Sparkles } from "lucide-react";
-import type { ConnectionStatus, DesktopSettingsPublic } from "../../electron/types";
+import type { ConnectionStatus, DesktopSettingsPublic, OllamaModelsResult } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
+import { getBrowserSettingsBridge, isBrowserDesktopPreviewEnabled } from "../browserPreviewBridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, LabeledInput, LoadingState, PageHeader, ReadOnlyField } from "../ui";
 import { formatDateTime } from "../format";
+import { getChatModelSelectionIssue, getInstalledChatModels } from "./settingsTypes";
 
 function SectionHeader({ title }: { title: string }) {
   return <h2 className="mb-3 text-card-title font-semibold text-text-primary">{title}</h2>;
 }
 
 export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => void }) {
-  const bridge = getDesktopBridge();
+  const bridge = getDesktopBridge() ?? getBrowserSettingsBridge();
+  const browserPreview = isBrowserDesktopPreviewEnabled();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -41,6 +44,8 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
 
   const [connections, setConnections] = useState<ConnectionStatus[] | null>(null);
   const [checkingConnections, setCheckingConnections] = useState(false);
+  const [modelsResult, setModelsResult] = useState<OllamaModelsResult | null>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
 
   const applySettings = useCallback((s: DesktopSettingsPublic) => {
     setSettings(s);
@@ -54,6 +59,26 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setMcpServerUrl(s.mcpServerUrl);
   }, []);
 
+  const loadOllamaModels = useCallback(
+    async (baseUrl: string) => {
+      if (!bridge) return;
+      setLoadingModels(true);
+      setModelsResult(null);
+      try {
+        setModelsResult(await bridge.listOllamaModels(baseUrl));
+      } catch (err) {
+        setModelsResult({
+          ok: false,
+          models: [],
+          error: err instanceof Error ? err.message : "Ollama 모델 목록을 불러오지 못했습니다.",
+        });
+      } finally {
+        setLoadingModels(false);
+      }
+    },
+    [bridge],
+  );
+
   const load = useCallback(async () => {
     if (!bridge) {
       setLoading(false);
@@ -65,12 +90,13 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
       const [s, root] = await Promise.all([bridge.getDesktopSettings(), bridge.getInstallRootPath()]);
       applySettings(s);
       setInstallRoot(root);
+      await loadOllamaModels(s.ollamaBaseUrl);
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : "설정을 불러오지 못했습니다.");
     } finally {
       setLoading(false);
     }
-  }, [bridge, applySettings]);
+  }, [bridge, applySettings, loadOllamaModels]);
 
   useEffect(() => {
     void load();
@@ -88,6 +114,12 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
       }
       applySettings(result.settings);
       setSectionSavedAt((prev) => ({ ...prev, [section]: new Date().toISOString() }));
+      if (section === "ollama") await loadOllamaModels(result.settings.ollamaBaseUrl);
+    } catch (err) {
+      setSectionError((prev) => ({
+        ...prev,
+        [section]: err instanceof Error ? err.message : "설정을 저장하지 못했습니다.",
+      }));
     } finally {
       setSavingSection(null);
     }
@@ -132,10 +164,20 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
 
   const ollamaStatus = connections?.find((c) => c.id === "ollama") ?? null;
   const mcpStatus = connections?.find((c) => c.id === "mcp") ?? null;
+  const installedChatModels = getInstalledChatModels(modelsResult);
+  const currentChatModelIsInstalled = installedChatModels.includes(chatModelAlias);
+  const cannotSaveModelsReason = getChatModelSelectionIssue(loadingModels, modelsResult, chatModelAlias);
 
   return (
     <div className="space-y-4">
       <PageHeader title="설정" description="Office Profile·모델·경로·로그 정책을 확인·변경합니다." />
+
+      {browserPreview && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-body text-amber-900">
+          <strong>브라우저 개발 모드</strong> — 설정은 이 브라우저에만 저장되며 Desktop 설정 파일에는 반영되지
+          않습니다. Electron 실행 시 실제 설정을 다시 확인하세요.
+        </div>
+      )}
 
       {/* IA 재편: 최초 설정 Wizard(D01)는 더 이상 사이드바 탭이 아니다 —
           여기서만 다시 실행할 수 있다. */}
@@ -201,22 +243,61 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
       </Card>
 
       <Card className="p-6">
-        <SectionHeader title="모델 Alias" />
+        <SectionHeader title="Ollama 모델" />
+        <p className="mb-3 text-body text-text-secondary">
+          기본 채팅에서 사용할 실제 Ollama 모델을 선택합니다. Embedding Alias는 Knowledge 인덱스 호환성을 위해 기존
+          설정값을 유지합니다.
+        </p>
         <div className="grid gap-3 sm:grid-cols-2">
-          <LabeledInput id="settings-chat-alias" label="기본 Chat Model Alias" value={chatModelAlias} onChange={setChatModelAlias} placeholder="default-chat" />
+          <div>
+            <label className="mb-1.5 block text-caption font-medium text-text-secondary" htmlFor="settings-chat-model">
+              기본 채팅 모델
+            </label>
+            <select
+              id="settings-chat-model"
+              value={chatModelAlias}
+              onChange={(event) => setChatModelAlias(event.target.value)}
+              disabled={loadingModels || installedChatModels.length === 0}
+              className="w-full rounded-lg border border-border bg-white px-3 py-2.5 text-body text-text-primary focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-text-muted"
+            >
+              {!currentChatModelIsInstalled && chatModelAlias && (
+                <option value={chatModelAlias}>{chatModelAlias} (현재 설정 · 설치 목록에 없음)</option>
+              )}
+              {installedChatModels.length === 0 && !chatModelAlias && <option value="">설치된 채팅 모델 없음</option>}
+              {installedChatModels.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+            <p className={`mt-1 text-caption ${cannotSaveModelsReason ? "text-warning" : "text-text-muted"}`}>
+              {cannotSaveModelsReason ?? `${installedChatModels.length}개의 채팅 모델을 선택할 수 있습니다.`}
+            </p>
+          </div>
           <LabeledInput id="settings-embedding-alias" label="기본 Embedding Model Alias" value={embeddingModelAlias} onChange={setEmbeddingModelAlias} placeholder="default-embedding" />
         </div>
         <div className="mt-3 flex items-center gap-3">
           <Button
             variant="secondary"
             onClick={() => void saveSection("models", { chatModelAlias, embeddingModelAlias })}
-            disabled={savingSection === "models"}
+            disabled={savingSection === "models" || cannotSaveModelsReason !== null}
+            title={cannotSaveModelsReason ?? undefined}
           >
             <Save size={14} /> 저장
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => void loadOllamaModels(settings.ollamaBaseUrl)}
+            disabled={loadingModels}
+          >
+            <RefreshCw size={14} className={loadingModels ? "animate-spin" : ""} /> 설치 모델 다시 확인
           </Button>
           {sectionSavedAt.models && <span className="text-caption text-text-muted">{formatDateTime(sectionSavedAt.models)} 저장됨</span>}
         </div>
         {sectionError.models && <div className="mt-2"><ErrorBanner message={sectionError.models} /></div>}
+        {modelsResult?.ok === false && (
+          <div className="mt-2"><ErrorBanner message={modelsResult.error ?? "Ollama 모델 목록을 불러오지 못했습니다."} /></div>
+        )}
       </Card>
 
       <Card className="p-6">

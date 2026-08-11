@@ -50,6 +50,19 @@ export function initialStages(): StageMap {
   };
 }
 
+/** Knowledge 검색과 Tool 실행을 거치지 않는 Ollama 일반 대화 단계. */
+export function ollamaChatStages(state: "running" | "succeeded" | "failed" | "cancelled"): StageMap {
+  const answerState: StageState =
+    state === "running" ? "active" : state === "succeeded" ? "done" : state === "failed" ? "error" : "cancelled";
+  return {
+    ready: "done",
+    analyze: "done",
+    knowledge_search: "skipped",
+    tool_call: "skipped",
+    answer_generate: answerState,
+  };
+}
+
 /** Marks whichever stage is currently "active" (or "waiting" — a Run can end
  * via timeout/cancel while parked in WAITING_FOR_USER) with `terminalState`,
  * and any stage after it in STAGE_ORDER that never started ("pending") as

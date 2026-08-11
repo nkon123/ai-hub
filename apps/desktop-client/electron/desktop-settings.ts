@@ -21,9 +21,10 @@ import path from "node:path";
 // D09가 결국 같은 값을 봐야 한다).
 import { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL } from "./connections";
 import { validateGenericUrl, validateOllamaBaseUrl } from "./network-policy";
+import { DEFAULT_CHAT_MODEL_ALIAS } from "./ollama-chat";
 import type { DesktopSettingsInput, DesktopSettingsPublic, DesktopSettingsUpdateResult } from "./types";
 
-export const DEFAULT_CHAT_MODEL_ALIAS = "default-chat";
+export { DEFAULT_CHAT_MODEL_ALIAS };
 export const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
 export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL };
 

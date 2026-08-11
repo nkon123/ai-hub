@@ -55,7 +55,7 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
   **이 디렉터리만 보고 작업하는 경우 지켜야 할 형태로 다시 적는다** — 서버 파일은 볼 수 없으므로 아래를 절대 규칙으로 취급한다:
   1. `buildHubQueryPreview`는 **사용자가 입력한 질문 텍스트만** 읽는다. 이전 턴의 `.answer`, Citation 발췌, 로컬 문서 내용, 재작성된 검색어를 **절대** 넣지 않는다.
   2. `allowHubLookup` 기본값 `false`를 바꾸지 않는다. 세션 간 영속시키지 않는다.
-  3. 허브 동의 토글과 설명 문구, `hub.query_sent` 표시, Citation의 로컬/허브 배지를 제거·축소하지 않는다. 이것들은 사용자가 유출 없음을 눈으로 확인하는 유일한 수단이다.
+  3. 허브 동의 토글, "로컬 문서 내용은 허브로 전송되지 않습니다" 설명, `hub.query_sent` 표시, Citation의 로컬/허브 배지를 **없애지 않는다**. 이것들은 사용자가 유출 없음을 확인하는 유일한 수단이다. 설명은 2026-08-11 승인된 결정에 따라 상시 노출 대신 아이콘 토글의 `aria-describedby` 툴팁으로 제공해도 되지만, **접근성 트리에서 사라지면 안 된다**. 보유 Knowledge 검색이 켜지기 전 허브 토글이 `disabled`인 것과, `hubLookupApplicable`이 꺼질 때 `allowHubLookup`을 `false`로 되돌리는 `useEffect`도 유지한다.
   4. 이 함수나 허브 요청 경로를 **바꿔야 할 것 같으면 임의로 바꾸지 말고 설계 문서 작성자에게 되묻는다.** 서버에 같은 규칙을 강제하는 코드와 회귀 테스트가 있어, 여기만 바꾸면 표시와 실제 전송이 어긋난다.
 - `apps/portal-web`, `apps/portal-api`의 소스를 import하지 않는다. `packages/schemas`의 Manifest 스키마도 코드로 직접 import하지 않고(별도 TS 스키마 패키지가 아직 없음) 필드 이름만 참고해 `electron/types.ts`에 로컬 타입을 둔다(`system-info.ts`, `service-detail.ts`의 주석이 이 갭을 명시).
 

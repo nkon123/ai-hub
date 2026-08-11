@@ -6,6 +6,10 @@
 작업 지시는 **[`./design-briefs/`](./design-briefs/)** 의 설계 문서로 전달된다.
 형식과 제출 방법은 [`./design-briefs/README.md`](./design-briefs/README.md)에 있다.
 
+**구현이 끝나면 설계 문서를 수정하지 말고**, `design-briefs/reports/`에
+같은 이름으로 구현 보고를 새로 만든다. 설계 문서는 지시서라서 그대로
+남아 있어야 "무엇을 시켰는가"와 "무엇이 나왔는가"를 대조할 수 있다.
+
 이 디렉터리는 자기완결이다 — 빌드·테스트·타입체크가 여기서 전부 돌고
 (`pnpm test`, `pnpm typecheck`), 바깥 디렉터리를 import하는 코드는 없다.
 상위 저장소를 볼 수 없어도 작업할 수 있게 필요한 규칙은 `CLAUDE.md`에

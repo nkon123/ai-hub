@@ -98,6 +98,21 @@ Ollama/MCP 주소도 Electron에서는 저장된 설정을 쓴다. 브라우저 
 | `checkAllConnections`의 기존 3개 호출부가 계속 동작 | `main.ts:379`, `diagnostic-bundle.ts:108`, SetupWizard | 기존 `connections.test.ts` 통과 유지 |
 | 진짜 장애 시 복구 안내가 사라지지 않는다 | 루트 CLAUDE.md 요구사항 | §6.3-3에서 강제 재현 |
 
+> **2026-08-11 갱신 — 허브 동의 UI 표현 변경(승인됨).**
+> 이 문서 초안에는 "허브 동의 토글과 **설명 문구**를 제거·축소하지 않는다"가
+> 있었다. 이후 별도 지시로 채팅 화면을 Ollama 데스크톱 앱처럼 단순화하면서,
+> 상시 노출 문구를 **아이콘 토글 + `aria-describedby` 툴팁**으로 바꾸었다.
+> 저장소 소유자가 검토 후 유지하기로 결정했다. 따라서 아래가 현재 불변식이다:
+>
+> - 허브 토글의 기본값은 `false`이고 세션 간 영속하지 않는다.
+> - **보유 Knowledge 검색이 켜지기 전에는 허브 토글이 `disabled`다**(초안보다
+>   강화된 부분). `hubLookupApplicable`이 꺼지면 `allowHubLookup`을 자동으로
+>   `false`로 되돌린다 — `ChatScreen.tsx`의 해당 `useEffect`를 제거하지 않는다.
+> - "로컬 문서 내용은 허브로 전송되지 않습니다" 설명은 **툴팁으로는 반드시
+>   유지한다**(`aria-describedby`). 접근성 트리에서 사라지면 안 된다.
+> - `hub.query_sent` 표시와 Citation의 로컬/허브 배지는 그대로 유지한다.
+> - `buildHubQueryPreview`는 사용자 질문 텍스트만 읽는다 — 변경 없음.
+
 ## 6. 완료 판정
 
 ### 6.1 실행할 명령과 기대 결과
@@ -145,3 +160,7 @@ ChatScreen 자체의 렌더링 테스트는 만들지 않는다 — 이 프로�
 ## 8. 열린 질문
 
 없음. §4.2의 배너 2단계 표현 방식(색/문구/컴포넌트)은 구현자 재량이되, 판정 로직은 한 곳에 모은다는 제약만 지킨다.
+
+---
+
+구현 보고는 이 파일에 덧붙이지 않는다 — [`reports/001-connection-detection.md`](reports/001-connection-detection.md)에 별도로 쓴다(형식은 `README.md` 참고).

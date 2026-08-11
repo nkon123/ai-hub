@@ -8,6 +8,7 @@ import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
 import { checkAllConnections, listOllamaModels } from "./connections";
 import { DesktopSettingsStore } from "./desktop-settings";
+import { chatWithOllama } from "./ollama-chat";
 import {
   activateAssetVersion,
   assetInstallDir,
@@ -46,6 +47,8 @@ import type {
   InstalledAssetWithStatus,
   LogEntry,
   LogFilters,
+  OllamaChatInput,
+  OllamaChatResult,
   OllamaModelsResult,
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
@@ -71,6 +74,7 @@ let appLogger: AppLogger | null = null;
 let portalSettingsStore: PortalSettingsStore | null = null;
 let desktopSettingsStore: DesktopSettingsStore | null = null;
 let conversationStore: ConversationStore | null = null;
+let ollamaChatAbortController: AbortController | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
@@ -570,6 +574,21 @@ function registerIpcHandlers(): void {
       return listOllamaModels(ollamaBaseUrl || getDesktopSettingsStore().getPublic().ollamaBaseUrl);
     },
   );
+
+  ipcMain.handle("chat:ollama", async (_event, input: OllamaChatInput): Promise<OllamaChatResult> => {
+    const settings = getDesktopSettingsStore().getPublic();
+    const controller = new AbortController();
+    ollamaChatAbortController = controller;
+    try {
+      return await chatWithOllama(settings.ollamaBaseUrl, settings.chatModelAlias, input, controller.signal);
+    } finally {
+      if (ollamaChatAbortController === controller) ollamaChatAbortController = null;
+    }
+  });
+
+  ipcMain.handle("chat:ollamaCancel", async (): Promise<void> => {
+    ollamaChatAbortController?.abort();
+  });
 
   // --- D03 Service/Agent 상세 -------------------------------------------------
   ipcMain.handle(

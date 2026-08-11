@@ -20,23 +20,26 @@
 // agent_profile=standard-db-agent + Tool 요청을 보낼 수 있게 해 확인 Panel
 // 자체(승인/거부, 만료 시간)를 실제로 검증할 수 있게 한다 — 정식 제품
 // UI가 아님을 라벨과 경고문으로 항상 명시한다.
-import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, FileSearch, Globe, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
-import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, InstalledAssetWithStatus } from "../../electron/types";
-import { checkAllConnections } from "../../electron/connections";
+import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
+import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, InstalledAssetWithStatus, OllamaModelsResult } from "../../electron/types";
+import { assessChatConnections, checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "../../electron/connections";
+import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-chat";
 import { getDesktopBridge } from "../bridge";
+import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
 import { Button, EmptyState, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
   type RunEventLogItem,
+  AGENT_RUNTIME_BASE_URL,
   cancelRun,
   confirmRun,
   getRun,
   openRunEventStream,
   startRun,
 } from "../agentRuntime";
-import { applyRuntimeEvent, initialStages } from "../runStages";
+import { applyRuntimeEvent, initialStages, ollamaChatStages } from "../runStages";
 import {
   type ChatMessage,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
@@ -52,6 +55,7 @@ import {
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
+import { getInstalledChatModels } from "./settingsTypes";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -80,13 +84,114 @@ const SERVICE_ID_PREFIX = "desktop-knowledge-chat";
 const fieldClass =
   "w-full rounded-lg border border-border bg-white px-3 py-2.5 text-body text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-text-muted";
 
+function ComposerToggle({
+  id,
+  label,
+  description,
+  icon,
+  pressed,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  icon: ReactNode;
+  pressed: boolean;
+  disabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <div className="group relative">
+      <button
+        type="button"
+        aria-label={label}
+        aria-pressed={pressed}
+        aria-describedby={`${id}-tooltip`}
+        disabled={disabled}
+        onClick={() => onChange(!pressed)}
+        className={`flex h-9 w-9 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 ${
+          pressed
+            ? "border-brand-500 bg-brand-50 text-brand-700"
+            : "border-border bg-white text-text-secondary hover:border-brand-300 hover:text-brand-700"
+        } disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-text-muted`}
+      >
+        {icon}
+      </button>
+      <div
+        id={`${id}-tooltip`}
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-72 translate-y-1 rounded-lg border border-slate-200 bg-slate-900 px-3 py-2.5 text-left text-xs text-slate-50 opacity-0 shadow-lg transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100"
+      >
+        <p className="font-semibold">{label}</p>
+        <p className="mt-1 leading-5 text-slate-200">{description}</p>
+      </div>
+    </div>
+  );
+}
+
 export function ChatScreen() {
   const bridge = getDesktopBridge();
+  const browserSettingsBridge = getBrowserSettingsBridge();
+  const settingsBridge = bridge ?? browserSettingsBridge;
+  const conversationBridge = bridge ?? browserSettingsBridge;
+
+  // 설정 화면까지 이동하지 않아도 이번 대화에 사용할 모델을 바로 고른다.
+  // 선택은 기존 Desktop/browser-preview 설정 저장소에 반영되므로 다음 대화의
+  // 기본값으로도 이어진다.
+  const [modelsResult, setModelsResult] = useState<OllamaModelsResult | null>(null);
+  const [chatModelAlias, setChatModelAlias] = useState(DEFAULT_CHAT_MODEL_ALIAS);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelSaving, setModelSaving] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
+
+  const loadChatModels = useCallback(async () => {
+    if (!settingsBridge) return;
+    setModelsLoading(true);
+    setModelError(null);
+    try {
+      const settings = await settingsBridge.getDesktopSettings();
+      const result = await settingsBridge.listOllamaModels(settings.ollamaBaseUrl);
+      const installed = getInstalledChatModels(result);
+      setModelsResult(result);
+      setChatModelAlias(installed.includes(settings.chatModelAlias) ? settings.chatModelAlias : (installed[0] ?? settings.chatModelAlias));
+      if (!result.ok) setModelError(result.error);
+    } catch (error) {
+      setModelError(error instanceof Error ? error.message : "Ollama 모델 목록을 불러오지 못했습니다.");
+    } finally {
+      setModelsLoading(false);
+    }
+  }, [settingsBridge]);
+
+  useEffect(() => {
+    void loadChatModels();
+  }, [loadChatModels]);
+
+  async function handleChatModelChange(model: string): Promise<void> {
+    if (!settingsBridge) return;
+    const previousModel = chatModelAlias;
+    setChatModelAlias(model);
+    setModelSaving(true);
+    setModelError(null);
+    try {
+      const result = await settingsBridge.updateDesktopSettings({ chatModelAlias: model });
+      if (!result.ok) {
+        setChatModelAlias(previousModel);
+        setModelError(result.error);
+      }
+    } catch (error) {
+      setChatModelAlias(previousModel);
+      setModelError(error instanceof Error ? error.message : "채팅 모델을 저장하지 못했습니다.");
+    } finally {
+      setModelSaving(false);
+    }
+  }
 
   // --- Knowledge 자동 검색 대상(지식 검색 자동화) ---
   const [installedKnowledge, setInstalledKnowledge] = useState<InstalledAssetWithStatus[] | null>(null);
   const [installedError, setInstalledError] = useState<string | null>(null);
   const [devKnowledgeId, setDevKnowledgeId] = useState("");
+  const [useKnowledge, setUseKnowledge] = useState(false);
 
   const loadInstalledKnowledge = useCallback(async () => {
     if (!bridge) return;
@@ -157,7 +262,7 @@ export function ChatScreen() {
   const refreshConnections = useCallback(async () => {
     setConnectionsChecking(true);
     try {
-      setConnections(await checkAllConnections());
+      setConnections(await checkAllConnections({ runtimeBaseUrl: AGENT_RUNTIME_BASE_URL }));
     } finally {
       setConnectionsChecking(false);
     }
@@ -172,6 +277,11 @@ export function ChatScreen() {
   // 한다). 켜져 있을 때만 `buildHubQueryPreview`로 실제 전송될 질의를
   // 미리 보여준다(§ 대화 입력 영역).
   const [allowHubLookup, setAllowHubLookup] = useState(false);
+  const knowledgeLookupActive = useKnowledge && hasUsableKnowledge && !mcpDevActive;
+  const hubLookupApplicable = knowledgeLookupActive;
+  useEffect(() => {
+    if (!hubLookupApplicable && allowHubLookup) setAllowHubLookup(false);
+  }, [allowHubLookup, hubLookupApplicable]);
 
   // --- 대화 ---
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -187,10 +297,10 @@ export function ChatScreen() {
   const [confirmingMessageId, setConfirmingMessageId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<Record<string, string>>({});
 
-  // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron 브릿지가 있을
-  // 때만 동작한다(Main Process 저장소, `conversation-store.ts`). 브릿지가
-  // 없는 개발용 Browser 검증 경로(devKnowledgeId)는 이 세션 전체가
-  // in-memory로만 존재한다 — 오늘 동작과 동일하며, 회귀가 아니다.
+  // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron에서는 Main
+  // Process 저장소, browser-preview에서는 해당 브라우저의 localStorage를
+  // 사용한다. 일반 브라우저 모드에서는 저장 브릿지가 없으므로 세션 내에서만
+  // 유지된다.
   const [conversations, setConversations] = useState<ConversationSummary[] | null>(null);
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
@@ -202,15 +312,15 @@ export function ChatScreen() {
   const persistedTurnIdsRef = useRef<Set<string>>(new Set());
 
   const loadConversations = useCallback(async () => {
-    if (!bridge) return;
+    if (!conversationBridge) return;
     setConversationsError(null);
     try {
-      setConversations(await bridge.listConversations());
+      setConversations(await conversationBridge.listConversations());
     } catch (err) {
       setConversationsError(err instanceof Error ? err.message : "대화 목록을 불러오지 못했습니다.");
       setConversations([]);
     }
-  }, [bridge]);
+  }, [conversationBridge]);
 
   useEffect(() => {
     void loadConversations();
@@ -218,6 +328,8 @@ export function ChatScreen() {
 
   const closeStreamRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
+  const ollamaAbortRef = useRef<AbortController | null>(null);
+  const cancelledOllamaMessageIdsRef = useRef<Set<string>>(new Set());
 
   // 화면을 벗어나거나 언마운트될 때 진행 중인 Run을 고아 상태로 남기지 않는다.
   useEffect(() => {
@@ -392,7 +504,7 @@ export function ChatScreen() {
   // RUNS_VALUE`) 같은 렌더링에서 두 턴이 동시에 터미널이 되어 `currentConversationId`
   // 생성 경쟁이 생길 걱정은 없다.
   useEffect(() => {
-    if (!bridge) return;
+    if (!conversationBridge) return;
     for (const m of messages) {
       if (m.restored) continue; // 이미 저장소에서 읽어온 턴 — 다시 쓸 필요 없음
       if (!TERMINAL_CONVERSATION_STATUSES.has(m.status as ConversationTurnStatus)) continue;
@@ -401,18 +513,18 @@ export function ChatScreen() {
       void persistTurn(m);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [messages, bridge]);
+  }, [messages, conversationBridge]);
 
   async function persistTurn(m: ChatMessage): Promise<void> {
-    if (!bridge) return;
+    if (!conversationBridge) return;
     try {
       let conversationId = currentConversationId;
       if (!conversationId) {
-        const created = await bridge.createConversation(m.knowledgeIdUsed, m.knowledgeLabelUsed);
+        const created = await conversationBridge.createConversation(m.knowledgeIdUsed, m.knowledgeLabelUsed);
         conversationId = created.id;
         setCurrentConversationId(created.id);
       }
-      await bridge.appendConversationTurn(conversationId, {
+      await conversationBridge.appendConversationTurn(conversationId, {
         question: m.question,
         answer: m.answer,
         status: m.status as ConversationTurnStatus,
@@ -429,10 +541,10 @@ export function ChatScreen() {
   }
 
   async function handleSelectConversation(id: string): Promise<void> {
-    if (!bridge) return;
+    if (!conversationBridge) return;
     setSendError(null);
     try {
-      const record = await bridge.getConversation(id);
+      const record = await conversationBridge.getConversation(id);
       if (!record) {
         // 다른 경로에서 이미 삭제된 대화 — 목록을 새로고침해 정리한다.
         await loadConversations();
@@ -458,11 +570,11 @@ export function ChatScreen() {
   }
 
   async function handleConfirmDeleteConversation(reason: string): Promise<void> {
-    if (!bridge || !deletingConversation) return;
+    if (!conversationBridge || !deletingConversation) return;
     setDeleteConversationBusy(true);
     setDeleteConversationError(null);
     try {
-      const result = await bridge.deleteConversation(deletingConversation.id, reason);
+      const result = await conversationBridge.deleteConversation(deletingConversation.id, reason);
       if (!result.ok) {
         setDeleteConversationError(result.error ?? "대화를 삭제하지 못했습니다.");
         return;
@@ -481,16 +593,15 @@ export function ChatScreen() {
 
   async function handleSend(text?: string) {
     const q = (text ?? question).trim();
-    // 개발 확인용 MCP 모드는 knowledge_required=false Agent를 쓰므로
-    // 검색 가능한 Knowledge 없이도 실행할 수 있다 — 그 외에는 검색 가능한
-    // Knowledge가 최소 1개 있어야 한다(지식 검색 자동화 — 더 이상 "선택"을
-    // 요구하지 않지만, 검색 대상 자체가 없으면 여전히 실행할 수 없다).
-    if (!q || isRunning || (!hasUsableKnowledge && !mcpDevActive)) return;
+    if (!q || isRunning) return;
 
     setSendError(null);
     setQuestion("");
     const id = crypto.randomUUID();
-    const serviceId = `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
+    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive;
+    const serviceId = ollamaOnly
+      ? `${SERVICE_ID_PREFIX}:ollama-default`
+      : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
     const agentProfile: ChatMessage["agentProfile"] = mcpDevActive ? "standard-db-agent" : "standard-agent";
     // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
     // `input.history`로 함께 보낸다(additive/optional, local-runtime-api.yaml
@@ -503,13 +614,14 @@ export function ChatScreen() {
       id,
       question: q,
       knowledgeIdUsed: knowledgeId,
-      knowledgeLabelUsed: knowledgeLabel,
+      knowledgeLabelUsed: ollamaOnly ? "기본 Ollama 대화" : knowledgeLabel,
       serviceId,
       agentProfile,
+      ollamaOnly,
       status: "running",
       answer: "",
       citations: [],
-      stages: initialStages(),
+      stages: ollamaOnly ? ollamaChatStages("running") : initialStages(),
       eventLog: [],
       pendingConfirmation: null,
       runId: null,
@@ -523,6 +635,37 @@ export function ChatScreen() {
     setIsRunning(true);
 
     try {
+      if (ollamaOnly) {
+        const input = { question: q, history };
+        const controller = new AbortController();
+        ollamaAbortRef.current = controller;
+        const previewSettings = !bridge && browserSettingsBridge ? await browserSettingsBridge.getDesktopSettings() : null;
+        const result = bridge
+          ? await bridge.chatWithOllama(input)
+          : await chatWithOllama(
+              previewSettings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+              previewSettings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+              input,
+              controller.signal,
+            );
+        if (cancelledOllamaMessageIdsRef.current.has(id)) {
+          cancelledOllamaMessageIdsRef.current.delete(id);
+          ollamaAbortRef.current = null;
+          return;
+        }
+        patchMessage(id, {
+          status: "succeeded",
+          answer: result.answer,
+          ollamaModel: result.model,
+          knowledgeLabelUsed: `Ollama · ${result.model}`,
+          stages: ollamaChatStages("succeeded"),
+          completedAt: new Date().toISOString(),
+        });
+        setIsRunning(false);
+        ollamaAbortRef.current = null;
+        return;
+      }
+
       const created = await startRun({
         serviceId,
         knowledgeId,
@@ -547,10 +690,23 @@ export function ChatScreen() {
         () => handleConnectionDropped(id),
       );
     } catch (err) {
+      const wasOllamaCancelled = cancelledOllamaMessageIdsRef.current.has(id);
+      cancelledOllamaMessageIdsRef.current.delete(id);
+      ollamaAbortRef.current = null;
+      if (ollamaOnly && wasOllamaCancelled) {
+        patchMessage(id, {
+          status: "cancelled",
+          stages: ollamaChatStages("cancelled"),
+          completedAt: new Date().toISOString(),
+        });
+        setIsRunning(false);
+        return;
+      }
       const msg = err instanceof Error ? err.message : String(err);
       patchMessage(id, {
         status: "failed",
         errorMessage: `실행 요청에 실패했습니다: ${msg}`,
+        ...(ollamaOnly ? { stages: ollamaChatStages("failed") } : {}),
         completedAt: new Date().toISOString(),
       });
       setIsRunning(false);
@@ -575,6 +731,18 @@ export function ChatScreen() {
   }
 
   async function handleCancel(message: ChatMessage) {
+    if (message.ollamaOnly) {
+      cancelledOllamaMessageIdsRef.current.add(message.id);
+      patchMessage(message.id, {
+        status: "cancelled",
+        stages: ollamaChatStages("cancelled"),
+        completedAt: new Date().toISOString(),
+      });
+      setIsRunning(false);
+      if (bridge) await bridge.cancelOllamaChat();
+      else ollamaAbortRef.current?.abort();
+      return;
+    }
     if (!message.runId) return;
     // 취소는 답변 생성 중에도 항상 호출 가능해야 한다(D06 규칙) — 서버가
     // 토큰 스트리밍 루프 중에도 cancel_event를 확인하므로 별도 분기가
@@ -596,16 +764,15 @@ export function ChatScreen() {
     downloadMarkdown(`knowledge-chat-${message.id.slice(0, 8)}.md`, buildMarkdown(message));
   }
 
-  const canSend = Boolean(question.trim()) && (hasUsableKnowledge || mcpDevActive) && !isRunning;
+  const canSend = Boolean(question.trim()) && !isRunning && !modelSaving;
+  const installedChatModels = getInstalledChatModels(modelsResult);
   const sendDisabledReason = isRunning
     ? "이미 실행 중입니다. 완료되거나 취소한 뒤 다시 시도하세요."
-    : !hasUsableKnowledge && !mcpDevActive
-      ? bridge && installedKnowledge !== null && installedKnowledge.length > 0
-        ? "설치된 Knowledge를 모두 사용할 수 없습니다 — 다시 반출·설치해야 대화할 수 있습니다."
-        : "대화할 수 있는 Knowledge가 없습니다 — 자산 허브 > 가져오기에서 Knowledge를 먼저 설치하세요."
-      : !question.trim()
-        ? "질문을 입력하세요."
-        : null;
+    : modelSaving
+      ? "선택한 모델을 저장하는 중입니다."
+    : !question.trim()
+      ? "질문을 입력하세요."
+      : null;
 
   // 허브로 실제 전송될 질의 미리보기 — 매 입력마다(질문 초안/이전 턴이
   // 바뀔 때마다) 다시 계산되어 최신 상태를 반영한다(chatTypes.ts
@@ -615,24 +782,22 @@ export function ChatScreen() {
 
   const detailMessage = messages.find((m) => m.id === detailMessageId) ?? null;
 
-  // 연결이 끊겨 대화가 제한될 수 있을 때(CLAUDE.md: "Desktop은 Runtime 장애
-  // 시 종료되지 않고 복구 안내를 제공한다") — 상세 화면(설정 > 연결 상태)으로
-  // 밀어내지 않고, 대화가 실제로 일어나는 이 화면에서 바로 그 사실과 복구
-  // 힌트를 보여준다.
-  const failedConnections = connections?.filter((c) => !c.ok) ?? [];
+  // 대화 필수 서비스 장애와 MCP 선택 기능 장애를 분리한다. 어떤 서비스가
+  // 필수인지에 대한 지식은 connections.ts의 순수 헬퍼 한 곳에만 둔다.
+  const connectionAssessment = assessChatConnections(
+    connections ?? [],
+    knowledgeLookupActive || mcpDevActive ? "knowledge" : "ollama",
+  );
+  const { blockingFailures, featureFailures } = connectionAssessment;
 
   // 상단 슬림 헤더용 — Ollama Desktop 앱처럼 모델/지식 상태를 한 줄로 요약한다.
   const knowledgeSummaryText = bridge
-    ? installedKnowledge === null
-      ? "지식 확인 중..."
-      : knowledgeIds.length > 0
-        ? `지식 ${knowledgeIds.length}개 사용 중`
-        : installedKnowledge.length === 0
-          ? "설치된 지식 없음"
-          : "검색 가능한 지식 없음"
-    : devKnowledgeId.trim()
-      ? "개발용 Knowledge ID 사용 중"
-      : "지식 없음 (개발자 옵션)";
+    ? knowledgeLookupActive
+      ? `Ollama + 지식 ${knowledgeIds.length}개 검색`
+      : "기본 Ollama 대화"
+    : knowledgeLookupActive
+      ? "Ollama + 개발용 Knowledge 검색"
+      : "기본 Ollama 대화";
 
   return (
     <div className="flex h-full flex-col">
@@ -640,9 +805,9 @@ export function ChatScreen() {
           한 줄로 보여준다. Service/버전/연결 배지 상세는 자산 허브 > 설치된
           자산(D03 상세)과 설정 > 연결 상태로 옮겼다. */}
       <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2 px-1">
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-2">
           <h1 className="text-card-title font-semibold text-text-primary">채팅</h1>
-          <span className="text-caption text-text-muted">· {knowledgeSummaryText}</span>
+          <span className="text-caption text-text-muted">{knowledgeSummaryText}</span>
         </div>
         <div className="flex items-center gap-2">
           {connections === null ? (
@@ -650,32 +815,56 @@ export function ChatScreen() {
           ) : (
             <span
               className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                failedConnections.length === 0 ? "bg-success/10 text-success" : "bg-danger/10 text-danger"
+                connectionAssessment.state === "healthy"
+                  ? "bg-success/10 text-success"
+                  : connectionAssessment.state === "limited"
+                    ? "bg-warning/10 text-warning"
+                    : "bg-danger/10 text-danger"
               }`}
               title={connections.map((c) => `${c.label}: ${c.ok ? "정상" : "오류"}`).join(" · ")}
             >
-              <span className={`h-1.5 w-1.5 rounded-full ${failedConnections.length === 0 ? "bg-success" : "bg-danger"}`} />
-              {failedConnections.length === 0 ? "연결 정상" : "연결 문제"}
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  connectionAssessment.state === "healthy"
+                    ? "bg-success"
+                    : connectionAssessment.state === "limited"
+                      ? "bg-warning"
+                      : "bg-danger"
+                }`}
+              />
+              {connectionAssessment.state === "healthy"
+                ? "연결 정상"
+                : connectionAssessment.state === "limited"
+                  ? "일부 기능 제한"
+                  : "대화 연결 문제"}
             </span>
           )}
-          <Button variant="secondary" size="sm" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
-            <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} /> 연결 다시 확인
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => void refreshConnections()}
+            disabled={connectionsChecking}
+            title="연결 상태 다시 확인"
+            aria-label="연결 상태 다시 확인"
+            className="px-2"
+          >
+            <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} />
           </Button>
         </div>
       </div>
 
       {/* 연결 장애 복구 안내(CLAUDE.md 필수) — 대화가 실제로 막힐 수 있는
           상황이므로 배지 hover가 아니라 항상 보이는 배너로 보여준다. */}
-      {failedConnections.length > 0 && (
+      {blockingFailures.length > 0 && (
         <div className="mb-3 shrink-0 rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
           <div className="flex items-start gap-2">
             <AlertTriangle size={16} className="mt-0.5 shrink-0" />
             <div className="min-w-0 flex-1">
               <p className="font-semibold">
-                {failedConnections.map((c) => c.label).join(", ")} 연결이 끊어져 있어 대화가 제한될 수 있습니다.
+                {blockingFailures.map((c) => c.label).join(", ")} 연결이 끊어져 있어 대화가 제한될 수 있습니다.
               </p>
               <ul className="mt-1 space-y-0.5 text-caption">
-                {failedConnections.map((c) => (
+                {blockingFailures.map((c) => (
                   <li key={c.id}>
                     {c.label}: {c.detail}
                     {c.recoveryHint ? ` — ${c.recoveryHint}` : ""}
@@ -688,11 +877,22 @@ export function ChatScreen() {
         </div>
       )}
 
+      {featureFailures.length > 0 && (
+        <div
+          className="mb-3 flex shrink-0 items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-warning"
+          title={`${featureFailures.map((connection) => `${connection.label}: ${connection.detail}${connection.recoveryHint ? ` — ${connection.recoveryHint}` : ""}`).join("\n")}\n설정 > 연결 상태에서 자세히 확인할 수 있습니다.`}
+        >
+          <AlertTriangle size={14} className="shrink-0" />
+          <span className="font-medium">Ollama 대화는 정상이며 Knowledge·Tool 일부 기능만 제한됩니다.</span>
+          <Info size={13} className="ml-auto shrink-0" aria-label="마우스를 올리면 제한 사유를 확인할 수 있습니다." />
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 gap-4">
         {/* 좌측 대화 목록 패널(Ollama Desktop 앱과 같은 구성) — D06 대화
             보존. Electron 브릿지가 있을 때만(대화 저장은 Main Process 전용). */}
-        {bridge && (
-          <div className="flex w-64 shrink-0 flex-col">
+        {conversationBridge && (
+          <aside className="flex w-64 shrink-0 flex-col border-r border-border pr-3" aria-label="채팅 목록">
             <Button
               variant="secondary"
               onClick={handleNewConversation}
@@ -730,14 +930,14 @@ export function ChatScreen() {
                       size="sm"
                       onClick={() => requestDeleteConversation(c)}
                       title="이 대화 삭제"
-                      className="shrink-0 px-2"
+                      className="shrink-0 px-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
                     >
                       <Trash2 size={13} />
                     </Button>
                   </div>
                 ))}
             </div>
-          </div>
+          </aside>
         )}
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
@@ -760,16 +960,16 @@ export function ChatScreen() {
           {bridge && installedKnowledge !== null && installedKnowledge.length === 0 && !installedError && (
             <div className="mb-3 shrink-0">
               <EmptyState
-                title="설치된 Knowledge가 없습니다"
-                description="자산 허브 > 가져오기에서 Knowledge가 포함된 Offline Bundle을 먼저 반입하세요."
+                title="기본 Ollama 모델로 대화합니다"
+                description="Knowledge를 설치하면 사내 지식을 근거로 답변하고, 지금은 설치된 기본 채팅 모델로 일반 대화합니다."
               />
             </div>
           )}
           {bridge && installedKnowledge !== null && installedKnowledge.length > 0 && knowledgeIds.length === 0 && (
             <div className="mb-3 shrink-0">
               <EmptyState
-                title="검색 가능한 지식 자산이 없습니다"
-                description="설치된 Knowledge가 모두 이전 형식의 Bundle입니다 — 다시 반출·설치해야 대화할 수 있습니다."
+                title="기본 Ollama 모델로 대화합니다"
+                description="설치된 Knowledge는 현재 검색할 수 없어 일반 대화로 실행합니다. 지식 답변이 필요하면 자산을 다시 반출·설치하세요."
               />
             </div>
           )}
@@ -890,9 +1090,9 @@ export function ChatScreen() {
                 <EmptyState
                   title="아직 대화가 없습니다"
                   description={
-                    hasUsableKnowledge || mcpDevActive
-                      ? "질문을 입력해 대화를 시작하세요."
-                      : "대화할 수 있는 Knowledge가 없습니다. 먼저 Knowledge를 설치하세요."
+                    knowledgeLookupActive
+                      ? "보유 Knowledge를 근거로 답할 질문을 입력하세요."
+                      : "질문을 입력하면 기본 Ollama 모델로 일반 대화를 시작합니다. 필요할 때 보유 Knowledge 검색을 켤 수 있습니다."
                   }
                 />
               )}
@@ -917,34 +1117,74 @@ export function ChatScreen() {
               ))}
             </div>
 
-            <div className="mt-4 shrink-0 border-t border-border pt-4">
-              {/* 허브 조회 동의(Stage 2, D-078) — 절대 제거·축소·기본값
-                  변경 금지. 기본 꺼짐, 세션마다 초기화(저장하지 않음).
-                  "로컬에서 조회하는 데이터를 허브에 넘기면 안 돼": 이 동의는
-                  편의를 위한 묵시적 허용이 아니라 매번 다시 확인하는 명시적
-                  선택. 켜져 있을 때만 실제 전송될 질의를 미리 보여준다(사전
-                  가시성) — 사후 가시성은 "hub.query_sent" 이벤트(ChatTurn
-                  대화 내 안내문)가 보완한다. */}
-              <div className="mb-3">
-                <label className="flex items-center gap-2 text-caption font-medium text-text-secondary">
-                  <input
-                    type="checkbox"
-                    checked={allowHubLookup}
-                    onChange={(e) => setAllowHubLookup(e.target.checked)}
-                    disabled={isRunning}
-                  />
-                  허브에도 물어보기 (로컬에서 찾지 못한 경우에만)
-                </label>
-                <p className="mt-1 text-caption text-text-muted">
-                  기본적으로 꺼져 있습니다. 켜면 로컬에서 답을 찾지 못했을 때만, 사용자가 입력한 질문 텍스트만 허브로
-                  전송됩니다 — 로컬 문서 내용은 전송되지 않습니다.
-                </p>
-                {allowHubLookup && (
-                  <p className="mt-1.5 text-caption text-text-secondary">
-                    허브로 전송될 질의 미리보기: &quot;{hubQueryPreview}&quot;
-                  </p>
+            <div className="mt-4 shrink-0 border-t border-border pt-3">
+              <div className="mb-2 flex items-center gap-2">
+                <ComposerToggle
+                  id="knowledge-toggle"
+                  label="보유 Knowledge에서 찾기"
+                  description={
+                    hasUsableKnowledge
+                      ? "사내 지식에 근거한 답변이 필요할 때 켭니다. 끄면 선택한 Ollama 모델과 바로 대화합니다."
+                      : installedKnowledge === null && bridge
+                        ? "보유 Knowledge를 확인하는 중입니다. Ollama 일반 대화는 바로 사용할 수 있습니다."
+                        : "검색 가능한 Knowledge가 없어 현재는 Ollama 일반 대화만 사용할 수 있습니다."
+                  }
+                  icon={<BookOpenCheck size={16} aria-hidden="true" />}
+                  pressed={useKnowledge}
+                  disabled={isRunning || !hasUsableKnowledge || mcpDevActive}
+                  onChange={setUseKnowledge}
+                />
+
+                {/* 허브 조회 동의(Stage 2, D-078) — 기본 꺼짐과 세션별 초기화,
+                    사용자 질문 텍스트만 전송하는 경계는 그대로 유지한다. 긴
+                    설명은 제거하지 않고 hover/focus 툴팁으로 점진 공개한다. */}
+                <ComposerToggle
+                  id="hub-toggle"
+                  label="허브에도 물어보기"
+                  description={
+                    hubLookupApplicable
+                      ? "로컬 Knowledge에서 답을 찾지 못한 경우에만 사용자가 입력한 질문 텍스트를 허브로 전송합니다. 로컬 문서 내용은 전송되지 않습니다."
+                      : "보유 Knowledge 검색을 먼저 켜야 사용할 수 있습니다. 기본적으로 꺼져 있으며 로컬 문서 내용은 허브로 전송되지 않습니다."
+                  }
+                  icon={<Globe2 size={16} aria-hidden="true" />}
+                  pressed={allowHubLookup}
+                  disabled={isRunning || !hubLookupApplicable}
+                  onChange={setAllowHubLookup}
+                />
+
+                {settingsBridge ? (
+                  <div className="ml-1 flex min-w-0 items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1.5">
+                    <Bot size={14} className="shrink-0 text-brand-600" aria-hidden="true" />
+                    <label htmlFor="chat-model-select" className="sr-only">채팅 모델</label>
+                    <select
+                      id="chat-model-select"
+                      value={chatModelAlias}
+                      onChange={(event) => void handleChatModelChange(event.target.value)}
+                      disabled={modelsLoading || modelSaving || installedChatModels.length === 0 || isRunning}
+                      className="max-w-64 min-w-0 bg-transparent text-caption font-medium text-text-primary outline-none disabled:text-text-muted"
+                      title={modelError ?? "이 질문에 사용할 Ollama 모델"}
+                    >
+                      {installedChatModels.length === 0 ? (
+                        <option value={chatModelAlias}>{modelsLoading ? "모델 확인 중..." : chatModelAlias}</option>
+                      ) : (
+                        installedChatModels.map((model) => <option key={model} value={model}>{model}</option>)
+                      )}
+                    </select>
+                    {modelError && <Info size={13} className="shrink-0 text-warning" aria-label={modelError} />}
+                  </div>
+                ) : (
+                  <span className="text-caption text-text-muted">Ollama · {chatModelAlias}</span>
+                )}
+                {knowledgeLookupActive && (
+                  <span className="text-caption text-text-muted">Knowledge {knowledgeIds.length}개 검색</span>
                 )}
               </div>
+
+              {allowHubLookup && (
+                <p className="mb-2 rounded-md bg-brand-50 px-2.5 py-1.5 text-caption text-brand-700">
+                  허브 전송 미리보기: &quot;{hubQueryPreview}&quot;
+                </p>
+              )}
               <div className="flex gap-2">
                 <textarea
                   value={question}
@@ -1034,6 +1274,11 @@ function ChatTurn({
       <div className="max-w-[90%] space-y-2">
         {message.restored && (
           <p className="text-[11px] text-text-muted">저장된 대화에서 복원됨 · 실행 상세 정보는 보존되지 않습니다.</p>
+        )}
+        {message.ollamaOnly && (
+          <p className="text-[11px] text-text-muted">
+            {message.ollamaModel ? `Ollama 일반 대화 · ${message.ollamaModel}` : "Ollama 일반 대화"}
+          </p>
         )}
         <StageIndicator stages={message.stages} />
 
@@ -1160,7 +1405,7 @@ function ChatTurn({
               </Button>
             </>
           )}
-          {isTerminal && (
+          {isTerminal && !message.ollamaOnly && (
             <Button variant="secondary" size="sm" onClick={onOpenDetail}>
               <ListChecks size={13} /> 상세 실행 보기
             </Button>

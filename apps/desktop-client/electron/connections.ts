@@ -3,7 +3,8 @@
 // 하드코딩돼 있었다 — 이제 Ollama/MCP는 설정 저장소 값을 인자로 받고, 값이
 // 없으면(설정 전, 또는 이 함수를 직접 호출하는 기존 테스트/호출부) 이전과
 // 동일한 기본값으로 동작한다(D01/D10 작업 전 동작을 조금도 바꾸지 않는다).
-// Local Agent Runtime(8100)은 D01 필드 목록에 없는 값이라 계속 고정값이다.
+// Local Agent Runtime은 D01 저장 설정 필드에는 없지만, 렌더러가 실제 대화에
+// 사용하는 Vite 환경 설정을 호출 시점에 넘길 수 있도록 선택 인자로 받는다.
 //
 // CLAUDE.md: "Desktop은 Runtime 장애 시 종료되지 않고 복구 안내를 제공한다."
 // Every check below is wrapped so a network failure never throws past this
@@ -23,6 +24,39 @@ export interface ConnectionCheckSettings {
   runtimeBaseUrl?: string;
   mcpServerUrl?: string;
   mcpServerAlias?: string;
+}
+
+export type ChatConnectionState = "healthy" | "blocked" | "limited";
+
+export interface ChatConnectionAssessment {
+  state: ChatConnectionState;
+  blockingFailures: ConnectionStatus[];
+  featureFailures: ConnectionStatus[];
+}
+
+/**
+ * 대화에 필수인 서비스와 선택 기능용 서비스를 한 곳에서 구분한다.
+ * Local Agent Runtime과 Ollama 장애는 대화 자체를 막을 수 있지만, MCP 장애는
+ * MCP Tool 질문만 제한하며 Knowledge 대화에는 영향을 주지 않는다.
+ */
+export function assessChatConnections(
+  connections: readonly ConnectionStatus[],
+  mode: "knowledge" | "ollama" = "knowledge",
+): ChatConnectionAssessment {
+  const blockingFailures = connections.filter(
+    (connection) =>
+      !connection.ok && (connection.id === "ollama" || (mode === "knowledge" && connection.id === "runtime")),
+  );
+  const featureFailures = connections.filter(
+    (connection) =>
+      !connection.ok && (connection.id === "mcp" || (mode === "ollama" && connection.id === "runtime")),
+  );
+
+  return {
+    state: blockingFailures.length > 0 ? "blocked" : featureFailures.length > 0 ? "limited" : "healthy",
+    blockingFailures,
+    featureFailures,
+  };
 }
 
 function trimTrailingSlash(url: string): string {

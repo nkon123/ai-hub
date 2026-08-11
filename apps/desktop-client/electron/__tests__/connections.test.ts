@@ -4,7 +4,8 @@
 // 고정돼 있던 것을 대체). global.fetch를 모의(mock)해 실제 호출 URL을
 // 검증한다 — 실 서비스가 떠 있지 않아도 결정적으로 통과해야 한다.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { checkAllConnections, listOllamaModels } from "../connections";
+import { assessChatConnections, checkAllConnections, listOllamaModels } from "../connections";
+import type { ConnectionId, ConnectionStatus } from "../types";
 
 const originalFetch = global.fetch;
 
@@ -37,8 +38,16 @@ describe("checkAllConnections", () => {
     const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]);
     expect(calledUrls).toContain("http://127.0.0.1:22222/api/tags");
     expect(calledUrls).toContain("http://127.0.0.1:33333/health/live");
-    // Runtime endpoint has no D01 settings field — always the fixed default.
+    // Runtime endpoint falls back to the default when the caller has no override.
     expect(calledUrls).toContain("http://127.0.0.1:8100/health");
+  });
+
+  it("uses the configured runtime endpoint instead of the default", async () => {
+    mockFetchOk();
+    await checkAllConnections({ runtimeBaseUrl: "http://127.0.0.1:8102" });
+    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+    expect(calledUrls).toContain("http://127.0.0.1:8102/health");
+    expect(calledUrls).not.toContain("http://127.0.0.1:8100/health");
   });
 
   it("labels the MCP connection with the configured alias", async () => {
@@ -57,6 +66,62 @@ describe("checkAllConnections", () => {
       expect(r.ok).toBe(false);
       expect(r.recoveryHint).toBeTruthy();
     }
+  });
+});
+
+function connection(id: ConnectionId, ok: boolean): ConnectionStatus {
+  return {
+    id,
+    label: id,
+    ok,
+    detail: ok ? "정상 연결됨" : "연결 실패",
+    checkedAt: "2026-08-11T00:00:00.000Z",
+    latencyMs: ok ? 1 : null,
+    recoveryHint: ok ? null : "서비스 상태를 확인하세요.",
+  };
+}
+
+describe("assessChatConnections", () => {
+  it("blocks chat when the runtime is unavailable", () => {
+    const result = assessChatConnections([
+      connection("runtime", false),
+      connection("ollama", true),
+      connection("mcp", true),
+    ]);
+    expect(result.state).toBe("blocked");
+    expect(result.blockingFailures.map((item) => item.id)).toEqual(["runtime"]);
+  });
+
+  it("limits only MCP Tool features when only MCP is unavailable", () => {
+    const result = assessChatConnections([
+      connection("runtime", true),
+      connection("ollama", true),
+      connection("mcp", false),
+    ]);
+    expect(result.state).toBe("limited");
+    expect(result.featureFailures.map((item) => item.id)).toEqual(["mcp"]);
+    expect(result.blockingFailures).toEqual([]);
+  });
+
+  it("treats a runtime outage as a feature limitation in Ollama-only mode", () => {
+    const result = assessChatConnections(
+      [connection("runtime", false), connection("ollama", true), connection("mcp", true)],
+      "ollama",
+    );
+    expect(result.state).toBe("limited");
+    expect(result.blockingFailures).toEqual([]);
+    expect(result.featureFailures.map((item) => item.id)).toEqual(["runtime"]);
+  });
+
+  it("reports healthy when every chat-related connection is available", () => {
+    const result = assessChatConnections([
+      connection("runtime", true),
+      connection("ollama", true),
+      connection("mcp", true),
+    ]);
+    expect(result.state).toBe("healthy");
+    expect(result.blockingFailures).toEqual([]);
+    expect(result.featureFailures).toEqual([]);
   });
 });
 

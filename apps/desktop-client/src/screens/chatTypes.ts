@@ -30,6 +30,10 @@ export interface ChatMessage {
    * (not read live off screen state) for the same reason knowledgeIdUsed is —
    * and so D07 can display what was *actually* used for this turn. */
   agentProfile: "standard-agent" | "standard-db-agent";
+  /** true when this turn bypasses Knowledge search and talks directly to Ollama. */
+  ollamaOnly?: boolean;
+  /** Actual installed Ollama model selected for this turn. */
+  ollamaModel?: string;
   status: ChatMessageStatus;
   answer: string;
   citations: Citation[];

@@ -1,5 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { applyRuntimeEvent, initialStages } from "./runStages";
+import { applyRuntimeEvent, initialStages, ollamaChatStages } from "./runStages";
+
+describe("ollamaChatStages", () => {
+  it("skips Knowledge and Tool stages for a successful Ollama-only chat", () => {
+    expect(ollamaChatStages("succeeded")).toEqual({
+      ready: "done",
+      analyze: "done",
+      knowledge_search: "skipped",
+      tool_call: "skipped",
+      answer_generate: "done",
+    });
+  });
+
+  it("represents cancellation while Ollama is generating an answer", () => {
+    expect(ollamaChatStages("cancelled").answer_generate).toBe("cancelled");
+  });
+});
 
 describe("runStages / applyRuntimeEvent", () => {
   it("progresses through ready -> analyze -> knowledge_search -> answer_generate -> done on a normal success", () => {
