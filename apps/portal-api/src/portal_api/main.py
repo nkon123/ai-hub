@@ -18,6 +18,7 @@ from portal_api.routers.assets import router as assets_router
 from portal_api.routers.deployments import router as deployments_router
 from portal_api.routers.distributions import router as distributions_router
 from portal_api.routers.evaluations import router as evaluations_router
+from portal_api.routers.knowledge_search import router as knowledge_search_router
 from portal_api.routers.reviews import router as reviews_router
 from portal_api.routers.services import router as services_router
 
@@ -74,6 +75,11 @@ app.include_router(deployments_router)
 app.include_router(distributions_router)
 app.include_router(evaluations_router)
 app.include_router(admin_router)
+# `/api/v1/knowledge-search` is a brand-new literal path segment (no
+# `{param}` catch-all), so unlike the reviews_router/assets_router ordering
+# above (D-034), registration order here cannot shadow or be shadowed by
+# any existing route.
+app.include_router(knowledge_search_router)
 
 
 @app.get("/health")

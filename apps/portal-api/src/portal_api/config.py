@@ -36,6 +36,19 @@ class Settings(BaseSettings):
     # _trigger_indexing).
     search_runtime_url: str = "http://localhost:8300"
     evaluation_timeout_seconds: float = 300.0
+
+    # `routers/knowledge_search.py` (POST /api/v1/knowledge-search) — the
+    # `access_context.clearance` portal-api asserts to search-runtime on
+    # every fan-out call, mirroring `AgentRuntimeSettings
+    # .default_search_clearance` (services/agent-runtime/src/agent_runtime
+    # /config.py) exactly, including its caveat: open-decisions.md D-062
+    # documents that this PLATFORM ASSERTS a clearance on the caller's
+    # behalf — it does not verify one against a real identity/session,
+    # because no such system exists yet in this PoC (D-001/D-015). There is
+    # deliberately no request-body field that lets a caller override this
+    # (see the router's module docstring) — raising it here is the only way
+    # to widen what hub-wide Knowledge search can see.
+    default_search_clearance: str = "INTERNAL"
     # Evaluation Dataset storage doesn't exist yet (open-decisions.md D-055) —
     # PoC discovery convention: scan every `*/evaluation-dataset.json` under
     # this directory and match on the dataset's own `knowledge_asset_id`

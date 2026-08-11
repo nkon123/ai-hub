@@ -18,6 +18,7 @@ tags:
   - name: distributions
   - name: audit
   - name: evaluations
+  - name: knowledge-search
 
 paths:
   /health:
@@ -431,6 +432,60 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+
+  /api/v1/knowledge-search:
+    post:
+      tags: [knowledge-search]
+      summary: Search across every Knowledge asset the caller may see (Hub Search)
+      description: |
+        `services/search-runtime` (M08) only ever searches one `knowledge_id`
+        per request. This is the missing cross-Knowledge capability:
+        portal-api (M02) resolves the caller's visible APPROVED Knowledge
+        AssetVersions from its own Registry, fans out concurrently to
+        search-runtime per Knowledge, and merges/re-ranks the results —
+        mirroring `POST /api/v1/distributions`'s division of labor (M02
+        owns auth/ACL/audit, the downstream service does the work).
+
+        Deliberately absent from the request body: any ACL/clearance/
+        classification/metadata_filters override field. There is no surface
+        for a caller to widen its own access — the clearance asserted to
+        search-runtime on every fan-out call is derived entirely
+        server-side from the authenticated caller
+        (`Settings.default_search_clearance`, D-062), never from this
+        request.
+      operationId: knowledge_search
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/KnowledgeSearchRequest"
+      responses:
+        "200":
+          description: |
+            OK. Always 200 for a normal empty result (no APPROVED Knowledge
+            visible, or none of the requested `knowledge_ids` were
+            visible) — that is not an error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/KnowledgeSearchResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: |
+            KNOWLEDGE_SEARCH_UNAVAILABLE — search-runtime was unreachable
+            for every targeted Knowledge. Partial failure (some Knowledge
+            succeed, some fail) is not an error — the response degrades to
+            only the succeeded Knowledge's citations with a 200.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
 
   /api/v1/manifests/validate:
     post:
@@ -1766,6 +1821,100 @@ components:
           type: array
           items:
             type: string
+
+    KnowledgeSearchRequest:
+      type: object
+      required: [query]
+      description: |
+        No ACL/clearance/classification/metadata_filters field exists here
+        by design — see the path's `description`. This is intentionally a
+        narrower surface than search-runtime's own `SearchRequest`
+        (knowledge-search.schema.json), which portal-api calls once per
+        visible Knowledge on the caller's behalf.
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 2000
+        knowledge_ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: |
+            Restrict the search to these AssetVersion ids (intersected with
+            what the caller may see — an id outside that set is silently
+            dropped, never an error). Omit to search every APPROVED
+            Knowledge the caller can see, capped at a small fan-out
+            constant.
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 50
+          default: 5
+
+    KnowledgeSearchCitation:
+      type: object
+      description: |
+        Additive superset of search-runtime's own Citation
+        (knowledge-search.schema.json#/definitions/Citation) — every field
+        it returns is passed through with the same name (e.g. `excerpt`,
+        not `text`), plus `knowledge_id`/`asset_id`/`asset_name`/`source`
+        stamped on by this endpoint.
+      required: [chunk_id, excerpt, score, knowledge_id, asset_id, asset_name, source]
+      properties:
+        chunk_id:
+          type: string
+        parent_chunk_id:
+          type: string
+        document_path:
+          type: string
+        document_title:
+          type: string
+        page:
+          type: integer
+        section:
+          type: string
+        excerpt:
+          type: string
+        parent_context:
+          type: string
+        score:
+          type: number
+        similarity:
+          type: ["number", "null"]
+        knowledge_id:
+          type: string
+          format: uuid
+          description: The AssetVersion id this citation was found in.
+        asset_id:
+          type: string
+          format: uuid
+        asset_name:
+          type: string
+        source:
+          type: string
+          enum: [hub]
+
+    KnowledgeSearchResponse:
+      type: object
+      required: [trace_id, knowledge_ids_searched, citations]
+      properties:
+        trace_id:
+          type: string
+        knowledge_ids_searched:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: |
+            AssetVersion ids this request actually completed a search
+            against — excludes any that were visible/requested but whose
+            search-runtime call failed (partial failure).
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/KnowledgeSearchCitation"
 
     AssetListResponse:
       type: object

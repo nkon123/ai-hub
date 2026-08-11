@@ -444,6 +444,16 @@ Portal은 Polling으로 시작할 수 있으며 추후 SSE로 교체 가능하�
 - `KNOWLEDGE_ACCESS_DENIED`
 - `KNOWLEDGE_SEARCH_TIMEOUT`
 - `KNOWLEDGE_NO_RESULTS`
+- `KNOWLEDGE_SEARCH_UNAVAILABLE` — M02 `POST /api/v1/knowledge-search`(Hub
+  Search, 여러 Knowledge에 Fan-out)이 대상 Knowledge 전부에 대해
+  search-runtime 호출이 실패했을 때 반환(HTTP 503). 일부만 실패한 경우는
+  오류가 아니라 성공한 Knowledge의 Citation만으로 200을 반환한다(정상 부분
+  성공, Graceful Degradation). agent-runtime의
+  `HttpKnowledgeAdapter`(services/agent-runtime/src/agent_runtime/adapters/
+  search.py)가 단일 Knowledge 호출 실패에 이미 같은 코드명을 내부적으로
+  사용하고 있었고(Transport 실패 한정, 문서화되지 않았던 기존 코드), 이번에
+  동일 이름을 재사용해 최초로 이 표에 문서화한다 — 두 사용처 모두 "검색
+  대상 Knowledge에 도달할 수 없다"는 동일한 의미다.
 
 ### MCP
 

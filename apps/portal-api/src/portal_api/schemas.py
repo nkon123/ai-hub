@@ -954,3 +954,58 @@ class AdminSettingsOut(BaseModel):
     security_classification_retention: SecurityClassificationRetentionSectionOut
     package_trust_signature: PackageTrustSignatureSectionOut
     indexing_embedding_model: IndexingEmbeddingModelSectionOut
+
+
+# --- POST /api/v1/knowledge-search — cross-Knowledge Hub Search (M02) -----
+#
+# `KnowledgeSearchRequest` deliberately has NO ACL/clearance/classification/
+# metadata_filters field — see `routers/knowledge_search.py`'s module
+# docstring for why that absence is the design, not an omission. ACL is
+# derived entirely server-side from the authenticated caller
+# (`settings.default_search_clearance`), so there is no field here a caller
+# could use to widen its own access.
+
+
+class KnowledgeSearchRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
+    # Restricts the search to this AssetVersion id set (intersected with
+    # what the caller may see); omit to search every APPROVED Knowledge the
+    # caller can see, capped at
+    # `routers.knowledge_search._MAX_FANOUT_KNOWLEDGE_COUNT`.
+    knowledge_ids: list[str] | None = None
+    top_k: int = Field(default=5, ge=1, le=50)
+
+
+class KnowledgeSearchCitationOut(BaseModel):
+    """Additive superset of search-runtime's own Citation shape
+    (`packages/schemas/api/knowledge-search.schema.json#/definitions/
+    Citation`) — every field search-runtime already returns is passed
+    through unchanged (field names match its contract exactly, e.g.
+    `excerpt`, not `text`), plus four fields this router stamps on: which
+    Knowledge/Asset the citation came from and a fixed `source` marker."""
+
+    chunk_id: str
+    parent_chunk_id: str | None = None
+    document_path: str | None = None
+    document_title: str | None = None
+    page: int | None = None
+    section: str | None = None
+    excerpt: str
+    parent_context: str | None = None
+    score: float
+    similarity: float | None = None
+    # Additive — stamped by this router, not present in search-runtime's own
+    # response.
+    knowledge_id: str
+    asset_id: str
+    asset_name: str
+    source: Literal["hub"] = "hub"
+
+
+class KnowledgeSearchResponseOut(BaseModel):
+    trace_id: str
+    # AssetVersion ids this request actually completed a search against
+    # (excludes ids that were requested/visible but whose search-runtime
+    # call failed — see the router's partial-failure handling).
+    knowledge_ids_searched: list[str]
+    citations: list[KnowledgeSearchCitationOut]

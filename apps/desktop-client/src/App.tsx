@@ -45,14 +45,21 @@ const TABS: Array<{ id: Tab; label: string; icon: typeof Home }> = [
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("home");
+  // 대화 우선(Chat-first) 기본값 — Ollama Desktop 앱과 같은 정신으로, 실행
+  // 시 곧바로 D06 대화 화면으로 진입한다(Home을 삭제하거나 사이드바에서
+  // 빼지 않는다 — 여전히 첫 번째 탭으로 남아 있다).
+  const [tab, setTab] = useState<Tab>("chat");
   // Bumping this remounts HomeScreen so it reloads the asset list right
   // after a successful import, without HomeScreen and ImportScreen having
   // to share state directly.
   const [homeRefreshKey, setHomeRefreshKey] = useState(0);
   // D03 진입 대상 — D02(HomeScreen)/D08(AssetsScreen)의 "상세" 버튼이
   // 설정하고, "detail" 탭으로 전환한다. 이전 탭으로 돌아갈 곳을 함께
-  // 기억해 "뒤로"가 항상 올바른 화면으로 되돌아가게 한다.
+  // 기억해 "뒤로"가 항상 올바른 화면으로 되돌아가게 한다. 기본값은 여전히
+  // "home"이다 — "detail"에는 항상 openDetail()이 명시적으로 fromTab을
+  // 전달해 진입하므로(HomeScreen/AssetsScreen 둘 다 자기 자신의 탭 id를
+  // 넘긴다) 이 초기값이 실제로 쓰이는 경우는 없다(첫 렌더에 detailTarget이
+  // null이라 "detail" 탭 자체가 아직 존재하지 않는다).
   const [detailTarget, setDetailTarget] = useState<ServiceDetailTarget | null>(null);
   const [detailReturnTab, setDetailReturnTab] = useState<Tab>("home");
 

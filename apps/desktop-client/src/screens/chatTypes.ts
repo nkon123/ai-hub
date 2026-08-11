@@ -61,6 +61,14 @@ export interface ChatMessage {
    * (unpersisted) Run had, shown as a plain count since the citations
    * themselves were not saved. */
   restoredCitationCount?: number;
+  /** Every `"hub.query_sent"` SSE event this turn's Run has emitted so far —
+   * the after-the-fact visibility guarantee for Stage 2 hub lookup consent,
+   * complementing the before-the-fact preview `buildHubQueryPreview` powers
+   * while the user is still typing. `query` is guaranteed by agent-runtime's
+   * own enforced chokepoint to be built only from text the user typed —
+   * never local document content — so it is safe to render verbatim. Always
+   * `[]` for a restored turn (not persisted, same as `citations`/`eventLog`). */
+  hubQueriesSent: Array<{ query: string; knowledgeIdsSearched: string[] }>;
 }
 
 // D-060: an installed Knowledge from a Bundle built before the fix has no
@@ -93,6 +101,21 @@ export function resolveKnowledgeSelection(asset: InstalledAsset | null): Knowled
   return { knowledgeId: asset.assetVersionId, disabledReason: null };
 }
 
+/** 지식 검색 자동화 — replaces the old "pick exactly one Knowledge" flow:
+ * every installed Knowledge asset search-runtime can actually be searched
+ * against, gathered in one call. Filters to Knowledge-type assets and reuses
+ * `resolveKnowledgeSelection`'s per-asset D-060 decision (never duplicated
+ * here) to drop legacy-Bundle installs with no AssetVersion id. Callers are
+ * expected to have already excluded INACTIVE versions before calling this
+ * (the same filter `ChatScreen`'s installed-Knowledge load already applies,
+ * `InstalledAsset` itself carries no `status` field to check here). */
+export function resolveInstalledKnowledgeIds(assets: InstalledAsset[]): string[] {
+  return assets
+    .filter((a) => a.assetType === "knowledge")
+    .map((a) => resolveKnowledgeSelection(a).knowledgeId)
+    .filter((id) => id.length > 0);
+}
+
 // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
 
 /** Builds the `history` sent to agent-runtime (`input.history`, additive/
@@ -111,6 +134,24 @@ export function buildHistoryFromMessages(messages: ChatMessage[]): ConversationT
   return messages
     .filter((m) => m.status === "succeeded" && m.answer.trim().length > 0)
     .map((m) => ({ question: m.question, answer: m.answer }));
+}
+
+/** Pure TS mirror of agent-runtime's `build_hub_query`
+ * (services/agent-runtime/src/agent_runtime/hub_query.py) — powers the
+ * consent-preview UI (허브로 전송될 질의 미리보기) so the user can see exactly
+ * what would be sent to the hub BEFORE it goes, matching the after-the-fact
+ * `"hub.query_sent"` SSE event's guarantee byte-for-byte.
+ *
+ * SECURITY (product requirement — "로컬에서 조회하는 데이터를 허브에 넘기면
+ * 안 돼"): reads only every prior turn's `.question` text, NEVER `.answer` —
+ * an answer may echo back local document content Stage 1 search retrieved,
+ * which must never reach the hub. This is the same exclusion
+ * `build_hub_query` enforces server-side; both sides must never drift. */
+export function buildHubQueryPreview(question: string, messages: ChatMessage[]): string {
+  const priorQuestions = messages.map((m) => m.question.trim()).filter((q) => q.length > 0);
+  const draft = question.trim();
+  const parts = draft.length > 0 ? [...priorQuestions, draft] : priorQuestions;
+  return parts.join("\n");
 }
 
 /** Reconstructs a read-only, terminal `ChatMessage` from a persisted
@@ -154,6 +195,7 @@ export function chatMessageFromStoredTurn(
     serverRun: null,
     restored: true,
     restoredCitationCount: turn.citationCount,
+    hubQueriesSent: [],
   };
 }
 

@@ -20,6 +20,7 @@ import pytest
 from agent_runtime.adapters import (
     AssetRegistryResolver,
     DeploymentResolver,
+    HubSearchAdapter,
     KnowledgeAdapter,
     LLMAdapter,
     MCPAdapter,
@@ -29,6 +30,7 @@ from agent_runtime.main import app
 from agent_runtime.routers.chat import get_deployment_resolver
 from agent_runtime.routers.runs import (
     get_asset_registry_resolver,
+    get_hub_search_adapter,
     get_knowledge_adapter,
     get_llm_adapter,
     get_mcp_adapter,
@@ -134,6 +136,48 @@ class FakeKnowledgeAdapter(KnowledgeAdapter):
             "latency_ms": 5,
             "trace_id": request.get("trace_id"),
             "search_id": "fake-search-id",
+        }
+
+
+class FakeHubSearchAdapter(HubSearchAdapter):
+    """In-memory stand-in for `HttpHubSearchAdapter` — no live portal-api
+    needed. Records the exact `UserTypedQuery` object (and its `.text`) that
+    `search()` was invoked with (`received_queries`/`received_query_text`),
+    so a test can assert on the actual outbound value — not merely that
+    `search()` was called — which is what the hub security regression test
+    (`tests/integration/agent_runtime/test_hub_query.py`) needs.
+
+    - `error_to_raise`: if set, `search()` raises this instead of returning
+      (simulates the hub being unreachable/erroring).
+    """
+
+    def __init__(
+        self,
+        citations: list[dict[str, Any]] | None = None,
+        knowledge_ids_searched: list[str] | None = None,
+        error_to_raise: Exception | None = None,
+    ) -> None:
+        self.citations = citations if citations is not None else []
+        self.knowledge_ids_searched = (
+            knowledge_ids_searched if knowledge_ids_searched is not None else []
+        )
+        self.error_to_raise = error_to_raise
+        self.call_count = 0
+        self.received_queries: list[Any] = []
+        self.received_query_text: list[str] = []
+
+    async def search(
+        self, query: Any, *, top_k: int = 5, trace_id: str | None = None
+    ) -> dict[str, Any]:
+        self.call_count += 1
+        self.received_queries.append(query)
+        self.received_query_text.append(getattr(query, "text", ""))
+        if self.error_to_raise is not None:
+            raise self.error_to_raise
+        return {
+            "trace_id": trace_id,
+            "knowledge_ids_searched": self.knowledge_ids_searched,
+            "citations": self.citations,
         }
 
 
@@ -275,18 +319,25 @@ def fake_asset_registry_resolver() -> FakeAssetRegistryResolver:
 
 
 @pytest.fixture
+def fake_hub_search_adapter() -> FakeHubSearchAdapter:
+    return FakeHubSearchAdapter()
+
+
+@pytest.fixture
 async def client(
     fake_llm_adapter: FakeLLMAdapter,
     fake_knowledge_adapter: FakeKnowledgeAdapter,
     fake_mcp_adapter: FakeMCPAdapter,
     fake_deployment_resolver: FakeDeploymentResolver,
     fake_asset_registry_resolver: FakeAssetRegistryResolver,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
 ) -> AsyncIterator[httpx.AsyncClient]:
     app.dependency_overrides[get_llm_adapter] = lambda: fake_llm_adapter
     app.dependency_overrides[get_knowledge_adapter] = lambda: fake_knowledge_adapter
     app.dependency_overrides[get_mcp_adapter] = lambda: fake_mcp_adapter
     app.dependency_overrides[get_deployment_resolver] = lambda: fake_deployment_resolver
     app.dependency_overrides[get_asset_registry_resolver] = lambda: fake_asset_registry_resolver
+    app.dependency_overrides[get_hub_search_adapter] = lambda: fake_hub_search_adapter
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as ac:
         yield ac

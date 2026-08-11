@@ -262,11 +262,33 @@ components:
             every existing caller already gets — growth is bounded
             server-side (`AgentRuntimeSettings.max_history_turns`/
             `max_history_chars`), not by anything the caller sends.
+            `knowledge_ids` and `allow_hub_lookup` are documented explicitly
+            below (additive/optional) because they are new: `knowledge_ids`
+            fans Stage 1 Knowledge search out across every id in the list
+            (against this machine's LOCAL search-runtime only) instead of
+            the single `knowledge_id` field; omitting it reproduces the
+            single-`knowledge_id` behavior exactly. `allow_hub_lookup`
+            (default `false`) opts a Run into Stage 2 — a lookup against the
+            CENTRAL hub Knowledge registry (portal-api
+            `POST /api/v1/knowledge-search`, a different network/trust
+            boundary than this machine) — which only ever runs when Stage 1
+            found zero citations. The hub query is built server-side ONLY
+            from the caller-typed `question` and prior turns'
+            `history[].question` fields — NEVER `history[].answer`, local
+            citations, or the local (possibly rewritten) search query — see
+            `agent_runtime.hub_query` in services/agent-runtime.
           properties:
             history:
               type: array
               items:
                 $ref: "#/components/schemas/ConversationTurnInput"
+            knowledge_ids:
+              type: array
+              items:
+                type: string
+            allow_hub_lookup:
+              type: boolean
+              default: false
         trace_id:
           type: string
         user_context:
@@ -344,6 +366,8 @@ components:
             - knowledge.search.started
             - knowledge.search.completed
             - knowledge.query_rewritten
+            - hub.query_sent
+            - hub.search.completed
             - mcp.call.started
             - mcp.call.completed
             - mcp.confirmation_required

@@ -5,7 +5,9 @@ import type { ChatMessage } from "./chatTypes";
 import {
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
   buildHistoryFromMessages,
+  buildHubQueryPreview,
   chatMessageFromStoredTurn,
+  resolveInstalledKnowledgeIds,
   resolveKnowledgeSelection,
 } from "./chatTypes";
 
@@ -28,6 +30,7 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     startedAt: "2026-08-10T00:00:00.000Z",
     completedAt: "2026-08-10T00:00:01.000Z",
     serverRun: null,
+    hubQueriesSent: [],
     ...overrides,
   };
 }
@@ -151,5 +154,68 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
       conversation,
     );
     expect(buildHistoryFromMessages([message])).toEqual([{ question: "q", answer: "a" }]);
+  });
+});
+
+describe("resolveInstalledKnowledgeIds (지식 검색 자동화 — 여러 Knowledge 자동 검색)", () => {
+  it("returns an empty array for an empty list", () => {
+    expect(resolveInstalledKnowledgeIds([])).toEqual([]);
+  });
+
+  it("excludes a legacy-Bundle asset (no assetVersionId) rather than guessing its id", () => {
+    const legacyAsset = installedAsset({ assetId: "asset-legacy", assetVersionId: null });
+
+    expect(resolveInstalledKnowledgeIds([legacyAsset])).toEqual([]);
+  });
+
+  it("keeps only the usable ids from a mix of valid and legacy-Bundle/non-Knowledge assets", () => {
+    const valid1 = installedAsset({ assetId: "asset-1", assetVersionId: "asset-version-1" });
+    const legacy = installedAsset({ assetId: "asset-2", assetVersionId: null });
+    const valid2 = installedAsset({ assetId: "asset-3", assetVersionId: "asset-version-3" });
+    const nonKnowledge = installedAsset({
+      assetId: "asset-4",
+      assetVersionId: "asset-version-4",
+      assetType: "agent",
+    });
+
+    expect(resolveInstalledKnowledgeIds([valid1, legacy, valid2, nonKnowledge])).toEqual([
+      "asset-version-1",
+      "asset-version-3",
+    ]);
+  });
+});
+
+describe("buildHubQueryPreview (허브 질의 미리보기 — 로컬 문서 내용 제외)", () => {
+  const LOCAL_ANSWER_MARKER = "로컬-문서-내용-마커-Z8f";
+
+  it("never includes a prior turn's answer text, even when it contains local document content", () => {
+    const messages = [
+      chatMessage({ id: "1", question: "재택근무 정책이 뭐야?", answer: LOCAL_ANSWER_MARKER, status: "succeeded" }),
+    ];
+
+    const preview = buildHubQueryPreview("추가로 궁금한 점", messages);
+
+    expect(preview).not.toContain(LOCAL_ANSWER_MARKER);
+    expect(preview).toContain("재택근무 정책이 뭐야?");
+    expect(preview).toContain("추가로 궁금한 점");
+  });
+
+  it("joins prior questions (oldest first) and the current draft, newline-separated", () => {
+    const messages = [
+      chatMessage({ id: "1", question: "질문1", answer: "답변1" }),
+      chatMessage({ id: "2", question: "질문2", answer: "답변2" }),
+    ];
+
+    expect(buildHubQueryPreview("현재 입력", messages)).toBe("질문1\n질문2\n현재 입력");
+  });
+
+  it("returns an empty string when there is no history and no draft", () => {
+    expect(buildHubQueryPreview("", [])).toBe("");
+  });
+
+  it("omits an empty draft rather than appending a trailing blank line", () => {
+    const messages = [chatMessage({ id: "1", question: "질문1", answer: "답변1" })];
+
+    expect(buildHubQueryPreview("   ", messages)).toBe("질문1");
   });
 });

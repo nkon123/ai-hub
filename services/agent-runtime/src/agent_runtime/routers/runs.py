@@ -13,7 +13,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from agent_runtime.adapters import AssetRegistryResolver, KnowledgeAdapter, LLMAdapter, MCPAdapter
+from agent_runtime.adapters import (
+    AssetRegistryResolver,
+    HubSearchAdapter,
+    KnowledgeAdapter,
+    LLMAdapter,
+    MCPAdapter,
+)
+from agent_runtime.adapters.hub_search import HttpHubSearchAdapter
 from agent_runtime.adapters.mcp import HttpMCPAdapter
 from agent_runtime.adapters.ollama import OllamaLLMAdapter
 from agent_runtime.adapters.registry import HttpAssetRegistryResolver
@@ -108,6 +115,12 @@ def get_asset_registry_resolver() -> AssetRegistryResolver:
     )
 
 
+def get_hub_search_adapter() -> HubSearchAdapter:
+    return HttpHubSearchAdapter(
+        portal_api_url=settings.portal_api_url, token=settings.portal_api_token
+    )
+
+
 def _fail_run_synchronously(
     run_id: str,
     service_id: str,
@@ -147,6 +160,7 @@ async def start_run(
     knowledge_adapter: KnowledgeAdapter = Depends(get_knowledge_adapter),
     mcp_adapter: MCPAdapter = Depends(get_mcp_adapter),
     registry_resolver: AssetRegistryResolver = Depends(get_asset_registry_resolver),
+    hub_search_adapter: HubSearchAdapter = Depends(get_hub_search_adapter),
 ) -> RunResponse:
     trace_id = body.trace_id or str(uuid4())
     record = run_store.create(service_id=body.service_id, trace_id=trace_id)
@@ -233,6 +247,16 @@ async def start_run(
     raw_history = body.input.get("history")
     history = raw_history if isinstance(raw_history, list) else None
 
+    # Hub (central Knowledge registry, portal-api M02) lookup — additive/
+    # optional, default off (D-062-adjacent: a caller opts in explicitly).
+    # `knowledge_ids` (Stage 1 fan-out across the local search-runtime) is
+    # likewise defensive/optional here, same "is it a list at all" parsing
+    # style as `history` above — workflow.py's own gate (`has_knowledge_id`)
+    # handles a malformed/missing value safely.
+    raw_knowledge_ids = body.input.get("knowledge_ids")
+    knowledge_ids = raw_knowledge_ids if isinstance(raw_knowledge_ids, list) else None
+    allow_hub_lookup = bool(body.input.get("allow_hub_lookup", False))
+
     asyncio.create_task(
         run_knowledge_chat(
             run_id=record.id,
@@ -255,6 +279,9 @@ async def start_run(
             # `body.input` — see workflow.run_knowledge_chat's docstring.
             user_context=body.user_context,
             history=history,
+            knowledge_ids=knowledge_ids,
+            allow_hub_lookup=allow_hub_lookup,
+            hub_search_adapter=hub_search_adapter,
         )
     )
 

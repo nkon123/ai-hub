@@ -4,7 +4,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent_runtime.hub_query import UserTypedQuery
 
 
 class LLMAdapter(ABC):
@@ -25,6 +28,29 @@ class KnowledgeAdapter(ABC):
 
     @abstractmethod
     async def search(self, request: dict[str, Any]) -> dict[str, Any]:
+        ...
+
+
+class HubSearchAdapter(ABC):
+    """Interface for hub (central Knowledge registry, portal-api M02)
+    search — a DIFFERENT network/trust boundary than `KnowledgeAdapter`
+    (this machine's local search-runtime). Backed in production by
+    `agent_runtime.adapters.hub_search.HttpHubSearchAdapter`, which calls
+    portal-api's `POST /api/v1/knowledge-search`.
+
+    Only ever invoked with a `UserTypedQuery`
+    (`agent_runtime.hub_query.UserTypedQuery`, built exclusively by
+    `agent_runtime.hub_query.build_hub_query`) — never a raw `str`, which
+    could carry local document/citation text or conversation-history
+    assistant answers across this trust boundary. See
+    `agent_runtime.adapters.hub_search.HttpHubSearchAdapter.search`'s
+    `TypeError` guard, the actual enforcement point.
+    """
+
+    @abstractmethod
+    async def search(
+        self, query: UserTypedQuery, *, top_k: int = 5, trace_id: str | None = None
+    ) -> dict[str, Any]:
         ...
 
 

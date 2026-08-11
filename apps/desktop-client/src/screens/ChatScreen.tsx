@@ -21,7 +21,7 @@
 // 자체(승인/거부, 만료 시간)를 실제로 검증할 수 있게 한다 — 정식 제품
 // UI가 아님을 라벨과 경고문으로 항상 명시한다.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Check, Copy, Download, FileSearch, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
+import { AlertTriangle, Check, Copy, Download, FileSearch, Globe, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
 import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, InstalledAssetWithStatus } from "../../electron/types";
 import { checkAllConnections } from "../../electron/connections";
 import { getDesktopBridge } from "../bridge";
@@ -41,11 +41,13 @@ import {
   type ChatMessage,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
   buildHistoryFromMessages,
+  buildHubQueryPreview,
   buildMarkdown,
   chatMessageFromStoredTurn,
   downloadMarkdown,
   hasLowConfidenceCitation,
   mergeCitations,
+  resolveInstalledKnowledgeIds,
   resolveKnowledgeSelection,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
@@ -78,17 +80,12 @@ const SERVICE_ID_PREFIX = "desktop-knowledge-chat";
 const fieldClass =
   "w-full rounded-lg border border-border bg-white px-3 py-2.5 text-body text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-text-muted";
 
-function keyForInstalled(asset: InstalledAssetWithStatus): string {
-  return `${asset.assetId}::${asset.version}`;
-}
-
 export function ChatScreen() {
   const bridge = getDesktopBridge();
 
-  // --- Knowledge 선택 ---
+  // --- Knowledge 자동 검색 대상(지식 검색 자동화) ---
   const [installedKnowledge, setInstalledKnowledge] = useState<InstalledAssetWithStatus[] | null>(null);
   const [installedError, setInstalledError] = useState<string | null>(null);
-  const [selectedInstalledKey, setSelectedInstalledKey] = useState<string>("");
   const [devKnowledgeId, setDevKnowledgeId] = useState("");
 
   const loadInstalledKnowledge = useCallback(async () => {
@@ -113,17 +110,31 @@ export function ChatScreen() {
     void loadInstalledKnowledge();
   }, [loadInstalledKnowledge]);
 
-  const selectedInstalled = (installedKnowledge ?? []).find((a) => keyForInstalled(a) === selectedInstalledKey) ?? null;
-  // D-060: never send selectedInstalled.assetId as knowledge_id — the search
-  // index keys Knowledge by AssetVersion id, not Asset id. resolveKnowledgeSelection
-  // is the single place that decides this (and refuses to guess when a legacy
-  // Bundle installed the asset without an AssetVersion id at all).
-  const knowledgeSelection = resolveKnowledgeSelection(bridge ? selectedInstalled : null);
-  const knowledgeId = bridge ? knowledgeSelection.knowledgeId : devKnowledgeId.trim();
+  // 지식 검색 자동화 — 더 이상 수동으로 하나만 고르지 않는다: 설치된 모든
+  // Knowledge(Active 버전, 이전 형식 Bundle 제외 — D-060)를 대상으로 Stage 1
+  // 로컬 검색을 자동 실행한다. `resolveInstalledKnowledgeIds`가
+  // `resolveKnowledgeSelection`의 D-060 판단을 자산별로 그대로 재사용한다.
+  const knowledgeIds = bridge
+    ? resolveInstalledKnowledgeIds(installedKnowledge ?? [])
+    : devKnowledgeId.trim()
+      ? [devKnowledgeId.trim()]
+      : [];
+  // 하위 호환용 단일 id(agent-runtime의 기존 입력 검증 Gate) — 목록의 첫
+  // 항목, 없으면 빈 문자열. `knowledge_ids`가 채워진 뒤로는 그 자체로는
+  // 더 이상 의미가 없다(agentRuntime.ts StartRunParams 참고).
+  const knowledgeId = knowledgeIds[0] ?? "";
+  const hasUsableKnowledge = knowledgeIds.length > 0;
   const knowledgeLabel = bridge
-    ? selectedInstalled
-      ? `${selectedInstalled.name} v${selectedInstalled.version}`
-      : ""
+    ? knowledgeIds.length === 0
+      ? ""
+      : knowledgeIds.length === 1
+        ? (() => {
+            const asset = (installedKnowledge ?? []).find(
+              (a) => resolveKnowledgeSelection(a).knowledgeId === knowledgeIds[0],
+            );
+            return asset ? `${asset.name} v${asset.version}` : "지식 자산";
+          })()
+        : `여러 지식 자산 (${knowledgeIds.length}개)`
     : devKnowledgeId.trim()
       ? `Knowledge ID ${devKnowledgeId.trim()}`
       : "";
@@ -154,6 +165,13 @@ export function ChatScreen() {
   useEffect(() => {
     void refreshConnections();
   }, [refreshConnections]);
+
+  // --- 허브 조회 동의(Stage 2) — 세션마다 기본 꺼짐, 저장하지 않는다("로컬에서
+  // 조회하는 데이터를 허브에 넘기면 안 돼"는 제품 요구사항: 이 동의는
+  // 편의를 위한 묵시적 허용이 아니라 매번 다시 확인하는 명시적 선택이어야
+  // 한다). 켜져 있을 때만 `buildHubQueryPreview`로 실제 전송될 질의를
+  // 미리 보여준다(§ 대화 입력 영역).
+  const [allowHubLookup, setAllowHubLookup] = useState(false);
 
   // --- 대화 ---
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -248,6 +266,26 @@ export function ChatScreen() {
             next = { ...next, citations: mergeCitations(next.citations, [item.data as Citation]) };
             break;
           }
+          case "hub.query_sent": {
+            // 사후 가시성(after-the-fact) 보장 — Stage 2가 허브로 실제 전송한
+            // 질의를 대화창에 그대로 보여준다. agent-runtime의 강제 지점이
+            // 이 값이 사용자가 입력한 텍스트로만 구성되도록 보장하므로
+            // 그대로 표시해도 안전하다(chatTypes.ts buildHubQueryPreview 참고).
+            const data = item.data as { query?: string; knowledge_ids_searched?: string[] } | null;
+            if (data?.query) {
+              next = {
+                ...next,
+                hubQueriesSent: [
+                  ...next.hubQueriesSent,
+                  { query: data.query, knowledgeIdsSearched: data.knowledge_ids_searched ?? [] },
+                ],
+              };
+            }
+            break;
+          }
+          // "hub.search.completed"({citation_count})는 knowledge.search.completed와
+          // 동일하게 별도 UI 없이 stages(applyRuntimeEvent)로만 조용히
+          // 흡수된다 — 새 UI Chrome을 억지로 만들지 않는다.
           case "mcp.confirmation_required": {
             const data = item.data as { tool_name?: string; summary?: string; deadline?: string } | null;
             if (data?.tool_name && data.summary && data.deadline) {
@@ -444,9 +482,10 @@ export function ChatScreen() {
   async function handleSend(text?: string) {
     const q = (text ?? question).trim();
     // 개발 확인용 MCP 모드는 knowledge_required=false Agent를 쓰므로
-    // Knowledge 선택 없이도 실행할 수 있다 — 그 외에는 기존과 동일하게
-    // Knowledge 선택이 필수다.
-    if (!q || isRunning || (!knowledgeId && !mcpDevActive)) return;
+    // 검색 가능한 Knowledge 없이도 실행할 수 있다 — 그 외에는 검색 가능한
+    // Knowledge가 최소 1개 있어야 한다(지식 검색 자동화 — 더 이상 "선택"을
+    // 요구하지 않지만, 검색 대상 자체가 없으면 여전히 실행할 수 없다).
+    if (!q || isRunning || (!hasUsableKnowledge && !mcpDevActive)) return;
 
     setSendError(null);
     setQuestion("");
@@ -478,6 +517,7 @@ export function ChatScreen() {
       startedAt: new Date().toISOString(),
       completedAt: null,
       serverRun: null,
+      hubQueriesSent: [],
     };
     setMessages((prev) => [...prev, newMessage]);
     setIsRunning(true);
@@ -486,7 +526,9 @@ export function ChatScreen() {
       const created = await startRun({
         serviceId,
         knowledgeId,
+        knowledgeIds,
         question: q,
+        allowHubLookup,
         ...(history.length > 0 ? { history } : {}),
         ...(mcpDevActive
           ? {
@@ -554,16 +596,22 @@ export function ChatScreen() {
     downloadMarkdown(`knowledge-chat-${message.id.slice(0, 8)}.md`, buildMarkdown(message));
   }
 
-  const canSend = Boolean(question.trim()) && (Boolean(knowledgeId) || mcpDevActive) && !isRunning;
+  const canSend = Boolean(question.trim()) && (hasUsableKnowledge || mcpDevActive) && !isRunning;
   const sendDisabledReason = isRunning
     ? "이미 실행 중입니다. 완료되거나 취소한 뒤 다시 시도하세요."
-    : bridge && knowledgeSelection.disabledReason
-      ? knowledgeSelection.disabledReason
-      : !knowledgeId && !mcpDevActive
-        ? "대화할 Knowledge를 먼저 선택하세요."
-        : !question.trim()
-          ? "질문을 입력하세요."
-          : null;
+    : !hasUsableKnowledge && !mcpDevActive
+      ? bridge && installedKnowledge !== null && installedKnowledge.length > 0
+        ? "설치된 Knowledge를 모두 사용할 수 없습니다 — 다시 반출·설치해야 대화할 수 있습니다."
+        : "대화할 수 있는 Knowledge가 없습니다 — 가져오기 화면에서 Knowledge를 먼저 설치하세요."
+      : !question.trim()
+        ? "질문을 입력하세요."
+        : null;
+
+  // 허브로 실제 전송될 질의 미리보기 — 매 입력마다(질문 초안/이전 턴이
+  // 바뀔 때마다) 다시 계산되어 최신 상태를 반영한다(chatTypes.ts
+  // buildHubQueryPreview). 토글이 꺼져 있으면 전송될 것이 없으므로 계산하지
+  // 않는다.
+  const hubQueryPreview = allowHubLookup ? buildHubQueryPreview(question, messages) : "";
 
   const detailMessage = messages.find((m) => m.id === detailMessageId) ?? null;
 
@@ -664,13 +712,13 @@ export function ChatScreen() {
         </Card>
       )}
 
-      {/* Knowledge 선택 */}
+      {/* 지식 검색 대상 — 지식 검색 자동화: 더 이상 하나만 수동으로 고르지
+          않는다. 설치된 모든 Knowledge(Active 버전)를 자동으로 검색 대상으로
+          쓰고, 그 개수만 안내한다(CLAUDE.md: 빈 상태를 별도로 안내). */}
       <Card className="mb-4 shrink-0 p-4">
         {bridge ? (
           <div>
-            <label className="mb-1.5 block text-caption font-medium text-text-secondary" htmlFor="knowledge-select">
-              대화할 Knowledge
-            </label>
+            <p className="mb-1.5 text-caption font-medium text-text-secondary">지식 검색 대상</p>
             {installedKnowledge === null && !installedError && <LoadingState label="설치된 Knowledge를 불러오는 중..." />}
             {installedError && <ErrorBanner message={installedError} />}
             {installedKnowledge !== null && installedKnowledge.length === 0 && !installedError && (
@@ -681,28 +729,14 @@ export function ChatScreen() {
             )}
             {installedKnowledge !== null && installedKnowledge.length > 0 && (
               <>
-                <select
-                  id="knowledge-select"
-                  value={selectedInstalledKey}
-                  onChange={(e) => setSelectedInstalledKey(e.target.value)}
-                  className={fieldClass}
-                >
-                  <option value="">선택하세요</option>
-                  {installedKnowledge.map((a) => {
-                    // D-060: a Bundle installed before the fix has no
-                    // AssetVersion id — disable it in the picker itself
-                    // (not just at send-time) so the reason is visible where
-                    // the user is choosing, and it can never be silently
-                    // sent as-is.
-                    const disabled = !a.assetVersionId;
-                    return (
-                      <option key={keyForInstalled(a)} value={keyForInstalled(a)} disabled={disabled}>
-                        {a.name} v{a.version}
-                        {disabled ? " (다시 반출·설치 필요)" : ""}
-                      </option>
-                    );
-                  })}
-                </select>
+                {knowledgeIds.length > 0 ? (
+                  <p className="text-body text-text-primary">설치된 지식 자산 {knowledgeIds.length}개에서 검색합니다.</p>
+                ) : (
+                  <EmptyState
+                    title="검색 가능한 지식 자산이 없습니다"
+                    description="설치된 Knowledge가 모두 이전 형식의 Bundle입니다 — 다시 반출·설치해야 대화할 수 있습니다."
+                  />
+                )}
                 {installedKnowledge.some((a) => !a.assetVersionId) && (
                   <p className="mt-2 flex items-start gap-1.5 text-caption text-warning">
                     <AlertTriangle size={13} className="mt-0.5 shrink-0" />
@@ -711,12 +745,6 @@ export function ChatScreen() {
                       .filter((a) => !a.assetVersionId)
                       .map((a) => `${a.name} v${a.version}`)
                       .join(", ")}
-                  </p>
-                )}
-                {knowledgeSelection.disabledReason && (
-                  <p className="mt-2 flex items-start gap-1.5 text-caption text-danger">
-                    <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-                    {knowledgeSelection.disabledReason}
                   </p>
                 )}
               </>
@@ -820,7 +848,11 @@ export function ChatScreen() {
           {messages.length === 0 && (
             <EmptyState
               title="아직 대화가 없습니다"
-              description={knowledgeId ? "질문을 입력해 대화를 시작하세요." : "먼저 대화할 Knowledge를 선택하세요."}
+              description={
+                hasUsableKnowledge || mcpDevActive
+                  ? "질문을 입력해 대화를 시작하세요."
+                  : "대화할 수 있는 Knowledge가 없습니다. 먼저 Knowledge를 설치하세요."
+              }
             />
           )}
 
@@ -845,6 +877,32 @@ export function ChatScreen() {
         </div>
 
         <div className="mt-4 shrink-0 border-t border-border pt-4">
+          {/* 허브 조회 동의(Stage 2) — 기본 꺼짐, 세션마다 초기화(저장하지
+              않음). "로컬에서 조회하는 데이터를 허브에 넘기면 안 돼": 이 동의는
+              편의를 위한 묵시적 허용이 아니라 매번 다시 확인하는 명시적 선택.
+              켜져 있을 때만 실제 전송될 질의를 미리 보여준다(사전 가시성) —
+              사후 가시성은 "hub.query_sent" 이벤트(ChatTurn 대화 내 안내문)가
+              보완한다. */}
+          <div className="mb-3">
+            <label className="flex items-center gap-2 text-caption font-medium text-text-secondary">
+              <input
+                type="checkbox"
+                checked={allowHubLookup}
+                onChange={(e) => setAllowHubLookup(e.target.checked)}
+                disabled={isRunning}
+              />
+              허브에도 물어보기 (로컬에서 찾지 못한 경우에만)
+            </label>
+            <p className="mt-1 text-caption text-text-muted">
+              기본적으로 꺼져 있습니다. 켜면 로컬에서 답을 찾지 못했을 때만, 사용자가 입력한 질문 텍스트만 허브로
+              전송됩니다 — 로컬 문서 내용은 전송되지 않습니다.
+            </p>
+            {allowHubLookup && (
+              <p className="mt-1.5 text-caption text-text-secondary">
+                허브로 전송될 질의 미리보기: &quot;{hubQueryPreview}&quot;
+              </p>
+            )}
+          </div>
           <div className="flex gap-2">
             <textarea
               value={question}
@@ -935,6 +993,17 @@ function ChatTurn({
         )}
         <StageIndicator stages={message.stages} />
 
+        {/* 허브 조회 사후 가시성 — "hub.query_sent" 이벤트가 도착할 때마다
+            실제로 허브에 전송된 질의를 그대로 보여준다(agent-runtime의 강제
+            지점이 사용자가 입력한 텍스트로만 구성되도록 보장하므로 그대로
+            표시해도 안전하다). */}
+        {message.hubQueriesSent.map((h, idx) => (
+          <p key={idx} className="flex items-start gap-1.5 text-caption text-text-muted">
+            <Globe size={13} className="mt-0.5 shrink-0" />
+            허브에 질의를 전송했습니다: &quot;{h.query}&quot;
+          </p>
+        ))}
+
         {message.status === "running" && (
           <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-4 py-2.5">
             <span className="flex items-center gap-2 text-body text-text-muted">
@@ -1003,9 +1072,21 @@ function ChatTurn({
                 onClick={() => onCitationClick(c)}
                 className="block w-full rounded-lg border border-border bg-slate-50 px-3 py-2 text-left text-xs hover:bg-slate-100"
               >
-                <div className="font-semibold text-text-secondary">
-                  {c.document_title || c.document_path || "제목 없음"}
-                  {c.section && <span className="font-normal"> · {c.section}</span>}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="min-w-0 font-semibold text-text-secondary">
+                    {c.document_title || c.document_path || "제목 없음"}
+                    {c.section && <span className="font-normal"> · {c.section}</span>}
+                  </div>
+                  {/* 두 단계 검색(지식 검색 자동화 + 허브 조회 동의) — 이
+                      출처가 로컬/허브 중 어느 쪽 검색에서 나왔는지. 값이
+                      없으면(과거 데이터) 로컬로 취급해 표시한다. */}
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                      c.source === "hub" ? "bg-brand-50 text-brand-700" : "bg-slate-200 text-text-muted"
+                    }`}
+                  >
+                    {c.source === "hub" ? "허브" : "로컬"}
+                  </span>
                 </div>
               </button>
             ))}

@@ -8,9 +8,14 @@ from typing import Any
 
 import httpx
 import pytest
+from agent_runtime.adapters.hub_search import HubSearchError
 from agent_runtime.config import settings as agent_runtime_settings
 
-from tests.integration.agent_runtime.conftest import FakeKnowledgeAdapter, FakeLLMAdapter
+from tests.integration.agent_runtime.conftest import (
+    FakeHubSearchAdapter,
+    FakeKnowledgeAdapter,
+    FakeLLMAdapter,
+)
 
 
 async def _read_all_sse_events(client: httpx.AsyncClient, run_id: str) -> list[dict[str, Any]]:
@@ -397,3 +402,254 @@ async def test_history_does_not_bypass_hallucination_guard(
 
     # Only the Query Rewrite call happened — never a second (answer) call.
     assert fake_llm_adapter.call_count == 1
+
+
+# --- Hub (central Knowledge registry, portal-api M02) lookup ---------------
+#
+# `allow_hub_lookup`/`knowledge_ids` (additive/optional). Stage 2 (hub) only
+# ever runs when Stage 1 (local) found zero citations AND the caller
+# explicitly opted in — see agent_runtime.hub_query's module docstring for
+# the security guarantee these tests exist to prove: local retrieval
+# results, local document/chunk text, and any query built from conversation
+# history's *assistant answers* must never reach the hub.
+
+
+async def test_local_citations_are_tagged_source_local(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """Stage 1 (local) citations are additively tagged `"source": "local"` —
+    every pre-existing key from search-runtime's response is preserved."""
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"knowledge_id": "hr-policy-knowledge", "question": "연차는 며칠인가요?"},
+        },
+    )
+    run_id = resp.json()["id"]
+    await _read_all_sse_events(client, run_id)
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    citations = final.json()["output"]["citations"]
+    assert len(citations) == 2
+    assert all(c["source"] == "local" for c in citations)
+    assert citations[0]["chunk_id"] == "chunk-001"  # original key preserved
+
+
+async def test_knowledge_ids_fans_out_local_search_and_merges_citations(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """`knowledge_ids` (plural, additive) fans Stage 1 out across every id
+    via asyncio.gather using the same search query, merging all citations —
+    the single-`knowledge_id` path (every other test in this file) stays
+    byte-for-byte unaffected when `knowledge_ids` is omitted."""
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "knowledge_ids": ["hr-policy-knowledge", "it-policy-knowledge"],
+                "question": "연차는 며칠인가요?",
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    await _read_all_sse_events(client, run_id)
+
+    assert len(fake_knowledge_adapter.calls) == 2
+    searched_ids = {c["knowledge_id"] for c in fake_knowledge_adapter.calls}
+    assert searched_ids == {"hr-policy-knowledge", "it-policy-knowledge"}
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+    # 2 knowledge_ids × 2 default citations each = 4, all tagged "local".
+    citations = final.json()["output"]["citations"]
+    assert len(citations) == 4
+    assert all(c["source"] == "local" for c in citations)
+
+
+async def test_hub_lookup_never_leaks_prior_answer_text_to_hub(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
+) -> None:
+    """The core security regression test. Stage 1 (local) finds nothing;
+    `allow_hub_lookup=True`; a prior turn's *answer* contains a marker string
+    simulating local Knowledge document content quoted back by a previous
+    assistant reply (exactly what a real Knowledge-chatbot answer looks
+    like). That marker must NEVER appear in the outbound hub query text —
+    only user-typed `.question` fields may reach the hub. Also proves Stage
+    2 actually ran and contributed hub-sourced citations to the final
+    result, not that it was silently skipped."""
+    fake_knowledge_adapter.citations = []
+    marker = "국세청-내부문서-비밀조항-QK9x"
+    fake_hub_search_adapter.citations = [
+        {
+            "chunk_id": "hub-chunk-1",
+            "parent_chunk_id": None,
+            "document_path": "central-hr/leave.md",
+            "document_title": "연차 휴가 정책 (Hub)",
+            "page": 1,
+            "section": "1.1",
+            "excerpt": "휴가 정책 관련 Hub 검색 결과",
+            "parent_context": "휴가 정책 전문...",
+            "score": 0.9,
+            "similarity": 0.9,
+            "knowledge_id": "central-hr-knowledge",
+            "asset_id": "asset-1",
+            "asset_name": "HR 정책",
+            "source": "hub",
+        }
+    ]
+    fake_hub_search_adapter.knowledge_ids_searched = ["central-hr-knowledge"]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "그 정책 더 알려줘",
+                "allow_hub_lookup": True,
+                "history": [{"question": "연차 정책이 뭐야?", "answer": marker}],
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    # The security guarantee: the marker (simulated local document content
+    # from a prior assistant answer) never reaches the actual outbound
+    # payload sent to the hub adapter.
+    assert fake_hub_search_adapter.call_count == 1
+    for text in fake_hub_search_adapter.received_query_text:
+        assert marker not in text
+
+    assert "hub.query_sent" in event_names
+    assert "hub.search.completed" in event_names
+    query_sent_event = next(e for e in events if e["event"] == "hub.query_sent")
+    assert marker not in query_sent_event["data"]["query"]
+    assert "그 정책 더 알려줘" in query_sent_event["data"]["query"]
+    assert "연차 정책이 뭐야?" in query_sent_event["data"]["query"]
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+    citations = final.json()["output"]["citations"]
+    hub_citations = [c for c in citations if c.get("source") == "hub"]
+    assert len(hub_citations) == 1
+
+
+async def test_hub_lookup_default_off_never_calls_hub_adapter(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
+) -> None:
+    """`allow_hub_lookup` omitted (defaults False) — Stage 2 must never run
+    even when Stage 1 found zero citations: the hub adapter's `search()` is
+    never called at all, and the run terminates INSUFFICIENT_EVIDENCE
+    exactly as it did before this feature existed (consent-default-off)."""
+    fake_knowledge_adapter.citations = []
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"knowledge_id": "hr-policy-knowledge", "question": "연차는 며칠인가요?"},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert fake_hub_search_adapter.call_count == 0
+    assert "hub.query_sent" not in event_names
+    assert "hub.search.completed" not in event_names
+
+    completed_event = next(e for e in events if e["event"] == "run.completed")
+    assert completed_event["data"]["status"] == "INSUFFICIENT_EVIDENCE"
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "INSUFFICIENT_EVIDENCE"
+
+
+async def test_hub_lookup_d036_guard_holds_when_both_stages_find_nothing(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
+) -> None:
+    """Both stages return zero citations even with `allow_hub_lookup=True` —
+    the hallucination guard (D-036) still fires: INSUFFICIENT_EVIDENCE, and
+    the LLM's generate() is never invoked at all (no history here, so there
+    is no Query Rewrite call either — a clean zero calls)."""
+    fake_knowledge_adapter.citations = []
+    fake_hub_search_adapter.citations = []
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "완전히 새로운 질문",
+                "allow_hub_lookup": True,
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert fake_hub_search_adapter.call_count == 1  # Stage 2 did run...
+    assert "answer.delta" not in event_names  # ...but ANSWER_GENERATE never reached
+    completed_event = next(e for e in events if e["event"] == "run.completed")
+    assert completed_event["data"]["status"] == "INSUFFICIENT_EVIDENCE"
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "INSUFFICIENT_EVIDENCE"
+    assert fake_llm_adapter.call_count == 0
+
+
+async def test_hub_lookup_error_degrades_gracefully_without_failing_run(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
+) -> None:
+    """The hub being unreachable/erroring must never fail the Run — Stage 2
+    simply contributes nothing, falling through to the same
+    INSUFFICIENT_EVIDENCE path as if it had never been tried."""
+    fake_knowledge_adapter.citations = []
+    fake_hub_search_adapter.error_to_raise = HubSearchError(
+        "HUB_SEARCH_UNAVAILABLE", "portal-api unreachable"
+    )
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "question": "완전히 새로운 질문",
+                "allow_hub_lookup": True,
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert "run.failed" not in event_names
+    assert "hub.query_sent" not in event_names  # only emitted on success
+    completed_event = next(e for e in events if e["event"] == "run.completed")
+    assert completed_event["data"]["status"] == "INSUFFICIENT_EVIDENCE"
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "INSUFFICIENT_EVIDENCE"

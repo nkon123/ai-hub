@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "knowledge-search",
   "title": "Knowledge Search Request/Response",
+  "description": "This contract is single-Knowledge only (SearchRequest.knowledge_id is exactly one AssetVersion per call) — it has no notion of searching across multiple Knowledge assets. `POST /api/v1/knowledge-search` in packages/schemas/api/portal-openapi.yaml (M02, apps/portal-api/src/portal_api/routers/knowledge_search.py) is the multi-Knowledge caller built on top of this contract: it resolves the caller's visible APPROVED Knowledge from the Registry, calls this service's `/search/v1/query` once per Knowledge (using this file's SearchRequest/Citation/SearchResult shapes unchanged), and merges the resulting Citations, additively stamping `knowledge_id`/`asset_id`/`asset_name`/`source` onto each one. No behavior change to this schema itself — doc note only, added alongside the new endpoint (see D-046/D-062 for the access_context/relevance-threshold behavior this schema already documents, which the new endpoint reuses as-is per Knowledge).",
   "definitions": {
     "SearchRequest": {
       "type": "object",

@@ -60,11 +60,13 @@ from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 from observability import bind_run_id, bind_trace_id
 
 from agent_runtime import mcp_tools
-from agent_runtime.adapters import KnowledgeAdapter, LLMAdapter, MCPAdapter
+from agent_runtime.adapters import HubSearchAdapter, KnowledgeAdapter, LLMAdapter, MCPAdapter
+from agent_runtime.adapters.hub_search import HubSearchError
 from agent_runtime.adapters.mcp import MCPCallError
 from agent_runtime.adapters.search import KnowledgeSearchError
 from agent_runtime.config import settings
 from agent_runtime.conversation import bound_history, rewrite_query_for_search
+from agent_runtime.hub_query import build_hub_query
 from agent_runtime.manifests import StandardKnowledgeChatConfig
 from agent_runtime.prompt_renderer import build_messages
 from agent_runtime.run_store import PendingConfirmation, RunRecord, RunStore
@@ -459,6 +461,9 @@ async def run_knowledge_chat(
     mcp_confirmation_timeout_seconds: float | None = None,
     user_context: dict[str, Any] | None = None,
     history: list[dict[str, Any]] | None = None,
+    knowledge_ids: list[str] | None = None,
+    allow_hub_lookup: bool = False,
+    hub_search_adapter: HubSearchAdapter | None = None,
 ) -> None:
     """`mcp_adapter`/`mcp_tool_request` are additive/optional — the
     Knowledge-only standard-agent path (both always None/omitted, exactly
@@ -492,7 +497,27 @@ async def run_knowledge_chat(
     today except the new Desktop persistence work) reproduces the exact
     prior behavior: `bound_history(None, ...)` is `[]`,
     `rewrite_query_for_search` no-ops on empty history, and `build_messages`
-    renders no history block at all."""
+    renders no history block at all.
+
+    `knowledge_ids` (additive/optional) fans Stage 1 (local) search out
+    across every id in the list via `asyncio.gather`, using the same
+    (possibly rewritten) local search query for all of them, merging all
+    their citations (each additively tagged `"source": "local"`).
+    Omitted/empty falls back to the single-`knowledge_id` behavior
+    byte-for-byte.
+
+    `allow_hub_lookup`/`hub_search_adapter` (additive/optional, default off)
+    gate Stage 2: a hub (central Knowledge registry, portal-api M02) lookup
+    that only ever runs when Stage 1 found zero citations AND the caller
+    explicitly opted in AND an adapter was supplied — see
+    `agent_runtime.hub_query` for why the hub query is built ONLY from
+    `question` (this call's own, untouched parameter) and `bounded_history`'s
+    `["question"]` fields, NEVER `["answer"]` fields (which can legitimately
+    contain local Knowledge document content), retrieved citations, or the
+    Stage 1 (possibly rewritten) local search query. A hub lookup failure
+    (`HubSearchError`) is logged and swallowed — it must never fail the Run;
+    Stage 2 simply contributes nothing, falling through to the same
+    INSUFFICIENT_EVIDENCE path as when both stages find nothing."""
     bounded_history = bound_history(
         history, max_turns=settings.max_history_turns, max_chars=settings.max_history_chars
     )
@@ -538,7 +563,13 @@ async def run_knowledge_chat(
             _fail(run_store, run_id, trace_id, "INVALID_INPUT", "question is required")
             return
 
-        has_knowledge_id = bool(knowledge_id)
+        # Defensive: a caller may send only the fan-out `knowledge_ids` list
+        # (no singular `knowledge_id`) — the Desktop client is expected to
+        # always send both for back-compat, but this gate must not falsely
+        # reject a valid multi-knowledge request that omits the singular
+        # field. `knowledge_ok` below (PREFLIGHT) reads this same variable,
+        # so this one change covers both checks.
+        has_knowledge_id = bool(knowledge_id) or bool(knowledge_ids)
         has_mcp_request = mcp_tool_request is not None
         if knowledge_required and not has_knowledge_id:
             _fail(run_store, run_id, trace_id, "INVALID_INPUT", "knowledge_id is required")
@@ -616,26 +647,39 @@ async def run_knowledge_chat(
                 )
                 run_store.append_event(run_id, "knowledge.query_rewritten", rewrite_meta)
 
-            try:
-                search_result = await knowledge_adapter.search(
+            # Stage 1 fan-out: `knowledge_ids` (non-empty) searches every id
+            # in the list with the same `search_query`, via `asyncio.gather`
+            # — unchanged access_context/clearance logic, just repeated per
+            # id. Omitted/empty `knowledge_ids` reproduces the exact prior
+            # single-`knowledge_id` request/response handling.
+            ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
+            access_context = {
+                # §3.8 step 1 — see this function's docstring for why this
+                # comes from `user_context`, never from `input`.
+                "user_id": (user_context or {}).get("user_id"),
+                "organization_id": (user_context or {}).get("organization_id"),
+                "permissions": (user_context or {}).get("permissions", []),
+                "clearance": (user_context or {}).get("clearance")
+                or settings.default_search_clearance,
+            }
+
+            async def _search_one(kid: str) -> dict[str, Any]:
+                return await knowledge_adapter.search(
                     {
                         "query": search_query,
-                        "knowledge_id": knowledge_id,
+                        "knowledge_id": kid,
                         "knowledge_version": "latest",
                         "top_k": 5,
                         "alpha": 0.5,
                         "trace_id": trace_id,
                         "run_id": run_id,
-                        # §3.8 step 1 — see this function's docstring for why
-                        # this comes from `user_context`, never from `input`.
-                        "access_context": {
-                            "user_id": (user_context or {}).get("user_id"),
-                            "organization_id": (user_context or {}).get("organization_id"),
-                            "permissions": (user_context or {}).get("permissions", []),
-                            "clearance": (user_context or {}).get("clearance")
-                            or settings.default_search_clearance,
-                        },
+                        "access_context": access_context,
                     }
+                )
+
+            try:
+                search_results = await asyncio.gather(
+                    *(_search_one(kid) for kid in ids_to_search)
                 )
             except KnowledgeSearchError as exc:
                 # Surfaces search-runtime's own code (e.g. KNOWLEDGE_ACCESS_DENIED
@@ -646,8 +690,21 @@ async def run_knowledge_chat(
                 # path fires on a real integration/config bug, not normal use.
                 _fail(run_store, run_id, trace_id, exc.code, exc.message)
                 return
-            citations = search_result.get("citations", [])
-            latency_ms = search_result.get("latency_ms")
+
+            citations = [
+                {**citation, "source": "local"}
+                for search_result in search_results
+                for citation in search_result.get("citations", [])
+            ]
+            # Single-id fallback keeps the exact prior latency_ms value
+            # (including `None` when absent); fan-out sums the per-id
+            # latencies as a reasonable merge — this event's payload was
+            # never asserted on beyond `citation_count` by any existing test.
+            latency_ms = (
+                search_results[0].get("latency_ms")
+                if len(search_results) == 1
+                else sum(r.get("latency_ms") or 0 for r in search_results)
+            )
 
             run_store.append_event(
                 run_id,
@@ -659,6 +716,54 @@ async def run_knowledge_chat(
             )
             for citation in citations:
                 run_store.append_event(run_id, "citation.added", citation)
+
+        # --- Stage 2: hub lookup (opt-in, only when Stage 1 found nothing) ---
+        # Consent-default-off: `allow_hub_lookup` defaults False, so this
+        # block never runs — and `hub_search_adapter.search` is never
+        # called — unless a caller explicitly opts in. See hub_query.py's
+        # module docstring for why `hub_query` is built ONLY from `question`
+        # (this call's own untouched parameter, never the Stage 1 rewritten
+        # `search_query`) and `bounded_history`'s `["question"]` fields.
+        if len(citations) == 0 and allow_hub_lookup and hub_search_adapter is not None:
+            hub_query = build_hub_query(question, bounded_history)
+            try:
+                hub_result = await hub_search_adapter.search(
+                    hub_query, top_k=5, trace_id=trace_id
+                )
+            except HubSearchError as exc:
+                # Hub unreachable/erroring must never fail the Run — Stage 2
+                # simply contributes nothing, falling through to the same
+                # INSUFFICIENT_EVIDENCE path as if it had never been tried.
+                logger.info(
+                    "hub.search.failed run_id=%s code=%s message=%s",
+                    run_id,
+                    exc.code,
+                    exc.message,
+                )
+            else:
+                hub_citations = [
+                    {**citation, "source": "hub"} for citation in hub_result.get("citations", [])
+                ]
+                # Safe to include the literal query text in this event:
+                # `UserTypedQuery` structurally guarantees it never contains
+                # assistant/local content (see hub_query.py).
+                run_store.append_event(
+                    run_id,
+                    "hub.query_sent",
+                    {
+                        "query": hub_query.text,
+                        "knowledge_ids_searched": hub_result.get("knowledge_ids_searched", []),
+                    },
+                )
+                run_store.append_event(
+                    run_id, "hub.search.completed", {"citation_count": len(hub_citations)}
+                )
+                logger.info(
+                    "run.hub_search run_id=%s citation_count=%d", run_id, len(hub_citations)
+                )
+                citations = citations + hub_citations
+                for citation in hub_citations:
+                    run_store.append_event(run_id, "citation.added", citation)
 
         # --- TOOL_CONFIRM (optional) / MCP_TOOL_CALL (0..n) ---
         tool_results: list[dict[str, Any]] = []
