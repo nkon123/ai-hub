@@ -277,6 +277,23 @@ components:
             `history[].question` fields — NEVER `history[].answer`, local
             citations, or the local (possibly rewritten) search query — see
             `agent_runtime.hub_query` in services/agent-runtime.
+            `knowledge_candidates` (additive/optional) enables agentic
+            Knowledge selection — the KNOWLEDGE_ROUTE stage
+            (`agent_runtime.knowledge_router`), which runs before
+            KNOWLEDGE_SEARCH and takes over id selection from
+            `knowledge_ids` entirely when present. One optional LLM call
+            reads ONLY the current `question` and each candidate's
+            metadata — never document text, citations, or prior turns'
+            `history[].answer` — and returns the subset worth searching,
+            each with a short Korean reason. At/below a server-side
+            threshold the LLM call is skipped (every candidate is
+            searched); on any routing failure, an id the router invented,
+            or a valid-but-empty selection, the Run fails open and searches
+            every candidate — never zero, never a guessed-at subset. The
+            decision is emitted as a `knowledge.route.selected` event.
+            Omitting `knowledge_candidates` (every caller today, including
+            the 4 published Hosted chatbots) reproduces the exact prior
+            `knowledge_ids`/`knowledge_id` behavior byte-for-byte.
           properties:
             history:
               type: array
@@ -286,6 +303,10 @@ components:
               type: array
               items:
                 type: string
+            knowledge_candidates:
+              type: array
+              items:
+                $ref: "#/components/schemas/KnowledgeCandidateInput"
             allow_hub_lookup:
               type: boolean
               default: false
@@ -354,6 +375,28 @@ components:
         answer:
           type: string
 
+    KnowledgeCandidateInput:
+      type: object
+      description: >
+        One Knowledge asset offered to the KNOWLEDGE_ROUTE stage for
+        agentic selection (`agent_runtime.knowledge_router`). Metadata
+        only — never document text, chunks, or citations; that data is
+        never sent into the routing LLM call.
+      required: [knowledge_id]
+      properties:
+        knowledge_id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        classification:
+          type: string
+
     RuntimeSSEEvent:
       type: object
       required: [event, data]
@@ -363,6 +406,7 @@ components:
           enum:
             - run.started
             - preflight.completed
+            - knowledge.route.selected
             - knowledge.search.started
             - knowledge.search.completed
             - knowledge.query_rewritten

@@ -653,3 +653,291 @@ async def test_hub_lookup_error_degrades_gracefully_without_failing_run(
 
     final = await client.get(f"/local/v1/runs/{run_id}")
     assert final.json()["status"] == "INSUFFICIENT_EVIDENCE"
+
+
+# --- Agentic Knowledge selection (KNOWLEDGE_ROUTE stage, `knowledge_candidates`) ---
+#
+# Additive/optional (`input.knowledge_candidates`), analogous to
+# `knowledge_ids`/`allow_hub_lookup` above. See
+# `tests/integration/agent_runtime/test_knowledge_router.py` for the pure
+# routing-logic unit tests; these prove the same fail-open behavior through
+# a real `/local/v1/runs` request, plus the D-078 boundary extended to
+# routing metadata.
+
+_ROUTE_CANDIDATES = [
+    {
+        "knowledge_id": "hr-policy-knowledge",
+        "name": "HR 정책",
+        "description": "연차, 휴직 등 인사 정책 문서",
+        "tags": ["HR"],
+        "classification": "INTERNAL",
+    },
+    {
+        "knowledge_id": "it-runbook-knowledge",
+        "name": "IT 운영 Runbook",
+        "description": "서버 장애 대응 절차",
+        "tags": ["IT"],
+        "classification": "INTERNAL",
+    },
+    {
+        "knowledge_id": "finance-policy-knowledge",
+        "name": "재무 정책",
+        "description": "비용 처리와 정산 규정",
+        "tags": ["재무"],
+        "classification": "CONFIDENTIAL",
+    },
+]
+
+
+async def test_knowledge_candidates_routes_to_selected_subset_only(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """KNOWLEDGE_ROUTE narrows Stage 1 search to only the LLM-selected
+    subset of `knowledge_candidates` — an unrelated candidate (IT Runbook,
+    Finance policy) is never searched at all for an HR question."""
+    routing_json = json.dumps(
+        {
+            "selected": [
+                {"knowledge_id": "hr-policy-knowledge", "reason": "연차 정책과 직접 관련"}
+            ],
+            "excluded": [
+                {"knowledge_id": "it-runbook-knowledge", "reason": "IT 운영과 무관"},
+                {"knowledge_id": "finance-policy-knowledge", "reason": "재무와 무관"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    fake_llm_adapter.responses = [[routing_json], ["연차", "는", " 15일", "입니다"]]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"question": "연차는 며칠인가요?", "knowledge_candidates": _ROUTE_CANDIDATES},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert "knowledge.route.selected" in event_names
+    route_event = next(e for e in events if e["event"] == "knowledge.route.selected")
+    assert route_event["data"]["status"] == "ran"
+    assert route_event["data"]["fallback_reason"] is None
+    selected_ids = {c["knowledge_id"] for c in route_event["data"]["selected"]}
+    excluded_ids = {c["knowledge_id"] for c in route_event["data"]["excluded"]}
+    assert selected_ids == {"hr-policy-knowledge"}
+    assert excluded_ids == {"it-runbook-knowledge", "finance-policy-knowledge"}
+
+    # The KNOWLEDGE_ROUTE event must appear before knowledge.search.started.
+    _assert_subsequence(event_names, ["knowledge.route.selected", "knowledge.search.started"])
+
+    # Only the selected candidate was actually searched.
+    assert len(fake_knowledge_adapter.calls) == 1
+    assert fake_knowledge_adapter.calls[0]["knowledge_id"] == "hr-policy-knowledge"
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+
+
+async def test_knowledge_route_unparseable_output_falls_back_to_searching_all(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """A routing failure (here: unparseable model output) must fall back to
+    searching every candidate — never zero, never a guessed-at subset."""
+    fake_llm_adapter.responses = [["이건 JSON이 아닙니다"], ["답", "변"]]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"question": "질문", "knowledge_candidates": _ROUTE_CANDIDATES},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    route_event = next(e for e in events if e["event"] == "knowledge.route.selected")
+    assert route_event["data"]["status"] == "fallback"
+    assert route_event["data"]["fallback_reason"] == "unparseable"
+
+    searched_ids = {c["knowledge_id"] for c in fake_knowledge_adapter.calls}
+    assert searched_ids == {c["knowledge_id"] for c in _ROUTE_CANDIDATES}
+
+
+async def test_knowledge_route_empty_selection_falls_back_to_searching_all(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """A valid-but-empty selection ("abstained") is NOT the same as "search
+    nothing" — it must still search every candidate, because D-036's guard
+    (0 citations -> INSUFFICIENT_EVIDENCE) means "we searched and found
+    nothing", not "we chose not to search"."""
+    routing_json = json.dumps({"selected": [], "excluded": []})
+    fake_llm_adapter.responses = [[routing_json], ["답", "변"]]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"question": "질문", "knowledge_candidates": _ROUTE_CANDIDATES},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    route_event = next(e for e in events if e["event"] == "knowledge.route.selected")
+    assert route_event["data"]["status"] == "fallback"
+    assert route_event["data"]["fallback_reason"] == "abstained"
+
+    searched_ids = {c["knowledge_id"] for c in fake_knowledge_adapter.calls}
+    assert searched_ids == {c["knowledge_id"] for c in _ROUTE_CANDIDATES}
+
+
+async def test_knowledge_candidates_below_threshold_skips_llm_routing_call(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """At/below `AgentRuntimeSettings.knowledge_route_skip_threshold`
+    (default 2) candidates, the router is never called at all — the LLM
+    adapter is only ever invoked once, for ANSWER_GENERATE."""
+    two_candidates = _ROUTE_CANDIDATES[:2]
+    fake_llm_adapter.tokens = ["답", "변"]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"question": "질문", "knowledge_candidates": two_candidates},
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    route_event = next(e for e in events if e["event"] == "knowledge.route.selected")
+    assert route_event["data"]["status"] == "skipped"
+    assert route_event["data"]["fallback_reason"] is None
+
+    searched_ids = {c["knowledge_id"] for c in fake_knowledge_adapter.calls}
+    assert searched_ids == {c["knowledge_id"] for c in two_candidates}
+    # Exactly one LLM call total (ANSWER_GENERATE) — the router itself never
+    # calls the adapter when skipped.
+    assert fake_llm_adapter.call_count == 1
+
+
+async def test_knowledge_ids_only_callers_are_unaffected_by_routing(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """Baseline regression: a caller that only sends `knowledge_ids` (no
+    `knowledge_candidates`) — exactly what the 4 published Hosted chatbots
+    and every pre-existing caller do — never triggers KNOWLEDGE_ROUTE: no
+    `knowledge.route.selected` event, and the LLM is called exactly once
+    (ANSWER_GENERATE only, same as before this feature existed)."""
+    fake_llm_adapter.tokens = ["답", "변"]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "knowledge_id": "hr-policy-knowledge",
+                "knowledge_ids": ["hr-policy-knowledge", "it-policy-knowledge"],
+                "question": "질문",
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+    event_names = [e["event"] for e in events]
+
+    assert "knowledge.route.selected" not in event_names
+    assert fake_llm_adapter.call_count == 1
+    assert len(fake_knowledge_adapter.calls) == 2
+
+
+async def test_knowledge_route_metadata_never_leaks_to_hub_query(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    fake_hub_search_adapter: FakeHubSearchAdapter,
+) -> None:
+    """D-078 extended to KNOWLEDGE_ROUTE: candidate metadata (name/
+    description) and the router's own selection reasons must never reach
+    the hub query — `build_hub_query` (agent_runtime.hub_query) only ever
+    reads `question` and prior turns' `.question` fields, and nothing about
+    KNOWLEDGE_ROUTE changes that chokepoint. Stage 1 (local, routed to only
+    the selected candidate) finds nothing, so Stage 2 (hub) runs."""
+    marker_name = "극비-내부전용-라우팅후보-QK9x"
+    marker_reason = "극비-라우팅-사유-마커-ZZ77"
+    fake_knowledge_adapter.citations = []  # Stage 1 finds nothing -> Stage 2 hub runs
+    routing_json = json.dumps(
+        {
+            "selected": [{"knowledge_id": "hr-policy-knowledge", "reason": marker_reason}],
+            "excluded": [
+                {"knowledge_id": "it-runbook-knowledge", "reason": "무관"},
+                {"knowledge_id": "finance-policy-knowledge", "reason": "무관"},
+            ],
+        },
+        ensure_ascii=False,
+    )
+    fake_llm_adapter.tokens = [routing_json]  # ANSWER_GENERATE is never reached either way
+    fake_hub_search_adapter.citations = [
+        {
+            "chunk_id": "hub-chunk-1",
+            "parent_chunk_id": None,
+            "document_path": "central-hr/leave.md",
+            "document_title": "연차 휴가 정책 (Hub)",
+            "page": 1,
+            "section": "1.1",
+            "excerpt": "휴가 정책 관련 Hub 검색 결과",
+            "parent_context": "휴가 정책 전문...",
+            "score": 0.9,
+            "similarity": 0.9,
+            "knowledge_id": "central-hr-knowledge",
+            "asset_id": "asset-1",
+            "asset_name": "HR 정책",
+            "source": "hub",
+        }
+    ]
+
+    candidates_with_marker = [
+        {**_ROUTE_CANDIDATES[0], "name": marker_name, "description": marker_name},
+        _ROUTE_CANDIDATES[1],
+        _ROUTE_CANDIDATES[2],
+    ]
+
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {
+                "question": "정책이 궁금해요",
+                "allow_hub_lookup": True,
+                "knowledge_candidates": candidates_with_marker,
+            },
+        },
+    )
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+
+    assert fake_hub_search_adapter.call_count == 1
+    for text in fake_hub_search_adapter.received_query_text:
+        assert marker_name not in text
+        assert marker_reason not in text
+
+    query_sent_event = next(e for e in events if e["event"] == "hub.query_sent")
+    assert marker_name not in query_sent_event["data"]["query"]
+    assert marker_reason not in query_sent_event["data"]["query"]
+    assert "정책이 궁금해요" in query_sent_event["data"]["query"]
+
+    # Sanity: the routing reason marker *was* emitted in the local
+    # knowledge.route.selected event trail — proving the assertions above
+    # are a real negative result, not an artifact of the marker never
+    # appearing anywhere in this run at all.
+    route_event = next(e for e in events if e["event"] == "knowledge.route.selected")
+    assert marker_reason in json.dumps(route_event["data"], ensure_ascii=False)

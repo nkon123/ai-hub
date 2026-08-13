@@ -10,6 +10,21 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-
 
 
 class AgentRuntimeSettings(BaseSettings):
+    # Deployment identity — same contract as `portal_api.config.Settings` and
+    # `distribution_service.config.Settings` (2026-08-12), extended to this
+    # service on 2026-08-14. Release automation injects the immutable commit
+    # SHA; the explicit "unknown" fallback keeps a local/dev process honest
+    # without making Git metadata a runtime dependency.
+    #
+    # Why this service needed it too: on 2026-08-13 a search-runtime process
+    # from six days earlier was still listening, so a route added that week
+    # returned 404 and the only way to tell a fresh process from a stale one
+    # was reading `/openapi.json` by hand. Every long-running service in this
+    # repo must be able to answer "what code are you actually running" from
+    # `/health` alone.
+    build_version: str = "0.1.0"
+    commit_sha: str = "unknown"
+
     config_dir: Path = _REPO_ROOT / "services" / "agent-runtime" / "config"
     search_runtime_url: str = "http://localhost:8300"
     portal_api_url: str = "http://localhost:8000"
@@ -77,6 +92,24 @@ class AgentRuntimeSettings(BaseSettings):
     # bounds how long a run waits before falling back, so a stuck Ollama call
     # cannot hang a Run indefinitely just to rewrite a search query.
     query_rewrite_timeout_seconds: float = 8.0
+    # Agentic Knowledge selection (KNOWLEDGE_ROUTE stage,
+    # agent_runtime.knowledge_router) — additive/optional: only exercised
+    # when a caller populates `input.knowledge_candidates`. Every existing
+    # `knowledge_ids`/`knowledge_id` caller, including the 4 published
+    # Hosted chatbots (chat.py never sends candidates at all), never pays
+    # this LLM call and is byte-for-byte unaffected. At or below this many
+    # candidates, routing is skipped entirely (no LLM call) — deciding
+    # among 1-2 Knowledge is pure latency for no benefit; every candidate is
+    # searched instead. A setting, not a literal in workflow.py/
+    # knowledge_router.py, per this file's own CORS-hardcoding lesson.
+    knowledge_route_skip_threshold: int = 2
+    # Mirrors `query_rewrite_timeout_seconds`'s role for KNOWLEDGE_ROUTE:
+    # "Timeout 또는 Output 오류 시 원문 Fallback" applied to routing — a
+    # stuck/slow routing call falls back to searching every candidate
+    # rather than hanging the Run. Routing is an optimization; a failed
+    # optimization must never silently reduce recall (fail-open, never
+    # zero, never a guessed-at subset — see knowledge_router.py).
+    knowledge_route_timeout_seconds: float = 8.0
 
     class Config:
         env_prefix = "AGENT_RUNTIME_"

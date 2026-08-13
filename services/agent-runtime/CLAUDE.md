@@ -32,7 +32,10 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
   Core를 사용").
 - `manifests.py`(표준 config 로더 + D-034 Registry 해석), `hub_query.py`
   (Hub 질의를 만드는 유일한 경로 — 아래 참고), `conversation.py`(multi-turn
-  `bound_history`/`rewrite_query_for_search`).
+  `bound_history`/`rewrite_query_for_search`), `knowledge_router.py`
+  (KNOWLEDGE_ROUTE 단계 — 후보 지식 자산 metadata + 이번 턴 질문만으로
+  검색 대상 Knowledge를 고르는 선택적 LLM 호출 하나, 실패 시 후보 전체
+  검색으로 fail-open).
 - `mcp_tools.py` — office-mcp-server Tool 계약의 **손으로 복사한 정적 사본**
   (`MCP_TOOL_SPECS`) — M10이 Tool을 바꾸면 이 파일도 수동 갱신해야 한다
   (drift risk, open-decisions.md 기록).
@@ -53,13 +56,16 @@ Run 상태(`run_store.py`): `CREATED`, `PREFLIGHT`, `RUNNING`,
 `SUCCEEDED`, `FAILED`, `CANCELLED`, `INSUFFICIENT_EVIDENCE`(`TERMINAL_STATUSES`).
 
 내부 이벤트 이름: `run.started`, `preflight.completed`,
-`knowledge.search.started`, `knowledge.query_rewritten`,
-`knowledge.search.completed`, `citation.added`, `hub.query_sent`,
-`hub.search.completed`, `mcp.confirmation_required`,
-`mcp.confirmation_resolved`, `mcp.confirmation_expired`, `mcp.call.started`,
-`mcp.call.completed`, `answer.delta`, `run.completed`, `run.failed`,
-`run.cancelled`. Hosted(`chat.py`)는 이 중 6개만
-(`_INTERNAL_TO_HOSTED_EVENT`) 번역해 노출하고 나머지는 드롭한다.
+`knowledge.route.selected`, `knowledge.search.started`,
+`knowledge.query_rewritten`, `knowledge.search.completed`,
+`citation.added`, `hub.query_sent`, `hub.search.completed`,
+`mcp.confirmation_required`, `mcp.confirmation_resolved`,
+`mcp.confirmation_expired`, `mcp.call.started`, `mcp.call.completed`,
+`answer.delta`, `run.completed`, `run.failed`, `run.cancelled`.
+Hosted(`chat.py`)는 이 중 6개만(`_INTERNAL_TO_HOSTED_EVENT`) 번역해 노출하고
+나머지는 드롭한다 — `knowledge.route.selected`는 의도적으로 포함하지 않는다
+(Hosted 챗봇은 `knowledge_candidates`를 절대 보내지 않으므로 이 이벤트
+자체가 발생하지 않는다).
 
 **근거 0건이면 LLM을 호출하지 않는다** (D-036 hallucination guard,
 `workflow.py`의 `if len(citations) == 0 and len(tool_results) == 0:` →

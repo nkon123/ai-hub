@@ -257,6 +257,16 @@ async def start_run(
     knowledge_ids = raw_knowledge_ids if isinstance(raw_knowledge_ids, list) else None
     allow_hub_lookup = bool(body.input.get("allow_hub_lookup", False))
 
+    # Agentic Knowledge selection (KNOWLEDGE_ROUTE stage) — additive/
+    # optional, same defensive "is it a list at all" parsing style as
+    # `knowledge_ids`/`history` above. workflow.py's `route_knowledge_
+    # candidates` normalizes/validates each entry defensively and never
+    # raises on malformed input.
+    raw_knowledge_candidates = body.input.get("knowledge_candidates")
+    knowledge_candidates = (
+        raw_knowledge_candidates if isinstance(raw_knowledge_candidates, list) else None
+    )
+
     asyncio.create_task(
         run_knowledge_chat(
             run_id=record.id,
@@ -280,6 +290,7 @@ async def start_run(
             user_context=body.user_context,
             history=history,
             knowledge_ids=knowledge_ids,
+            knowledge_candidates=knowledge_candidates,
             allow_hub_lookup=allow_hub_lookup,
             hub_search_adapter=hub_search_adapter,
         )

@@ -1,10 +1,14 @@
 """Standard Knowledge (+ optional MCP Tool) chat workflow (state machine).
 
-INPUT_VALIDATE -> PREPARE -> ANALYZE -> KNOWLEDGE_SEARCH (0..n) ->
-TOOL_CONFIRM (optional) -> MCP_TOOL_CALL (0..n) -> ANSWER_GENERATE ->
-OUTPUT_VALIDATE -> COMPLETE
+INPUT_VALIDATE -> PREPARE -> ANALYZE -> KNOWLEDGE_ROUTE (optional) ->
+KNOWLEDGE_SEARCH (0..n) -> TOOL_CONFIRM (optional) -> MCP_TOOL_CALL (0..n) ->
+ANSWER_GENERATE -> OUTPUT_VALIDATE -> COMPLETE
 
-(stage list per 02-desktop-and-agent-runtime.md §5.2.)
+(stage list per 02-desktop-and-agent-runtime.md §5.2, extended with
+KNOWLEDGE_ROUTE — agentic Knowledge selection, only present when the caller
+supplies `knowledge_candidates`; see `agent_runtime.knowledge_router` and
+this function's own docstring on `knowledge_candidates` for the full
+contract, including its fail-open guarantee.)
 
 Never call the LLM to *answer* when there is no evidence at all — neither
 Knowledge citations nor MCP Tool results (hallucination guard, D-036,
@@ -67,6 +71,7 @@ from agent_runtime.adapters.search import KnowledgeSearchError
 from agent_runtime.config import settings
 from agent_runtime.conversation import bound_history, rewrite_query_for_search
 from agent_runtime.hub_query import build_hub_query
+from agent_runtime.knowledge_router import KnowledgeRouteResult, route_knowledge_candidates
 from agent_runtime.manifests import StandardKnowledgeChatConfig
 from agent_runtime.prompt_renderer import build_messages
 from agent_runtime.run_store import PendingConfirmation, RunRecord, RunStore
@@ -462,6 +467,7 @@ async def run_knowledge_chat(
     user_context: dict[str, Any] | None = None,
     history: list[dict[str, Any]] | None = None,
     knowledge_ids: list[str] | None = None,
+    knowledge_candidates: list[dict[str, Any]] | None = None,
     allow_hub_lookup: bool = False,
     hub_search_adapter: HubSearchAdapter | None = None,
 ) -> None:
@@ -505,6 +511,30 @@ async def run_knowledge_chat(
     their citations (each additively tagged `"source": "local"`).
     Omitted/empty falls back to the single-`knowledge_id` behavior
     byte-for-byte.
+
+    `knowledge_candidates` (additive/optional — agentic Knowledge selection,
+    KNOWLEDGE_ROUTE stage, `agent_runtime.knowledge_router`) is a list of
+    `{knowledge_id, name, description?, tags?, classification?}` dicts. When
+    non-empty, it takes over Stage 1's search-target selection entirely:
+    ONE optional LLM call (`route_knowledge_candidates`) reads only this
+    call's `question` and the candidates' metadata — never document text,
+    citations, or prior answers — and picks the subset worth searching,
+    each with a short Korean reason; `knowledge_ids` is ignored in that
+    case (a caller doing agentic selection sends candidates, not a
+    pre-decided id list). Below `settings.knowledge_route_skip_threshold`
+    candidates the LLM call is skipped entirely (every candidate is
+    searched — routing that few is pure latency for no benefit). On any
+    routing failure (LLM error/timeout/unparseable output/an id outside the
+    candidate list) OR a valid-but-empty selection ("abstained"), this
+    fails open: every candidate is searched, never zero, never a
+    guessed-at subset — routing is an optimization, and a failed
+    optimization must not silently reduce recall. The decision (selected
+    ids, excluded ids, each with a reason, and whether routing ran/was
+    skipped/fell back) is emitted as a `knowledge.route.selected` event.
+    Omitting `knowledge_candidates` (every caller today, including the 4
+    published Hosted chatbots) reproduces the exact prior `knowledge_ids`/
+    `knowledge_id` behavior byte-for-byte — `route_knowledge_candidates` is
+    never even called.
 
     `allow_hub_lookup`/`hub_search_adapter` (additive/optional, default off)
     gate Stage 2: a hub (central Knowledge registry, portal-api M02) lookup
@@ -569,7 +599,7 @@ async def run_knowledge_chat(
         # reject a valid multi-knowledge request that omits the singular
         # field. `knowledge_ok` below (PREFLIGHT) reads this same variable,
         # so this one change covers both checks.
-        has_knowledge_id = bool(knowledge_id) or bool(knowledge_ids)
+        has_knowledge_id = bool(knowledge_id) or bool(knowledge_ids) or bool(knowledge_candidates)
         has_mcp_request = mcp_tool_request is not None
         if knowledge_required and not has_knowledge_id:
             _fail(run_store, run_id, trace_id, "INVALID_INPUT", "knowledge_id is required")
@@ -624,6 +654,43 @@ async def run_knowledge_chat(
         run_store.set_status(run_id, "RUNNING")
         citations: list[dict[str, Any]] = []
         if has_knowledge_id:
+            # --- KNOWLEDGE_ROUTE (optional, before KNOWLEDGE_SEARCH) ---
+            # Agentic Knowledge selection — only runs when the caller
+            # supplied `knowledge_candidates` (additive/optional; every
+            # existing caller, including the 4 published Hosted chatbots,
+            # never does). See `agent_runtime.knowledge_router` for the
+            # fail-open contract this relies on: `route_result.selected_ids`
+            # is always safe to search directly, in every status.
+            route_result: KnowledgeRouteResult | None = None
+            if knowledge_candidates:
+                route_result = await route_knowledge_candidates(
+                    question,
+                    knowledge_candidates,
+                    llm_adapter,
+                    model_alias="default-chat",
+                    timeout_seconds=settings.knowledge_route_timeout_seconds,
+                    skip_threshold=settings.knowledge_route_skip_threshold,
+                )
+                run_store.append_event(
+                    run_id,
+                    "knowledge.route.selected",
+                    {
+                        "status": route_result.status,
+                        "fallback_reason": route_result.fallback_reason,
+                        "selected": route_result.selected,
+                        "excluded": route_result.excluded,
+                    },
+                )
+                logger.info(
+                    "knowledge.route run_id=%s status=%s fallback_reason=%s "
+                    "selected_count=%d excluded_count=%d",
+                    run_id,
+                    route_result.status,
+                    route_result.fallback_reason,
+                    len(route_result.selected_ids),
+                    len(route_result.excluded),
+                )
+
             run_store.append_event(
                 run_id, "knowledge.search.started", {"knowledge_id": knowledge_id}
             )
@@ -647,12 +714,19 @@ async def run_knowledge_chat(
                 )
                 run_store.append_event(run_id, "knowledge.query_rewritten", rewrite_meta)
 
-            # Stage 1 fan-out: `knowledge_ids` (non-empty) searches every id
-            # in the list with the same `search_query`, via `asyncio.gather`
-            # — unchanged access_context/clearance logic, just repeated per
-            # id. Omitted/empty `knowledge_ids` reproduces the exact prior
+            # Stage 1 fan-out: searches every id in `ids_to_search` with the
+            # same `search_query`, via `asyncio.gather` — unchanged
+            # access_context/clearance logic, just repeated per id.
+            # `route_result` (KNOWLEDGE_ROUTE, above) takes over id
+            # selection entirely when present — its `selected_ids` is
+            # always the right thing to search, fallback-inclusive.
+            # Otherwise `knowledge_ids` (non-empty) reproduces the plain
+            # fan-out; omitting both reproduces the exact prior
             # single-`knowledge_id` request/response handling.
-            ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
+            if route_result is not None:
+                ids_to_search = route_result.selected_ids
+            else:
+                ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
             access_context = {
                 # §3.8 step 1 — see this function's docstring for why this
                 # comes from `user_context`, never from `input`.

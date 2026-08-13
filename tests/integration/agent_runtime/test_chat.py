@@ -11,6 +11,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 
 from tests.integration.agent_runtime.conftest import (
     FakeDeploymentResolver,
@@ -226,3 +227,44 @@ async def test_deployment_resolver_not_called_on_message_send(
         await _read_all_sse_events(resp)
 
     assert fake_deployment_resolver.call_count == 1
+
+
+async def test_hosted_chat_never_triggers_agentic_knowledge_routing(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for the KNOWLEDGE_ROUTE stage's additive-optional
+    contract: `send_message` (routers/chat.py) calls `run_knowledge_chat`
+    without `knowledge_candidates` at all, so the 4 published Hosted
+    chatbots — which never send candidates — must never pay the routing LLM
+    call or see the new `knowledge.route.selected` event, regardless of how
+    KNOWLEDGE_ROUTE evolves inside workflow.py. Proven here by making the
+    router raise if it is ever invoked, rather than merely asserting it
+    wasn't (which could pass for the wrong reason, e.g. an exception
+    swallowed elsewhere)."""
+
+    async def _fail_if_called(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("route_knowledge_candidates must never be called by Hosted Chat")
+
+    monkeypatch.setattr(
+        "agent_runtime.workflow.route_knowledge_candidates", _fail_if_called
+    )
+
+    fake_llm_adapter.tokens = ["재택근무는", " 주 2회", " 가능합니다."]
+    session = await _create_session(client)
+
+    async with client.stream(
+        "POST",
+        f"/chat-api/v1/sessions/{session['id']}/messages",
+        json={"message": "재택근무 신청 방법은?"},
+    ) as resp:
+        assert resp.status_code == 200
+        events = await _read_all_sse_events(resp)
+
+    event_names = [e["event"] for e in events]
+    assert "run.failed" not in event_names
+    assert "knowledge.route.selected" not in event_names
+    completed = next(e for e in events if e["event"] == "run.completed")
+    assert completed["data"]["status"] == "SUCCEEDED"
