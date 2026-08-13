@@ -9,7 +9,10 @@ user-controlled code.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header
 from fastapi.responses import JSONResponse
@@ -31,10 +34,38 @@ _logger = logging.getLogger("office_mcp_server")
 SERVER_VERSION = "0.1.0"
 SCHEMA_VERSION = "1.0"
 
+# Deployment identity — distinct from SERVER_VERSION above. SERVER_VERSION is
+# the product/protocol version this MCP server advertises to clients; these
+# two answer a different question: "which build of the code is this process
+# actually running". Same contract as portal-api / distribution-service
+# (2026-08-12), search-runtime (2026-08-13) and agent-runtime /
+# indexing-runtime (2026-08-14). Plain `os.environ` because this service has
+# no settings module and two constants do not justify introducing one.
+#
+# The incident: a search-runtime process from six days earlier was still
+# listening, so a route added that week returned 404 while `/health` reported
+# a hardcoded version — a fresh process and a stale one looked identical.
+BUILD_VERSION = os.environ.get("OFFICE_MCP_BUILD_VERSION", "0.1.0")
+COMMIT_SHA = os.environ.get("OFFICE_MCP_COMMIT_SHA", "unknown")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Emitted once so an operator reading this process's log can tell which
+    # revision is in memory — see BUILD_VERSION above.
+    _logger.info(
+        "service.started service=office-mcp-server build_version=%s commit_sha=%s",
+        BUILD_VERSION,
+        COMMIT_SHA,
+    )
+    yield
+
+
 app = FastAPI(
     title="Office MCP Server",
-    version=SERVER_VERSION,
+    version=BUILD_VERSION,
     description="READ_ONLY MCP tools only. No arbitrary SQL or code execution.",
+    lifespan=lifespan,
 )
 
 registry = ToolRegistry()
@@ -72,7 +103,10 @@ def _require_admin(x_actor_role: str | None) -> None:
 async def health_legacy() -> JSONResponse:
     """Kept for backward compatibility with the pre-§11 stub; §11's
     `/health/live` and `/health/ready` are the canonical operational API."""
-    return JSONResponse({"status": "ok", "version": SERVER_VERSION})
+    # Same shape every other service's `/health` returns, so one operator
+    # check works across the whole stack. `/health/live` deliberately stays
+    # minimal (§11 liveness probe) and `/version` keeps SERVER_VERSION.
+    return JSONResponse({"status": "ok", "version": BUILD_VERSION, "commit_sha": COMMIT_SHA})
 
 
 @app.get("/health/live")
@@ -93,6 +127,8 @@ async def version() -> JSONResponse:
         {
             "server_version": SERVER_VERSION,
             "schema_version": SCHEMA_VERSION,
+            "build_version": BUILD_VERSION,
+            "commit_sha": COMMIT_SHA,
             "tools": [{"name": t.name, "version": t.version} for t in registry.list_all()],
         }
     )

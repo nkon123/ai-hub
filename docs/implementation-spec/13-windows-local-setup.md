@@ -243,7 +243,7 @@ chcp 65001
 
 **`pnpm install` 을 직접 실행하면 Electron 단계에서 막힐 수 있다.** `apps/desktop-client` 의 postinstall 이 Electron 실행 바이너리(약 100MB)를 GitHub Releases 에서 내려받는데, 사내망에서는 `RequestError: read ECONNRESET` 로 실패하는 경우가 많다.
 
-**Portal 을 띄우는 데 Electron 은 필요 없다.** 위 스크립트는 기본적으로 Electron 바이너리 내려받기를 건너뛰고 나머지를 모두 설치한다. Portal(:3000)과 Desktop 렌더러(Vite, :5174)는 그대로 동작하며, Electron 앱 자체를 띄울 때만 바이너리가 필요하다.
+**Portal 을 띄우는 데 Electron 은 필요 없다.** 위 스크립트는 기본적으로 Electron 바이너리 내려받기를 건너뛰고 나머지를 모두 설치한다. Portal(:3000)과 Desktop 렌더러(Vite, **:5173** — `vite.config.ts`가 `strictPort`로 고정)는 그대로 동작하며, Electron 앱 자체를 띄울 때만 바이너리가 필요하다.
 
 직접 실행한다면 아래와 같다.
 
@@ -407,6 +407,24 @@ export SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI
 **아직 해소되지 않은 것**: Desktop 앱이 이 PC에 이미 설치해 둔 사본(`~/Library/Application Support/desktop-client/assets/knowledge/2f157a86-…/1.0.0/index`, macOS 기준)은 여전히 `bm25.pkl`만 있다 — 그 `knowledge_id`(`d9e660b7-…`)가 중앙 `INDEX_BASE`에 이미 있어 `central_index_exists`로 어차피 등록이 거절되므로 지금 변환해도 이득이 없어 의도적으로 범위 밖에 뒀다. 그리고 실행 중이던 `:8300` search-runtime 프로세스는 여전히 D-079 라우트가 없는 구버전이라 활성화 요청이 404 나며, 운영자가 재시작해야 해소된다 — 이번 조치에서 라이브 서비스 재시작은 하지 않았다.
 
 search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청이 전달하는 것은 그 PC의 로컬 절대 경로이므로, 원격 search-runtime은 그 디렉터리를 읽을 수 없다.
+
+### 7.2 macOS 개발 세션에서 스택 제어하기 (`scripts/macos/dev-stack.sh`)
+
+이 문서의 나머지는 Windows 대상 PC 배포 절차이지만, 이 저장소를 준비·검증하는 macOS 개발 머신에서는 7개 서비스를 매번 개별 명령으로 띄우고 내리는 대신 한 스크립트로 제어할 수 있다. `scripts/windows/start-all.ps1`/`health-check.ps1`의 macOS 대응물이며, 이쪽은 시작뿐 아니라 종료까지 한 진입점에서 지원한다.
+
+```bash
+scripts/macos/dev-stack.sh <start|stop|restart|status> [서비스 이름...]
+```
+
+서비스 이름을 생략하면 7개 전체(portal-api/agent-runtime/indexing-runtime/search-runtime/distribution-service/office-mcp-server/portal-web)를 대상으로 한다. 실행 명령 자체는 `Makefile`의 `dev-*` 타겟과 동일하되 `--reload`는 뺀다 — reloader가 감시용 부모와 실제 요청을 처리하는 자식 프로세스를 분리해 PID·포트 관리를 불안정하게 만들기 때문이다. 이 스크립트로 띄운 스택은 코드가 바뀌면 `restart`로 통째로 다시 띄우는 것을 전제로 하므로 파일 감시가 필요 없다.
+
+- **`start`는 포트가 이미 점유돼 있으면 거부한다**(점유 중인 PID와 시작 시각을 표시) — 죽은 줄 알았던 프로세스 위에 새 인스턴스를 덧띄우는 사고를 막기 위함이다.
+- **`stop`은 PID 파일만 믿지 않는다** — 포트 소유자 PID와 명령줄 패턴을 함께 찾아 SIGTERM을 보내고, 그래도 남아 있으면 SIGKILL로 강제 종료하며, 그래도 포트가 비지 않으면 실패로 종료한다(조용히 넘어가지 않는다).
+- **`status`가 이 스크립트의 핵심이다.** 각 서비스가 실제로 응답하는 `commit_sha`를 저장소 현재 HEAD와 나란히 보여준다 — portal-api/distribution-service/search-runtime 세 서비스만 이 필드를 갖고 있어(`PORTAL_`/`DISTRIBUTION_`/`SEARCH_` 접두사의 `BUILD_VERSION`/`COMMIT_SHA` 환경변수로 주입) 확인할 수 있고, 나머지 세(agent-runtime/indexing-runtime/office-mcp-server)는 코드에 그 필드 자체가 없어 "미지원"으로 명시한다(빈 칸이 아니라 명시적 표시 — 실제 한계이지 누락이 아니다). 200을 반환해도 커밋이 HEAD와 다르면 "오래된 코드"로 눈에 띄게 표시한다 — 바로 위 §7.1 끝에 기록된 것처럼, 재시작하지 않은 구버전 search-runtime이 새 라우트를 404로 거부하던 사고를 다음에는 로그를 뒤지지 않고 즉시 알아챌 수 있게 하려는 목적이다.
+- search-runtime을 이 스크립트로 띄울 때는 `SEARCH_LOCAL_INDEX_ROOTS`를 위 §7.1 기본값(`$HOME/Library/Application Support/desktop-client/assets`)으로 자동 주입한다(이미 설정된 값이 있으면 그것을 우선한다).
+- PID/로그는 저장소 루트의 `.dev-stack/`(gitignored)에 쌓인다.
+- Ollama(:11434)는 `status`에서 확인만 하고, 이 스크립트가 시작/중지하지 않는다.
+- DB 마이그레이션은 자동 적용하지 않는다 — `status`가 최신이 아니면 경고만 하고, 적용은 `make migrate`를 사용자가 직접 실행해야 한다.
 
 ## 8. 문제 해결
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
@@ -21,14 +23,27 @@ from indexing_runtime.embedders import (
 )
 from indexing_runtime.errors import ErrorCode, error_envelope, status_for
 from indexing_runtime.pipeline import run_pipeline
-from indexing_runtime.settings import EMBED_MODEL
+from indexing_runtime.settings import BUILD_VERSION, COMMIT_SHA, EMBED_MODEL
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn.
 configure_logging("indexing-runtime")
 _logger = logging.getLogger("indexing_runtime")
 
-app = FastAPI(title="Indexing Runtime", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Emitted once so an operator reading this process's log can tell which
+    # revision is actually in memory — see settings.BUILD_VERSION for the
+    # stale-process incident that made this necessary across every service.
+    _logger.info(
+        "service.started service=indexing-runtime build_version=%s commit_sha=%s",
+        BUILD_VERSION,
+        COMMIT_SHA,
+    )
+    yield
+
+
+app = FastAPI(title="Indexing Runtime", version=BUILD_VERSION, lifespan=lifespan)
 
 # Repo-root-relative default, mirroring the same pattern already used by
 # sibling services for the identical value (`distribution_service.config
@@ -71,7 +86,9 @@ class IndexJobRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    # Same shape portal-api / distribution-service / agent-runtime /
+    # search-runtime return, so one operator check works across every service.
+    return JSONResponse({"status": "ok", "version": BUILD_VERSION, "commit_sha": COMMIT_SHA})
 
 
 @app.get("/indexing/v1/models")

@@ -10,6 +10,24 @@ from __future__ import annotations
 
 import os
 
+BUILD_VERSION: str = os.environ.get("INDEXING_BUILD_VERSION", "0.1.0")
+COMMIT_SHA: str = os.environ.get("INDEXING_COMMIT_SHA", "unknown")
+"""Deployment identity, exposed by `/health` and logged once at startup.
+
+Same contract as `portal_api.config.Settings.build_version` /
+`distribution_service` (2026-08-12) and `search_runtime.settings`
+(2026-08-13), extended here on 2026-08-14 so every long-running service in
+this repo can answer "what code are you actually running" the same way.
+Declared with this module's plain-`os.environ` convention rather than
+pydantic-settings, matching the note at the top of this file.
+
+The incident this closes: a search-runtime process from six days earlier was
+still listening, so a route added that week returned 404 while `/health`
+cheerfully reported a hardcoded `"0.1.0"` — indistinguishable from a process
+started five minutes ago. Release automation injects the real SHA; the
+explicit `"unknown"` fallback keeps a dev process honest instead of making
+Git metadata a runtime dependency."""
+
 EMBED_MODEL: str = os.environ.get("INDEXING_EMBED_MODEL", "qwen3-embedding:0.6b")
 """Ollama embedding model indexing-runtime uses to embed document chunks
 (`embedders.embed_batch`, `pipeline.run_pipeline`'s default). Also the value

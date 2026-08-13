@@ -1,6 +1,6 @@
 # Desktop Client (M04)
 
-Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted 대화(Chat) 실행, 연결 상태, 로그/진단, 업데이트를 담당한다. Main process(Node/Electron)와 React 렌더러(Vite)로 구성된다. 렌더러는 `dev` 스크립트 기준 5173(`vite.config.ts`/`electron/main.ts:145` 하드코딩)이 기본값이지만, 이 저장소 문서(open-decisions.md D-059, 13-windows-local-setup.md)와 실제 운영 세션은 5174를 참조한다 — 실행 전 `lsof -i :5173`/`:5174`로 실제 뜬 포트를 확인한다(아래 "코드 배치" 참고).
+Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted 대화(Chat) 실행, 연결 상태, 로그/진단, 업데이트를 담당한다. Main process(Node/Electron)와 React 렌더러(Vite)로 구성된다. 렌더러 포트는 **5173 하나뿐이다**(`vite.config.ts`의 `port: 5173` + `strictPort: true`, `electron/main.ts`도 5173을 로드). `strictPort`가 켜져 있어 5173이 점유되면 vite는 다른 포트로 밀리지 않고 **실패한다** — 예전 문서가 경고하던 "5174로 밀려서 Electron이 엉뚱한 포트를 본다"는 설정으로 이미 닫혀 있다. 남은 함정은 반대쪽이다: 누군가 `--port 5174`로 따로 띄워 둔 렌더러는 Electron이 영영 보지 않으므로, 창은 비어 있는데 브라우저로는 멀쩡히 보이는 상태가 된다(2026-08-14 실제 발생). `scripts/macos/dev-stack.sh status`가 이 잔재를 경고한다.
 
 ## 반드시 지킬 규칙 (상위 저장소 규칙 중 이 모듈에 적용되는 것)
 
@@ -73,9 +73,9 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
 
 ## 개발 환경 — 실행 전에 알아야 할 것
 
-- **Electron 바이너리가 없을 수 있다.** 사내망에서는 GitHub Releases 다운로드가 막히고, macOS에서는 XProtect가 받은 바이너리를 격리·삭제한다. **Gatekeeper/XProtect를 우회하지 마라**(`xattr -d com.apple.quarantine`, `spctl` 변경 금지). 우회 없이 확인하는 방법은 아래 "렌더러만 띄우기"다.
-- **렌더러만 띄우기**: `pnpm exec vite` → 브라우저에서 `http://localhost:5174`. 반드시 `localhost`로 연다 — `127.0.0.1`은 agent-runtime CORS에서 걸린다. 이 경로에서는 `window.desktop`이 없어 `bridge.ts`가 `null`을 반환하므로, 파일시스템에 의존하는 화면(스토어/가져오기/설치된 자산/업데이트·복구/로그·진단/설정)은 "Desktop 런타임 필요"로 표시되고 **대화 화면만 실제로 동작한다**. 대화 화면의 "개발자 옵션 > Knowledge ID 직접 입력"이 이때 쓰는 경로다.
-- **포트 불일치(미해결)**: `vite.config.ts`와 `electron/main.ts:145`는 `5173`으로 하드코딩되어 있는데 문서·실운영 세션은 `5174`를 쓴다. 5173이 점유된 상태에서 vite가 5174로 밀리면 Electron은 엉뚱한 5173을 로드한다. 실행 전 실제 포트를 확인한다.
+- **Electron 실행 여부는 머신마다 다르다.** 이 개발 머신에서는 실측(2026-08-14) `node_modules`의 Electron **v43.3.0이 quarantine 속성 없이 정상 실행**되며 실제 창도 뜬다 — 그동안 "이 세션에서는 Electron을 띄울 수 없다"고 적혀 있던 제약은 최소한 이 머신에서는 더 이상 사실이 아니다. 다만 사내망에서는 GitHub Releases 다운로드가 막히고, macOS에서는 XProtect가 새로 받은 바이너리를 격리·삭제할 수 있다. **Gatekeeper/XProtect를 우회하지 마라**(`xattr -d com.apple.quarantine`, `spctl` 변경 금지). 우회 없이 확인하는 방법은 아래 "렌더러만 띄우기"다.
+- **렌더러만 띄우기**: `pnpm exec vite` → 브라우저에서 `http://localhost:5173`. **반드시 `localhost`로 연다** — 이유가 둘이다: (1) `127.0.0.1`은 agent-runtime CORS에서 걸리고, (2) 실측(2026-08-14) Vite dev 서버는 **IPv6 `[::1]`에만 바인딩**해서 `127.0.0.1`로는 아예 응답하지 않는다(`localhost`는 `::1`로 풀린다). 이 두 번째 이유 때문에 dev-stack 스크립트의 준비 검사가 한동안 멀쩡한 서버를 "기동 실패"로 오판했다. 이 경로에서는 `window.desktop`이 없어 `bridge.ts`가 `null`을 반환하므로, 파일시스템에 의존하는 화면(스토어/가져오기/설치된 자산/업데이트·복구/로그·진단/설정)은 "Desktop 런타임 필요"로 표시되고 **대화 화면만 실제로 동작한다**. 대화 화면의 "개발자 옵션 > Knowledge ID 직접 입력"이 이때 쓰는 경로다.
+- **스택 기동은 `scripts/macos/dev-stack.sh`를 쓴다**: `start|stop|restart|status [서비스...]`. `desktop-client`를 포함한 8개를 다루며, `status`는 각 서비스가 **실제로 응답하는 커밋**과 저장소 HEAD를 나란히 보여주고 Desktop은 `dist/electron` 빌드 신선도까지 표시한다(오래된 preload가 런타임 크래시를 만든 적이 있다). `stop`은 Electron 창까지 정리하되 **저장소 경로로 범위를 좁혀** 이 머신의 다른 Electron 앱(VS Code 등)은 건드리지 않는다.
 - **연결 판정 오탐(미해결)**: `electron/connections.ts:17`의 `DEFAULT_RUNTIME_BASE_URL`이 `http://127.0.0.1:8100`으로 하드코딩되어 있어, 대화가 실제로 쓰는 `VITE_AGENT_RUNTIME_BASE_URL`을 무시한다. 그 결과 대화가 멀쩡히 되는데도 채팅 화면에 빨간 "연결 끊김" 배너가 뜬다.
 - **`.env.local`은 개인 로컬 설정이다.** 커밋 대상이 아니고, 남의 세션 값을 임의로 덮어쓰지 않는다.
 - 함께 떠 있어야 하는 것: agent-runtime(기본 8100), search-runtime(8300), Ollama(11434). MCP Tool을 쓸 때만 office-mcp-server(8500).

@@ -34,6 +34,10 @@ apps/portal-api/*.db-wal
 apps/portal-api/*.db-shm
 *.bak
 
+# scripts/macos/dev-stack.sh 의 PID/로그 파일. 다른 PC에서 재생 불가능한
+# 로컬 프로세스 상태이므로 위 데이터 산출물과 같은 이유로 제외한다.
+/.dev-stack/
+
 # Desktop Client가 설치한 로컬 자산/상태
 apps/desktop-client/install-root/
 apps/desktop-client/.vite/

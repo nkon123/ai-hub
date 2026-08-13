@@ -7,6 +7,7 @@ Runs in two modes:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -26,6 +27,8 @@ from agent_runtime.routers import chat, runs
 # agent_runtime.workflow's module-level logger) actually emits anything.
 configure_logging("agent-runtime")
 
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
@@ -34,12 +37,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # startup immediately instead of on the first request.
     manifests.get_standard_config()
     manifests.get_db_agent_config()
+    # Emitted once so an operator reading this process's log can tell which
+    # revision is actually in memory — see AgentRuntimeSettings.build_version
+    # for the incident that made this necessary across every service.
+    logger.info(
+        "service.started service=agent-runtime build_version=%s commit_sha=%s",
+        settings.build_version,
+        settings.commit_sha,
+    )
     yield
 
 
 app = FastAPI(
     title="Agent Runtime",
-    version="0.1.0",
+    version=settings.build_version,
     lifespan=lifespan,
 )
 
@@ -57,7 +68,13 @@ app.add_middleware(
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    # Same shape portal-api / distribution-service / search-runtime return, so
+    # one operator check works across every service.
+    return JSONResponse({
+        "status": "ok",
+        "version": settings.build_version,
+        "commit_sha": settings.commit_sha,
+    })
 
 
 @app.get("/local/v1/health")
