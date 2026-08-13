@@ -12,6 +12,7 @@ import { chatWithOllama } from "./ollama-chat";
 import {
   activateAssetVersion,
   assetInstallDir,
+  buildKnowledgeCandidatesForChat,
   checkAssetRemoval,
   cleanupOrphanedInstalls,
   diffAssetVersions,
@@ -52,7 +53,9 @@ import type {
   DiagnosticBundle,
   DiskSpaceInfo,
   ImportProgressEvent,
+  InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeCandidate,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -351,6 +354,18 @@ function registerIpcHandlers(): void {
         };
       }
       return getAssetDependencyView(layout, store, asset);
+    },
+  );
+
+  // --- D06 대화: KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택) -------------
+  // 렌더러가 이미 `partitionInstalledKnowledgeByActivation`으로 "검색 가능"
+  // 판정을 마친 자산 목록을 그대로 받는다 — 이 핸들러는 그 판정을 다시
+  // 계산하지 않고, fs로만 가능한 부분(각 자산의 manifest.json 읽기)만 한다.
+  ipcMain.handle(
+    "knowledge:getCandidates",
+    async (_event, assets: InstalledAsset[]): Promise<KnowledgeCandidate[]> => {
+      const layout = getLayout();
+      return buildKnowledgeCandidatesForChat(layout, Array.isArray(assets) ? assets : []);
     },
   );
 

@@ -14,6 +14,7 @@ import { computeAssetStatus } from "./asset-status";
 import { findReferencingServices, parseServiceDefinition, type InstalledServiceBindings } from "./service-dependencies";
 import { evaluateAssetRemoval, type ActivePointerInput } from "./removal-guard";
 import { computeManifestDiff, manifestFileNameHint } from "./version-diff";
+import { buildKnowledgeCandidates } from "./knowledge-candidates";
 import type {
   ActivateVersionResult,
   AssetDependencyView,
@@ -24,6 +25,7 @@ import type {
   ChecksumVerification,
   InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeCandidate,
   OrphanedInstallCleanupResult,
 } from "./types";
 
@@ -212,6 +214,24 @@ export function readAssetManifest(layout: InstallRootLayout, asset: InstalledAss
     };
   }
   return { available: true, reason: null, manifest };
+}
+
+// ---------------------------------------------------------------------------
+// D06 대화 — KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택)
+// ---------------------------------------------------------------------------
+
+/** `assets`(렌더러가 이미 "검색 가능"으로 판정해 넘긴 목록, `chatTypes.ts`의
+ * `partitionInstalledKnowledgeByActivation`)마다 `manifest.json`을 읽고
+ * `buildKnowledgeCandidates`(순수 조립 규칙, `knowledge-candidates.ts`)로
+ * agent-runtime의 `knowledge_candidates` 입력 형태로 만든다. fs 읽기(이
+ * 함수)와 필드 조립(순수 모듈)의 경계는 `diffAssetVersions`가
+ * `readAssetManifest`+`computeManifestDiff`에 대해 갖는 관계와 동일하다. */
+export function buildKnowledgeCandidatesForChat(
+  layout: InstallRootLayout,
+  assets: InstalledAsset[],
+): KnowledgeCandidate[] {
+  const manifests = assets.map((asset) => readAssetManifest(layout, asset));
+  return buildKnowledgeCandidates(assets, manifests);
 }
 
 // ---------------------------------------------------------------------------

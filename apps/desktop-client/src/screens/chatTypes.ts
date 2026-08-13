@@ -73,6 +73,19 @@ export interface ChatMessage {
    * never local document content — so it is safe to render verbatim. Always
    * `[]` for a restored turn (not persisted, same as `citations`/`eventLog`). */
   hubQueriesSent: Array<{ query: string; knowledgeIdsSearched: string[] }>;
+  /** `knowledge_id -> name`, captured at send time from the exact
+   * `knowledge_candidates` this turn sent (empty when this turn didn't send
+   * candidates) — used only to resolve human-readable names when the
+   * `"knowledge.route.selected"` SSE event arrives (it carries ids only).
+   * Never sent anywhere itself; purely a local display aid. */
+  knowledgeCandidateNameById: Record<string, string>;
+  /** Non-null only once (if ever) a `"knowledge.route.selected"` SSE event
+   * has arrived for this turn — i.e. this turn sent `knowledge_candidates`
+   * AND KNOWLEDGE_ROUTE actually ran (skipped/fell back/ran). `null` for
+   * every turn that searched by plain `knowledgeIds` (no routing stage
+   * exists for it) and for a restored turn (not persisted). See
+   * `describeKnowledgeRoute`. */
+  knowledgeRoute: KnowledgeRouteDisplay | null;
 }
 
 // D-060: an installed Knowledge from a Bundle built before the fix has no
@@ -186,6 +199,88 @@ export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[]
   return partitionInstalledKnowledgeByActivation(assets).usable.map((u) => u.knowledgeId);
 }
 
+// --- D-079 이어 붙이기(반복 설명 정리, 2026-08-14) --------------------------
+// 실사용 화면 관찰: 활성화 실패 원인이 환경적(search-runtime 프로세스 자체가
+// 이 API를 모름, local_indexes 기능 꺼짐 등)이면 설치된 Knowledge가 몇 개든
+// 전부 정확히 같은 `reason` 문자열을 받는다(원인이 자산이 아니라 search-runtime
+// 쪽에 있으므로). 그런데 화면은 그 문자열을 자산마다 한 번씩 반복해 보여줬고,
+// 방금 누른 재시도 결과(`feedback.message`)가 같은 원인이면 또 한 번, 그
+// 아래 reconcile 안내가 또 한 번 — 같은 문단이 최대 세 번 찍혔다(정직하지만
+// 읽을 수 없음, 루트 CLAUDE.md "기술 명칭보다 업무 목적을 먼저 표시한다"
+// 위반). 아래 두 함수가 그 중복 제거를 순수 로직으로 분리한다 — 원인이 실제로
+// 서로 다르면(자산별 사유) 여전히 각 줄에 그대로 남는다: 숨기는 게 아니라
+// "같은 말을 세 번 하지 않는다"만 한다.
+
+export interface GroupedExcludedKnowledge<T extends InstalledAsset = InstalledAsset> {
+  asset: T;
+  /** null이면 이 자산의 사유가 `sharedReason`으로 패널 상단에 이미 한 번
+   * 표시됐다는 뜻 — 행에서는 다시 찍지 않는다. non-null이면(원인이 자산마다
+   * 다름) 이 행이 유일하게 그 사유를 보여주는 자리이므로 그대로 둔다. */
+  reason: string | null;
+}
+
+export interface GroupedKnowledgeExclusion<T extends InstalledAsset = InstalledAsset> {
+  /** 제외된 Knowledge가 하나 이상 있고 전부 동일한 사유일 때만 채워진다
+   * (자산이 1개뿐이면 "전부 동일"이 자명하게 참이므로 이때도 채워진다) —
+   * 패널 레벨에서 한 번만 보여줄 문구. 사유가 서로 다르면 `null`이고, 각
+   * `items[].reason`이 대신 그 정보를 보존한다. */
+  sharedReason: string | null;
+  items: GroupedExcludedKnowledge<T>[];
+}
+
+/** 제외된 Knowledge 목록을 "공유 사유 한 번 + 자산별 고유 사유"로 나눈다.
+ * 무엇이 보고되는지는 절대 바꾸지 않는다(자산 목록과 사유 문자열은 입력
+ * 그대로 보존) — 어디서 몇 번 찍히는지만 바꾼다. */
+export function groupExcludedKnowledgeByReason<T extends InstalledAsset>(
+  excluded: ExcludedKnowledge<T>[],
+): GroupedKnowledgeExclusion<T> {
+  if (excluded.length === 0) return { sharedReason: null, items: [] };
+  const firstReason = excluded[0].reason;
+  const allSameReason = excluded.every((e) => e.reason === firstReason);
+  if (allSameReason) {
+    return {
+      sharedReason: firstReason,
+      items: excluded.map(({ asset }) => ({ asset, reason: null })),
+    };
+  }
+  return {
+    sharedReason: null,
+    items: excluded.map(({ asset, reason }) => ({ asset, reason })),
+  };
+}
+
+/** `ExcludedKnowledgeRow`가 실제로 그려야 할 텍스트를 결정한다. 방금 누른
+ * 활성화 재시도(`feedback`)가 이미 표시 중인 `reason`(패널이 공유 사유로
+ * 뽑아갔다면 null)과 글자 그대로 같으면, 같은 문단을 두 번 찍지 않고
+ * `feedback` 쪽만 남긴다(최신 시도 결과이므로) — 재시도가 다른 이유로
+ * 실패했거나 성공했으면 그 새 내용을 그대로 보여준다. */
+export function resolveExcludedRowText(
+  reason: string | null,
+  feedback: { ok: boolean; message: string } | null,
+): { reasonText: string | null; feedbackText: string | null } {
+  if (!feedback) return { reasonText: reason, feedbackText: null };
+  const isDuplicate = !feedback.ok && reason !== null && feedback.message.trim() === reason.trim();
+  return { reasonText: isDuplicate ? null : reason, feedbackText: feedback.message };
+}
+
+/** reconcile 안내(`resolveReconcileNotice`의 결과)가 방금 위에서 이미 전체
+ * 문장으로 보여준 사유(공유 사유 또는 자산별 사유)와 글자 그대로 같으면,
+ * 그 문단을 또 반복하지 않고 "그 확인 자체가 실패했다"는 새 정보만 짧게
+ * 알린다. 원인이 다르면(예: reconcile은 되지만 등록이 사라짐 vs 활성화
+ * API 자체가 없음) 원래 전체 문구를 그대로 보여준다 — 서로 다른 사실을
+ * 하나로 뭉개지 않는다. */
+export const RECONCILE_SAME_CAUSE_NOTICE = "활성화 상태를 다시 확인하지 못했습니다(원인은 위와 같습니다).";
+
+export function resolveReconcileCaption(
+  reconcileNotice: string | null,
+  alreadyShownReasons: ReadonlyArray<string | null>,
+): string | null {
+  if (!reconcileNotice) return null;
+  const normalized = reconcileNotice.trim();
+  const matchesShown = alreadyShownReasons.some((r) => r !== null && r.trim() === normalized);
+  return matchesShown ? RECONCILE_SAME_CAUSE_NOTICE : reconcileNotice;
+}
+
 // D-079 이어 붙이기 — `reconcileKnowledgeActivations()`는 목록을 보여주기
 // 전에 로컬 ACTIVE 상태가 search-runtime과 여전히 일치하는지 재확인하는
 // "있으면 좋은" 부가 기능이다: 이 호출이 없거나 실패해도 설치된 Knowledge
@@ -194,13 +289,25 @@ export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[]
 // 어겼다: `bridge.reconcileKnowledgeActivations()`를 가드 없이 호출해
 // `TypeError: bridge.reconcileKnowledgeActivations is not a function`가
 // 채팅 화면 전체를 무너뜨렸다 — Main process가 빌드한 `dist/electron/preload.js`가
-// 이 메서드가 추가되기 전 버전으로 stale했기 때문이다. `window.desktop`은
-// `global.d.ts`에서 무조건 완전한 `DesktopBridge`로 타입 선언되어 있어
-// TypeScript가 이 어긋남을 컴파일 타임에 잡을 수 없다(preload.js는 별도
-// 빌드 산출물이라 타입 검사 대상이 아니다). 이 함수는 "메서드가 아예 없음"과
-// "호출은 됐지만 실패함"을 모두 같은 방식으로 다룬다: 조용히 성공한 것처럼
-// 넘어가지 않고, search-runtime에 실제로 도달할 수 없을 때와 동일한
-// "확인 불가" 안내로 degrade한다 — 절대로 throw하지 않는다.
+// 이 메서드가 추가되기 전 버전으로 stale했기 때문이다.
+//
+// 이 함수는 "메서드가 아예 없음"과 "호출은 됐지만 실패함"을 모두 같은
+// 방식으로 다룬다: 조용히 성공한 것처럼 넘어가지 않고, search-runtime에
+// 실제로 도달할 수 없을 때와 동일한 "확인 불가" 안내로 degrade한다 — 절대로
+// throw하지 않는다.
+//
+// "메서드가 아예 없음" 분기는 이제 이중 방어(belt-and-braces)다: 이 함수의
+// 유일한 실제 호출자인 `ChatScreen.tsx`는 항상 `../bridge`의
+// `getDesktopBridge()`가 돌려준 값을 넘기고, 그 함수는 이제 stale
+// `preload.js`로 빠진 메서드를 스스로 감지해 던지는 대신 거절(reject)하는
+// 안전한 대체 함수로 채워 넣는다(`src/bridge.ts` 참고) — 그 경로로는 아래
+// `typeof ... !== "function"` 분기가 더 이상 실행되지 않고, 대신 실제
+// 호출이 이루어져 `catch` 블록으로 떨어진다(결과는 동일: "확인 불가" 안내).
+// 그래도 이 분기를 지우지 않는 이유: `ReconcileCapableBridge`는 export된
+// 구조적 타입이라 `getDesktopBridge()`를 거치지 않고 손으로 만든 객체(이
+// 파일의 테스트가 바로 그렇게 한다, `chatTypes.test.ts`의 "bridge has no
+// such method at all" 케이스)도 유효한 입력이다 — 그런 입력에서는 여전히
+// 유일한 방어선이므로 지우면 실제로 도달 가능한 경로가 가드 없이 남는다.
 export const RECONCILE_UNAVAILABLE_NOTICE =
   "search-runtime에 연결할 수 없어 활성화 상태를 확인하지 못했습니다.";
 
@@ -222,6 +329,111 @@ export async function resolveReconcileNotice(bridge: ReconcileCapableBridge | nu
   } catch (err) {
     return err instanceof Error ? err.message : RECONCILE_UNAVAILABLE_NOTICE;
   }
+}
+
+// --- D06 대화: KNOWLEDGE_ROUTE 표시(agentic Knowledge 선택) -------------------
+// 배경: 이전에는 "지식에서 검색"을 켜면 설치+활성화된 Knowledge 전부를
+// 검색했다(위 `partitionInstalledKnowledgeByActivation`). 후보(이름/설명/
+// 태그/분류 메타데이터만)를 보내면, agent-runtime의 KNOWLEDGE_ROUTE 단계
+// (`agent_runtime.knowledge_router`)가 이번 턴 질문과 그 메타데이터만으로
+// 검색할 가치가 있는 부분집합을 하나의 선택적 LLM 호출로 고른다 — 문서
+// 본문/Citation/이전 답변은 절대 이 호출에 들어가지 않는다(서버 쪽 보장,
+// D-078 hub_query.py의 신뢰 경계와 같은 원칙을 다른 목적지에 적용한 것).
+//
+// 서버가 실제로 보내는 `status` 값은 `"ran"`/`"skipped"`/`"fallback"`
+// 셋뿐이다(`agent_runtime.knowledge_router.RouteStatus`) — "ran"만 실제로
+// LLM이 골랐다는 뜻이고, 나머지 둘은 절대 선택처럼 보이면 안 된다(요구사항:
+// "Never let a fallback look like a successful selection"). `_search_all`
+// (서버 쪽)이 skip/fallback일 때 모든 항목에 정확히 같은 한국어 reason
+// 문장을 붙이므로, 아래 그룹핑은 그 경우 자연히 "공유 사유 한 번"으로
+// 접힌다 — `groupExcludedKnowledgeByReason`이 이미 세운 반복 설명 정리
+// 규칙(2026-08-14)을 여기서도 그대로 따른다: 같은 말을 여러 번 하지 않고,
+// 무엇이 왜 선택/제외됐는지는 항상 어딘가에 남는다(숨기지 않는다).
+
+/** SSE `"knowledge.route.selected"`의 실제 payload — 서버 필드 이름 그대로
+ * (`workflow.py`가 `route_result`를 이 모양으로 직렬화한다). */
+export interface KnowledgeRouteEventData {
+  status: "ran" | "skipped" | "fallback";
+  fallback_reason: string | null;
+  selected: Array<{ knowledge_id: string; reason: string }>;
+  excluded: Array<{ knowledge_id: string; reason: string }>;
+}
+
+export interface KnowledgeRouteDisplayItem {
+  knowledgeId: string;
+  /** `nameById`에 없으면(정상적으로는 발생하지 않는다 — 후보 목록과 라우팅
+   * 결과는 같은 Run 안에서 나온다) id 자체를 그대로 보여준다. */
+  name: string;
+  /** null이면 이 항목의 사유가 상단 공유 문구(`sharedReason`)로 이미
+   * 표시됐다는 뜻 — `groupExcludedKnowledgeByReason`과 동일한 규칙. */
+  reason: string | null;
+}
+
+/** `groupExcludedKnowledgeByReason`과 동일한 반복 설명 정리 규칙을
+ * `{knowledge_id, reason}` 목록에 적용한다(자산 객체 대신 id/이름만
+ * 다룬다는 점만 다르다 — Knowledge 후보는 InstalledAsset이 아니라
+ * agent-runtime이 돌려준 순수 id/reason 쌍이므로 그 함수를 그대로 재사용할
+ * 수 없다). */
+export function groupKnowledgeRouteChoicesByReason(
+  choices: Array<{ knowledge_id: string; reason: string }>,
+  nameById: Readonly<Record<string, string>>,
+): { sharedReason: string | null; items: KnowledgeRouteDisplayItem[] } {
+  if (choices.length === 0) return { sharedReason: null, items: [] };
+  const firstReason = choices[0].reason;
+  const allSameReason = choices.every((c) => c.reason === firstReason);
+  return {
+    sharedReason: allSameReason ? firstReason : null,
+    items: choices.map((c) => ({
+      knowledgeId: c.knowledge_id,
+      name: nameById[c.knowledge_id] ?? c.knowledge_id,
+      reason: allSameReason ? null : c.reason,
+    })),
+  };
+}
+
+export interface KnowledgeRouteDisplay {
+  status: "ran" | "skipped" | "fallback";
+  /** 사실 그대로의 한 줄 요약 — `status === "ran"`일 때만 실제 선택이
+   * 일어났다고 말한다. */
+  headline: string;
+  selected: KnowledgeRouteDisplayItem[];
+  excluded: KnowledgeRouteDisplayItem[];
+  sharedSelectedReason: string | null;
+  sharedExcludedReason: string | null;
+}
+
+/** `KnowledgeRouteEventData`를 화면에 그대로 뿌릴 수 있는 형태로 바꾼다 —
+ * 세 `status`를 절대 섞어 말하지 않는다:
+ * - `"ran"`: 실제로 자동 선택이 일어났다 — 선택/제외 각각 이유와 함께.
+ * - `"skipped"`: 후보가 적어(threshold 이하) 선택 자체가 없었다 — "선택이
+ *   이루어진 것은 아니다"를 명시한다(요구사항: skip을 선택처럼 보이지 않게).
+ * - `"fallback"`: 자동 선택이 실패해 전체를 검색했다 — 실패 원인을
+ *   사용자 언어로 설명한다(서버가 이미 만든 한국어 reason 문장을 그대로
+ *   쓴다 — 원인 문구를 이 파일에서 또 만들지 않는다, 서버가 유일한 진실원). */
+export function describeKnowledgeRoute(
+  event: KnowledgeRouteEventData,
+  nameById: Readonly<Record<string, string>>,
+): KnowledgeRouteDisplay {
+  const selectedGroup = groupKnowledgeRouteChoicesByReason(event.selected, nameById);
+  const excludedGroup = groupKnowledgeRouteChoicesByReason(event.excluded, nameById);
+
+  let headline: string;
+  if (event.status === "ran") {
+    headline = `관련 있는 지식 자산 ${event.selected.length}개를 자동으로 선택해 검색했습니다.`;
+  } else if (event.status === "skipped") {
+    headline = `설치된 Knowledge가 적어(${event.selected.length}개) 자동 선택 없이 전체를 검색했습니다 — 선택이 이루어진 것은 아닙니다.`;
+  } else {
+    headline = `자동 선택에 실패해 전체 지식 자산 ${event.selected.length}개를 대신 검색했습니다.`;
+  }
+
+  return {
+    status: event.status,
+    headline,
+    selected: selectedGroup.items,
+    excluded: excludedGroup.items,
+    sharedSelectedReason: selectedGroup.sharedReason,
+    sharedExcludedReason: excludedGroup.sharedReason,
+  };
 }
 
 // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
@@ -304,6 +516,8 @@ export function chatMessageFromStoredTurn(
     restored: true,
     restoredCitationCount: turn.citationCount,
     hubQueriesSent: [],
+    knowledgeCandidateNameById: {},
+    knowledgeRoute: null,
   };
 }
 

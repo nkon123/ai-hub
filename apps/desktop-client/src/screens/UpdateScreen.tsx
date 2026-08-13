@@ -39,7 +39,7 @@ import type {
   OrphanedInstallCleanupResult,
 } from "../../electron/types";
 import { STAGE_LABELS } from "../../electron/types";
-import { getDesktopBridge } from "../bridge";
+import { getDesktopBridge, isBridgeMethodMissing } from "../bridge";
 import {
   Button,
   BridgeUnavailableState,
@@ -76,6 +76,10 @@ const CHANGE_LABEL: Record<"added" | "removed" | "changed", string> = {
 
 export function UpdateScreen({ onGoToImport }: { onGoToImport: () => void }) {
   const bridge = getDesktopBridge();
+  // stale preload.js 빌드로 `onImportProgress`가 없으면 이 화면의 1단계
+  // "새로운 Offline Bundle 가져오기"도 ImportScreen과 동일하게 진행 이벤트를
+  // 절대 받지 못한다(`src/bridge.ts`) — 빈 진행률 영역 대신 그 사실을 알린다.
+  const importProgressUnavailable = !!bridge && isBridgeMethodMissing("onImportProgress");
 
   // --- 1. 새 Bundle 가져오기 (D04 재사용) -------------------------------------
   const [importPhase, setImportPhase] = useState<"IDLE" | "RUNNING" | "DONE">("IDLE");
@@ -253,6 +257,15 @@ export function UpdateScreen({ onGoToImport }: { onGoToImport: () => void }) {
         {importError && (
           <div className="mt-3">
             <ErrorBanner message={importError} />
+          </div>
+        )}
+        {importPhase === "RUNNING" && importEvents.length === 0 && importProgressUnavailable && (
+          <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            <span>
+              가져오기가 진행 중이지만 실행 중인 앱 빌드가 최신이 아니어서 단계별 진행 상황을 실시간으로 표시할 수
+              없습니다 — 완료되면 아래에 결과가 표시됩니다. 앱을 재시작하면 실시간 표시가 복구됩니다.
+            </span>
           </div>
         )}
         {importEvents.length > 0 && importPhase === "RUNNING" && (

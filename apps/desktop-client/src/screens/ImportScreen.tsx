@@ -9,7 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, FileArchive, FolderOpen, Loader2, RotateCcw } from "lucide-react";
 import type { ActivateKnowledgeResult, ImportProgressEvent, ImportResult } from "../../electron/types";
 import { STAGE_LABELS } from "../../electron/types";
-import { getDesktopBridge } from "../bridge";
+import { getDesktopBridge, isBridgeMethodMissing } from "../bridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, PageHeader } from "../ui";
 import { assetTypeLabel, formatBytes } from "../format";
 import { knowledgeActivationTargets } from "./knowledgeActivation";
@@ -22,6 +22,11 @@ function activationKey(assetId: string, version: string): string {
 
 export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
   const bridge = getDesktopBridge();
+  // stale preload.js 빌드로 이 구독 메서드 자체가 없으면 `onImportProgress`는
+  // 항상 아무 이벤트도 만들지 못하는 no-op으로 대체된다(`src/bridge.ts`) —
+  // 그 상태에서 진행률 영역을 빈 채로 두면 "아무 일도 없다"는 거짓 인상을
+  // 준다. 대신 실시간 진행 상황을 보여줄 수 없다는 사실을 명시한다.
+  const importProgressUnavailable = !!bridge && isBridgeMethodMissing("onImportProgress");
   const [phase, setPhase] = useState<Phase>("IDLE");
   const [liveEvents, setLiveEvents] = useState<ImportProgressEvent[]>([]);
   const [result, setResult] = useState<ImportResult | null>(null);
@@ -153,6 +158,16 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
           <p className="text-card-title font-medium text-text-primary">설치 ZIP을 선택하세요</p>
           <p className="text-body text-text-secondary">
             무결성·승인 상태·Runtime 호환성을 자동으로 확인합니다.
+          </p>
+        </Card>
+      )}
+
+      {phase === "RUNNING" && rows.length === 0 && importProgressUnavailable && (
+        <Card className="flex items-start gap-2 border-warning/30 bg-warning/5 p-5 shadow-none">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
+          <p className="text-body text-warning">
+            검증이 진행 중이지만 실행 중인 앱 빌드가 최신이 아니어서 단계별 진행 상황을 실시간으로 표시할 수
+            없습니다 — 완료되면 아래에 결과가 표시됩니다. 앱을 재시작하면 실시간 표시가 복구됩니다.
           </p>
         </Card>
       )}

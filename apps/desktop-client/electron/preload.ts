@@ -20,7 +20,9 @@ import type {
   DiskSpaceInfo,
   ImportProgressEvent,
   ImportResult,
+  InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeCandidate,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -76,6 +78,10 @@ const bridge: DesktopBridge = {
 
   getAssetDependencies: (assetType: string, assetId: string, version: string): Promise<AssetDependencyView> =>
     ipcRenderer.invoke("assets:getDependencies", assetType, assetId, version),
+
+  // --- D06 대화: KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택) -------------
+  getKnowledgeCandidates: (assets: InstalledAsset[]): Promise<KnowledgeCandidate[]> =>
+    ipcRenderer.invoke("knowledge:getCandidates", assets),
 
   // --- D-079 Knowledge 활성화 --------------------------------------------------
   activateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<ActivateKnowledgeResult> =>

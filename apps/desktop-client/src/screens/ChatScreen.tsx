@@ -22,13 +22,20 @@
 // UI가 아님을 라벨과 경고문으로 항상 명시한다.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
-import type { ConnectionStatus, ConversationSummary, ConversationTurnStatus, InstalledAssetWithStatus, OllamaModelsResult } from "../../electron/types";
+import type {
+  ConnectionStatus,
+  ConversationSummary,
+  ConversationTurnStatus,
+  InstalledAssetWithStatus,
+  KnowledgeCandidate,
+  OllamaModelsResult,
+} from "../../electron/types";
 import { assessChatConnections, checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "../../electron/connections";
 import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-chat";
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
-import { Button, EmptyState, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
+import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
   type RunEventLogItem,
@@ -43,14 +50,21 @@ import { applyRuntimeEvent, initialStages, ollamaChatStages } from "../runStages
 import {
   type ChatMessage,
   type ExcludedKnowledge,
+  type KnowledgeRouteDisplay,
+  type KnowledgeRouteEventData,
+  RECONCILE_SAME_CAUSE_NOTICE,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   buildMarkdown,
   chatMessageFromStoredTurn,
+  describeKnowledgeRoute,
   downloadMarkdown,
+  groupExcludedKnowledgeByReason,
   hasLowConfidenceCitation,
   mergeCitations,
   partitionInstalledKnowledgeByActivation,
+  resolveExcludedRowText,
+  resolveReconcileCaption,
   resolveReconcileNotice,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
@@ -92,6 +106,7 @@ function ComposerToggle({
   pressed,
   disabled,
   onChange,
+  activeLabel,
 }: {
   id: string;
   label: string;
@@ -100,7 +115,12 @@ function ComposerToggle({
   pressed: boolean;
   disabled: boolean;
   onChange: (next: boolean) => void;
+  /** 켜져 있을 때 아이콘 옆에 붙는 짧은 상태 텍스트(예: "지식 3개"). 이
+   *  화면에서 "지금 무엇이 켜져 있는가"를 알려주는 유일한 상시 표시이므로,
+   *  꺼져 있을 때는 아이콘만 남겨 조용히 둔다(안내 문구 최소화, 2026-08-14). */
+  activeLabel?: string;
 }) {
+  const showLabel = pressed && Boolean(activeLabel);
   return (
     <div className="group relative">
       <button
@@ -110,13 +130,16 @@ function ComposerToggle({
         aria-describedby={`${id}-tooltip`}
         disabled={disabled}
         onClick={() => onChange(!pressed)}
-        className={`flex h-9 w-9 items-center justify-center rounded-lg border transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2 ${
+        className={`flex h-8 items-center justify-center gap-1.5 rounded-full border text-caption font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1 ${
+          showLabel ? "px-2.5" : "w-8"
+        } ${
           pressed
-            ? "border-brand-500 bg-brand-50 text-brand-700"
-            : "border-border bg-white text-text-secondary hover:border-brand-300 hover:text-brand-700"
+            ? "border-brand-200 bg-brand-50 text-brand-700"
+            : "border-transparent bg-slate-100 text-text-secondary hover:bg-slate-200 hover:text-text-primary"
         } disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-text-muted`}
       >
         {icon}
+        {showLabel && <span className="whitespace-nowrap">{activeLabel}</span>}
       </button>
       <div
         id={`${id}-tooltip`}
@@ -130,9 +153,82 @@ function ComposerToggle({
   );
 }
 
+// 이슈가 있을 때만 뜨는 한 줄 알림(2026-08-14 "안내 문구가 너무 많다"). 정상
+// 상태를 설명하는 상시 배너는 이 화면에서 전부 걷어냈고, 남은 것은 사용자가
+// 실제로 무언가를 해야 하거나 기능이 제한된 경우뿐이다. 긴 사유·복구 안내·
+// 조치 버튼은 지우지 않고 `detail`에 넣어 접어 둔다 — 정보는 사라지지 않고
+// 접힌다(CLAUDE.md: Runtime 장애 시 복구 안내 제공).
+type NoticeTone = "danger" | "warning" | "info";
+
+const NOTICE_TONE: Record<NoticeTone, string> = {
+  danger: "border-danger/30 bg-danger/5 text-danger",
+  warning: "border-warning/30 bg-warning/5 text-warning",
+  info: "border-border bg-slate-50 text-text-secondary",
+};
+
+function Notice({ tone, title, detail }: { tone: NoticeTone; title: string; detail?: ReactNode }) {
+  const icon = tone === "info" ? <Info size={13} className="shrink-0" /> : <AlertTriangle size={13} className="shrink-0" />;
+  if (!detail) {
+    return (
+      <div
+        role="status"
+        className={`mb-2 flex shrink-0 items-center gap-2 rounded-lg border px-3 py-1.5 text-caption ${NOTICE_TONE[tone]}`}
+      >
+        {icon}
+        <span className="min-w-0 flex-1">{title}</span>
+      </div>
+    );
+  }
+  return (
+    <details className={`mb-2 shrink-0 rounded-lg border text-caption ${NOTICE_TONE[tone]}`}>
+      <summary className="flex cursor-pointer select-none items-center gap-2 px-3 py-1.5 font-medium">
+        {icon}
+        <span className="min-w-0 flex-1">{title}</span>
+        <span className="shrink-0 text-[11px] font-normal opacity-70">자세히</span>
+      </summary>
+      <div className="border-t border-border/60 px-3 py-2.5">{detail}</div>
+    </details>
+  );
+}
+
+// 대화 턴의 보조 동작(복사/다시 실행/상세) — 평소에는 보이지 않다가 턴에
+// 마우스를 올리거나 키보드 포커스가 들어올 때만 나타난다.
+function IconAction({
+  label,
+  onClick,
+  disabled,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      aria-label={label}
+      className="flex h-7 w-7 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-slate-100 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-40"
+    >
+      {children}
+    </button>
+  );
+}
+
 // D-079 이어 붙이기 — 검색 대상에서 제외된 Knowledge 한 건: 이름/버전, 제외
 // 사유(항상 한국어), 그리고 그 자리에서 바로 다시 시도할 수 있는 활성화
 // 버튼. 진행 중/성공/실패를 이 컴포넌트 하나로 함께 보여준다.
+//
+// `reason`이 `null`인 것은 사유가 없다는 뜻이 아니라, 감싸는 패널이 이미
+// 모든 제외 자산이 공유하는 그 사유를 상단에 한 번 적었다는 뜻이다
+// (`groupExcludedKnowledgeByReason` 참고) — 이 행은 그때 이름/버전과
+// 활성화 버튼만 보여준다. `resolveExcludedRowText`가 방금 누른 재시도
+// 결과(`feedback`)가 표시 중인 사유와 글자 그대로 같은 경우도 걸러내
+// 같은 문단이 두 번 찍히지 않게 한다(반복 정보-무손실 규칙: 사유 자체는
+// 어디에도 사라지지 않고, 위치와 중복만 정리된다).
 function ExcludedKnowledgeRow({
   asset,
   reason,
@@ -141,11 +237,12 @@ function ExcludedKnowledgeRow({
   onActivate,
 }: {
   asset: InstalledAssetWithStatus;
-  reason: string;
+  reason: string | null;
   busy: boolean;
   feedback: { ok: boolean; message: string } | null;
   onActivate: () => void;
 }) {
+  const { reasonText, feedbackText } = resolveExcludedRowText(reason, feedback);
   return (
     <li className="rounded-lg border border-border bg-white px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -153,9 +250,9 @@ function ExcludedKnowledgeRow({
           <p className="truncate text-caption font-semibold text-text-primary">
             {asset.name} v{asset.version}
           </p>
-          <p className="text-caption text-text-secondary">{reason}</p>
-          {feedback && (
-            <p className={`mt-1 text-caption ${feedback.ok ? "text-success" : "text-danger"}`}>{feedback.message}</p>
+          {reasonText && <p className="text-caption text-text-secondary">{reasonText}</p>}
+          {feedbackText && (
+            <p className={`mt-1 text-caption ${feedback?.ok ? "text-success" : "text-danger"}`}>{feedbackText}</p>
           )}
         </div>
         <Button variant="secondary" size="sm" onClick={onActivate} disabled={busy} className="shrink-0">
@@ -163,6 +260,54 @@ function ExcludedKnowledgeRow({
         </Button>
       </div>
     </li>
+  );
+}
+
+// D06 KNOWLEDGE_ROUTE(agentic Knowledge 선택) 결과 — `describeKnowledgeRoute`
+// (chatTypes.ts)가 세 `status`를 이미 정직하게 구분해 둔 것을 그대로
+// 그린다. `"ran"`만 선택/제외 목록을 보여준다 — `"skipped"`/`"fallback"`은
+// 목록 없이 한 줄 요약(+공유 사유)만 보여줘, 선택이 실제로 일어난 것처럼
+// 보이지 않게 한다(요구사항).
+function KnowledgeRoutePanel({ route }: { route: KnowledgeRouteDisplay }) {
+  return (
+    <div className="max-w-full rounded-lg border border-border bg-slate-50 px-3 py-2 text-[11px] text-text-secondary">
+      <p
+        className={`flex items-start gap-1.5 font-medium ${route.status === "fallback" ? "text-warning" : "text-text-primary"}`}
+      >
+        <ListChecks size={12} className="mt-0.5 shrink-0" />
+        {route.headline}
+      </p>
+      {route.status !== "ran" && route.sharedSelectedReason && (
+        <p className="mt-1 pl-[18px]">{route.sharedSelectedReason}</p>
+      )}
+      {route.status === "ran" && (
+        <div className="mt-1 space-y-1.5 pl-[18px]">
+          {route.sharedSelectedReason && <p>{route.sharedSelectedReason}</p>}
+          <ul className="space-y-0.5">
+            {route.selected.map((s) => (
+              <li key={s.knowledgeId}>
+                · {s.name}
+                {s.reason ? ` — ${s.reason}` : ""}
+              </li>
+            ))}
+          </ul>
+          {route.excluded.length > 0 && (
+            <>
+              <p className="font-medium text-text-primary">제외된 지식 자산 {route.excluded.length}개</p>
+              {route.sharedExcludedReason && <p>{route.sharedExcludedReason}</p>}
+              <ul className="space-y-0.5">
+                {route.excluded.map((e) => (
+                  <li key={e.knowledgeId}>
+                    · {e.name}
+                    {e.reason ? ` — ${e.reason}` : ""}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -317,6 +462,13 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const knowledgePartition = bridge
     ? partitionInstalledKnowledgeByActivation(installedKnowledge ?? [])
     : { usable: [], excluded: [] as ExcludedKnowledge<InstalledAssetWithStatus>[] };
+  // 반복 설명 정리(2026-08-14) — 제외된 자산이 전부 같은 사유(전형적으로
+  // search-runtime 장애 같은 환경적 원인)를 공유하면 그 문장을 패널
+  // 상단에서 한 번만 보여주고, 각 행은 이름/버전과 활성화 버튼만 갖는다.
+  // 사유가 자산마다 다르면 `sharedReason`은 null이고 각 행이 그대로 자기
+  // 사유를 보여준다 — 어느 쪽이든 어떤 자산이 왜 제외됐는지는 여전히 전부
+  // 확인 가능하다(숨기는 게 아니라 위치를 정리하는 것).
+  const groupedExclusion = groupExcludedKnowledgeByReason(knowledgePartition.excluded);
   const knowledgeIds = bridge
     ? knowledgePartition.usable.map((u) => u.knowledgeId)
     : devKnowledgeId.trim()
@@ -339,6 +491,57 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     : devKnowledgeId.trim()
       ? `Knowledge ID ${devKnowledgeId.trim()}`
       : "";
+
+  // KNOWLEDGE_ROUTE 후보(agentic Knowledge 선택) — 검색 가능(usable)한
+  // Knowledge마다 manifest.json을 읽어 이름/설명/태그/분류를 채운 후보
+  // 목록을 미리 준비해 둔다(전송 시점에 매번 IPC 왕복하지 않도록). 설치된
+  // Knowledge 목록이 바뀔 때(설치/제거/활성화)마다 다시 만든다. 실패해도
+  // (bridge 없음, IPC 오류) 조용히 빈 배열로 남는다 — `handleSend`가 그 경우
+  // 기존 `knowledgeIds` fan-out으로 그대로 대체한다(agent-runtime이
+  // `knowledge_candidates`/`knowledge_ids` 어느 쪽을 받아도 검색 자체는
+  // 항상 동작해야 한다 — CLAUDE.md: Runtime 장애 시 종료되지 않는다).
+  const [knowledgeCandidates, setKnowledgeCandidates] = useState<KnowledgeCandidate[]>([]);
+  const [knowledgeCandidatesError, setKnowledgeCandidatesError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!bridge) {
+      setKnowledgeCandidates([]);
+      setKnowledgeCandidatesError(null);
+      return;
+    }
+    const usableAssets = partitionInstalledKnowledgeByActivation(installedKnowledge ?? []).usable.map((u) => u.asset);
+    if (usableAssets.length === 0) {
+      setKnowledgeCandidates([]);
+      setKnowledgeCandidatesError(null);
+      return;
+    }
+    let cancelled = false;
+    bridge
+      .getKnowledgeCandidates(usableAssets)
+      .then((candidates) => {
+        if (cancelled) return;
+        setKnowledgeCandidates(candidates);
+        setKnowledgeCandidatesError(null);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        // 자동 선택을 못 쓰게 될 뿐(handleSend가 knowledge_ids fan-out으로
+        // 대체한다) — 화면을 막지 않고 무슨 일이 있었는지만 조용히 알린다
+        // (CLAUDE.md: 오류를 조용히 삼키지 않는다 — `if (!res.ok) return;` 금지).
+        setKnowledgeCandidates([]);
+        setKnowledgeCandidatesError(
+          err instanceof Error ? err.message : "지식 자산 후보 정보를 불러오지 못해 자동 선택 없이 전체를 검색합니다.",
+        );
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bridge, installedKnowledge]);
+
+  const knowledgeCandidateNameById: Record<string, string> = Object.fromEntries(
+    knowledgeCandidates.map((c) => [c.knowledge_id, c.name ?? c.knowledge_id]),
+  );
 
   // --- MCP Tool 호출(개발 확인용) — Service Registry가 없어(D-034/D-058)
   // 정식 Tool 선택 UI를 만들 근거가 없다. 확인 Panel(WAITING_FOR_USER) 자체를
@@ -505,6 +708,17 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         switch (item.event) {
           case "citation.added": {
             next = { ...next, citations: mergeCitations(next.citations, [item.data as Citation]) };
+            break;
+          }
+          case "knowledge.route.selected": {
+            // KNOWLEDGE_ROUTE(agentic Knowledge 선택) 결과 — 이 턴이 실제로
+            // 보낸 후보의 id->이름 맵(`next.knowledgeCandidateNameById`,
+            // 전송 시점 스냅샷)으로 사람이 읽을 이름을 붙인다. 세 status를
+            // 절대 섞어 말하지 않는다(describeKnowledgeRoute 참고).
+            const data = item.data as KnowledgeRouteEventData | null;
+            if (data) {
+              next = { ...next, knowledgeRoute: describeKnowledgeRoute(data, next.knowledgeCandidateNameById) };
+            }
             break;
           }
           case "hub.query_sent": {
@@ -759,6 +973,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       completedAt: null,
       serverRun: null,
       hubQueriesSent: [],
+      // KNOWLEDGE_ROUTE — 이번 턴에 실제로 보낼 후보의 id->이름 맵을 그대로
+      // 캡처해 둔다(화면 상태가 그 사이 바뀌어도 SSE 이벤트가 도착했을 때
+      // 엉뚱한 스냅샷을 참조하지 않도록, `knowledgeIdUsed`와 같은 이유).
+      knowledgeCandidateNameById,
+      knowledgeRoute: null,
     };
     setMessages((prev) => [...prev, newMessage]);
     setIsRunning(true);
@@ -799,6 +1018,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         serviceId,
         knowledgeId,
         knowledgeIds,
+        // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 비어 있으면 `startRun`이
+        // 기존 `knowledgeIds` fan-out을 그대로 보낸다(agentRuntime.ts 참고,
+        // 절대 둘 다 보내지 않는다).
+        knowledgeCandidates,
         question: q,
         allowHubLookup,
         ...(history.length > 0 ? { history } : {}),
@@ -919,80 +1142,65 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   );
   const { blockingFailures, featureFailures } = connectionAssessment;
 
-  // 상단 슬림 헤더용 — Ollama Desktop 앱처럼 모델/지식 상태를 한 줄로 요약한다.
-  const knowledgeSummaryText = bridge
-    ? knowledgeLookupActive
-      ? `Ollama + 지식 ${knowledgeIds.length}개 검색`
-      : "기본 Ollama 대화"
-    : knowledgeLookupActive
-      ? "Ollama + 개발용 Knowledge 검색"
-      : "기본 Ollama 대화";
+  // 연결 상태를 문장으로 설명하는 대신 점 하나로 보여주고, 어떤 서비스가 어떤
+  // 상태인지는 hover(title)로 남긴다 — 이슈가 있을 때만 아래 Notice가 뜬다.
+  const connectionTooltip = (connections ?? []).map((c) => `${c.label}: ${c.ok ? "정상" : "오류"}`).join(" · ");
 
   return (
     <div className="flex h-full flex-col">
-      {/* 슬림 헤더 — Ollama Desktop 앱처럼 모델/지식 요약과 연결 상태만
-          한 줄로 보여준다. Service/버전/연결 배지 상세는 자산 허브 > 설치된
-          자산(D03 상세)과 설정 > 연결 상태로 옮겼다. */}
-      <div className="mb-3 flex shrink-0 flex-wrap items-center justify-between gap-2 px-1">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <h1 className="text-card-title font-semibold text-text-primary">채팅</h1>
-          <span className="text-caption text-text-muted">{knowledgeSummaryText}</span>
-        </div>
-        <div className="flex items-center gap-2">
+      {/* 슬림 헤더 — 정상일 때는 상태 점 하나만 남긴다. 무엇을 근거로 답하는지
+          (모델/지식)는 입력창의 토글이 그대로 보여주므로 여기서 다시 적지
+          않는다. Service/버전/연결 상세는 자산 허브 > 설치된 자산(D03 상세)과
+          설정 > 연결 상태에 있다. */}
+      <div className="mb-2 flex shrink-0 items-center justify-between gap-2 px-1">
+        <h1 className="text-card-title font-semibold text-text-primary">채팅</h1>
+        <div className="flex items-center gap-1">
           {connections === null ? (
-            <span className="text-caption text-text-muted">연결 확인 중...</span>
+            <span
+              role="status"
+              aria-label="연결 확인 중"
+              title="연결 확인 중..."
+              className="h-2 w-2 animate-pulse rounded-full bg-slate-300"
+            />
+          ) : connectionAssessment.state === "healthy" ? (
+            <span
+              role="status"
+              aria-label="연결 정상"
+              title={`연결 정상 · ${connectionTooltip}`}
+              className="h-2 w-2 rounded-full bg-success"
+            />
           ) : (
             <span
-              className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-semibold ${
-                connectionAssessment.state === "healthy"
-                  ? "bg-success/10 text-success"
-                  : connectionAssessment.state === "limited"
-                    ? "bg-warning/10 text-warning"
-                    : "bg-danger/10 text-danger"
+              role="status"
+              title={connectionTooltip}
+              className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                connectionAssessment.state === "limited" ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger"
               }`}
-              title={connections.map((c) => `${c.label}: ${c.ok ? "정상" : "오류"}`).join(" · ")}
             >
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
-                  connectionAssessment.state === "healthy"
-                    ? "bg-success"
-                    : connectionAssessment.state === "limited"
-                      ? "bg-warning"
-                      : "bg-danger"
+                  connectionAssessment.state === "limited" ? "bg-warning" : "bg-danger"
                 }`}
               />
-              {connectionAssessment.state === "healthy"
-                ? "연결 정상"
-                : connectionAssessment.state === "limited"
-                  ? "일부 기능 제한"
-                  : "대화 연결 문제"}
+              {connectionAssessment.state === "limited" ? "일부 기능 제한" : "대화 연결 문제"}
             </span>
           )}
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => void refreshConnections()}
-            disabled={connectionsChecking}
-            title="연결 상태 다시 확인"
-            aria-label="연결 상태 다시 확인"
-            className="px-2"
-          >
+          <IconAction label="연결 상태 다시 확인" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
             <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} />
-          </Button>
+          </IconAction>
         </div>
       </div>
 
       {/* 연결 장애 복구 안내(CLAUDE.md 필수) — 대화가 실제로 막힐 수 있는
-          상황이므로 배지 hover가 아니라 항상 보이는 배너로 보여준다. */}
+          상황이므로 한 줄 알림으로 항상 보여주고, 서비스별 사유와 복구 방법은
+          펼쳤을 때 그대로 나온다. */}
       {blockingFailures.length > 0 && (
-        <div className="mb-3 shrink-0 rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
-          <div className="flex items-start gap-2">
-            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-            <div className="min-w-0 flex-1">
-              <p className="font-semibold">
-                {blockingFailures.map((c) => c.label).join(", ")} 연결이 끊어져 있어 대화가 제한될 수 있습니다.
-              </p>
-              <ul className="mt-1 space-y-0.5 text-caption">
+        <Notice
+          tone="danger"
+          title={`${blockingFailures.map((c) => c.label).join(", ")} 연결이 끊어져 대화가 제한될 수 있습니다.`}
+          detail={
+            <>
+              <ul className="space-y-0.5">
                 {blockingFailures.map((c) => (
                   <li key={c.id}>
                     {c.label}: {c.detail}
@@ -1000,21 +1208,30 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   </li>
                 ))}
               </ul>
-              <p className="mt-1.5 text-caption text-text-secondary">설정 &gt; 연결 상태에서 자세히 확인할 수 있습니다.</p>
-            </div>
-          </div>
-        </div>
+              <p className="mt-1.5 text-text-secondary">설정 &gt; 연결 상태에서 자세히 확인할 수 있습니다.</p>
+            </>
+          }
+        />
       )}
 
       {featureFailures.length > 0 && (
-        <div
-          className="mb-3 flex shrink-0 items-center gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-warning"
-          title={`${featureFailures.map((connection) => `${connection.label}: ${connection.detail}${connection.recoveryHint ? ` — ${connection.recoveryHint}` : ""}`).join("\n")}\n설정 > 연결 상태에서 자세히 확인할 수 있습니다.`}
-        >
-          <AlertTriangle size={14} className="shrink-0" />
-          <span className="font-medium">Ollama 대화는 정상이며 Knowledge·Tool 일부 기능만 제한됩니다.</span>
-          <Info size={13} className="ml-auto shrink-0" aria-label="마우스를 올리면 제한 사유를 확인할 수 있습니다." />
-        </div>
+        <Notice
+          tone="warning"
+          title="Knowledge·Tool 일부 기능이 제한됩니다 (Ollama 대화는 정상)."
+          detail={
+            <>
+              <ul className="space-y-0.5">
+                {featureFailures.map((c) => (
+                  <li key={c.id}>
+                    {c.label}: {c.detail}
+                    {c.recoveryHint ? ` — ${c.recoveryHint}` : ""}
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1.5 text-text-secondary">설정 &gt; 연결 상태에서 자세히 확인할 수 있습니다.</p>
+            </>
+          }
+        />
       )}
 
       <div className="flex min-h-0 flex-1 gap-4">
@@ -1071,43 +1288,31 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {/* 지식 검색 대상 상태 — 지식 검색 자동화 + D-079 이어 붙이기(활성화
-              인지): "설치됨"과 "활성화됨"은 서로 다른 사실이다. 정상(=1개
-              이상 활성화되어 있고 제외된 것이 없음)일 때는 위 슬림 헤더 한
-              줄로 충분하므로, 여기서는 안내가 필요한 경우(Loading/Empty/
-              Error/제외됨)만 배너로 보여준다(CLAUDE.md: Loading/Empty/Error
-              상태 유지). 활성화된 게 하나도 없으면 검색이 결과를 낼 수 없는
-              상태이므로 — 조용히 Ollama로만 넘어가지 않고 왜 그런지와 고치는
-              방법(활성화 버튼)을 항상 함께 보여준다. */}
-          {bridge && installedKnowledge === null && !installedError && (
-            <div className="mb-3 shrink-0">
-              <LoadingState label="설치된 Knowledge를 불러오는 중..." />
-            </div>
-          )}
-          {bridge && installedError && (
-            <div className="mb-3 shrink-0">
-              <ErrorBanner message={installedError} />
-            </div>
-          )}
-          {bridge && installedKnowledge !== null && installedKnowledge.length === 0 && !installedError && (
-            <div className="mb-3 shrink-0">
-              <EmptyState
-                title="기본 Ollama 모델로 대화합니다"
-                description="Knowledge를 설치하면 사내 지식을 근거로 답변하고, 지금은 설치된 기본 채팅 모델로 일반 대화합니다."
-              />
-            </div>
+              인지): "설치됨"과 "활성화됨"은 서로 다른 사실이다. 정상일 때(활성
+              1개 이상 + 제외 없음)는 물론이고, Knowledge를 아직 하나도 설치하지
+              않은 상태·불러오는 중처럼 사용자가 할 일이 없는 상태도 이제 아무
+              배너를 띄우지 않는다(2026-08-14 "안내 문구가 너무 많다"). 그
+              상태들은 입력창의 Knowledge 토글(비활성 + 사유 툴팁)과 빈 대화
+              화면이 이미 말해 준다. 사용자가 실제로 조치해야 하는 경우 —
+              불러오기 실패, 활성화된 게 하나도 없음, 일부 제외됨, 확인 불가 —
+              만 한 줄 알림으로 남기고 사유·활성화 버튼은 펼침 안에 그대로
+              둔다. */}
+          {bridge && installedError && <Notice tone="danger" title={installedError} />}
+          {/* KNOWLEDGE_ROUTE 후보 조립 실패 — 자동 선택 자체를 못 쓰게 될 뿐
+              (전체를 검색하는 기존 방식으로 대체된다), 대화 자체를 막지
+              않는다. usable Knowledge가 있을 때만 의미 있는 알림이다. */}
+          {bridge && knowledgeLookupActive && knowledgeCandidatesError && (
+            <Notice tone="info" title={knowledgeCandidatesError} />
           )}
           {bridge && installedKnowledge !== null && installedKnowledge.length > 0 && knowledgePartition.usable.length === 0 && (
-            <div className="mb-3 shrink-0 rounded-card border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
-              <div className="flex items-start gap-2">
-                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                <div className="min-w-0 flex-1">
-                  <p className="font-semibold">
-                    설치된 Knowledge {installedKnowledge.length}개가 모두 검색에 활성화되지 않아 지금은 지식 검색을
-                    실행할 수 없습니다 — 질문은 기본 Ollama 모델로만 답변됩니다. 아래에서 활성화하면 바로 검색에
-                    쓸 수 있습니다.
-                  </p>
-                  <ul className="mt-2 space-y-1.5">
-                    {knowledgePartition.excluded.map(({ asset, reason }) => (
+            <Notice
+              tone="danger"
+              title={`설치된 Knowledge ${installedKnowledge.length}개가 모두 비활성 상태입니다 — 지금은 Ollama 일반 대화만 가능합니다.`}
+              detail={
+                <>
+                  {groupedExclusion.sharedReason && <p className="mb-2">{groupedExclusion.sharedReason}</p>}
+                  <ul className="space-y-1.5">
+                    {groupedExclusion.items.map(({ asset, reason }) => (
                       <ExcludedKnowledgeRow
                         key={knowledgeAssetKey(asset)}
                         asset={asset}
@@ -1123,43 +1328,49 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       설치된 자산 화면 열기
                     </Button>
                   )}
-                </div>
-              </div>
-            </div>
+                </>
+              }
+            />
           )}
           {bridge && knowledgePartition.usable.length > 0 && knowledgePartition.excluded.length > 0 && (
-            <details className="mb-3 shrink-0 rounded-card border border-warning/30 bg-warning/5">
-              <summary className="cursor-pointer select-none px-4 py-2.5 text-caption font-semibold text-warning">
-                Knowledge {knowledgePartition.usable.length}개 활성화됨 · {knowledgePartition.excluded.length}개
-                검색에서 제외됨 (자세히)
-              </summary>
-              <div className="space-y-2 border-t border-warning/20 p-4">
-                <ul className="space-y-1.5">
-                  {knowledgePartition.excluded.map(({ asset, reason }) => (
-                    <ExcludedKnowledgeRow
-                      key={knowledgeAssetKey(asset)}
-                      asset={asset}
-                      reason={reason}
-                      busy={activatingKey === knowledgeAssetKey(asset)}
-                      feedback={activationFeedback[knowledgeAssetKey(asset)] ?? null}
-                      onActivate={() => void handleActivateKnowledge(asset)}
-                    />
-                  ))}
-                </ul>
-                {onGoToInstalledAssets && (
-                  <Button variant="secondary" size="sm" onClick={onGoToInstalledAssets}>
-                    설치된 자산 화면 열기
-                  </Button>
-                )}
-              </div>
-            </details>
+            <Notice
+              tone="warning"
+              title={`Knowledge ${knowledgePartition.excluded.length}개가 검색에서 제외됨 (${knowledgePartition.usable.length}개 사용 중)`}
+              detail={
+                <>
+                  {groupedExclusion.sharedReason && (
+                    <p className="mb-2 text-text-secondary">{groupedExclusion.sharedReason}</p>
+                  )}
+                  <ul className="space-y-1.5">
+                    {groupedExclusion.items.map(({ asset, reason }) => (
+                      <ExcludedKnowledgeRow
+                        key={knowledgeAssetKey(asset)}
+                        asset={asset}
+                        reason={reason}
+                        busy={activatingKey === knowledgeAssetKey(asset)}
+                        feedback={activationFeedback[knowledgeAssetKey(asset)] ?? null}
+                        onActivate={() => void handleActivateKnowledge(asset)}
+                      />
+                    ))}
+                  </ul>
+                  {onGoToInstalledAssets && (
+                    <Button variant="secondary" size="sm" className="mt-2" onClick={onGoToInstalledAssets}>
+                      설치된 자산 화면 열기
+                    </Button>
+                  )}
+                </>
+              }
+            />
           )}
-          {bridge && reconcileNotice && (
-            <p className="mb-3 flex shrink-0 items-start gap-1.5 text-caption text-text-muted">
-              <Info size={13} className="mt-0.5 shrink-0" />
-              활성화 상태 확인 불가: {reconcileNotice}
-            </p>
-          )}
+          {bridge && reconcileNotice && (() => {
+            const caption = resolveReconcileCaption(reconcileNotice, [
+              groupedExclusion.sharedReason,
+              ...groupedExclusion.items.map((i) => i.reason),
+            ]);
+            if (!caption) return null;
+            const isShortened = caption === RECONCILE_SAME_CAUSE_NOTICE;
+            return <Notice tone="info" title={isShortened ? caption : `활성화 상태 확인 불가: ${caption}`} />;
+          })()}
 
           {/* 개발 확인용 입력 — Service Registry가 아직 없어(D-034/D-058) 정식
               Knowledge/Tool 선택 UI를 만들 근거가 없다. 메인 흐름에서 빼고
@@ -1262,22 +1473,30 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               </div>
             )}
 
-            <div className="flex-1 space-y-4 overflow-y-auto pr-1">
+            <div className="flex-1 space-y-5 overflow-y-auto pr-1">
               {messages.length === 0 && (
-                <EmptyState
-                  title="아직 대화가 없습니다"
-                  description={
-                    knowledgeLookupActive
-                      ? "보유 Knowledge를 근거로 답할 질문을 입력하세요."
-                      : "질문을 입력하면 기본 Ollama 모델로 일반 대화를 시작합니다. 필요할 때 보유 Knowledge 검색을 켤 수 있습니다."
-                  }
-                />
+                <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+                  <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">
+                    <Bot size={22} aria-hidden="true" />
+                  </div>
+                  <p className="text-card-title font-semibold text-text-primary">무엇을 도와드릴까요?</p>
+                  <p className="text-caption text-text-muted">
+                    {knowledgeLookupActive
+                      ? "보유 Knowledge를 근거로 답변합니다."
+                      : "기본 Ollama 모델로 대화합니다."}
+                  </p>
+                </div>
               )}
 
-              {messages.map((m) => (
+              {messages.map((m, idx) => (
                 <ChatTurn
                   key={m.id}
                   message={m}
+                  // 어떤 모델/지식으로 답했는지는 매 턴 반복하지 않고 앞 턴과
+                  // 달라졌을 때만 한 줄로 보여준다 — 한 대화 안에서 Ollama
+                  // 일반 대화와 지식 검색을 오갔다는 사실은 남기되, 같은 문구가
+                  // 턴마다 다시 찍히지는 않는다.
+                  showContextLabel={turnContextLabel(m) !== turnContextLabel(messages[idx - 1])}
                   onCancel={() => void handleCancel(m)}
                   onRerun={() => void handleSend(m.question)}
                   onCopy={() => handleCopy(m)}
@@ -1294,75 +1513,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               ))}
             </div>
 
-            <div className="mt-4 shrink-0 border-t border-border pt-3">
-              <div className="mb-2 flex items-center gap-2">
-                <ComposerToggle
-                  id="knowledge-toggle"
-                  label="보유 Knowledge에서 찾기"
-                  description={
-                    hasUsableKnowledge
-                      ? "사내 지식에 근거한 답변이 필요할 때 켭니다. 끄면 선택한 Ollama 모델과 바로 대화합니다."
-                      : installedKnowledge === null && bridge
-                        ? "보유 Knowledge를 확인하는 중입니다. Ollama 일반 대화는 바로 사용할 수 있습니다."
-                        : "검색 가능한 Knowledge가 없어 현재는 Ollama 일반 대화만 사용할 수 있습니다."
-                  }
-                  icon={<BookOpenCheck size={16} aria-hidden="true" />}
-                  pressed={useKnowledge}
-                  disabled={isRunning || !hasUsableKnowledge || mcpDevActive}
-                  onChange={setUseKnowledge}
-                />
-
-                {/* 허브 조회 동의(Stage 2, D-078) — 기본 꺼짐과 세션별 초기화,
-                    사용자 질문 텍스트만 전송하는 경계는 그대로 유지한다. 긴
-                    설명은 제거하지 않고 hover/focus 툴팁으로 점진 공개한다. */}
-                <ComposerToggle
-                  id="hub-toggle"
-                  label="허브에도 물어보기"
-                  description={
-                    hubLookupApplicable
-                      ? "로컬 Knowledge에서 답을 찾지 못한 경우에만 사용자가 입력한 질문 텍스트를 허브로 전송합니다. 로컬 문서 내용은 전송되지 않습니다."
-                      : "보유 Knowledge 검색을 먼저 켜야 사용할 수 있습니다. 기본적으로 꺼져 있으며 로컬 문서 내용은 허브로 전송되지 않습니다."
-                  }
-                  icon={<Globe2 size={16} aria-hidden="true" />}
-                  pressed={allowHubLookup}
-                  disabled={isRunning || !hubLookupApplicable}
-                  onChange={setAllowHubLookup}
-                />
-
-                {settingsBridge ? (
-                  <div className="ml-1 flex min-w-0 items-center gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1.5">
-                    <Bot size={14} className="shrink-0 text-brand-600" aria-hidden="true" />
-                    <label htmlFor="chat-model-select" className="sr-only">채팅 모델</label>
-                    <select
-                      id="chat-model-select"
-                      value={chatModelAlias}
-                      onChange={(event) => void handleChatModelChange(event.target.value)}
-                      disabled={modelsLoading || modelSaving || installedChatModels.length === 0 || isRunning}
-                      className="max-w-64 min-w-0 bg-transparent text-caption font-medium text-text-primary outline-none disabled:text-text-muted"
-                      title={modelError ?? "이 질문에 사용할 Ollama 모델"}
-                    >
-                      {installedChatModels.length === 0 ? (
-                        <option value={chatModelAlias}>{modelsLoading ? "모델 확인 중..." : chatModelAlias}</option>
-                      ) : (
-                        installedChatModels.map((model) => <option key={model} value={model}>{model}</option>)
-                      )}
-                    </select>
-                    {modelError && <Info size={13} className="shrink-0 text-warning" aria-label={modelError} />}
-                  </div>
-                ) : (
-                  <span className="text-caption text-text-muted">Ollama · {chatModelAlias}</span>
-                )}
-                {knowledgeLookupActive && (
-                  <span className="text-caption text-text-muted">Knowledge {knowledgeIds.length}개 검색</span>
-                )}
-              </div>
-
-              {allowHubLookup && (
-                <p className="mb-2 rounded-md bg-brand-50 px-2.5 py-1.5 text-caption text-brand-700">
-                  허브 전송 미리보기: &quot;{hubQueryPreview}&quot;
-                </p>
-              )}
-              <div className="flex gap-2">
+            {/* 입력창 — 토글/모델/전송을 하나의 카드 안에 넣어 화면 아래쪽
+                덩어리를 하나로 줄인다. 보낼 수 없는 이유는 문단이 아니라 전송
+                버튼의 title로만 남긴다. */}
+            <div className="mt-3 shrink-0">
+              <div className="rounded-2xl border border-border bg-white shadow-sm transition focus-within:border-brand-400 focus-within:ring-1 focus-within:ring-brand-400">
                 <textarea
                   value={question}
                   onChange={(e) => setQuestion(e.target.value)}
@@ -1374,15 +1529,90 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   }}
                   placeholder="질문을 입력하세요..."
                   rows={2}
-                  className={`${fieldClass} resize-none`}
+                  aria-label="질문"
+                  className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-body text-text-primary placeholder:text-text-muted focus:outline-none disabled:text-text-muted"
                   disabled={isRunning}
                 />
-                <Button onClick={() => void handleSend()} disabled={!canSend} title={sendDisabledReason ?? undefined}>
-                  <Send size={15} /> 실행
-                </Button>
+                <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
+                  <ComposerToggle
+                    id="knowledge-toggle"
+                    label="보유 Knowledge에서 찾기"
+                    description={
+                      hasUsableKnowledge
+                        ? "사내 지식에 근거한 답변이 필요할 때 켭니다. 끄면 선택한 Ollama 모델과 바로 대화합니다."
+                        : installedKnowledge === null && bridge
+                          ? "보유 Knowledge를 확인하는 중입니다. Ollama 일반 대화는 바로 사용할 수 있습니다."
+                          : "검색 가능한 Knowledge가 없어 현재는 Ollama 일반 대화만 사용할 수 있습니다."
+                    }
+                    icon={<BookOpenCheck size={15} aria-hidden="true" />}
+                    pressed={useKnowledge}
+                    disabled={isRunning || !hasUsableKnowledge || mcpDevActive}
+                    onChange={setUseKnowledge}
+                    activeLabel={`지식 ${knowledgeIds.length}개`}
+                  />
+
+                  {/* 허브 조회 동의(Stage 2, D-078) — 기본 꺼짐과 세션별 초기화,
+                      사용자 질문 텍스트만 전송하는 경계는 그대로 유지한다. 긴
+                      설명은 제거하지 않고 hover/focus 툴팁으로 점진 공개한다. */}
+                  <ComposerToggle
+                    id="hub-toggle"
+                    label="허브에도 물어보기"
+                    description={
+                      hubLookupApplicable
+                        ? "로컬 Knowledge에서 답을 찾지 못한 경우에만 사용자가 입력한 질문 텍스트를 허브로 전송합니다. 로컬 문서 내용은 전송되지 않습니다."
+                        : "보유 Knowledge 검색을 먼저 켜야 사용할 수 있습니다. 기본적으로 꺼져 있으며 로컬 문서 내용은 허브로 전송되지 않습니다."
+                    }
+                    icon={<Globe2 size={15} aria-hidden="true" />}
+                    pressed={allowHubLookup}
+                    disabled={isRunning || !hubLookupApplicable}
+                    onChange={setAllowHubLookup}
+                    activeLabel="허브"
+                  />
+
+                  {settingsBridge ? (
+                    <div className="flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors hover:bg-slate-100">
+                      <Bot size={14} className="shrink-0 text-text-muted" aria-hidden="true" />
+                      <label htmlFor="chat-model-select" className="sr-only">채팅 모델</label>
+                      <select
+                        id="chat-model-select"
+                        value={chatModelAlias}
+                        onChange={(event) => void handleChatModelChange(event.target.value)}
+                        disabled={modelsLoading || modelSaving || installedChatModels.length === 0 || isRunning}
+                        className="max-w-48 min-w-0 cursor-pointer appearance-none bg-transparent text-caption font-medium text-text-secondary outline-none disabled:cursor-not-allowed disabled:text-text-muted"
+                        title={modelError ?? "이 질문에 사용할 Ollama 모델"}
+                      >
+                        {installedChatModels.length === 0 ? (
+                          <option value={chatModelAlias}>{modelsLoading ? "모델 확인 중..." : chatModelAlias}</option>
+                        ) : (
+                          installedChatModels.map((model) => <option key={model} value={model}>{model}</option>)
+                        )}
+                      </select>
+                      {modelError && <Info size={13} className="shrink-0 text-warning" aria-label={modelError} />}
+                    </div>
+                  ) : (
+                    <span className="text-caption text-text-muted">Ollama · {chatModelAlias}</span>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => void handleSend()}
+                    disabled={!canSend}
+                    title={sendDisabledReason ?? "실행"}
+                    aria-label="실행"
+                    className="ml-auto flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-brand-500 text-white transition-colors hover:bg-brand-600 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                  >
+                    <Send size={15} />
+                  </button>
+                </div>
               </div>
-              {sendDisabledReason && !isRunning && (
-                <p className="mt-1.5 text-caption text-text-muted">{sendDisabledReason}</p>
+
+              {/* D-078 사전 가시성 — 허브 조회를 켠 동안에만, 실제로 전송될
+                  질문 텍스트를 그대로 보여준다. */}
+              {allowHubLookup && (
+                <p className="mt-1.5 flex items-start gap-1.5 px-1 text-[11px] text-text-muted">
+                  <Globe2 size={11} className="mt-0.5 shrink-0" aria-hidden="true" />
+                  <span className="min-w-0">허브 전송 미리보기: &quot;{hubQueryPreview}&quot;</span>
+                </p>
               )}
             </div>
           </div>
@@ -1411,8 +1641,27 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   );
 }
 
+// 턴 하나가 "무엇으로 답했는지"를 나타내는 짧은 문구. 같은 문구가 연속되면
+// ChatScreen이 뒤쪽 턴에서는 표시하지 않는다(`showContextLabel`). 실행 중과
+// 완료 후에 값이 달라지면 안 되므로(그러면 턴마다 같은 줄이 깜빡인다) 실제
+// 응답 모델명은 여기 넣지 않고 `turnContextTitle`(hover)에만 둔다.
+function turnContextLabel(message?: ChatMessage): string {
+  if (!message) return "";
+  const base = message.ollamaOnly ? "Ollama 일반 대화" : message.knowledgeLabelUsed || "지식 검색";
+  return message.restored ? `저장된 대화 · ${base}` : base;
+}
+
+function turnContextTitle(message: ChatMessage): string | undefined {
+  const parts = [
+    message.ollamaModel ? `모델: ${message.ollamaModel}` : null,
+    message.restored ? "저장된 대화에서 복원됨 — 실행 상세 정보는 보존되지 않습니다." : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
 function ChatTurn({
   message,
+  showContextLabel,
   onCancel,
   onRerun,
   onCopy,
@@ -1427,6 +1676,7 @@ function ChatTurn({
   onOpenDetail,
 }: {
   message: ChatMessage;
+  showContextLabel: boolean;
   onCancel: () => void;
   onRerun: () => void;
   onCopy: () => void;
@@ -1445,37 +1695,44 @@ function ChatTurn({
   const lowConfidence = message.status === "succeeded" && hasLowConfidenceCitation(message.citations);
 
   return (
-    <div className="space-y-2">
-      <div className="ml-auto max-w-[80%] rounded-xl bg-brand-600 px-4 py-2.5 text-sm text-white">{message.question}</div>
+    <div className="group space-y-2">
+      {showContextLabel && (
+        <p className="text-center text-[11px] text-text-muted" title={turnContextTitle(message)}>
+          {turnContextLabel(message)}
+        </p>
+      )}
+
+      {/* 짧은 질문이 가로로 늘어나지 않도록 내용 너비(w-fit)로 둔다. */}
+      <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
+        {message.question}
+      </div>
 
       <div className="max-w-[90%] space-y-2">
-        {message.restored && (
-          <p className="text-[11px] text-text-muted">저장된 대화에서 복원됨 · 실행 상세 정보는 보존되지 않습니다.</p>
-        )}
-        {message.ollamaOnly && (
-          <p className="text-[11px] text-text-muted">
-            {message.ollamaModel ? `Ollama 일반 대화 · ${message.ollamaModel}` : "Ollama 일반 대화"}
-          </p>
-        )}
-        <StageIndicator stages={message.stages} />
+        {/* 단계 표시는 실행 중일 때만 — 끝난 턴에서 5개 배지가 계속 남아 있을
+            이유가 없다(상세는 "상세 실행 보기"에 그대로 있다). Ollama 일반
+            대화는 단계가 사실상 없으므로 아래 진행 표시로 충분하다. */}
+        {isInFlight && !message.ollamaOnly && <StageIndicator stages={message.stages} />}
+
+        {/* KNOWLEDGE_ROUTE(agentic Knowledge 선택) 결과 — 이 턴이 후보를
+            보냈고 라우팅이 실제로 돌았을 때만(스킵/실패 포함) 나타난다. 요구
+            사항: 셋(ran/skipped/fallback)을 절대 섞어 말하지 않는다. */}
+        {message.knowledgeRoute && <KnowledgeRoutePanel route={message.knowledgeRoute} />}
 
         {/* 허브 조회 사후 가시성 — "hub.query_sent" 이벤트가 도착할 때마다
             실제로 허브에 전송된 질의를 그대로 보여준다(agent-runtime의 강제
             지점이 사용자가 입력한 텍스트로만 구성되도록 보장하므로 그대로
             표시해도 안전하다). */}
         {message.hubQueriesSent.map((h, idx) => (
-          <p key={idx} className="flex items-start gap-1.5 text-caption text-text-muted">
-            <Globe size={13} className="mt-0.5 shrink-0" />
-            허브에 질의를 전송했습니다: &quot;{h.query}&quot;
+          <p key={idx} className="flex items-start gap-1.5 text-[11px] text-text-muted">
+            <Globe size={12} className="mt-0.5 shrink-0" />
+            허브에 전송한 질의: &quot;{h.query}&quot;
           </p>
         ))}
 
         {message.status === "running" && (
-          <div className="flex items-center justify-between rounded-xl border border-border bg-surface px-4 py-2.5">
-            <span className="flex items-center gap-2 text-body text-text-muted">
-              <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-brand-400" />
-              {message.answer ? message.answer : "처리하는 중..."}
-            </span>
+          <div className="flex items-center gap-2 text-body text-text-secondary">
+            <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-400" />
+            <span className="whitespace-pre-wrap">{message.answer ? message.answer : "처리하는 중..."}</span>
           </div>
         )}
 
@@ -1490,9 +1747,7 @@ function ChatTurn({
         )}
 
         {message.status === "succeeded" && (
-          <div className="whitespace-pre-wrap rounded-xl border border-border bg-surface px-4 py-2.5 text-body text-text-primary">
-            {message.answer || "답변이 없습니다."}
-          </div>
+          <div className="whitespace-pre-wrap text-body text-text-primary">{message.answer || "답변이 없습니다."}</div>
         )}
 
         {message.status === "insufficient_evidence" && (
@@ -1502,9 +1757,7 @@ function ChatTurn({
         )}
 
         {message.status === "cancelled" && (
-          <div className="rounded-xl border border-border bg-slate-50 px-4 py-2.5 text-body text-text-secondary">
-            취소됨{message.traceId ? ` (Trace ID: ${message.traceId})` : ""}
-          </div>
+          <p className="text-body text-text-muted">취소됨{message.traceId ? ` (Trace ID: ${message.traceId})` : ""}</p>
         )}
 
         {message.status === "failed" && (
@@ -1523,69 +1776,69 @@ function ChatTurn({
         )}
 
         {message.restored && (message.restoredCitationCount ?? 0) > 0 && (
-          <p className="text-caption text-text-muted">
+          <p className="text-[11px] text-text-muted">
             출처 {message.restoredCitationCount}건 (복원된 대화에는 출처 상세 내용이 저장되지 않습니다)
           </p>
         )}
 
+        {/* 출처는 제목 칩으로 접어 보여주고, 발췌/섹션은 클릭했을 때 모달에서
+            본다. 로컬/허브 구분(D-078)은 칩 안에 그대로 남는다. */}
         {message.citations.length > 0 && (
-          <div className="space-y-1.5">
-            <p className="text-caption font-medium text-text-muted">출처</p>
+          <div className="flex flex-wrap gap-1.5">
             {message.citations.map((c, idx) => (
               <button
                 key={c.chunk_id || idx}
                 type="button"
                 onClick={() => onCitationClick(c)}
-                className="block w-full rounded-lg border border-border bg-slate-50 px-3 py-2 text-left text-xs hover:bg-slate-100"
+                title={`${c.document_title || c.document_path || "제목 없음"}${c.section ? ` · ${c.section}` : ""} — ${c.source === "hub" ? "허브" : "로컬"} 검색 결과`}
+                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-white px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-slate-50"
               >
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0 font-semibold text-text-secondary">
-                    {c.document_title || c.document_path || "제목 없음"}
-                    {c.section && <span className="font-normal"> · {c.section}</span>}
-                  </div>
-                  {/* 두 단계 검색(지식 검색 자동화 + 허브 조회 동의) — 이
-                      출처가 로컬/허브 중 어느 쪽 검색에서 나왔는지. 값이
-                      없으면(과거 데이터) 로컬로 취급해 표시한다. */}
-                  <span
-                    className={`shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
-                      c.source === "hub" ? "bg-brand-50 text-brand-700" : "bg-slate-200 text-text-muted"
-                    }`}
-                  >
-                    {c.source === "hub" ? "허브" : "로컬"}
-                  </span>
-                </div>
+                <FileSearch size={11} className="shrink-0 text-text-muted" aria-hidden="true" />
+                <span className="min-w-0 truncate">{c.document_title || c.document_path || "제목 없음"}</span>
+                <span className={`shrink-0 font-semibold ${c.source === "hub" ? "text-brand-600" : "text-text-muted"}`}>
+                  {c.source === "hub" ? "허브" : "로컬"}
+                </span>
               </button>
             ))}
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2 pt-1">
+        {/* 보조 동작은 평소 숨기고 hover/포커스 때만 — 취소만 예외로 항상
+            보인다(D06 규칙: 실행 중에는 언제나 취소할 수 있어야 한다). */}
+        <div
+          className={`flex flex-wrap items-center gap-1 ${
+            isInFlight ? "" : "opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+          }`}
+        >
           {isInFlight && (
-            // D06 규칙: 답변 생성 중은 물론, Tool 확인을 기다리는 동안에도
-            // 취소는 항상 가능해야 한다.
             <Button variant="secondary" size="sm" onClick={onCancel}>
               <Square size={13} /> 취소
             </Button>
           )}
-          {isTerminal && (
+          {message.status === "failed" && (
             <Button variant="secondary" size="sm" onClick={onRerun} disabled={rerunDisabled}>
-              {message.status === "failed" ? "재시도" : "동일 입력으로 다시 실행"}
+              <RefreshCw size={13} /> 재시도
             </Button>
+          )}
+          {isTerminal && message.status !== "failed" && (
+            <IconAction label="동일 입력으로 다시 실행" onClick={onRerun} disabled={rerunDisabled}>
+              <RefreshCw size={13} />
+            </IconAction>
           )}
           {message.status === "succeeded" && (
             <>
-              <Button variant="secondary" size="sm" onClick={onCopy}>
-                {copied ? <Check size={13} /> : <Copy size={13} />} {copied ? "복사됨" : "결과 복사"}
-              </Button>
-              <Button variant="secondary" size="sm" onClick={onDownload}>
-                <Download size={13} /> Markdown 저장
-              </Button>
+              <IconAction label={copied ? "복사됨" : "결과 복사"} onClick={onCopy}>
+                {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
+              </IconAction>
+              <IconAction label="Markdown 저장" onClick={onDownload}>
+                <Download size={13} />
+              </IconAction>
             </>
           )}
           {isTerminal && !message.ollamaOnly && (
-            <Button variant="secondary" size="sm" onClick={onOpenDetail}>
-              <ListChecks size={13} /> 상세 실행 보기
-            </Button>
+            <IconAction label="상세 실행 보기" onClick={onOpenDetail}>
+              <ListChecks size={13} />
+            </IconAction>
           )}
         </div>
       </div>

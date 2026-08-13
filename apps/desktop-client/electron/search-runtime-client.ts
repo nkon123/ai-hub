@@ -185,15 +185,20 @@ async function parseErrorEnvelope(res: Response): Promise<SearchRuntimeFailure> 
  * 없음) `parseErrorEnvelope`를 거치면 진짜 원인을 전혀 알려주지 못하는 일반
  * "unknown" 메시지로 뭉개진다. **정확한 진단은 아니다** — 이론상 다른 원인의
  * 404일 수도 있으므로 "가장 가능성 높은 원인"이라고만 말하고 단정하지
- * 않는다. */
+ * 않는다.
+ *
+ * 2026-08-14 후속: 이 메시지는 원래 진단을 먼저 말하고 조치(재시작)를 맨
+ * 끝에 붙이는 순서였다 — 사용자가 실제로 해야 할 일이 문장 끝에 묻혀
+ * 눈에 띄지 않았다. 지금은 조치를 먼저 말하고 그 뒤에 "왜"(가능성 높은
+ * 원인)를 붙인다. 아래 `unreachableFailure`도 같은 이유로 같은 순서로
+ * 고쳤다 — 사실 관계는 그대로이고 순서만 바뀌었다. */
 function activationApiUnavailableFailure(): SearchRuntimeFailure {
   return {
     ok: false,
     reason: "activation_api_unavailable",
     message:
-      "이 search-runtime에는 Knowledge 활성화 API(/search/v1/local-indexes)가 없습니다 (HTTP 404). " +
-      "가장 가능성 높은 원인은 이 기능이 추가되기 전에 시작된 search-runtime 프로세스가 재시작 없이 " +
-      "계속 실행 중인 것입니다 — search-runtime을 재시작한 뒤 다시 시도하세요.",
+      "search-runtime을 재시작한 뒤 다시 시도하세요 — 가장 가능성 높은 원인은 Knowledge 활성화 API" +
+      "(/search/v1/local-indexes)가 추가되기 전에 시작된 프로세스가 재시작 없이 계속 실행 중인 것입니다(HTTP 404).",
   };
 }
 
@@ -203,8 +208,8 @@ function unreachableFailure(err: unknown): SearchRuntimeFailure {
     ok: false,
     reason: "unreachable",
     message: isTimeout
-      ? "search-runtime 응답이 시간 내에 오지 않았습니다. search-runtime이 실행 중인지 확인한 뒤 다시 시도하세요."
-      : `search-runtime에 연결할 수 없습니다: ${err instanceof Error ? err.message : String(err)}. search-runtime이 실행 중인지, 주소가 올바른지 확인하세요.`,
+      ? "search-runtime이 실행 중인지 확인한 뒤 다시 시도하세요 — 응답이 시간 내에 오지 않았습니다."
+      : `search-runtime이 실행 중인지, 주소가 올바른지 확인하세요 — 연결할 수 없습니다: ${err instanceof Error ? err.message : String(err)}.`,
   };
 }
 

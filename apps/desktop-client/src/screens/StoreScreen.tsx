@@ -22,7 +22,7 @@ import type {
   StoreInstallResult,
 } from "../../electron/types";
 import { STAGE_LABELS, STORE_SERVER_STAGE_LABELS } from "../../electron/types";
-import { getDesktopBridge } from "../bridge";
+import { getDesktopBridge, isBridgeMethodMissing } from "../bridge";
 import {
   Button,
   BridgeUnavailableState,
@@ -65,6 +65,12 @@ function progressRowLabel(stage: StoreInstallProgressEvent["stage"]): string {
 
 export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () => void; onInstalled: () => void }) {
   const bridge = getDesktopBridge();
+  // stale preload.js 빌드로 `onStoreInstallProgress`가 없으면(2026-08-13
+  // 실제 장애 — 이 메서드가 없어 자산 허브 화면 전체가 ErrorBoundary까지
+  // 무너졌다) 구독은 no-op으로 대체되어 이벤트가 절대 오지 않는다
+  // (`src/bridge.ts`). 설치 Modal의 진행률 영역을 빈 채로 두지 않고 그
+  // 사실을 명시한다.
+  const storeProgressUnavailable = !!bridge && isBridgeMethodMissing("onStoreInstallProgress");
 
   const [settings, setSettings] = useState<PortalSettingsPublic | null>(null);
   const [baseUrlInput, setBaseUrlInput] = useState("");
@@ -448,6 +454,15 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
           <div className="space-y-4">
             {(installRunning || installResult) && (
               <div className="space-y-2">
+                {installRunning && installEvents.length === 0 && storeProgressUnavailable && (
+                  <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+                    <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                    <span>
+                      설치가 진행 중이지만 실행 중인 앱 빌드가 최신이 아니어서 단계별 진행 상황을 실시간으로 표시할
+                      수 없습니다 — 완료되면 아래에 결과가 표시됩니다. 앱을 재시작하면 실시간 표시가 복구됩니다.
+                    </span>
+                  </div>
+                )}
                 {installEvents.map((e) => (
                   <CheckRow
                     key={e.stage}

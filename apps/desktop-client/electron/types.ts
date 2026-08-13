@@ -272,6 +272,30 @@ export interface AssetManifestResult {
   manifest: unknown | null;
 }
 
+/** One installed, chat-usable Knowledge offered to agent-runtime's
+ * KNOWLEDGE_ROUTE stage (agentic Knowledge selection,
+ * `agent_runtime.knowledge_router`, `KnowledgeCandidateInput` in
+ * `packages/schemas/api/local-runtime-api.yaml`) — field names match the
+ * wire contract exactly (snake_case `knowledge_id`, not this file's usual
+ * camelCase) because this object is sent to agent-runtime byte-for-byte, not
+ * translated at another layer first.
+ *
+ * `name` always comes from the installed record itself (`InstalledAsset.name`
+ * — the only field the record itself carries). `description`/`tags`/
+ * `classification` — when present — come from that Knowledge's own
+ * `manifest.json` (`packages/schemas/manifests/knowledge-manifest.schema.json`).
+ * A missing/unreadable manifest (legacy Bundle, STANDARD_LOCAL_COPY) omits
+ * those three fields rather than inventing them — see
+ * `electron/knowledge-candidates.ts`'s `buildKnowledgeCandidate`, the pure
+ * function that decides this per asset. */
+export interface KnowledgeCandidate {
+  knowledge_id: string;
+  name?: string;
+  description?: string;
+  tags?: string[];
+  classification?: string;
+}
+
 export interface AssetDependencyView {
   /** This asset's own declared dependencies. Only Service assets carry real
    * entries here — an Agent/Knowledge/Prompt/MCP Package manifest declares
@@ -839,6 +863,17 @@ export interface DesktopBridge {
     version: string,
   ): Promise<{ available: boolean; reason: string | null; result: ChecksumVerification | null }>;
   getAssetDependencies(assetType: string, assetId: string, version: string): Promise<AssetDependencyView>;
+
+  // --- D06 대화: KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택) -------------
+  /** `assets`는 이미 렌더러가 "검색에 실제로 활성화된 것"으로 판정한 목록
+   * 그대로다(`chatTypes.ts`의 `partitionInstalledKnowledgeByActivation` —
+   * 이 호출은 그 판정을 재현하지 않고 재사용만 한다). 각 자산의
+   * `manifest.json`(fs 읽기, Main에서만 가능)을 읽어 agent-runtime의
+   * `knowledge_candidates` 입력 형태로 조립해 돌려준다. `assetVersionId`가
+   * 없는 자산(D-060 레거시 Bundle)은 애초에 `usable` 목록에 없어야 하지만,
+   * 방어적으로 결과에서 제외된다(발명하지 않는다) — 조립 규칙 자체는
+   * `electron/knowledge-candidates.ts`의 순수 함수를 그대로 쓴다. */
+  getKnowledgeCandidates(assets: InstalledAsset[]): Promise<KnowledgeCandidate[]>;
 
   // --- D-079 Knowledge 활성화 --------------------------------------------------
   /** "설치됨"과 "활성화됨"은 서로 다른 사실이다 — 이 호출은 설치된 Knowledge의

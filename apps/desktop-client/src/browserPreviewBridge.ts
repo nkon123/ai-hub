@@ -281,6 +281,14 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       return { forward: [], forwardNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE, referencedBy: [] };
     },
 
+    // --- D06 대화: KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택) -----------
+    // `listInstalledAssets()`가 이미 `[]`를 돌려주므로(브라우저 개발 모드는
+    // 설치된 자산 자체가 없다) 여기도 같은 사실을 그대로 반영한다 — 오류가
+    // 아니라 "후보가 없다"이므로 조용한 빈 배열이 정직한 결과다.
+    async getKnowledgeCandidates() {
+      return [];
+    },
+
     // --- D-079 Knowledge 활성화 ------------------------------------------------
     // 이 세 메서드가 이전에 빠져 있던(Pick 허용목록에 없던) 바로 그 메서드다
     // — 여기서도 마찬가지로 "시도조차 못했다"를 정직하게 표현한다.

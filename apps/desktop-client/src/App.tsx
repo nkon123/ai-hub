@@ -11,7 +11,8 @@ import { SetupWizardScreen } from "./screens/SetupWizardScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { InfoScreen } from "./screens/InfoScreen";
 import { ServiceDetailScreen, type ServiceDetailTarget } from "./screens/ServiceDetailScreen";
-import { Tabs } from "./ui";
+import { Tabs, StaleBridgeBuildBanner } from "./ui";
+import { getDesktopBridge, getMissingBridgeMethods } from "./bridge";
 
 // IA 재편(11개 사이드바 탭 -> 3개): 채팅 / 자산 허브 / 설정. "detail"(D03)과
 // "setup"(D01)은 사이드바에 없는 Drill-down 화면이다 — 진입 시 어디서
@@ -46,6 +47,19 @@ export default function App() {
   const [tab, setTab] = useState<MainTab>("chat");
   const [hubTab, setHubTab] = useState<HubSubTab>("store");
   const [settingsTab, setSettingsTab] = useState<SettingsSubTab>("general");
+
+  // 앱 시작 시 한 번만 확인한다 — `getDesktopBridge()`를 호출해야 stale
+  // `preload.js`로 인해 빠진 메서드가 있는지 알 수 있다(`src/bridge.ts`).
+  // 어떤 화면을 먼저 열든 동일한 배너가 한 번만 보이도록 여기(App 레벨)에서
+  // 계산한다 — 화면마다 각자 발견하고 각자 알리면 "한 번만 보여준다"는
+  // 요구사항을 어긴다. `window.desktop` 자체가 없는 정상 상태(브라우저
+  // 개발 모드)에서는 `getMissingBridgeMethods()`가 항상 빈 배열이라 배너가
+  // 뜨지 않는다 — `BridgeUnavailableState`가 이미 다루는 그 경로는 바뀌지
+  // 않는다.
+  const [missingBridgeMethods] = useState(() => {
+    getDesktopBridge();
+    return getMissingBridgeMethods();
+  });
 
   // Bumping this remounts the 설치된 자산 화면 so it reloads the asset list
   // right after a successful import/store install, without the screens
@@ -90,6 +104,8 @@ export default function App() {
           </div>
         </div>
       </header>
+
+      <StaleBridgeBuildBanner missingMethods={missingBridgeMethods} />
 
       <div className="flex flex-1 overflow-hidden">
         {/* Style guide §4.2: ~240px sidebar, white, right border. */}

@@ -5,13 +5,19 @@ import type { ChatMessage } from "./chatTypes";
 import {
   KNOWLEDGE_NOT_ACTIVATED_REASON,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
+  RECONCILE_SAME_CAUSE_NOTICE,
   RECONCILE_UNAVAILABLE_NOTICE,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
+  describeKnowledgeRoute,
+  groupExcludedKnowledgeByReason,
+  groupKnowledgeRouteChoicesByReason,
   partitionInstalledKnowledgeByActivation,
   resolveActivatedKnowledgeIds,
+  resolveExcludedRowText,
   resolveKnowledgeSelection,
+  resolveReconcileCaption,
   resolveReconcileNotice,
 } from "./chatTypes";
 
@@ -35,6 +41,8 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     completedAt: "2026-08-10T00:00:01.000Z",
     serverRun: null,
     hubQueriesSent: [],
+    knowledgeCandidateNameById: {},
+    knowledgeRoute: null,
     ...overrides,
   };
 }
@@ -339,5 +347,273 @@ describe("resolveReconcileNotice (2026-08-13 실제 장애 재발 방지 — bri
       },
     };
     expect(await resolveReconcileNotice(bridge)).toBe("네트워크 시간 초과");
+  });
+});
+
+// 반복 설명 정리(2026-08-14) — 사용자가 실제로 본 화면: 활성화 안 됨
+// 패널에 같은 ~3줄 설명(제외 사유 → 방금 누른 재시도의 feedback.message →
+// reconcile 안내)이 세 번 찍혔다. 아래 세 그룹의 테스트가 그 중복 제거
+// 로직을 검증한다 — 무엇이 보고되는지(어떤 자산이 왜 제외됐는지)는 항상
+// 그대로 확인 가능해야 하고, 사유가 실제로 다르면 절대 하나로 뭉개지지
+// 않아야 한다.
+describe("groupExcludedKnowledgeByReason (반복 설명 정리)", () => {
+  it("returns an empty group for no excluded assets", () => {
+    expect(groupExcludedKnowledgeByReason([])).toEqual({ sharedReason: null, items: [] });
+  });
+
+  it("hoists the shared reason once when every excluded asset has the identical reason text (환경적 원인 — search-runtime 장애)", () => {
+    const same = "search-runtime을 재시작한 뒤 다시 시도하세요 — Knowledge 활성화 API가 없습니다(HTTP 404).";
+    const assetA = installedAsset({ assetId: "asset-a", assetVersionId: "av-a" });
+    const assetB = installedAsset({ assetId: "asset-b", assetVersionId: "av-b" });
+
+    const result = groupExcludedKnowledgeByReason([
+      { asset: assetA, reason: same },
+      { asset: assetB, reason: same },
+    ]);
+
+    expect(result.sharedReason).toBe(same);
+    // Nothing about *which* assets were excluded is lost — both rows remain,
+    // each simply carries reason: null (already stated once above).
+    expect(result.items).toEqual([
+      { asset: assetA, reason: null },
+      { asset: assetB, reason: null },
+    ]);
+  });
+
+  it("keeps each asset's own reason when reasons genuinely differ (no false collapsing of distinct causes)", () => {
+    const assetA = installedAsset({ assetId: "asset-a", assetVersionId: "av-a" });
+    const assetB = installedAsset({ assetId: "asset-b", assetVersionId: null });
+
+    const result = groupExcludedKnowledgeByReason([
+      { asset: assetA, reason: "search-runtime을 재시작하세요." },
+      { asset: assetB, reason: LEGACY_BUNDLE_KNOWLEDGE_ID_REASON },
+    ]);
+
+    expect(result.sharedReason).toBeNull();
+    expect(result.items).toEqual([
+      { asset: assetA, reason: "search-runtime을 재시작하세요." },
+      { asset: assetB, reason: LEGACY_BUNDLE_KNOWLEDGE_ID_REASON },
+    ]);
+  });
+
+  it("a single excluded asset trivially counts as 'all share the same reason' and is hoisted", () => {
+    const asset = installedAsset({ assetId: "asset-a", assetVersionId: "av-a" });
+
+    const result = groupExcludedKnowledgeByReason([{ asset, reason: KNOWLEDGE_NOT_ACTIVATED_REASON }]);
+
+    expect(result.sharedReason).toBe(KNOWLEDGE_NOT_ACTIVATED_REASON);
+    expect(result.items).toEqual([{ asset, reason: null }]);
+  });
+});
+
+describe("resolveExcludedRowText (활성화 재시도 결과와 저장된 사유의 중복 제거)", () => {
+  it("shows only the stored reason when there is no retry feedback yet", () => {
+    expect(resolveExcludedRowText("사유", null)).toEqual({ reasonText: "사유", feedbackText: null });
+  });
+
+  it("shows only the null reason (already hoisted to the panel) with no feedback", () => {
+    expect(resolveExcludedRowText(null, null)).toEqual({ reasonText: null, feedbackText: null });
+  });
+
+  it("drops the reason and shows only the feedback when a failed retry repeats the identical stored reason text (the exact bug reported)", () => {
+    const text = "search-runtime을 재시작한 뒤 다시 시도하세요 — Knowledge 활성화 API가 없습니다(HTTP 404).";
+
+    const result = resolveExcludedRowText(text, { ok: false, message: text });
+
+    expect(result).toEqual({ reasonText: null, feedbackText: text });
+  });
+
+  it("keeps both when a failed retry reports a genuinely different message than the stored reason", () => {
+    const result = resolveExcludedRowText("이전 사유", { ok: false, message: "새로운 다른 실패 사유" });
+
+    expect(result).toEqual({ reasonText: "이전 사유", feedbackText: "새로운 다른 실패 사유" });
+  });
+
+  it("always shows a successful retry's message even if it happens to match the (now stale) failure reason text", () => {
+    // ok:true is never a duplicate of a FAILED reason in practice, but the
+    // function must not accidentally suppress a success message.
+    const result = resolveExcludedRowText("사유", { ok: true, message: "사유" });
+
+    expect(result).toEqual({ reasonText: "사유", feedbackText: "사유" });
+  });
+
+  it("shows the feedback alone (reason already null/hoisted) without crashing when reason is null", () => {
+    const result = resolveExcludedRowText(null, { ok: false, message: "재시도도 실패했습니다." });
+
+    expect(result).toEqual({ reasonText: null, feedbackText: "재시도도 실패했습니다." });
+  });
+});
+
+describe("resolveReconcileCaption (reconcile 안내와 위에서 이미 보여준 사유의 중복 제거)", () => {
+  it("returns null when there is no reconcile notice", () => {
+    expect(resolveReconcileCaption(null, ["사유"])).toBeNull();
+  });
+
+  it("shortens to the generic notice when the reconcile text matches an already-shown reason verbatim (the exact bug reported — same 404 hit twice)", () => {
+    const text = "search-runtime을 재시작한 뒤 다시 시도하세요 — Knowledge 활성화 API가 없습니다(HTTP 404).";
+
+    expect(resolveReconcileCaption(text, [text])).toBe(RECONCILE_SAME_CAUSE_NOTICE);
+  });
+
+  it("keeps the full text when the reconcile cause genuinely differs from what was already shown", () => {
+    const shown = "search-runtime을 재시작한 뒤 다시 시도하세요.";
+    const reconcile = "search-runtime에 이 Knowledge의 등록 정보가 없습니다.";
+
+    expect(resolveReconcileCaption(reconcile, [shown])).toBe(reconcile);
+  });
+
+  it("matches against any of several already-shown reasons (mixed-reason panel), not just the first", () => {
+    const text = "사유 B";
+
+    expect(resolveReconcileCaption(text, ["사유 A", "사유 B", null])).toBe(RECONCILE_SAME_CAUSE_NOTICE);
+  });
+
+  it("ignores null entries in already-shown reasons and still returns the full text when nothing matches", () => {
+    expect(resolveReconcileCaption("새 안내", [null, null])).toBe("새 안내");
+  });
+});
+
+describe("groupKnowledgeRouteChoicesByReason (KNOWLEDGE_ROUTE 반복 설명 정리)", () => {
+  it("returns an empty group for no choices", () => {
+    expect(groupKnowledgeRouteChoicesByReason([], {})).toEqual({ sharedReason: null, items: [] });
+  });
+
+  it("hoists the shared reason once when every choice shares identical reason text (the skip/fallback case — _search_all always ties the same sentence to every id)", () => {
+    const same = "후보 지식 자산 수가 적어 전체를 검색합니다.";
+    const result = groupKnowledgeRouteChoicesByReason(
+      [
+        { knowledge_id: "kb-1", reason: same },
+        { knowledge_id: "kb-2", reason: same },
+      ],
+      { "kb-1": "HR 정책", "kb-2": "IT 런북" },
+    );
+    expect(result.sharedReason).toBe(same);
+    expect(result.items).toEqual([
+      { knowledgeId: "kb-1", name: "HR 정책", reason: null },
+      { knowledgeId: "kb-2", name: "IT 런북", reason: null },
+    ]);
+  });
+
+  it("keeps each item's own reason when reasons genuinely differ (the real 'ran' case — the LLM reasons per candidate)", () => {
+    const result = groupKnowledgeRouteChoicesByReason(
+      [
+        { knowledge_id: "kb-1", reason: "재택근무 정책 질문과 직접 관련됩니다." },
+        { knowledge_id: "kb-2", reason: "IT 런북과는 무관합니다." },
+      ],
+      { "kb-1": "HR 정책", "kb-2": "IT 런북" },
+    );
+    expect(result.sharedReason).toBeNull();
+    expect(result.items).toEqual([
+      { knowledgeId: "kb-1", name: "HR 정책", reason: "재택근무 정책 질문과 직접 관련됩니다." },
+      { knowledgeId: "kb-2", name: "IT 런북", reason: "IT 런북과는 무관합니다." },
+    ]);
+  });
+
+  it("falls back to the raw id when nameById has no entry for it (defensive — should not normally happen)", () => {
+    const result = groupKnowledgeRouteChoicesByReason([{ knowledge_id: "kb-unknown", reason: "사유" }], {});
+    expect(result.items).toEqual([{ knowledgeId: "kb-unknown", name: "kb-unknown", reason: null }]);
+  });
+});
+
+describe("describeKnowledgeRoute (KNOWLEDGE_ROUTE 세 상태 표시 — ran/skipped/fallback을 절대 섞어 말하지 않는다)", () => {
+  const nameById = { "kb-1": "HR 정책 Knowledge", "kb-2": "IT 런북 Knowledge", "kb-3": "보안 정책 Knowledge" };
+
+  it("status='ran' with a single selected id — trivially hoisted as its own shared reason (same convention as groupExcludedKnowledgeByReason)", () => {
+    const result = describeKnowledgeRoute(
+      {
+        status: "ran",
+        fallback_reason: null,
+        selected: [{ knowledge_id: "kb-1", reason: "재택근무 정책 질문과 직접 관련됩니다." }],
+        excluded: [
+          { knowledge_id: "kb-2", reason: "질문과 관련이 없습니다." },
+          { knowledge_id: "kb-3", reason: "질문과 관련이 없습니다." },
+        ],
+      },
+      nameById,
+    );
+    expect(result.status).toBe("ran");
+    expect(result.headline).toBe("관련 있는 지식 자산 1개를 자동으로 선택해 검색했습니다.");
+    expect(result.sharedSelectedReason).toBe("재택근무 정책 질문과 직접 관련됩니다.");
+    expect(result.selected).toEqual([{ knowledgeId: "kb-1", name: "HR 정책 Knowledge", reason: null }]);
+    // 제외된 둘이 완전히 같은 사유를 공유하므로 한 번만 위로 뽑힌다.
+    expect(result.sharedExcludedReason).toBe("질문과 관련이 없습니다.");
+    expect(result.excluded).toEqual([
+      { knowledgeId: "kb-2", name: "IT 런북 Knowledge", reason: null },
+      { knowledgeId: "kb-3", name: "보안 정책 Knowledge", reason: null },
+    ]);
+  });
+
+  it("status='ran' with two selected ids that genuinely differ — each keeps its own reason (the realistic multi-Knowledge case)", () => {
+    const result = describeKnowledgeRoute(
+      {
+        status: "ran",
+        fallback_reason: null,
+        selected: [
+          { knowledge_id: "kb-1", reason: "재택근무 정책 질문과 직접 관련됩니다." },
+          { knowledge_id: "kb-3", reason: "보안 승인 절차도 함께 언급되어 관련 있습니다." },
+        ],
+        excluded: [{ knowledge_id: "kb-2", reason: "질문과 관련이 없습니다." }],
+      },
+      nameById,
+    );
+    expect(result.headline).toBe("관련 있는 지식 자산 2개를 자동으로 선택해 검색했습니다.");
+    expect(result.sharedSelectedReason).toBeNull();
+    expect(result.selected).toEqual([
+      { knowledgeId: "kb-1", name: "HR 정책 Knowledge", reason: "재택근무 정책 질문과 직접 관련됩니다." },
+      { knowledgeId: "kb-3", name: "보안 정책 Knowledge", reason: "보안 승인 절차도 함께 언급되어 관련 있습니다." },
+    ]);
+  });
+
+  it("status='skipped' — headline explicitly denies that a selection happened, and there is nothing in excluded", () => {
+    const result = describeKnowledgeRoute(
+      {
+        status: "skipped",
+        fallback_reason: null,
+        selected: [
+          { knowledge_id: "kb-1", reason: "후보 지식 자산 수가 적어 전체를 검색합니다." },
+          { knowledge_id: "kb-2", reason: "후보 지식 자산 수가 적어 전체를 검색합니다." },
+        ],
+        excluded: [],
+      },
+      nameById,
+    );
+    expect(result.status).toBe("skipped");
+    expect(result.headline).toBe("설치된 Knowledge가 적어(2개) 자동 선택 없이 전체를 검색했습니다 — 선택이 이루어진 것은 아닙니다.");
+    expect(result.sharedSelectedReason).toBe("후보 지식 자산 수가 적어 전체를 검색합니다.");
+    expect(result.excluded).toEqual([]);
+  });
+
+  it("status='fallback' — headline says automatic selection failed (never looks like a successful choice), names the server's own cause", () => {
+    const result = describeKnowledgeRoute(
+      {
+        status: "fallback",
+        fallback_reason: "error_or_timeout",
+        selected: [
+          { knowledge_id: "kb-1", reason: "라우팅 호출에 실패하여 전체를 검색합니다." },
+          { knowledge_id: "kb-2", reason: "라우팅 호출에 실패하여 전체를 검색합니다." },
+          { knowledge_id: "kb-3", reason: "라우팅 호출에 실패하여 전체를 검색합니다." },
+        ],
+        excluded: [],
+      },
+      nameById,
+    );
+    expect(result.status).toBe("fallback");
+    expect(result.headline).toBe("자동 선택에 실패해 전체 지식 자산 3개를 대신 검색했습니다.");
+    expect(result.sharedSelectedReason).toBe("라우팅 호출에 실패하여 전체를 검색합니다.");
+    expect(result.excluded).toEqual([]);
+  });
+
+  it("status='fallback' with an abstained (empty-selection) cause still fails open honestly, distinct from a real choice", () => {
+    const result = describeKnowledgeRoute(
+      {
+        status: "fallback",
+        fallback_reason: "abstained",
+        selected: [{ knowledge_id: "kb-1", reason: "라우터가 아무 것도 선택하지 않아 전체를 검색합니다." }],
+        excluded: [],
+      },
+      nameById,
+    );
+    expect(result.headline).toContain("자동 선택에 실패");
+    expect(result.sharedSelectedReason).toBe("라우터가 아무 것도 선택하지 않아 전체를 검색합니다.");
   });
 });

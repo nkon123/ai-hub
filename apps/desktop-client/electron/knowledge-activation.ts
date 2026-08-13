@@ -86,7 +86,7 @@ export async function activateInstalledKnowledge(
   if (!asset.assetVersionId) {
     const activation = failedActivation(
       "asset_version_id_missing",
-      "이 설치 기록에는 검증된 AssetVersion 식별자가 없어 활성화할 수 없습니다(D-060). 최신 Bundle로 다시 설치하면 해결될 수 있습니다.",
+      "최신 Bundle로 다시 설치하세요 — 이 설치 기록에는 검증된 AssetVersion 식별자가 없어 활성화할 수 없습니다(D-060).",
       null,
     );
     store.updateActivation(target.assetType, target.assetId, target.version, activation);
@@ -103,7 +103,7 @@ export async function activateInstalledKnowledge(
   if (!indexDirExists) {
     const activation = failedActivation(
       "index_dir_missing",
-      "설치된 자산에 index 폴더가 없어 활성화할 수 없습니다. 자산을 다시 설치하세요.",
+      "자산을 다시 설치하세요 — 설치된 자산에 index 폴더가 없어 활성화할 수 없습니다.",
       indexDir,
     );
     store.updateActivation(target.assetType, target.assetId, target.version, activation);
@@ -234,8 +234,8 @@ export function computeActivationReconcile(
         checkedAt: nowIso(),
         reason: serverLocalIndexesEnabled ? "not_registered_on_server" : "local_indexes_disabled",
         message: serverLocalIndexesEnabled
-          ? "search-runtime에 이 Knowledge의 등록 정보가 없습니다 — search-runtime이 다른 설정으로 재시작되었거나 등록이 초기화되었을 수 있습니다. 다시 활성화하세요."
-          : "연결된 search-runtime이 설치 자산 활성화를 허용하지 않도록 설정되어 있습니다(SEARCH_LOCAL_INDEX_ROOTS 미설정). 다시 활성화해도 같은 이유로 거절되므로, 관리자에게 이 PC의 설치 경로를 허용 목록에 추가하도록 요청하세요.",
+          ? "다시 활성화하세요 — search-runtime에 이 Knowledge의 등록 정보가 없습니다(search-runtime이 다른 설정으로 재시작되었거나 등록이 초기화되었을 수 있습니다)."
+          : "관리자에게 이 PC의 설치 경로를 SEARCH_LOCAL_INDEX_ROOTS 허용 목록에 추가하도록 요청하세요 — 연결된 search-runtime이 설치 자산 활성화를 허용하지 않도록 설정되어 있어(SEARCH_LOCAL_INDEX_ROOTS 미설정) 다시 활성화해도 같은 이유로 거절됩니다.",
         indexPath: asset.activation.indexPath,
       },
     });

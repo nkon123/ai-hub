@@ -122,6 +122,32 @@ export function BridgeUnavailableState({ detail }: { detail?: string }) {
   );
 }
 
+/** App-level(한 번만 표시), Desktop 런타임 자체는 붙어 있지만 실행 중인
+ * `preload.js` 빌드가 렌더러보다 오래되어(stale build) 일부 IPC 메서드가
+ * 없을 때 보여주는 안내(`src/bridge.ts`의 `getMissingBridgeMethods()`).
+ * `BridgeUnavailableState`(런타임이 아예 없음, 정상적인 상태)와는 다른
+ * 문제다 — 이쪽은 실제 장애이므로 항상 경고 톤으로 보여주고, 어떤 기능이
+ * 영향을 받는지 이름으로 알려준다("제품이 사용자에게 거짓을 말하지
+ * 않는다" 원칙 — 조용히 no-op으로 넘어가지 않는다). */
+export function StaleBridgeBuildBanner({ missingMethods }: { missingMethods: string[] }) {
+  if (missingMethods.length === 0) return null;
+  return (
+    <div
+      role="alert"
+      className="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-6 py-3 text-body text-warning"
+    >
+      <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+      <div>
+        <p className="font-semibold">실행 중인 Desktop 앱 빌드가 최신이 아닙니다.</p>
+        <p className="mt-0.5 text-caption text-text-secondary">
+          다음 기능을 사용할 수 없습니다: {missingMethods.join(", ")}. 앱을 완전히 종료했다가 다시 실행하세요(계속되면
+          최신 버전으로 다시 설치가 필요할 수 있습니다).
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // Style guide §5.3 status colors, used at full saturation here (not the
 // low-opacity badge fills elsewhere) because this checklist is the one place
 // an air-gapped operator decides whether to trust a bundle — the PASS/WARN/

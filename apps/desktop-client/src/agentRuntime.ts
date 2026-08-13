@@ -12,6 +12,14 @@
 // on a machine where Electron itself cannot be launched (see
 // open-decisions.md D-058).
 //
+// `KnowledgeCandidate`(agentic Knowledge selection, KNOWLEDGE_ROUTE stage —
+// `packages/schemas/api/local-runtime-api.yaml`'s `KnowledgeCandidateInput`,
+// `services/agent-runtime/src/agent_runtime/knowledge_router.py`) is declared
+// once in `electron/types.ts` (interface-only, zero runtime cost — see that
+// file's own header) and reused here rather than duplicated, since this is
+// the exact wire shape both places send/consume byte-for-byte.
+import type { KnowledgeCandidate } from "../electron/types";
+
 // Base URL is configurable (never hardcoded in components) via Vite's
 // `VITE_AGENT_RUNTIME_BASE_URL` define, defaulting to the documented local
 // port.
@@ -94,8 +102,19 @@ export interface StartRunParams {
    * search should run against — replaces the old single manual pick, and
    * (D-079 이어 붙이기) only ever includes Knowledge search-runtime has
    * actually registered as searchable. See `chatTypes.ts`'s
-   * `resolveActivatedKnowledgeIds`. */
+   * `resolveActivatedKnowledgeIds`. Ignored (never sent) when
+   * `knowledgeCandidates` is non-empty — see that field's docstring. */
   knowledgeIds: string[];
+  /** Agentic Knowledge selection (KNOWLEDGE_ROUTE stage, additive/optional).
+   * When non-empty, this REPLACES `knowledgeIds` in the request entirely —
+   * `startRun` sends `knowledge_candidates`, never `knowledge_ids`, in that
+   * case (the two are mutually exclusive on the wire, per
+   * `local-runtime-api.yaml`'s `StartRunRequest.input` docstring). Each
+   * candidate carries only metadata (id/name/description/tags/
+   * classification) — never document text — agent-runtime's own optional
+   * LLM call picks the subset worth searching. Omitting/emptying this
+   * reproduces the exact prior `knowledgeIds` fan-out behavior. */
+  knowledgeCandidates?: KnowledgeCandidate[];
   question: string;
   traceId?: string;
   /** Per-session consent (default `false`, never persisted) for Stage 2 hub
@@ -134,12 +153,20 @@ async function parseErrorBody(res: Response): Promise<string> {
 export async function startRun(params: StartRunParams): Promise<RunResponse> {
   const input: Record<string, unknown> = {
     knowledge_id: params.knowledgeId,
-    knowledge_ids: params.knowledgeIds,
     question: params.question,
     // 로컬에서 조회하는 데이터를 허브에 넘기면 안 된다 — default-off consent,
     // always sent explicitly (never inferred server-side).
     allow_hub_lookup: params.allowHubLookup,
   };
+  // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 후보를 보낼 때는 knowledge_ids를
+  // 절대 함께 보내지 않는다(local-runtime-api.yaml: 후보가 있으면 서버가 id
+  // 선택을 통째로 넘겨받는다). 후보가 없으면(브릿지 없음/manifest 조립 실패
+  // 등) 기존 fan-out 동작을 그대로 재현한다.
+  if (params.knowledgeCandidates && params.knowledgeCandidates.length > 0) {
+    input.knowledge_candidates = params.knowledgeCandidates;
+  } else {
+    input.knowledge_ids = params.knowledgeIds;
+  }
   if (params.agentProfile) input.agent_profile = params.agentProfile;
   if (params.mcpTool) {
     input.mcp_tool = params.mcpTool;
@@ -216,6 +243,12 @@ export interface RunEventLogItem {
 const KNOWN_EVENT_NAMES = [
   "run.started",
   "preflight.completed",
+  // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 후보를 보냈을 때만 실제로
+  // 발생한다(agent_runtime.knowledge_router). status는 "ran"(LLM이 실제로
+  // 골랐다)/"skipped"(후보가 threshold 이하라 LLM을 부르지 않았다)/
+  // "fallback"(LLM 호출은 됐지만 신뢰할 수 없어 전체를 검색했다) 중 하나 —
+  // chatTypes.ts의 describeKnowledgeRoute가 세 경우를 구분해 보여준다.
+  "knowledge.route.selected",
   "knowledge.search.started",
   "knowledge.search.completed",
   "knowledge.query_rewritten",
