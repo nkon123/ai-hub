@@ -4,6 +4,7 @@ import {
   compareVersions,
   computeCatalogItemView,
   computeCatalogView,
+  filterCatalogView,
   latestApprovedVersion,
   notInstallableReason,
   revokedInstallReason,
@@ -83,6 +84,31 @@ describe("latestApprovedVersion", () => {
       catalogVersion({ id: "v3", version: "1.5.0", status: "APPROVED" }),
     ]);
     expect(result?.version).toBe("1.5.0");
+  });
+});
+
+describe("filterCatalogView", () => {
+  const views = computeCatalogView(
+    [
+      catalogAsset({ id: "knowledge-1", name: "재택근무 정책", type: "knowledge" }),
+      catalogAsset({ id: "mcp-1", name: "DB 메타데이터", type: "mcp_tool" }),
+      catalogAsset({ id: "agent-1", name: "규정 안내 Agent", type: "agent" }),
+    ],
+    [],
+  );
+
+  it("filters Knowledge and MCP Tool without hiding other types from the all view", () => {
+    expect(filterCatalogView(views, { query: "", assetType: "knowledge" }).map((v) => v.asset.id)).toEqual([
+      "knowledge-1",
+    ]);
+    expect(filterCatalogView(views, { query: "", assetType: "mcp_tool" }).map((v) => v.asset.id)).toEqual([
+      "mcp-1",
+    ]);
+    expect(filterCatalogView(views, { query: "", assetType: "all" })).toHaveLength(3);
+  });
+
+  it("matches names case-insensitively and trims the query", () => {
+    expect(filterCatalogView(views, { query: "  db ", assetType: "all" }).map((v) => v.asset.id)).toEqual(["mcp-1"]);
   });
 });
 

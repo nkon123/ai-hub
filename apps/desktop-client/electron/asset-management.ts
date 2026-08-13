@@ -41,6 +41,50 @@ function readJsonIfExists(filePath: string): unknown | null {
   }
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const KNOWLEDGE_INDEX_META_PATH = "index/index-meta.json";
+
+/**
+ * Repairs a pre-D-060 Knowledge install only when its own index metadata is
+ * still covered by, and matches, the checksum verified during installation.
+ * Missing evidence leaves the record untouched (fail closed).
+ */
+export function recoverLegacyKnowledgeAssetVersionIds(
+  layout: InstallRootLayout,
+  store: InstalledAssetsStore,
+): number {
+  let recovered = 0;
+  const assetsRoot = `${path.resolve(layout.assetsDir)}${path.sep}`;
+
+  for (const asset of store.list()) {
+    if (asset.assetType !== "knowledge" || asset.assetVersionId) continue;
+    const expectedChecksum = asset.fileChecksums?.[KNOWLEDGE_INDEX_META_PATH]?.toLowerCase();
+    if (!expectedChecksum || !/^[0-9a-f]{64}$/.test(expectedChecksum)) continue;
+
+    try {
+      const installDir = path.resolve(assetInstallDir(layout, "knowledge", asset.assetId, asset.version));
+      if (!`${installDir}${path.sep}`.startsWith(assetsRoot)) continue;
+      const metaPath = path.join(installDir, KNOWLEDGE_INDEX_META_PATH);
+      // Offline Bundle import rejects symlinks; keep the recovery path just
+      // as strict in case local files were changed after installation.
+      if (!fs.existsSync(metaPath) || !fs.lstatSync(metaPath).isFile()) continue;
+      if (sha256OfFile(metaPath).toLowerCase() !== expectedChecksum) continue;
+
+      const raw = readJsonIfExists(metaPath);
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const candidate = (raw as Record<string, unknown>).knowledge_id;
+      if (typeof candidate !== "string" || !UUID_PATTERN.test(candidate) || candidate === asset.assetId) continue;
+      if (store.backfillAssetVersionId(asset.assetType, asset.assetId, asset.version, candidate)) recovered += 1;
+    } catch {
+      // A damaged/unreadable local file or unwritable state registry must not
+      // crash Desktop. The record remains disabled and keeps its explanation.
+      continue;
+    }
+  }
+
+  return recovered;
+}
+
 // ---------------------------------------------------------------------------
 // 설치된 Service 의존 관계 로드
 // ---------------------------------------------------------------------------

@@ -27,10 +27,10 @@ const MAIN_TABS: Array<{ id: MainTab; label: string; icon: typeof MessageSquare 
 ];
 
 const HUB_TABS: Array<{ id: HubSubTab; label: string }> = [
-  { id: "store", label: "스토어" },
-  { id: "import", label: "가져오기" },
+  { id: "store", label: "찾아 설치" },
+  { id: "import", label: "ZIP 가져오기" },
   { id: "assets", label: "설치된 자산" },
-  { id: "update", label: "업데이트·복구" },
+  { id: "update", label: "복구" },
 ];
 
 const SETTINGS_TABS: Array<{ id: SettingsSubTab; label: string }> = [
@@ -126,7 +126,7 @@ export default function App() {
             <div>
               <h1 className="mb-1 text-page-title font-bold text-text-primary">자산 허브</h1>
               <p className="mb-6 text-body text-text-secondary">
-                Knowledge/Agent/Service Package를 찾아보고, 반입하고, 설치된 자산을 관리합니다.
+                Knowledge와 MCP Tool을 찾아 설치하거나, 반입한 ZIP을 가져옵니다.
               </p>
               <Tabs tabs={HUB_TABS} activeId={hubTab} onChange={(id) => setHubTab(id as HubSubTab)} />
               {hubTab === "store" && (

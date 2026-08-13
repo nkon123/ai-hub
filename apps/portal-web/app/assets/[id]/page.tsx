@@ -183,11 +183,11 @@ function VersionActions({
           variant="secondary"
           disabled={!isExportableStatus || !canExport}
           onClick={() =>
-            router.push(`/distributions/new?assetId=${assetId}&versionId=${version.id}`)
+            router.push(`/assets/${assetId}/versions?versionId=${version.id}`)
           }
         >
           <PackageOpen size={14} />
-          Offline Bundle 요청
+          Desktop 설치 ZIP 받기
         </Button>
       </div>
 
@@ -208,7 +208,7 @@ function VersionActions({
           {exportDisabledReason && (
             <span className="inline-flex items-center gap-1">
               <Lock size={12} />
-              Offline Bundle 요청 불가: {exportDisabledReason}
+              설치 ZIP 생성 불가: {exportDisabledReason}
             </span>
           )}
         </div>

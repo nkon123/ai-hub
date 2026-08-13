@@ -40,6 +40,22 @@ const TYPE_ICON: Record<string, typeof BookOpen> = {
   service: Settings,
 };
 
+const TYPE_LABEL: Record<string, string> = {
+  knowledge: "Knowledge",
+  agent: "Agent",
+  prompt: "Prompt",
+  mcp_tool: "MCP Tool",
+  service: "AI Service",
+};
+
+const TYPE_TONE: Record<string, string> = {
+  knowledge: "bg-asset-knowledge/10 text-asset-knowledge",
+  mcp_tool: "bg-asset-tool/10 text-asset-tool",
+  agent: "bg-asset-agent/10 text-asset-agent",
+  prompt: "bg-asset-prompt/10 text-asset-prompt",
+  service: "bg-asset-workflow/10 text-asset-workflow",
+};
+
 export default function AssetsPage() {
   const router = useRouter();
   const { role } = useRole();
@@ -81,11 +97,16 @@ export default function AssetsPage() {
     <div>
       <PageHeader
         title="자산 카탈로그"
+        description="승인할 자산을 관리하고 Desktop 설치 ZIP을 받을 수 있습니다."
         actions={
-          <Button href="/knowledge/new">
-            <Plus size={16} />
-            지식 등록
-          </Button>
+          <>
+            <Button href="/assets/new/mcp_tool" variant="secondary">
+              <Wrench size={16} /> MCP Tool 등록
+            </Button>
+            <Button href="/knowledge/new">
+              <Plus size={16} /> Knowledge 등록
+            </Button>
+          </>
         }
       />
 
@@ -132,14 +153,18 @@ export default function AssetsPage() {
           const ver = latestVersion(asset);
           const TypeIcon = TYPE_ICON[asset.type] ?? BookOpen;
           return (
-            <Card key={asset.id} onClick={() => router.push(`/assets/${asset.id}`)} className="flex items-center gap-4 px-5 py-4">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-asset-knowledge/10 text-asset-knowledge">
+            <Card
+              key={asset.id}
+              onClick={() => router.push(asset.type === "knowledge" ? `/assets/${asset.id}` : `/assets/${asset.id}/versions`)}
+              className="flex items-center gap-4 px-5 py-4"
+            >
+              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${TYPE_TONE[asset.type] ?? "bg-slate-100 text-text-muted"}`}>
                 <TypeIcon size={19} strokeWidth={1.75} />
               </span>
               <div className="flex-1">
                 <div className="text-card-title font-semibold text-text-primary">{asset.name}</div>
                 <div className="mt-0.5 text-caption text-text-secondary">
-                  {asset.type} · {asset.owner_org} · {new Date(asset.created_at).toLocaleDateString("ko-KR")}
+                  {TYPE_LABEL[asset.type] ?? asset.type} · {asset.owner_org} · {new Date(asset.created_at).toLocaleDateString("ko-KR")}
                 </div>
               </div>
               {ver && (

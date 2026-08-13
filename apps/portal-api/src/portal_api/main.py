@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -25,6 +26,7 @@ from portal_api.routers.services import router as services_router
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn.
 configure_logging("portal-api")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -32,12 +34,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # See `database.init_db()` docstring: schema is owned by Alembic
     # (`make migrate`), not created here.
     await init_db()
+    logger.info(
+        "service.started service=portal-api build_version=%s commit_sha=%s",
+        settings.build_version,
+        settings.commit_sha,
+    )
     yield
 
 
 app = FastAPI(
     title="Enterprise AI Asset Hub — Portal API",
-    version="0.1.0",
+    version=settings.build_version,
     lifespan=lifespan,
 )
 
@@ -84,4 +91,10 @@ app.include_router(knowledge_search_router)
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "version": settings.build_version,
+            "commit_sha": settings.commit_sha,
+        }
+    )

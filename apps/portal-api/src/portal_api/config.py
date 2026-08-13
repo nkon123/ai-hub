@@ -8,6 +8,14 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-
 
 
 class Settings(BaseSettings):
+    # Deployment identity. Release automation must inject the immutable
+    # commit SHA; keeping an explicit "unknown" fallback makes a local/dev
+    # process honest without making Git metadata a runtime dependency.
+    # Exposed by `/health` and emitted once at startup so operators can
+    # distinguish the checked-out source from the code actually in memory.
+    build_version: str = "0.1.0"
+    commit_sha: str = "unknown"
+
     # Portal Web(브라우저)이 이 API 를 직접 호출할 때 허용할 Origin 목록.
     # `localhost` 와 `127.0.0.1` 은 브라우저 CORS 에서 **서로 다른 Origin** 이라,
     # 하나만 허용하면 다른 주소로 접속한 사용자에게는 서버가 200 을 기록해도

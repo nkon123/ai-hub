@@ -70,6 +70,10 @@ make migration name=... && make migrate   # 모델 변경 시
 make migrate-status
 ```
 
+배포 시 `PORTAL_BUILD_VERSION`과 immutable commit SHA인
+`PORTAL_COMMIT_SHA`를 주입한다. 로컬 개발에서 미주입된 SHA는 정직하게
+`unknown`으로 표시되며, 두 값은 `/health` 응답과 시작 로그에서 확인한다.
+
 ## 테스트
 
 `tests/integration/portal_api/` — 자산 등록, 버전 관리, 검토, 서비스, 배포,

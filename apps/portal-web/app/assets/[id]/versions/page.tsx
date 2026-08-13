@@ -14,15 +14,17 @@
  * 최종 확인된다.
  */
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   AlertTriangle,
   CheckCircle2,
   ChevronLeft,
+  Download,
   GitCompare,
   Loader2,
   Lock,
+  PackageOpen,
   PlusCircle,
   Send,
   ShieldQuestion,
@@ -41,7 +43,7 @@ import {
   inputClass,
 } from "../../../_components/ui";
 import { formatDateTime } from "../../../_components/review-meta";
-import { useRole } from "../../../_components/role-context";
+import { canCreateDistribution, useRole } from "../../../_components/role-context";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -113,6 +115,137 @@ async function safeJson(res: Response): Promise<any> {
   } catch {
     return null;
   }
+}
+
+type BundleDownloadState =
+  | { status: "idle" }
+  | { status: "running"; message: string }
+  | { status: "success"; message: string }
+  | { status: "cancelled"; message: string }
+  | { status: "error"; message: string };
+
+function AssetBundleDownloadAction({
+  assetName,
+  version,
+}: {
+  assetName: string;
+  version: VersionOut;
+}) {
+  const { role } = useRole();
+  const controllerRef = useRef<AbortController | null>(null);
+  const [state, setState] = useState<BundleDownloadState>({ status: "idle" });
+  const allowed = canCreateDistribution(role.code);
+  const approved = version.status === "APPROVED";
+  const canDownload = approved && allowed && state.status !== "running";
+  const disabledReason = !approved
+    ? `승인된 버전만 ZIP으로 받을 수 있습니다 (현재: ${version.status}).`
+    : !allowed
+      ? "자산 제작자 또는 관리자만 ZIP을 생성할 수 있습니다."
+      : null;
+
+  useEffect(() => () => controllerRef.current?.abort(), []);
+
+  async function downloadBundle() {
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    setState({ status: "running", message: "설치 ZIP을 준비하고 있습니다..." });
+    try {
+      const createRes = await fetch(`${API_BASE}/api/v1/distributions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${role.token}` },
+        body: JSON.stringify({
+          root_type: "ASSET_VERSION",
+          root_id: version.id,
+          mode: "OFFLINE_BUNDLE",
+        }),
+        signal: controller.signal,
+      });
+      const created = await safeJson(createRes);
+      if (!createRes.ok) {
+        throw new Error(created?.error?.message ?? `ZIP 생성 요청에 실패했습니다. (HTTP ${createRes.status})`);
+      }
+
+      let completed = false;
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        const statusRes = await fetch(`${API_BASE}/api/v1/distributions/${created.id}`, {
+          headers: { Authorization: `Bearer ${role.token}` },
+          signal: controller.signal,
+        });
+        const detail = await safeJson(statusRes);
+        if (!statusRes.ok) {
+          throw new Error(detail?.error?.message ?? `ZIP 상태를 확인하지 못했습니다. (HTTP ${statusRes.status})`);
+        }
+        if (detail.status === "FAILED" || detail.status === "CANCELLED") {
+          throw new Error(detail.error_message ?? "설치 ZIP을 만들지 못했습니다.");
+        }
+        if (detail.status === "SUCCEEDED") {
+          completed = true;
+          break;
+        }
+        setState({
+          status: "running",
+          message: detail.stage ? `설치 ZIP 준비 중 · ${detail.stage}` : "설치 ZIP을 준비하고 있습니다...",
+        });
+      }
+      if (!completed) throw new Error("ZIP 생성 시간이 초과되었습니다. 반출 요청 화면에서 작업 상태를 확인하세요.");
+
+      setState({ status: "running", message: "ZIP을 내려받고 있습니다..." });
+      const downloadRes = await fetch(`${API_BASE}/api/v1/distributions/${created.id}/download`, {
+        headers: { Authorization: `Bearer ${role.token}` },
+        signal: controller.signal,
+      });
+      if (!downloadRes.ok) {
+        const body = await safeJson(downloadRes);
+        throw new Error(body?.error?.message ?? `ZIP 다운로드에 실패했습니다. (HTTP ${downloadRes.status})`);
+      }
+      const blob = await downloadRes.blob();
+      const disposition = downloadRes.headers.get("Content-Disposition") ?? "";
+      const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1] ?? `${assetName}-${version.version}.zip`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      link.click();
+      URL.revokeObjectURL(url);
+      setState({ status: "success", message: "ZIP 다운로드를 시작했습니다. Desktop의 ‘ZIP 가져오기’에서 선택하세요." });
+    } catch (error) {
+      if (error instanceof Error && error.name === "AbortError") {
+        setState({ status: "cancelled", message: "화면 대기를 중단했습니다. 서버의 ZIP 생성 작업은 계속될 수 있습니다." });
+      } else {
+        setState({ status: "error", message: error instanceof Error ? error.message : "ZIP 다운로드에 실패했습니다." });
+      }
+    } finally {
+      if (controllerRef.current === controller) controllerRef.current = null;
+    }
+  }
+
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          size="sm"
+          variant={canDownload ? "primary" : "secondary"}
+          disabled={!canDownload}
+          title={disabledReason ?? undefined}
+          onClick={() => void downloadBundle()}
+        >
+          {state.status === "running" ? <Loader2 size={14} className="animate-spin" /> : <Download size={14} />}
+          {state.status === "running" ? "ZIP 준비 중" : "Desktop 설치 ZIP 받기"}
+        </Button>
+        {state.status === "running" && (
+          <Button variant="secondary" size="sm" onClick={() => controllerRef.current?.abort()}>
+            화면 대기 중단
+          </Button>
+        )}
+      </div>
+      {disabledReason && <p className="text-caption text-text-secondary">{disabledReason}</p>}
+      {state.status === "running" && <p className="text-caption text-brand-700">{state.message}</p>}
+      {state.status === "success" && <p className="text-caption text-success">{state.message}</p>}
+      {state.status === "cancelled" && <p className="text-caption text-warning">{state.message}</p>}
+      {state.status === "error" && <ErrorBanner message={state.message} />}
+    </div>
+  );
 }
 
 function bumpPatch(version: string): string {
@@ -622,6 +755,13 @@ export default function AssetVersionsPage() {
                   <XCircle size={14} />
                   검토 요청 취소
                 </Button>
+              </div>
+
+              <div className="border-t border-border pt-3">
+                <div className="mb-2 flex items-center gap-2 text-body font-semibold text-text-primary">
+                  <PackageOpen size={15} /> Desktop으로 가져가기
+                </div>
+                <AssetBundleDownloadAction assetName={info.name} version={selected} />
               </div>
 
               {(submitDisabledReason || cancelDisabledReason) && (

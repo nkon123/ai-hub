@@ -70,6 +70,10 @@ Agent/Prompt Local Copy 예외 처리). DB 연결이 없으므로 Registry 조�
 `make dev-distribution-service` (`cd services/distribution-service && uv run uvicorn
 distribution_service.main:app --reload --port 8400`)
 
+배포 시 `DISTRIBUTION_BUILD_VERSION`과 immutable commit SHA인
+`DISTRIBUTION_COMMIT_SHA`를 주입한다. 로컬 개발에서 미주입된 SHA는 정직하게
+`unknown`으로 표시되며, 두 값은 `/health` 응답과 시작 로그에서 확인한다.
+
 ## 테스트
 
 `tests/unit/distribution_service/` — `uv run pytest tests/unit/distribution_service/ -v`.

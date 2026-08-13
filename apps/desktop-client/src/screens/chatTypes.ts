@@ -82,7 +82,7 @@ export interface ChatMessage {
 // working chat that always returns zero results (INSUFFICIENT_EVIDENCE) —
 // exactly the bug this reason string exists to prevent by refusing to guess.
 export const LEGACY_BUNDLE_KNOWLEDGE_ID_REASON =
-  "이 자산은 이전 형식의 Bundle로 설치되어 Knowledge 식별자가 없습니다 — 다시 반출·설치해야 대화할 수 있습니다.";
+  "이 자산은 이전 형식의 Bundle이며 검증 가능한 Knowledge 식별자가 없습니다 — 최신 ZIP으로 다시 설치해야 대화할 수 있습니다.";
 
 export interface KnowledgeSelection {
   /** Empty string when nothing usable is selected — same "falsy means no

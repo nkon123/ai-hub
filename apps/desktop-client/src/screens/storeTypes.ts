@@ -161,3 +161,15 @@ export function computeCatalogView(
 ): CatalogItemView[] {
   return assets.map((asset) => computeCatalogItemView(asset, installed));
 }
+
+export function filterCatalogView(
+  views: CatalogItemView[],
+  filters: { query: string; assetType: "all" | "knowledge" | "mcp_tool" },
+): CatalogItemView[] {
+  const query = filters.query.trim().toLocaleLowerCase("ko-KR");
+  return views.filter((view) => {
+    if (filters.assetType !== "all" && view.asset.type !== filters.assetType) return false;
+    if (!query) return true;
+    return view.asset.name.toLocaleLowerCase("ko-KR").includes(query);
+  });
+}

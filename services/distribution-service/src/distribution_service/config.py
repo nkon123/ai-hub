@@ -18,6 +18,12 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent  # ente
 
 
 class Settings(BaseSettings):
+    # Deployment identity. Release automation injects the immutable commit
+    # SHA; local development deliberately reports "unknown" instead of
+    # reading mutable Git metadata at runtime.
+    build_version: str = "0.1.0"
+    commit_sha: str = "unknown"
+
     # Where portal-api saved uploaded Knowledge (and, in principle, other
     # asset type) package files: storage_root/{asset_type}/{asset_id}/{version}/
     storage_root: Path = _REPO_ROOT / "apps" / "portal-api" / "storage"

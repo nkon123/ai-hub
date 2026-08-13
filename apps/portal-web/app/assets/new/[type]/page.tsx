@@ -81,7 +81,7 @@ const CLASSIFICATIONS = [
 
 const STEPS = [
   { id: 1, label: "기본정보" },
-  { id: 2, label: "Manifest 입력" },
+  { id: 2, label: "동작 설정" },
   { id: 3, label: "파일 업로드" },
   { id: 4, label: "검증" },
   { id: 5, label: "제출" },
@@ -218,6 +218,7 @@ function buildSkeleton(type: WizardType, id: string, basic: BasicInfo): Record<s
     tool_name: "",
     risk_level: "READ_ONLY",
     input_schema: { type: "object", properties: {} },
+    execution_guards: { timeout_seconds: 10, requires_user_confirmation: false },
   };
 }
 
@@ -450,7 +451,14 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return basic.name.trim().length > 0;
       case 2:
-        return manifestText.trim().length > 0;
+        if (type !== "mcp_tool") return manifestText.trim().length > 0;
+        return (
+          parsed.ok &&
+          typeof parsed.value.server_alias === "string" &&
+          parsed.value.server_alias.trim().length > 0 &&
+          typeof parsed.value.tool_name === "string" &&
+          parsed.value.tool_name.trim().length > 0
+        );
       case 3:
         return templateFileMatched;
       case 4:
@@ -466,7 +474,9 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return "자산 이름을 입력하세요.";
       case 2:
-        return "Manifest JSON을 입력하세요.";
+        return type === "mcp_tool"
+          ? "MCP 서버 연결 이름과 Tool 호출 이름을 입력하세요."
+          : "Manifest JSON을 입력하세요.";
       case 3:
         return expectedTemplateFileName
           ? `업로드한 파일 중 "${expectedTemplateFileName}" 이름과 일치하는 파일이 없습니다.`
@@ -818,6 +828,42 @@ function StepManifest({
   parsed: ParseResult;
   example: ExampleState;
 }) {
+  if (type === "mcp_tool") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">MCP Tool 연결</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            Desktop에서 사용할 읽기 전용 Tool의 연결 이름과 호출 이름만 입력하세요.
+          </p>
+        </div>
+
+        <McpManifestFields parsed={parsed} onChange={onChange} />
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              입력·출력 JSON Schema나 세부 실행 제한이 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="MCP Tool Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
@@ -868,6 +914,89 @@ function StepManifest({
       />
 
       {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+    </div>
+  );
+}
+
+function McpManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const guards =
+    typeof manifest.execution_guards === "object" && manifest.execution_guards !== null
+      ? (manifest.execution_guards as Record<string, unknown>)
+      : {};
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function updateGuard(key: string, value: unknown) {
+    updateManifest({
+      execution_guards: {
+        timeout_seconds: 10,
+        requires_user_confirmation: false,
+        ...guards,
+        [key]: value,
+      },
+    });
+  }
+
+  return (
+    <div className="space-y-4">
+      <FormField label="MCP 서버 연결 이름" required>
+        <input
+          value={typeof manifest.server_alias === "string" ? manifest.server_alias : ""}
+          onChange={(e) => updateManifest({ server_alias: e.target.value })}
+          placeholder="예: oracle-connector"
+          className={inputClass}
+        />
+        <p className="mt-1 text-caption text-text-muted">Office Profile에 등록된 서버 이름과 같아야 합니다.</p>
+      </FormField>
+
+      <FormField label="Tool 호출 이름" required>
+        <input
+          value={typeof manifest.tool_name === "string" ? manifest.tool_name : ""}
+          onChange={(e) => updateManifest({ tool_name: e.target.value })}
+          placeholder="예: db_metadata.get_tables"
+          className={inputClass}
+        />
+        <p className="mt-1 text-caption text-text-muted">영문·숫자·밑줄을 사용하고, 그룹은 점(.)으로 구분합니다.</p>
+      </FormField>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <FormField label="응답 제한 시간">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={typeof guards.timeout_seconds === "number" ? guards.timeout_seconds : 10}
+              onChange={(e) => updateGuard("timeout_seconds", Number(e.target.value))}
+              className={inputClass}
+            />
+            <span className="text-body text-text-muted">초</span>
+          </div>
+        </FormField>
+        <FormField label="사용 전 확인">
+          <label className="flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-3 text-body text-text-primary">
+            <input
+              type="checkbox"
+              checked={guards.requires_user_confirmation === true}
+              onChange={(e) => updateGuard("requires_user_confirmation", e.target.checked)}
+            />
+            실행 전에 사용자에게 확인
+          </label>
+        </FormField>
+      </div>
+
+      <div className="rounded-lg bg-success/5 px-4 py-3 text-body text-success">
+        안전 정책에 따라 이 PoC에서는 읽기 전용 Tool만 등록됩니다.
+      </div>
     </div>
   );
 }

@@ -1671,13 +1671,16 @@ components:
   schemas:
     HealthResponse:
       type: object
-      required: [status]
+      required: [status, version, commit_sha]
       properties:
         status:
           type: string
           enum: [ok, degraded]
         version:
           type: string
+        commit_sha:
+          type: string
+          description: Immutable source revision injected by release automation, or unknown in local development
 
     ErrorEnvelope:
       type: object
