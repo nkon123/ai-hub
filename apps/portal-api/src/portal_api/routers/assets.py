@@ -1141,6 +1141,40 @@ async def list_indexing_jobs(
     return [IndexingJobOut.model_validate(j) for j in jobs]
 
 
+def resolve_knowledge_index_dir(job: IndexingJob | None, version_id: str) -> Path | None:
+    """The single index-directory resolution rule this module uses — do not
+    duplicate this candidate list elsewhere (routers/knowledge_diagnostics.py
+    reuses this exact function for both its Feature 1 검색 품질 테스트 and
+    Feature 2 반출 준비 상태 점검 checks, per that module's brief: "resolve the
+    index dir the same way get_knowledge_info does — do not invent a second
+    resolution path").
+
+    Mirrors search-runtime's own `hybrid.resolve_index_dir`/`local_index_
+    registry` precedent of "first candidate that actually has an
+    `index-meta.json` wins", but resolved against *this* service's Registry
+    state (`IndexingJob`) rather than a live filesystem scan of INDEX_BASE —
+    portal-api and search-runtime are different processes and must not
+    import each other's internals (CLAUDE.md 구현 원칙 2).
+
+    Only looks at all once a COMPLETED `IndexingJob` exists — an in-progress
+    or absent job means there is nothing on disk to resolve yet, matching
+    this function's one existing caller's gating
+    (`if job and job.status == "COMPLETED"`) exactly. Candidates, in order:
+    the job's own recorded `index_path`, the shared `index_base/<version_id>`
+    convention, then the legacy manually-built `hr-policy-v1` fixture
+    directory. Returns `None` when no job is COMPLETED or no candidate has
+    an `index-meta.json`.
+    """
+    if not job or job.status != "COMPLETED":
+        return None
+    candidates: list[Path] = []
+    if job.index_path:
+        candidates.append(Path(job.index_path))
+    candidates.append(settings.index_base / version_id)
+    candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
+    return next((p for p in candidates if (p / "index-meta.json").exists()), None)
+
+
 @router.get("/assets/{asset_id}/knowledge-info", response_model=None)
 async def get_knowledge_info(
     asset_id: str,
@@ -1177,14 +1211,7 @@ async def get_knowledge_info(
         index_meta: dict | None = None
         chunks_preview: list[dict] = []
         if job and job.status == "COMPLETED":
-            # Resolve index path: try stored path first, then shared index base by version_id
-            candidates = []
-            if job.index_path:
-                candidates.append(Path(job.index_path))
-            candidates.append(settings.index_base / ver.id)
-            candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
-
-            index_dir = next((p for p in candidates if (p / "index-meta.json").exists()), None)
+            index_dir = resolve_knowledge_index_dir(job, ver.id)
             if index_dir:
                 with open(index_dir / "index-meta.json") as f:
                     index_meta = json.load(f)

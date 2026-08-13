@@ -388,6 +388,20 @@ export SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI
 
 **실측(2026-08-13, macOS)**: 현재 저장소의 `data/indexes/d9e660b7-...`(재택근무 정책 Knowledge) 색인은 아직 `bm25.pkl`만 가지고 있어 **그대로는 활성화되지 않는다** — `bm25_legacy_pickle_only`로 거절되는 것을 실제 서비스로 확인했다. `convert-bm25-format`으로 변환한 사본은 등록에 성공했고, 같은 질의(`장비 지원은 무엇이 있나요?`)가 활성화 전 0건 → 활성화 후 실제 Citation 1건(`장비 지원` 섹션, similarity 0.53) → 비활성화 후 다시 0건으로 바뀌는 것까지 확인했다. **Offline Bundle로 반출하기 전에 §2.2 변환을 먼저 수행할 것.**
 
+**이건 이 색인 하나만의 문제가 아니다(2026-08-13, 전수 조사)**: `data/indexes/` 아래 존재하는 5개 색인 전부를 실제로 확인한 결과, **예외 없이 전부 `bm25.pkl`만 있고 변환된 `bm25.json`이 없다.**
+
+| 색인(AssetVersion id) | bm25 포맷 | 청크 classification |
+|---|---|---|
+| `43d83955-…` | `bm25.pkl`만 (미변환) | CONFIDENTIAL (청크 64개) |
+| `87827bf9-…` | `bm25.pkl`만 (미변환) | **없음 (청크 18개 전부 미기록)** |
+| `a038442d-…` | `bm25.pkl`만 (미변환) | INTERNAL (청크 11개) |
+| `d9e660b7-…` | `bm25.pkl`만 (미변환) | INTERNAL (청크 4개) |
+| `hr-policy-v1` | `bm25.pkl`만 (미변환) | INTERNAL (청크 4개) |
+
+즉 오늘 시점에 이 5개 중 **어느 것을 반출해도** §2.2 변환 없이는 Desktop에서 `bm25_legacy_pickle_only`로 활성화가 거절된다 — 반출 전 §2.2를 예외 없이 거쳐야 한다. 이 표의 색인 5개는 아직 실제로 변환하지 않았다(라이브 운영 데이터를 바꾸는 결정이라 이 세션 범위 밖으로 남겨뒀다 — `open-decisions.md` D-081).
+
+추가로 **`87827bf9-…`는 위 표의 `bm25.pkl` 문제를 해결해도 여전히 아무 결과도 반환하지 않는다** — 청크 18개 전부에 `classification`이 기록되어 있지 않고 D-062(미분류 자산 fail-closed)에 걸리기 때문이다. `SEARCH_ALLOW_UNKNOWN_CLASSIFICATION=false`(기본값)에서 0건, `=true`에서 3건(최고 유사도 0.90)으로 실측 확인했다 — 검색 품질 문제가 아니라 분류 미기록으로 인한 정책 차단이다. 어떤 등급을 스탬프할지는 문서 내용을 아는 사람의 결정이 필요해 이번 세션에서 `stamp-classification`을 실행하지 않았다(D-081). 아래 §8 표의 "챗봇/검색이 오류 없이 항상 '근거 없음'" 항목도 참고.
+
 search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청이 전달하는 것은 그 PC의 로컬 절대 경로이므로, 원격 search-runtime은 그 디렉터리를 읽을 수 없다.
 
 ## 8. 문제 해결
@@ -403,6 +417,7 @@ search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청
 | PowerShell에서 `.ps1` 실행이 거부됨(빨간 오류) | 실행 정책이 `Restricted` | §1.1 참고. 조직 정책상 `Set-ExecutionPolicy`가 막혀 있으면 `powershell -ExecutionPolicy Bypass -File <script>.ps1`로 개별 실행 |
 | Desktop Electron 창이 뜨지 않음 | §7 참고 — 이 경로는 이번 세션 기준 미검증 | `pnpm dev`의 콘솔 출력(Vite/Electron 각각의 로그, `-n vite,electron` 접두사로 구분됨)을 그대로 공유해 원인 분석 필요 |
 | 챗봇 답변의 근거(citation)가 이상하게 관련 없어 보임(오류는 없음) | 임베딩 모델 불일치(D-075) — Knowledge 색인을 만든 모델과 검색이 실제로 쓴 모델이 다르면 코사인 유사도 자체가 의미를 잃어 조용히 품질만 나빠진다 | search-runtime 로그에서 `search.embed_model.fallback`(색인에 `embed_model` 기록이 없어 `SEARCH_EMBED_MODEL` 폴백을 썼음) 또는 `search.embed_model.mismatch`(색인 기록과 `SEARCH_EMBED_MODEL` 설정이 서로 다름 — 색인 쪽이 우선 적용됨) 로그 라인을 확인. `POST /search/v1/query` 응답의 `embed_model_applied`/`embed_model_source` 필드로도 실제 적용된 모델을 바로 확인할 수 있다. §2.1 절차대로 재색인했는지 점검 |
+| 챗봇/검색이 오류 없이 항상 "근거 없음"(citation 0건) | 분류(classification) 미기록 — D-062가 미분류 청크를 fail-closed로 숨긴다. §7.1의 `87827bf9-…` 실측 사례와 동일 원인 | `SEARCH_ALLOW_UNKNOWN_CLASSIFICATION`을 임시로 `true`로 켜서 같은 질의 결과가 늘어나는지 비교하거나, Portal의 검색 품질 테스트(§7.1, `search-preview`)가 `no_result_reason: CLASSIFICATION_ABOVE_CLEARANCE`를 보고하는지 확인. 원인이 맞으면 `stamp-classification`으로 조치(어떤 등급을 스탬프할지는 사람의 결정 — `open-decisions.md` D-081) |
 
 ## 8.1 외부 연동 점검 결과 (실측)
 

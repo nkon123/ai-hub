@@ -260,6 +260,98 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/assets/{asset_id}/versions/{version_id}/search-preview:
+    post:
+      tags: [knowledge-diagnostics]
+      summary: 검색 품질 테스트 — 이 질문을 하면 실제로 무엇이 검색되는가 (retrieval preview, D-079)
+      description: |
+        Producer용 검색 단계 진단이다. 이미 있는 정적 청크 미리보기/평가
+        지표와 달리, 실제 질의를 search-runtime에 보내 어떤 청크가 어떤
+        점수로 검색되는지 보여준다 — LLM 응답이 아니다(그건 챗봇 Quick
+        Create Wizard의 몫). 승인되지 않은 버전에도 동작한다(승인 전 확인이
+        이 기능의 목적이다).
+
+        요청 Body에 `metadata_filters`/`access_context`/`retrieval_profile`이
+        의도적으로 없다 — 04-knowledge-platform.md §3.8이 금지하는 ACL
+        Override 표면을 만들지 않기 위해서다. `ignore_relevance_threshold:
+        true`는 search-runtime에 `min_relevance_score: 0`만 추가로 보낼 뿐,
+        ACL/Classification 필터링은 절대 완화하지 않는다.
+
+        `knowledge_id`로는 `asset_id`가 아니라 이 경로의 `version_id`
+        (AssetVersion id)를 그대로 사용한다(D-060).
+      operationId: search_preview
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+        - $ref: "#/components/parameters/VersionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchPreviewRequest"
+      responses:
+        "200":
+          description: OK (인용문이 0개여도 200 — `diagnostics.no_result_reason`으로 구분)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchPreviewResponse"
+        "400":
+          description: 잘못된 요청이거나, 이 자산이 Knowledge 유형이 아님
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: KNOWLEDGE_SEARCH_UNAVAILABLE — search-runtime에 연결할 수 없거나 오류를 반환함
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/assets/{asset_id}/versions/{version_id}/distribution-readiness:
+    get:
+      tags: [knowledge-diagnostics]
+      summary: 반출 준비 상태 점검 — 이 버전이 Desktop에서 실제로 활성화될지 예측 (D-079)
+      description: |
+        Offline Bundle ZIP을 만들기 전에, 이 버전의 색인이 설치 후
+        search-runtime의 `POST /search/v1/local-indexes`(D-079) 등록을
+        통과해 실제로 검색 가능해질지 미리 점검한다. 읽기 전용이며 아무것도
+        만들지 않는다 — 기존 반출(Distribution ZIP 생성) 흐름을 막지 않는다.
+
+        색인 디렉터리는 `GET /api/v1/assets/{asset_id}/knowledge-info`와
+        정확히 같은 방식으로 해석한다(portal-api는 두 번째 해석 경로를
+        만들지 않는다). `checks[].activation_reason`은
+        `packages/schemas/api/knowledge-local-index.schema.json`의
+        `RegisterLocalIndexResponse`가 문서화한 거절 사유 어휘 그대로이며,
+        `services/search-runtime`의 코드를 Import하지 않는다 — 두 서비스가
+        공유하는 것은 이 Schema 파일뿐이다.
+      operationId: distribution_readiness
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: OK (`ready`는 FAIL인 check가 하나도 없을 때만 true)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DistributionReadinessResponse"
+        "400":
+          description: 이 자산이 Knowledge 유형이 아님
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/my/assets:
     get:
       tags: [assets]
@@ -1918,6 +2010,173 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KnowledgeSearchCitation"
+
+    SearchPreviewRequest:
+      type: object
+      required: [query]
+      description: |
+        No metadata_filters/access_context/retrieval_profile field exists
+        here by design — same reasoning as KnowledgeSearchRequest, plus
+        04-knowledge-platform.md §3.8's explicit ACL-override prohibition.
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+        ignore_relevance_threshold:
+          type: boolean
+          default: false
+          description: |
+            true sends search-runtime `min_relevance_score: 0` and only
+            that — never relaxes ACL/classification filtering.
+
+    SearchPreviewCitation:
+      type: object
+      description: |
+        search-runtime's own Citation shape
+        (knowledge-search.schema.json#/definitions/Citation), passed
+        through unchanged. Unlike KnowledgeSearchCitation, nothing is
+        stamped on here — this endpoint already knows which single
+        AssetVersion it searched.
+      required: [chunk_id, excerpt, score]
+      properties:
+        chunk_id:
+          type: string
+        parent_chunk_id:
+          type: string
+        document_path:
+          type: string
+        document_title:
+          type: string
+        page:
+          type: integer
+        section:
+          type: string
+        excerpt:
+          type: string
+        parent_context:
+          type: string
+        score:
+          type: number
+        similarity:
+          type: ["number", "null"]
+
+    SearchPreviewDiagnostics:
+      type: object
+      required:
+        - index_found
+        - min_relevance_score_applied
+        - relevance_threshold_ignored
+        - clearance_applied
+        - retry_without_threshold_available
+      properties:
+        index_found:
+          type: boolean
+          description: portal-api's own filesystem check — true regardless of whether the search-runtime call itself succeeded.
+        embed_model_applied:
+          type: ["string", "null"]
+        embed_model_source:
+          type: ["string", "null"]
+        min_relevance_score_applied:
+          type: number
+        relevance_threshold_ignored:
+          type: boolean
+        clearance_applied:
+          type: string
+        asset_classification:
+          type: ["string", "null"]
+          description: |
+            Registry에 기록된 이 자산의 보안등급. `clearance_applied`와 나란히
+            보여주기 위한 값 — 둘을 함께 보여주지 않으면
+            CLASSIFICATION_ABOVE_CLEARANCE가 무슨 뜻인지 화면에서 읽을 수 없다.
+        no_result_reason:
+          type: ["string", "null"]
+          enum: [INDEX_NOT_BUILT, CLASSIFICATION_ABOVE_CLEARANCE, NO_CITATIONS, null]
+          description: |
+            이 호출이 실제로 관측한 것으로만 채운다. "임계값에 걸렸다"는
+            단일 호출로 증명할 수 없으므로 서버가 지어내지 않는다 —
+            retry_without_threshold_available 참고.
+            CLASSIFICATION_ABOVE_CLEARANCE는 예외적으로 단일 호출로 증명
+            가능하다: 자산의 기록된 등급과 이 플랫폼이 assert하는 clearance를
+            security_policy의 규칙으로 비교한 결과이며, 검색 품질 문제가 아니라
+            정책상 전면 차단이라 관련도 필터를 꺼도 결과가 달라지지 않는다
+            (그래서 이 경우 retry_without_threshold_available은 false다).
+        retry_without_threshold_available:
+          type: boolean
+          description: |
+            True only when citations came back empty, the index was
+            found, and this call did not already set
+            ignore_relevance_threshold. The UI re-runs with
+            ignore_relevance_threshold: true, and only if THAT returns
+            citations may it then attribute the empty result to the
+            relevance threshold.
+
+    SearchPreviewResponse:
+      type: object
+      required: [citations, diagnostics, trace_id]
+      properties:
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchPreviewCitation"
+        diagnostics:
+          $ref: "#/components/schemas/SearchPreviewDiagnostics"
+        trace_id:
+          type: string
+
+    DistributionReadinessCheck:
+      type: object
+      required: [id, status, message]
+      properties:
+        id:
+          type: string
+          enum:
+            - INDEXING_COMPLETED
+            - INDEX_DIR_FOUND
+            - INDEX_META_KNOWLEDGE_ID
+            - BM25_FORMAT
+            - CHROMA_PRESENT
+            - EMBED_MODEL_RECORDED
+            - CLASSIFICATION_STAMPED
+        status:
+          type: string
+          enum: [PASS, WARN, FAIL]
+        message:
+          type: string
+          description: Korean, user-facing.
+        remedy:
+          type: ["string", "null"]
+          description: A concrete action, e.g. the CLI command to run.
+        activation_reason:
+          type: ["string", "null"]
+          description: |
+            The D-079 refusal (knowledge-local-index.schema.json
+            RegisterLocalIndexResponse `details.reason`) this check
+            predicts, or null when there is none (a pre-install state) or
+            the check could not be evaluated (cascaded from an earlier
+            FAIL).
+
+    DistributionReadinessResponse:
+      type: object
+      required: [version_id, ready, checks, trace_id]
+      properties:
+        version_id:
+          type: string
+          format: uuid
+        ready:
+          type: boolean
+          description: True only when no check has status FAIL.
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DistributionReadinessCheck"
+        trace_id:
+          type: string
 
     AssetListResponse:
       type: object

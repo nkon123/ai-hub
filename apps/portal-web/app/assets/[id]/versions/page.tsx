@@ -77,6 +77,24 @@ interface AssetDetail {
   versions: VersionOut[];
 }
 
+// D-079 Feature 2: 반출 준비 상태 점검. 필드는
+// packages/schemas/api/portal-openapi.yaml의 DistributionReadinessResponse와
+// 정확히 일치한다.
+interface DistributionReadinessCheck {
+  id: string;
+  status: "PASS" | "WARN" | "FAIL";
+  message: string;
+  remedy: string | null;
+  activation_reason: string | null;
+}
+
+interface DistributionReadinessResult {
+  version_id: string;
+  ready: boolean;
+  checks: DistributionReadinessCheck[];
+  trace_id: string;
+}
+
 interface DiffEntryAdded {
   key: string;
   value: unknown;
@@ -115,6 +133,105 @@ async function safeJson(res: Response): Promise<any> {
   } catch {
     return null;
   }
+}
+
+const READINESS_STATUS_ICON: Record<
+  DistributionReadinessCheck["status"],
+  { icon: typeof CheckCircle2; className: string }
+> = {
+  PASS: { icon: CheckCircle2, className: "text-success" },
+  WARN: { icon: AlertTriangle, className: "text-warning" },
+  FAIL: { icon: XCircle, className: "text-danger" },
+};
+
+/**
+ * D-079 Feature 2 — 반출 준비 상태 점검. 이 버전의 ZIP을 만들기 *전에*,
+ * Desktop 설치 후 실제로 검색 가능(활성화)해질지 예측해 보여준다. 기존
+ * 반출 흐름(AssetBundleDownloadAction)을 절대 막지 않는다 — FAIL이 있어도
+ * 경고만 하고 사용자가 그대로 진행할 수 있게 둔다(브리프 요구사항).
+ */
+function DistributionReadinessPanel({
+  assetId,
+  versionId,
+}: {
+  assetId: string;
+  versionId: string;
+}) {
+  const { role } = useRole();
+  const [result, setResult] = useState<DistributionReadinessResult | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const res = await fetch(
+          `${API_BASE}/api/v1/assets/${assetId}/versions/${versionId}/distribution-readiness`,
+          { headers: { Authorization: `Bearer ${role.token}` } }
+        );
+        const body = await safeJson(res);
+        if (cancelled) return;
+        if (!res.ok) {
+          setError(body?.error?.message ?? `반출 준비 상태를 확인하지 못했습니다. (HTTP ${res.status})`);
+          return;
+        }
+        setResult(body);
+      } catch {
+        if (!cancelled) setError("서버에 연결할 수 없습니다.");
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId, versionId, role.token]);
+
+  if (loading) {
+    return <p className="text-caption text-text-muted">반출 준비 상태를 확인하는 중...</p>;
+  }
+  if (error) {
+    return <ErrorBanner message={error} />;
+  }
+  if (!result) return null;
+
+  return (
+    <div className="space-y-2">
+      <div
+        className={`rounded-lg border px-3 py-2 text-caption ${
+          result.ready
+            ? "border-success/30 bg-success/5 text-success"
+            : "border-danger/30 bg-danger/5 text-danger"
+        }`}
+      >
+        {result.ready
+          ? "이 버전은 Desktop에서 정상적으로 활성화될 것으로 예상됩니다."
+          : "이 상태로 반출하면 Desktop에서 활성화되지 않습니다 — 아래 실패 항목을 확인하세요. (반출 자체는 계속 진행할 수 있습니다.)"}
+      </div>
+      <ul className="space-y-1.5">
+        {result.checks.map((check) => {
+          const { icon: Icon, className } = READINESS_STATUS_ICON[check.status];
+          return (
+            <li key={check.id} className="flex items-start gap-2 text-caption">
+              <Icon size={14} className={`mt-0.5 shrink-0 ${className}`} />
+              <div>
+                <span className={className}>{check.message}</span>
+                {check.remedy && (
+                  <div className="mt-0.5 text-text-muted">
+                    조치: <code className="rounded bg-slate-100 px-1">{check.remedy}</code>
+                  </div>
+                )}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 }
 
 type BundleDownloadState =
@@ -760,6 +877,9 @@ export default function AssetVersionsPage() {
               <div className="border-t border-border pt-3">
                 <div className="mb-2 flex items-center gap-2 text-body font-semibold text-text-primary">
                   <PackageOpen size={15} /> Desktop으로 가져가기
+                </div>
+                <div className="mb-3">
+                  <DistributionReadinessPanel assetId={assetId} versionId={selected.id} />
                 </div>
                 <AssetBundleDownloadAction assetName={info.name} version={selected} />
               </div>

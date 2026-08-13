@@ -19,6 +19,7 @@ from portal_api.routers.assets import router as assets_router
 from portal_api.routers.deployments import router as deployments_router
 from portal_api.routers.distributions import router as distributions_router
 from portal_api.routers.evaluations import router as evaluations_router
+from portal_api.routers.knowledge_diagnostics import router as knowledge_diagnostics_router
 from portal_api.routers.knowledge_search import router as knowledge_search_router
 from portal_api.routers.reviews import router as reviews_router
 from portal_api.routers.services import router as services_router
@@ -82,6 +83,11 @@ app.include_router(deployments_router)
 app.include_router(distributions_router)
 app.include_router(evaluations_router)
 app.include_router(admin_router)
+# `/api/v1/assets/{asset_id}/versions/{version_id}/search-preview` and
+# `.../distribution-readiness` are new literal suffixes on an existing
+# `{param}` path, same shape as evaluations_router's `.../evaluations`
+# above — no catch-all collision (D-034) is possible.
+app.include_router(knowledge_diagnostics_router)
 # `/api/v1/knowledge-search` is a brand-new literal path segment (no
 # `{param}` catch-all), so unlike the reviews_router/assets_router ordering
 # above (D-034), registration order here cannot shadow or be shadowed by
