@@ -182,6 +182,44 @@ export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[]
   return partitionInstalledKnowledgeByActivation(assets).usable.map((u) => u.knowledgeId);
 }
 
+// D-079 이어 붙이기 — `reconcileKnowledgeActivations()`는 목록을 보여주기
+// 전에 로컬 ACTIVE 상태가 search-runtime과 여전히 일치하는지 재확인하는
+// "있으면 좋은" 부가 기능이다: 이 호출이 없거나 실패해도 설치된 Knowledge
+// 목록 자체는 항상 떠야 한다(CLAUDE.md: Desktop은 Runtime 장애 시 종료되지
+// 않고 복구 안내를 제공한다). 실제로 2026-08-13 런타임 버그가 이 규칙을
+// 어겼다: `bridge.reconcileKnowledgeActivations()`를 가드 없이 호출해
+// `TypeError: bridge.reconcileKnowledgeActivations is not a function`가
+// 채팅 화면 전체를 무너뜨렸다 — Main process가 빌드한 `dist/electron/preload.js`가
+// 이 메서드가 추가되기 전 버전으로 stale했기 때문이다. `window.desktop`은
+// `global.d.ts`에서 무조건 완전한 `DesktopBridge`로 타입 선언되어 있어
+// TypeScript가 이 어긋남을 컴파일 타임에 잡을 수 없다(preload.js는 별도
+// 빌드 산출물이라 타입 검사 대상이 아니다). 이 함수는 "메서드가 아예 없음"과
+// "호출은 됐지만 실패함"을 모두 같은 방식으로 다룬다: 조용히 성공한 것처럼
+// 넘어가지 않고, search-runtime에 실제로 도달할 수 없을 때와 동일한
+// "확인 불가" 안내로 degrade한다 — 절대로 throw하지 않는다.
+export const RECONCILE_UNAVAILABLE_NOTICE =
+  "search-runtime에 연결할 수 없어 활성화 상태를 확인하지 못했습니다.";
+
+export interface ReconcileCapableBridge {
+  reconcileKnowledgeActivations?: () => Promise<{ checked: boolean; error: string | null }>;
+}
+
+/** `bridge`가 `reconcileKnowledgeActivations`를 갖고 있지 않거나(오래된
+ * preload.js) 호출이 예외를 던져도 이 함수는 절대 throw하지 않는다 — 항상
+ * "표시할 안내 문구(또는 안내 없음)"만 돌려준다. 호출자는 이 결과와 무관하게
+ * 설치된 Knowledge 목록을 계속 불러와야 한다. */
+export async function resolveReconcileNotice(bridge: ReconcileCapableBridge | null): Promise<string | null> {
+  if (!bridge || typeof bridge.reconcileKnowledgeActivations !== "function") {
+    return RECONCILE_UNAVAILABLE_NOTICE;
+  }
+  try {
+    const result = await bridge.reconcileKnowledgeActivations();
+    return result.checked ? null : (result.error ?? RECONCILE_UNAVAILABLE_NOTICE);
+  } catch (err) {
+    return err instanceof Error ? err.message : RECONCILE_UNAVAILABLE_NOTICE;
+  }
+}
+
 // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
 
 /** Builds the `history` sent to agent-runtime (`input.history`, additive/

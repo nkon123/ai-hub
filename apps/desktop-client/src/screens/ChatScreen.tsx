@@ -51,6 +51,7 @@ import {
   hasLowConfidenceCitation,
   mergeCitations,
   partitionInstalledKnowledgeByActivation,
+  resolveReconcileNotice,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
@@ -250,11 +251,13 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // (electron/knowledge-activation.ts의 reconcileInstalledKnowledgeActivations
       // 참고). search-runtime에 도달할 수 없으면 아무것도 바뀌지 않고
       // "확인 불가"만 알린다 — 네트워크 장애를 "등록 안 됨"으로 지어내지
-      // 않는다.
-      const reconcile = await bridge.reconcileKnowledgeActivations();
-      setReconcileNotice(
-        reconcile.checked ? null : (reconcile.error ?? "search-runtime에 연결할 수 없어 활성화 상태를 확인하지 못했습니다."),
-      );
+      // 않는다. `resolveReconcileNotice`는 `bridge`가 이 메서드를 아예 갖고
+      // 있지 않거나(예: 오래된 preload.js 빌드) 호출이 예외를 던져도 절대
+      // throw하지 않는다 — 목록 로딩이 이 부가 기능 하나 때문에 화면 전체를
+      // 무너뜨리면 안 된다(2026-08-13 실제 장애: 가드 없는 호출이
+      // `TypeError: bridge.reconcileKnowledgeActivations is not a function`을
+      // 던져 채팅 화면 전체가 죽었다).
+      setReconcileNotice(await resolveReconcileNotice(bridge));
       const all = await bridge.listInstalledAssets();
       // D12/D-068: only offer the Active Version of each installed
       // Knowledge — an INACTIVE version (superseded via D12's "Active

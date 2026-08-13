@@ -5,12 +5,14 @@ import type { ChatMessage } from "./chatTypes";
 import {
   KNOWLEDGE_NOT_ACTIVATED_REASON,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
+  RECONCILE_UNAVAILABLE_NOTICE,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
   partitionInstalledKnowledgeByActivation,
   resolveActivatedKnowledgeIds,
   resolveKnowledgeSelection,
+  resolveReconcileNotice,
 } from "./chatTypes";
 
 function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -269,5 +271,51 @@ describe("buildHubQueryPreview (허브 질의 미리보기 — 로컬 문서 내
     const messages = [chatMessage({ id: "1", question: "질문1", answer: "답변1" })];
 
     expect(buildHubQueryPreview("   ", messages)).toBe("질문1");
+  });
+});
+
+describe("resolveReconcileNotice (2026-08-13 실제 장애 재발 방지 — bridge.reconcileKnowledgeActivations is not a function)", () => {
+  it("returns null (안내 없음) when the bridge confirms everything is still ACTIVE", async () => {
+    const bridge = { reconcileKnowledgeActivations: async () => ({ checked: true, error: null }) };
+    expect(await resolveReconcileNotice(bridge)).toBeNull();
+  });
+
+  it("surfaces the server's Korean error text when search-runtime could not be reached", async () => {
+    const bridge = {
+      reconcileKnowledgeActivations: async () => ({ checked: false, error: "search-runtime에 연결할 수 없습니다." }),
+    };
+    expect(await resolveReconcileNotice(bridge)).toBe("search-runtime에 연결할 수 없습니다.");
+  });
+
+  it("falls back to the standard notice when checked is false with no error text", async () => {
+    const bridge = { reconcileKnowledgeActivations: async () => ({ checked: false, error: null }) };
+    expect(await resolveReconcileNotice(bridge)).toBe(RECONCILE_UNAVAILABLE_NOTICE);
+  });
+
+  it("degrades to the standard notice — never throws — when the bridge has no such method at all (stale preload.js)", async () => {
+    const bridge = {};
+    await expect(resolveReconcileNotice(bridge)).resolves.toBe(RECONCILE_UNAVAILABLE_NOTICE);
+  });
+
+  it("degrades to the standard notice — never throws — when the bridge is null", async () => {
+    await expect(resolveReconcileNotice(null)).resolves.toBe(RECONCILE_UNAVAILABLE_NOTICE);
+  });
+
+  it("degrades to the standard notice — never throws — when the call itself throws a plain value", async () => {
+    const bridge = {
+      reconcileKnowledgeActivations: async () => {
+        throw "boom";
+      },
+    };
+    await expect(resolveReconcileNotice(bridge)).resolves.toBe(RECONCILE_UNAVAILABLE_NOTICE);
+  });
+
+  it("surfaces the thrown Error's message when the call rejects with an Error", async () => {
+    const bridge = {
+      reconcileKnowledgeActivations: async () => {
+        throw new Error("네트워크 시간 초과");
+      },
+    };
+    expect(await resolveReconcileNotice(bridge)).toBe("네트워크 시간 초과");
   });
 });

@@ -24,21 +24,27 @@ const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
 const MAX_CONCURRENT_RUNS_REASON =
   "브라우저 개발 모드와 Desktop 모두 한 번에 하나의 대화만 실행합니다. 현재 이 값은 편집할 수 없습니다.";
 
-export type BrowserSettingsBridge = Pick<
-  DesktopBridge,
-  | "getDesktopSettings"
-  | "updateDesktopSettings"
-  | "markSetupCompleted"
-  | "getInstallRootPath"
-  | "getDiskSpace"
-  | "listOllamaModels"
-  | "checkConnections"
-  | "listConversations"
-  | "getConversation"
-  | "createConversation"
-  | "appendConversationTurn"
-  | "deleteConversation"
->;
+// 브라우저 개발 모드는 파일시스템/Electron IPC가 전혀 없어 실제로 수행할 수
+// 없는 동작에 공통으로 쓰는 안내 문구 — 항상 이 문구로 명시적으로 거부하고,
+// 조용히 성공한 것처럼 값을 지어내지 않는다.
+const DESKTOP_RUNTIME_REQUIRED_MESSAGE = "브라우저 개발 모드에서는 사용할 수 없습니다. Desktop 앱에서 실행하세요.";
+
+// 이 타입은 예전에는 `Pick<DesktopBridge, ...>`(메서드 일부만 포함한
+// 허용목록)이었다 — 그 결과 `DesktopBridge`에 새 메서드(D-079 활성화 3종)가
+// 추가돼도 이 파일이 갱신되지 않으면 TypeScript가 아무 신호도 주지 않았고,
+// `getDesktopBridge()`는 `window.desktop`을 여전히 "완전한 DesktopBridge"로
+// 단정했다. 화면들이 `getDesktopBridge() ?? getBrowserSettingsBridge()`처럼
+// 두 값을 섞어 쓰는 패턴(SettingsScreen.tsx, SetupWizardScreen.tsx)에서는
+// 이 어긋남이 실제 런타임 TypeError로 이어질 수 있는 구조였다.
+//
+// 지금은 `DesktopBridge` 그 자체와 동일하다 — 모든 메서드를 실제로 구현하고,
+// 브라우저에서 수행할 수 없는 것(파일 설치, Portal Store, Knowledge 활성화
+// 등)은 조용히 성공한 척하지 않고 `DESKTOP_RUNTIME_REQUIRED_MESSAGE` 모양의
+// 정직한 실패/빈 결과를 돌려준다. 이렇게 하면 다음에 `DesktopBridge`에
+// 메서드가 하나 추가될 때, 아래 객체 리터럴이 그 메서드를 빠뜨리는 순간
+// `pnpm typecheck`가 즉시 실패한다 — 허용목록이 인터페이스와 갈라질 수
+// 없어진다.
+export type BrowserSettingsBridge = DesktopBridge;
 
 export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
   return {
@@ -218,6 +224,189 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
         mcpServerUrl: settings.mcpServerUrl,
       });
     },
+
+    // --- Bundle Import / D08 로컬 자산 관리 -----------------------------------
+    // 브라우저 개발 모드에는 파일시스템도, 설치된 자산도 없다. 빈 목록/
+    // "선택 없음"은 이 모드에서는 사실 그대로다(설치된 것이 정말 없다) —
+    // 거짓 성공이 아니다.
+    async pickBundleFile() {
+      return null;
+    },
+    async importBundle() {
+      return {
+        outcome: "FAILED",
+        checks: [
+          {
+            id: "desktop_runtime_required",
+            label: "Desktop 런타임 필요",
+            status: "FAIL",
+            message: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+          },
+        ],
+        failedStage: null,
+        retryable: false,
+        manifest: null,
+        installPlan: [],
+        totalSizeBytes: 0,
+      };
+    },
+    onImportProgress() {
+      // 브라우저 개발 모드에서는 Import 자체가 절대 시작되지 않으므로 이
+      // 이벤트도 절대 발생하지 않는다 — 구독은 안전하게 no-op으로 둔다.
+      return () => {};
+    },
+    async listInstalledAssets() {
+      return [];
+    },
+    async removeInstalledAsset() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async checkAssetRemoval() {
+      return {
+        blocked: false,
+        referencingServices: [],
+        runCheckAvailable: false,
+        runCheckNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+        blockedByActiveVersion: false,
+        activeVersionNote: null,
+      };
+    },
+    async getAssetManifest() {
+      return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, manifest: null };
+    },
+    async reverifyAssetChecksum() {
+      return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, result: null };
+    },
+    async getAssetDependencies() {
+      return { forward: [], forwardNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE, referencedBy: [] };
+    },
+
+    // --- D-079 Knowledge 활성화 ------------------------------------------------
+    // 이 세 메서드가 이전에 빠져 있던(Pick 허용목록에 없던) 바로 그 메서드다
+    // — 여기서도 마찬가지로 "시도조차 못했다"를 정직하게 표현한다.
+    async activateInstalledKnowledge() {
+      return { ok: false, activation: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async deactivateInstalledKnowledge() {
+      return { ok: false, remoteWarning: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async reconcileKnowledgeActivations() {
+      return { checked: false, downgradedCount: 0, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+
+    // --- D12 업데이트/복구 -------------------------------------------------------
+    async diffAssetVersions() {
+      return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, diff: null };
+    },
+    async activateAssetVersion() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async cleanupOrphanedInstalls() {
+      return { removed: [] };
+    },
+
+    // --- D11 로그/진단 -----------------------------------------------------------
+    async listLogs() {
+      return [];
+    },
+    async generateDiagnosticBundle() {
+      const generatedAt = new Date().toISOString();
+      return {
+        bundle: {
+          generatedAt,
+          clientVersion: "browser-preview",
+          runtimeVersion: null,
+          runtimeVersionNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+          os: { platform: "browser", release: "-", arch: "-" },
+          pythonVersion: null,
+          pythonVersionNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+          sanitizedSettings: {},
+          installedAssets: [],
+          health: [],
+          logs: [],
+        },
+        savedPath: "브라우저 개발 모드 (파일 저장 없음)",
+      };
+    },
+
+    // --- 자산 스토어(Portal 카탈로그 설치) --------------------------------------
+    // Portal 설정은 브라우저 개발 모드에서 저장하지 않는다(Token을
+    // localStorage에 남기지 않기 위한 의도적 선택, CLAUDE.md: Secret을
+    // 기본 저장하지 않는다) — 항상 "설정 안 됨" 상태를 정직하게 돌려준다.
+    async getPortalSettings() {
+      return { baseUrl: null, tokenConfigured: false, tokenUpdatedAt: null };
+    },
+    async setPortalBaseUrl() {
+      return { baseUrl: null, tokenConfigured: false, tokenUpdatedAt: null };
+    },
+    async setPortalToken() {
+      return { baseUrl: null, tokenConfigured: false, tokenUpdatedAt: null };
+    },
+    async clearPortalToken() {
+      return { baseUrl: null, tokenConfigured: false, tokenUpdatedAt: null };
+    },
+    async fetchPortalCatalog() {
+      return { ok: false, assets: [], error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async installFromStore() {
+      return {
+        outcome: "FAILED",
+        failedStage: null,
+        message: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+        cancelled: false,
+        importResult: null,
+        retryable: false,
+      };
+    },
+    onStoreInstallProgress() {
+      return () => {};
+    },
+    async cancelStoreInstall() {
+      // 진행 중인 Store 설치가 있을 수 없으므로(installFromStore가 항상
+      // 즉시 실패를 돌려줌) no-op.
+    },
+
+    // --- D01 최초 설정 Wizard / D10 설정: chatWithOllama/cancelOllamaChat ------
+    // ChatScreen은 브라우저 개발 모드에서 이 메서드를 거치지 않는다 —
+    // `../../electron/ollama-chat`의 순수 함수를 직접 호출해 Ollama와
+    // Loopback으로 통신한다(그 경로가 실제 동작 경로). 이 스텁은 향후 다른
+    // 호출자가 `bridge.chatWithOllama`를 통해서만 접근하더라도 타입 계약을
+    // 지키면서 정직하게(성공을 지어내지 않고) 실패하도록 존재한다.
+    async chatWithOllama() {
+      throw new Error(`${DESKTOP_RUNTIME_REQUIRED_MESSAGE} (대화 화면은 Ollama에 직접 연결합니다.)`);
+    },
+    async cancelOllamaChat() {
+      // 위와 같은 이유로 취소할 진행 중인 호출이 이 경로로는 존재하지 않는다.
+    },
+
+    // --- D03 Service/Agent 상세 -------------------------------------------------
+    async getServiceDetail() {
+      return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, detail: null };
+    },
+
+    // --- D13 정보/보안 -----------------------------------------------------------
+    async getSystemInfo() {
+      return {
+        clientVersion: "browser-preview",
+        runtimeVersion: null,
+        runtimeVersionNote: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+        schemaVersion: { supportedVersion: "unknown", source: DESKTOP_RUNTIME_REQUIRED_MESSAGE },
+        os: { platform: "browser", release: "-", arch: "-" },
+        trustStore: { status: "NOT_IMPLEMENTED" as const, message: "이 PoC는 Trust Store를 구현하지 않습니다." },
+        revocationList: { knownEntryCount: 0, lastLocalUpdateAt: null, note: DESKTOP_RUNTIME_REQUIRED_MESSAGE },
+        openSourceNotices: { entries: [], incomplete: true, incompleteReason: DESKTOP_RUNTIME_REQUIRED_MESSAGE },
+        dataLocations: {
+          installRoot: "-",
+          assetsDir: "-",
+          stateDir: "-",
+          logsDir: "-",
+          quarantineDir: "-",
+          profilesDir: "-",
+          diagnosticsDir: "-",
+        },
+      };
+    },
+
     async listConversations() {
       return readConversations()
         .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
