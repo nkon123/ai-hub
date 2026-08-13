@@ -18,11 +18,19 @@ import { assetInstallDir } from "./asset-management";
 import type { InstallRootLayout } from "./bundle-install";
 import type { InstalledAssetsStore } from "./installed-assets-store";
 import {
+  listLocalKnowledgeIndexes,
   registerLocalKnowledgeIndex,
   unregisterLocalKnowledgeIndex,
   type FetchLike,
+  type LocalIndexEntry,
 } from "./search-runtime-client";
-import type { ActivateKnowledgeResult, DeactivateKnowledgeResult, KnowledgeActivation } from "./types";
+import type {
+  ActivateKnowledgeResult,
+  DeactivateKnowledgeResult,
+  InstalledAsset,
+  KnowledgeActivation,
+  ReconcileKnowledgeActivationsResult,
+} from "./types";
 
 export interface KnowledgeActivationTarget {
   assetType: string;
@@ -146,4 +154,89 @@ export async function deactivateInstalledKnowledge(
 
   store.updateActivation(target.assetType, target.assetId, target.version, null);
   return { ok: true, remoteWarning, error: null };
+}
+
+// --- D-079 이어 붙이기: 활성화 상태 재확인(reconcile) ---------------------------
+// 로컬에 저장된 `activation.state === "ACTIVE"`는 시점 스냅샷일 뿐이다 —
+// search-runtime이 다른 `SEARCH_LOCAL_INDEX_ROOTS`로 재시작되었거나 등록
+// 레지스트리 파일이 초기화되면, 로컬은 여전히 ACTIVE라고 믿지만 실제로는
+// 검색되지 않는 "거짓 ACTIVE"가 생긴다. 이 절이 그 어긋남을 바로잡는다.
+
+export interface ActivationDowngrade {
+  assetType: string;
+  assetId: string;
+  version: string;
+  activation: KnowledgeActivation;
+}
+
+/** 순수 비교 로직 — fs/네트워크 없음, 단위 테스트 대상.
+ *
+ * `serverEntries === null`은 "서버에 물어봤지만 응답을 알 수 없음"(도달 불가
+ * 포함)을 뜻한다 — 이 경우 절대 아무것도 낮추지 않는다(`checked: false`):
+ * 네트워크 장애를 "등록 안 됨"이라는 사실로 둔갑시키면 그 자체가 거짓
+ * 정보를 지어내는 것이다(CLAUDE.md). 서버 목록을 실제로 받았을 때만
+ * (`checked: true`) 로컬 ACTIVE 중 그 목록에 없는 것을 FAILED로 낮춘다.
+ *
+ * `serverLocalIndexesEnabled === false`(계약의 `local_indexes_enabled`)는
+ * "등록이 사라졌다"가 아니라 "이 배포는 활성화 기능 자체를 켜지 않았다"는
+ * 뜻이다(search-runtime에 `SEARCH_LOCAL_INDEX_ROOTS` 미설정). 두 경우 모두
+ * 로컬 ACTIVE는 거짓이므로 낮추는 것은 같지만, **안내가 달라야 한다** —
+ * 전자에 "다시 활성화하세요"라고 말하면 사용자는 반드시 다시 실패하는 행동을
+ * 하게 된다. 계약이 이 플래그를 따로 돌려주는 이유가 정확히 이 구분이다. */
+export function computeActivationReconcile(
+  installed: readonly InstalledAsset[],
+  serverEntries: readonly LocalIndexEntry[] | null,
+  serverLocalIndexesEnabled = true,
+): { downgrades: ActivationDowngrade[]; checked: boolean } {
+  if (serverEntries === null) {
+    return { downgrades: [], checked: false };
+  }
+  const registeredIds = new Set(serverEntries.map((e) => e.knowledgeId));
+  const downgrades: ActivationDowngrade[] = [];
+  for (const asset of installed) {
+    if (asset.assetType !== "knowledge") continue;
+    if (asset.activation?.state !== "ACTIVE") continue;
+    if (!asset.assetVersionId) continue; // ACTIVE without an id should not happen, but never guess.
+    if (registeredIds.has(asset.assetVersionId)) continue;
+    downgrades.push({
+      assetType: asset.assetType,
+      assetId: asset.assetId,
+      version: asset.version,
+      activation: {
+        state: "FAILED",
+        checkedAt: nowIso(),
+        reason: serverLocalIndexesEnabled ? "not_registered_on_server" : "local_indexes_disabled",
+        message: serverLocalIndexesEnabled
+          ? "search-runtime에 이 Knowledge의 등록 정보가 없습니다 — search-runtime이 다른 설정으로 재시작되었거나 등록이 초기화되었을 수 있습니다. 다시 활성화하세요."
+          : "연결된 search-runtime이 설치 자산 활성화를 허용하지 않도록 설정되어 있습니다(SEARCH_LOCAL_INDEX_ROOTS 미설정). 다시 활성화해도 같은 이유로 거절되므로, 관리자에게 이 PC의 설치 경로를 허용 목록에 추가하도록 요청하세요.",
+        indexPath: asset.activation.indexPath,
+      },
+    });
+  }
+  return { downgrades, checked: true };
+}
+
+/** Main-process 오케스트레이션 — search-runtime에 실제로 등록된 목록을
+ * 받아와 위 순수 비교를 수행하고, 낮출 것이 있으면 저장한다. search-runtime에
+ * 도달할 수 없으면 아무것도 바꾸지 않고 `checked:false`+서버가 준 한국어
+ * 메시지를 그대로 반환한다("확인 불가" — 사실을 지어내지 않는다). */
+export async function reconcileInstalledKnowledgeActivations(
+  store: InstalledAssetsStore,
+  searchRuntimeBaseUrl: string,
+  fetchImpl?: FetchLike,
+): Promise<ReconcileKnowledgeActivationsResult> {
+  const listResult = await listLocalKnowledgeIndexes(searchRuntimeBaseUrl, fetchImpl);
+  if (!listResult.ok) {
+    return { checked: false, downgradedCount: 0, error: listResult.message };
+  }
+  const installed = store.list();
+  const { downgrades, checked } = computeActivationReconcile(
+    installed,
+    listResult.entries,
+    listResult.localIndexesEnabled,
+  );
+  for (const d of downgrades) {
+    store.updateActivation(d.assetType, d.assetId, d.version, d.activation);
+  }
+  return { checked, downgradedCount: downgrades.length, error: null };
 }

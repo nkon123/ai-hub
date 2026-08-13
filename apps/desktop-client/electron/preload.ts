@@ -29,6 +29,7 @@ import type {
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
   PortalSettingsPublic,
+  ReconcileKnowledgeActivationsResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -82,6 +83,9 @@ const bridge: DesktopBridge = {
 
   deactivateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult> =>
     ipcRenderer.invoke("knowledge:deactivate", assetType, assetId, version),
+
+  reconcileKnowledgeActivations: (): Promise<ReconcileKnowledgeActivationsResult> =>
+    ipcRenderer.invoke("knowledge:reconcileActivations"),
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   diffAssetVersions: (

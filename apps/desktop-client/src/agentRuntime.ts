@@ -91,8 +91,10 @@ export interface StartRunParams {
    * 자동화). */
   knowledgeId: string;
   /** Every installed Knowledge asset's AssetVersion id Stage 1 (local)
-   * search should run against — replaces the old single manual pick. See
-   * `chatTypes.ts`'s `resolveInstalledKnowledgeIds`. */
+   * search should run against — replaces the old single manual pick, and
+   * (D-079 이어 붙이기) only ever includes Knowledge search-runtime has
+   * actually registered as searchable. See `chatTypes.ts`'s
+   * `resolveActivatedKnowledgeIds`. */
   knowledgeIds: string[];
   question: string;
   traceId?: string;

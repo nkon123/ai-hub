@@ -6,6 +6,7 @@ import logging
 import uuid
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from observability import bind_run_id, bind_trace_id, configure_logging
 from pydantic import BaseModel
@@ -17,6 +18,7 @@ from search_runtime.hybrid import INDEX_BASE, hybrid_search, resolve_embed_model
 from search_runtime.local_index_registry import LocalIndexError, get_registry
 from search_runtime.settings import (
     ALLOW_UNKNOWN_CLASSIFICATION,
+    CORS_ORIGINS,
     DEFAULT_MIN_RELEVANCE_SCORE,
     DEFAULT_QUERY_INSTRUCT_PREFIX,
 )
@@ -27,6 +29,21 @@ configure_logging("search-runtime")
 _logger = logging.getLogger("search_runtime")
 
 app = FastAPI(title="Knowledge Search Runtime", version="0.1.0")
+
+# Always read `settings.CORS_ORIGINS` — never inline a literal here. This
+# service's sibling (agent-runtime) once hardcoded a CORS value that silently
+# shadowed its own setting, and the symptom was brutal to diagnose: the server
+# logged 200s while the browser threw every response away. See that setting's
+# docstring for why search-runtime needs CORS at all (the Desktop chat screen
+# health-checks it from the renderer, D-079) and for what CORS does and does
+# not protect here.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(CORS_ORIGINS),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class SearchRequest(BaseModel):

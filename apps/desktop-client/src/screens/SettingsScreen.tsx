@@ -37,6 +37,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const [embeddingModelAlias, setEmbeddingModelAlias] = useState("");
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
+  const [searchRuntimeBaseUrl, setSearchRuntimeBaseUrl] = useState("");
 
   const [savingSection, setSavingSection] = useState<string | null>(null);
   const [sectionError, setSectionError] = useState<Record<string, string | null>>({});
@@ -57,6 +58,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setEmbeddingModelAlias(s.embeddingModelAlias);
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
+    setSearchRuntimeBaseUrl(s.searchRuntimeBaseUrl);
   }, []);
 
   const loadOllamaModels = useCallback(
@@ -164,6 +166,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
 
   const ollamaStatus = connections?.find((c) => c.id === "ollama") ?? null;
   const mcpStatus = connections?.find((c) => c.id === "mcp") ?? null;
+  const searchStatus = connections?.find((c) => c.id === "search") ?? null;
   const installedChatModels = getInstalledChatModels(modelsResult);
   const currentChatModelIsInstalled = installedChatModels.includes(chatModelAlias);
   const cannotSaveModelsReason = getChatModelSelectionIssue(loadingModels, modelsResult, chatModelAlias);
@@ -323,6 +326,46 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
         {mcpStatus && (
           <div className="mt-3">
             <CheckRow label={mcpStatus.label} status={mcpStatus.ok ? "PASS" : "FAIL"} message={mcpStatus.ok ? mcpStatus.detail : `${mcpStatus.detail} — ${mcpStatus.recoveryHint ?? ""}`} />
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-6">
+        <SectionHeader title="지식 검색(search-runtime) 연결" />
+        <p className="mb-3 text-body text-text-secondary">
+          설치된 Knowledge를 활성화(검색 가능하게 등록)할 때 사용하는 주소입니다. 활성화 요청은 이 PC의 로컬 절대
+          경로를 그대로 담아 전달하므로, 반드시 이 PC(loopback: 127.0.0.1/localhost)에서 실행 중인 search-runtime을
+          가리켜야 합니다 — 원격 주소는 그 경로를 읽을 수 없어 애초에 동작할 수 없고, 저장 시에도 항상 거부됩니다
+          (Ollama의 "외부 허용" 같은 예외가 없습니다).
+        </p>
+        <LabeledInput
+          id="settings-search-runtime-url"
+          label="search-runtime Base URL"
+          value={searchRuntimeBaseUrl}
+          onChange={setSearchRuntimeBaseUrl}
+          placeholder="http://127.0.0.1:8300"
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={() => void saveSection("search", { searchRuntimeBaseUrl })}
+            disabled={savingSection === "search"}
+          >
+            <Save size={14} /> 저장
+          </Button>
+          <Button variant="secondary" onClick={() => void runConnectionsCheck()} disabled={checkingConnections}>
+            <RefreshCw size={14} className={checkingConnections ? "animate-spin" : ""} /> 연결 테스트
+          </Button>
+          {sectionSavedAt.search && <span className="text-caption text-text-muted">{formatDateTime(sectionSavedAt.search)} 저장됨</span>}
+        </div>
+        {sectionError.search && <div className="mt-2"><ErrorBanner message={sectionError.search} /></div>}
+        {searchStatus && (
+          <div className="mt-3">
+            <CheckRow
+              label={searchStatus.label}
+              status={searchStatus.ok ? "PASS" : "FAIL"}
+              message={searchStatus.ok ? searchStatus.detail : `${searchStatus.detail} — ${searchStatus.recoveryHint ?? ""}`}
+            />
           </div>
         )}
       </Card>

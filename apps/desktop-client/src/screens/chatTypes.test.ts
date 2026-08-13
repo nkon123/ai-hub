@@ -3,11 +3,13 @@ import type { ConversationRecord, InstalledAsset } from "../../electron/types";
 import { initialStages } from "../runStages";
 import type { ChatMessage } from "./chatTypes";
 import {
+  KNOWLEDGE_NOT_ACTIVATED_REASON,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
-  resolveInstalledKnowledgeIds,
+  partitionInstalledKnowledgeByActivation,
+  resolveActivatedKnowledgeIds,
   resolveKnowledgeSelection,
 } from "./chatTypes";
 
@@ -157,31 +159,81 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
   });
 });
 
-describe("resolveInstalledKnowledgeIds (지식 검색 자동화 — 여러 Knowledge 자동 검색)", () => {
-  it("returns an empty array for an empty list", () => {
-    expect(resolveInstalledKnowledgeIds([])).toEqual([]);
+const ACTIVE = { state: "ACTIVE" as const, checkedAt: "2026-08-13T00:00:00.000Z", reason: null, message: null, indexPath: "/idx" };
+const FAILED = (message: string) => ({
+  state: "FAILED" as const,
+  checkedAt: "2026-08-13T00:00:00.000Z",
+  reason: "index_dir_missing",
+  message,
+  indexPath: "/idx",
+});
+
+describe("partitionInstalledKnowledgeByActivation / resolveActivatedKnowledgeIds (D-079 이어 붙이기 — 활성화 인지 지식 검색)", () => {
+  it("returns empty usable/excluded for an empty list", () => {
+    expect(partitionInstalledKnowledgeByActivation([])).toEqual({ usable: [], excluded: [] });
+    expect(resolveActivatedKnowledgeIds([])).toEqual([]);
   });
 
-  it("excludes a legacy-Bundle asset (no assetVersionId) rather than guessing its id", () => {
-    const legacyAsset = installedAsset({ assetId: "asset-legacy", assetVersionId: null });
+  it("treats a legacy-Bundle asset (no assetVersionId) as excluded with the D-060 reason, never as usable", () => {
+    const legacyAsset = installedAsset({ assetId: "asset-legacy", assetVersionId: null, activation: ACTIVE });
 
-    expect(resolveInstalledKnowledgeIds([legacyAsset])).toEqual([]);
+    const result = partitionInstalledKnowledgeByActivation([legacyAsset]);
+
+    expect(result.usable).toEqual([]);
+    expect(result.excluded).toEqual([{ asset: legacyAsset, reason: LEGACY_BUNDLE_KNOWLEDGE_ID_REASON }]);
   });
 
-  it("keeps only the usable ids from a mix of valid and legacy-Bundle/non-Knowledge assets", () => {
-    const valid1 = installedAsset({ assetId: "asset-1", assetVersionId: "asset-version-1" });
-    const legacy = installedAsset({ assetId: "asset-2", assetVersionId: null });
-    const valid2 = installedAsset({ assetId: "asset-3", assetVersionId: "asset-version-3" });
-    const nonKnowledge = installedAsset({
-      assetId: "asset-4",
-      assetVersionId: "asset-version-4",
-      assetType: "agent",
+  it("excludes a Knowledge that has never been activated (activation field absent) with the '미시도' reason", () => {
+    const neverActivated = installedAsset({ assetId: "asset-1", assetVersionId: "av-1" });
+
+    const result = partitionInstalledKnowledgeByActivation([neverActivated]);
+
+    expect(result.usable).toEqual([]);
+    expect(result.excluded).toEqual([{ asset: neverActivated, reason: KNOWLEDGE_NOT_ACTIVATED_REASON }]);
+  });
+
+  it("excludes a Knowledge that was explicitly deactivated (activation === null) the same as 'never attempted'", () => {
+    const deactivated = installedAsset({ assetId: "asset-1", assetVersionId: "av-1", activation: null });
+
+    const result = partitionInstalledKnowledgeByActivation([deactivated]);
+
+    expect(result.excluded).toEqual([{ asset: deactivated, reason: KNOWLEDGE_NOT_ACTIVATED_REASON }]);
+  });
+
+  it("excludes a Knowledge whose activation failed and surfaces the server's own Korean message", () => {
+    const failed = installedAsset({
+      assetId: "asset-1",
+      assetVersionId: "av-1",
+      activation: FAILED("search-runtime이 이 경로를 거부했습니다."),
     });
 
-    expect(resolveInstalledKnowledgeIds([valid1, legacy, valid2, nonKnowledge])).toEqual([
-      "asset-version-1",
-      "asset-version-3",
+    const result = partitionInstalledKnowledgeByActivation([failed]);
+
+    expect(result.usable).toEqual([]);
+    expect(result.excluded).toEqual([{ asset: failed, reason: "search-runtime이 이 경로를 거부했습니다." }]);
+  });
+
+  it("includes only ACTIVE Knowledge as usable, and resolveActivatedKnowledgeIds mirrors it", () => {
+    const active1 = installedAsset({ assetId: "asset-1", assetVersionId: "av-1", activation: ACTIVE });
+    const neverActivated = installedAsset({ assetId: "asset-2", assetVersionId: "av-2" });
+    const active2 = installedAsset({ assetId: "asset-3", assetVersionId: "av-3", activation: ACTIVE });
+    const legacy = installedAsset({ assetId: "asset-4", assetVersionId: null, activation: ACTIVE });
+    const nonKnowledge = installedAsset({
+      assetId: "asset-5",
+      assetVersionId: "av-5",
+      assetType: "agent",
+      activation: ACTIVE,
+    });
+
+    const assets = [active1, neverActivated, active2, legacy, nonKnowledge];
+    const result = partitionInstalledKnowledgeByActivation(assets);
+
+    expect(result.usable).toEqual([
+      { knowledgeId: "av-1", asset: active1 },
+      { knowledgeId: "av-3", asset: active2 },
     ]);
+    expect(result.excluded.map((e) => e.asset.assetId)).toEqual(["asset-2", "asset-4"]);
+    expect(resolveActivatedKnowledgeIds(assets)).toEqual(["av-1", "av-3"]);
   });
 });
 

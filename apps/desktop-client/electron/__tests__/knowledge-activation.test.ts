@@ -10,9 +10,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveInstallRoot, type InstallRootLayout } from "../bundle-install";
 import { assetInstallDir } from "../asset-management";
 import { InstalledAssetsStore } from "../installed-assets-store";
-import { activateInstalledKnowledge, deactivateInstalledKnowledge } from "../knowledge-activation";
-import type { FetchLike } from "../search-runtime-client";
-import type { InstalledAsset } from "../types";
+import {
+  activateInstalledKnowledge,
+  computeActivationReconcile,
+  deactivateInstalledKnowledge,
+  reconcileInstalledKnowledgeActivations,
+} from "../knowledge-activation";
+import type { FetchLike, LocalIndexEntry } from "../search-runtime-client";
+import type { InstalledAsset, KnowledgeActivation } from "../types";
 
 const BASE_URL = "http://127.0.0.1:8300";
 
@@ -322,5 +327,146 @@ describe("deactivateInstalledKnowledge", () => {
     );
     expect(result.ok).toBe(false);
     expect(result.error).toContain("찾을 수 없습니다");
+  });
+});
+
+// D-079 이어 붙이기: 로컬 ACTIVE와 search-runtime의 실제 등록 목록이 어긋날
+// 수 있다(재시작/레지스트리 초기화) — 그 어긋남을 발견하고 정직하게
+// 낮추는 재확인(reconcile) 로직.
+function activeActivation(overrides: Partial<KnowledgeActivation> = {}): KnowledgeActivation {
+  return { state: "ACTIVE", checkedAt: "2026-08-13T00:00:00.000Z", reason: null, message: null, indexPath: "/idx", ...overrides };
+}
+
+function knowledgeAsset(overrides: Partial<InstalledAsset> = {}): InstalledAsset {
+  return {
+    assetId: "know-1",
+    assetVersionId: "av-1",
+    assetType: "knowledge",
+    name: "재택근무 정책",
+    version: "1.0.0",
+    installedAt: "2026-08-13T00:00:00.000Z",
+    sizeBytes: 100,
+    bundleId: "bundle-1",
+    ...overrides,
+  };
+}
+
+function localIndexEntry(overrides: Partial<LocalIndexEntry> = {}): LocalIndexEntry {
+  return {
+    knowledgeId: "av-1",
+    indexPath: "/idx",
+    source: "DESKTOP_OFFLINE_BUNDLE",
+    label: null,
+    registeredAt: "2026-08-13T00:00:00.000Z",
+    ...overrides,
+  };
+}
+
+describe("computeActivationReconcile (순수 비교 로직)", () => {
+  it("never downgrades anything when the server list is null (unreachable) — 'checked: false'", () => {
+    const asset = knowledgeAsset({ activation: activeActivation() });
+    const result = computeActivationReconcile([asset], null);
+    expect(result).toEqual({ downgrades: [], checked: false });
+  });
+
+  it("downgrades a locally-ACTIVE Knowledge that the server no longer lists", () => {
+    const asset = knowledgeAsset({ activation: activeActivation() });
+    const result = computeActivationReconcile([asset], []);
+    expect(result.checked).toBe(true);
+    expect(result.downgrades).toHaveLength(1);
+    expect(result.downgrades[0]).toMatchObject({ assetType: "knowledge", assetId: "know-1", version: "1.0.0" });
+    expect(result.downgrades[0].activation.state).toBe("FAILED");
+    expect(result.downgrades[0].activation.reason).toBe("not_registered_on_server");
+  });
+
+  it("leaves an ACTIVE Knowledge alone when the server's list still contains its id", () => {
+    const asset = knowledgeAsset({ activation: activeActivation() });
+    const result = computeActivationReconcile([asset], [localIndexEntry({ knowledgeId: "av-1" })]);
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
+  it("ignores Knowledge that is not ACTIVE locally (nothing to reconcile)", () => {
+    const neverActivated = knowledgeAsset({ assetId: "know-2" });
+    const failed = knowledgeAsset({
+      assetId: "know-3",
+      activation: { state: "FAILED", checkedAt: "2026-08-13T00:00:00.000Z", reason: "index_dir_missing", message: "실패", indexPath: null },
+    });
+    const result = computeActivationReconcile([neverActivated, failed], []);
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
+  it("ignores non-Knowledge assets even if somehow marked ACTIVE", () => {
+    const asset = knowledgeAsset({ assetType: "service", activation: activeActivation() });
+    const result = computeActivationReconcile([asset], []);
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
+  it("blames the deployment, not a lost registration, when the server has activation disabled", () => {
+    // 두 경우 모두 로컬 ACTIVE 는 거짓이므로 낮추는 것은 같다. 다른 것은
+    // 안내다 — 기능이 꺼진 배포에서 "다시 활성화하세요"라고 말하면 사용자는
+    // 반드시 다시 실패하는 행동을 하게 된다.
+    const asset = knowledgeAsset({ activation: activeActivation() });
+    const disabled = computeActivationReconcile([asset], [], false);
+
+    expect(disabled.checked).toBe(true);
+    expect(disabled.downgrades).toHaveLength(1);
+    expect(disabled.downgrades[0].activation.reason).toBe("local_indexes_disabled");
+    expect(disabled.downgrades[0].activation.message).not.toContain("다시 활성화하세요");
+
+    const lost = computeActivationReconcile([asset], [], true);
+    expect(lost.downgrades[0].activation.reason).toBe("not_registered_on_server");
+    expect(lost.downgrades[0].activation.message).toContain("다시 활성화하세요");
+  });
+
+  it("defaults to the 'registration lost' wording when the flag is not supplied", () => {
+    const asset = knowledgeAsset({ activation: activeActivation() });
+    expect(computeActivationReconcile([asset], []).downgrades[0].activation.reason).toBe(
+      "not_registered_on_server",
+    );
+  });
+});
+
+describe("reconcileInstalledKnowledgeActivations (main-process 오케스트레이션)", () => {
+  it("downgrades a stale ACTIVE entry and persists it to the store", async () => {
+    installKnowledgeWithIndex("know-8", "1.0.0");
+    store.updateActivation("knowledge", "know-8", "1.0.0", activeActivation());
+    const fetchImpl = (async () => jsonResponse(200, { entries: [], local_indexes_enabled: true })) as unknown as FetchLike;
+
+    const result = await reconcileInstalledKnowledgeActivations(store, BASE_URL, fetchImpl);
+
+    expect(result).toEqual({ checked: true, downgradedCount: 1, error: null });
+    expect(store.find("knowledge", "know-8", "1.0.0")?.activation?.state).toBe("FAILED");
+    expect(store.find("knowledge", "know-8", "1.0.0")?.activation?.reason).toBe("not_registered_on_server");
+  });
+
+  it("leaves the store untouched and reports checked:false when search-runtime is unreachable", async () => {
+    installKnowledgeWithIndex("know-9", "1.0.0");
+    store.updateActivation("knowledge", "know-9", "1.0.0", activeActivation());
+    const fetchImpl = (async () => {
+      throw new Error("connect ECONNREFUSED");
+    }) as unknown as FetchLike;
+
+    const result = await reconcileInstalledKnowledgeActivations(store, BASE_URL, fetchImpl);
+
+    expect(result.checked).toBe(false);
+    expect(result.downgradedCount).toBe(0);
+    expect(result.error).toBeTruthy();
+    // Never invented a fact from a network failure — the ACTIVE state stands.
+    expect(store.find("knowledge", "know-9", "1.0.0")?.activation?.state).toBe("ACTIVE");
+  });
+
+  it("reports downgradedCount:0 when the server list matches local state exactly", async () => {
+    const indexDir = installKnowledgeWithIndex("know-10", "1.0.0");
+    store.updateActivation("knowledge", "know-10", "1.0.0", activeActivation({ indexPath: indexDir }));
+    const fetchImpl = (async () =>
+      jsonResponse(200, {
+        entries: [{ knowledge_id: "av-1", index_path: indexDir, source: "DESKTOP_OFFLINE_BUNDLE", label: null, registered_at: "2026-08-13T00:00:00.000Z" }],
+        local_indexes_enabled: true,
+      })) as unknown as FetchLike;
+
+    const result = await reconcileInstalledKnowledgeActivations(store, BASE_URL, fetchImpl);
+
+    expect(result).toEqual({ checked: true, downgradedCount: 0, error: null });
+    expect(store.find("knowledge", "know-10", "1.0.0")?.activation?.state).toBe("ACTIVE");
   });
 });

@@ -42,7 +42,7 @@ import {
 import { applyRuntimeEvent, initialStages, ollamaChatStages } from "../runStages";
 import {
   type ChatMessage,
-  LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
+  type ExcludedKnowledge,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   buildMarkdown,
@@ -50,8 +50,7 @@ import {
   downloadMarkdown,
   hasLowConfidenceCitation,
   mergeCitations,
-  resolveInstalledKnowledgeIds,
-  resolveKnowledgeSelection,
+  partitionInstalledKnowledgeByActivation,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
@@ -130,7 +129,43 @@ function ComposerToggle({
   );
 }
 
-export function ChatScreen() {
+// D-079 이어 붙이기 — 검색 대상에서 제외된 Knowledge 한 건: 이름/버전, 제외
+// 사유(항상 한국어), 그리고 그 자리에서 바로 다시 시도할 수 있는 활성화
+// 버튼. 진행 중/성공/실패를 이 컴포넌트 하나로 함께 보여준다.
+function ExcludedKnowledgeRow({
+  asset,
+  reason,
+  busy,
+  feedback,
+  onActivate,
+}: {
+  asset: InstalledAssetWithStatus;
+  reason: string;
+  busy: boolean;
+  feedback: { ok: boolean; message: string } | null;
+  onActivate: () => void;
+}) {
+  return (
+    <li className="rounded-lg border border-border bg-white px-3 py-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="truncate text-caption font-semibold text-text-primary">
+            {asset.name} v{asset.version}
+          </p>
+          <p className="text-caption text-text-secondary">{reason}</p>
+          {feedback && (
+            <p className={`mt-1 text-caption ${feedback.ok ? "text-success" : "text-danger"}`}>{feedback.message}</p>
+          )}
+        </div>
+        <Button variant="secondary" size="sm" onClick={onActivate} disabled={busy} className="shrink-0">
+          {busy ? "활성화하는 중..." : "활성화"}
+        </Button>
+      </div>
+    </li>
+  );
+}
+
+export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: () => void } = {}) {
   const bridge = getDesktopBridge();
   const browserSettingsBridge = getBrowserSettingsBridge();
   const settingsBridge = bridge ?? browserSettingsBridge;
@@ -187,16 +222,39 @@ export function ChatScreen() {
     }
   }
 
-  // --- Knowledge 자동 검색 대상(지식 검색 자동화) ---
+  // --- Knowledge 자동 검색 대상(지식 검색 자동화 + D-079 이어 붙이기: 활성화
+  // 인지) ---
   const [installedKnowledge, setInstalledKnowledge] = useState<InstalledAssetWithStatus[] | null>(null);
   const [installedError, setInstalledError] = useState<string | null>(null);
   const [devKnowledgeId, setDevKnowledgeId] = useState("");
   const [useKnowledge, setUseKnowledge] = useState(false);
+  // search-runtime에 물어 로컬 ACTIVE 상태가 여전히 맞는지 재확인한 결과 —
+  // `checked:false`(도달 불가)일 때만 채워진다("확인 불가", 사실을 지어내지
+  // 않는다). `null`이면 최근 확인이 정상이었거나 아직 확인 전이다.
+  const [reconcileNotice, setReconcileNotice] = useState<string | null>(null);
+  // D-079 이어 붙이기 — 채팅 화면에서 바로 활성화를 시도할 수 있게 한다
+  // (설치된 자산 화면까지 가지 않아도 됨). 키는 `${assetType}::${assetId}::${version}`.
+  const [activatingKey, setActivatingKey] = useState<string | null>(null);
+  const [activationFeedback, setActivationFeedback] = useState<
+    Record<string, { ok: boolean; message: string }>
+  >({});
 
   const loadInstalledKnowledge = useCallback(async () => {
     if (!bridge) return;
     setInstalledError(null);
     try {
+      // D-079 이어 붙이기: 목록을 보여주기 전에 로컬 ACTIVE 상태가
+      // search-runtime의 실제 등록 목록과 여전히 일치하는지 재확인한다 —
+      // search-runtime이 다른 SEARCH_LOCAL_INDEX_ROOTS로 재시작되었거나
+      // 레지스트리가 초기화되면 로컬만 "거짓 ACTIVE"로 남을 수 있다
+      // (electron/knowledge-activation.ts의 reconcileInstalledKnowledgeActivations
+      // 참고). search-runtime에 도달할 수 없으면 아무것도 바뀌지 않고
+      // "확인 불가"만 알린다 — 네트워크 장애를 "등록 안 됨"으로 지어내지
+      // 않는다.
+      const reconcile = await bridge.reconcileKnowledgeActivations();
+      setReconcileNotice(
+        reconcile.checked ? null : (reconcile.error ?? "search-runtime에 연결할 수 없어 활성화 상태를 확인하지 못했습니다."),
+      );
       const all = await bridge.listInstalledAssets();
       // D12/D-068: only offer the Active Version of each installed
       // Knowledge — an INACTIVE version (superseded via D12's "Active
@@ -215,12 +273,47 @@ export function ChatScreen() {
     void loadInstalledKnowledge();
   }, [loadInstalledKnowledge]);
 
-  // 지식 검색 자동화 — 더 이상 수동으로 하나만 고르지 않는다: 설치된 모든
-  // Knowledge(Active 버전, 이전 형식 Bundle 제외 — D-060)를 대상으로 Stage 1
-  // 로컬 검색을 자동 실행한다. `resolveInstalledKnowledgeIds`가
-  // `resolveKnowledgeSelection`의 D-060 판단을 자산별로 그대로 재사용한다.
+  function knowledgeAssetKey(asset: { assetType: string; assetId: string; version: string }): string {
+    return `${asset.assetType}::${asset.assetId}::${asset.version}`;
+  }
+
+  async function handleActivateKnowledge(asset: InstalledAssetWithStatus): Promise<void> {
+    if (!bridge) return;
+    const key = knowledgeAssetKey(asset);
+    setActivatingKey(key);
+    setActivationFeedback((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.activateInstalledKnowledge(asset.assetType, asset.assetId, asset.version);
+      if (result.ok) {
+        setActivationFeedback((prev) => ({ ...prev, [key]: { ok: true, message: "활성화되었습니다 — 이제 검색에 사용됩니다." } }));
+      } else {
+        const message = result.activation?.message ?? result.error ?? "활성화하지 못했습니다.";
+        setActivationFeedback((prev) => ({ ...prev, [key]: { ok: false, message } }));
+      }
+      await loadInstalledKnowledge();
+    } catch (err) {
+      setActivationFeedback((prev) => ({
+        ...prev,
+        [key]: { ok: false, message: err instanceof Error ? err.message : "활성화 요청 중 오류가 발생했습니다." },
+      }));
+    } finally {
+      setActivatingKey((cur) => (cur === key ? null : cur));
+    }
+  }
+
+  // 지식 검색 자동화 + D-079 이어 붙이기 — 설치된 모든 Knowledge 중
+  // 검색에 실제로 활성화된(activation.state === "ACTIVE") 것만 Stage 1
+  // 로컬 검색 대상으로 쓴다. 이전 형식 Bundle(D-060)과 활성화되지 않은/
+  // 실패한 Knowledge는 사유와 함께 `knowledgePartition.excluded`에 남는다.
+  const knowledgePartition = bridge
+    ? partitionInstalledKnowledgeByActivation(installedKnowledge ?? [])
+    : { usable: [], excluded: [] as ExcludedKnowledge<InstalledAssetWithStatus>[] };
   const knowledgeIds = bridge
-    ? resolveInstalledKnowledgeIds(installedKnowledge ?? [])
+    ? knowledgePartition.usable.map((u) => u.knowledgeId)
     : devKnowledgeId.trim()
       ? [devKnowledgeId.trim()]
       : [];
@@ -234,10 +327,8 @@ export function ChatScreen() {
       ? ""
       : knowledgeIds.length === 1
         ? (() => {
-            const asset = (installedKnowledge ?? []).find(
-              (a) => resolveKnowledgeSelection(a).knowledgeId === knowledgeIds[0],
-            );
-            return asset ? `${asset.name} v${asset.version}` : "지식 자산";
+            const usable = knowledgePartition.usable[0];
+            return usable ? `${usable.asset.name} v${usable.asset.version}` : "지식 자산";
           })()
         : `여러 지식 자산 (${knowledgeIds.length}개)`
     : devKnowledgeId.trim()
@@ -262,11 +353,35 @@ export function ChatScreen() {
   const refreshConnections = useCallback(async () => {
     setConnectionsChecking(true);
     try {
-      setConnections(await checkAllConnections({ runtimeBaseUrl: AGENT_RUNTIME_BASE_URL }));
+      // 저장된 설정의 Endpoint 로 검사한다. 기본값으로만 검사하면 사용자가
+      // 설정 화면에서 주소를 바꿨을 때 멀쩡한 서비스를 "연결 끊김"으로
+      // 표시하게 된다 — 이 저장소가 이미 한 번 겪은 오탐이며(`connections.ts`
+      // 의 `DEFAULT_RUNTIME_BASE_URL` 주석), search-runtime 은 D-079 이후
+      // Knowledge 대화의 필수 의존성이라 그 오탐이 곧바로 빨간 차단 배너로
+      // 이어진다. 설정을 못 읽으면(브라우저 전용 모드 등) 기존처럼 기본값을
+      // 쓴다 — 검사를 건너뛰지는 않는다.
+      let endpoints: Parameters<typeof checkAllConnections>[0] = {
+        runtimeBaseUrl: AGENT_RUNTIME_BASE_URL,
+      };
+      if (settingsBridge) {
+        try {
+          const settings = await settingsBridge.getDesktopSettings();
+          endpoints = {
+            ...endpoints,
+            ollamaBaseUrl: settings.ollamaBaseUrl,
+            mcpServerUrl: settings.mcpServerUrl,
+            mcpServerAlias: settings.mcpServerAlias,
+            searchRuntimeBaseUrl: settings.searchRuntimeBaseUrl,
+          };
+        } catch {
+          // 설정 조회 실패는 연결 검사 자체를 막지 않는다.
+        }
+      }
+      setConnections(await checkAllConnections(endpoints));
     } finally {
       setConnectionsChecking(false);
     }
-  }, []);
+  }, [settingsBridge]);
   useEffect(() => {
     void refreshConnections();
   }, [refreshConnections]);
@@ -282,6 +397,15 @@ export function ChatScreen() {
   useEffect(() => {
     if (!hubLookupApplicable && allowHubLookup) setAllowHubLookup(false);
   }, [allowHubLookup, hubLookupApplicable]);
+  // D-079 이어 붙이기: 검색 가능한 Knowledge가 하나도 없어졌는데(재확인으로
+  // 다운그레이드되었거나, 사용자가 방금 비활성화한 경우 등) 토글만 "켜짐"
+  // 상태로 남아 있으면, 곧바로 다시 검색 가능해진 것처럼 보여 혼란을 준다 —
+  // 실제로는 이미 `knowledgeLookupActive`가 false가 되어 Ollama 일반 대화로
+  // 조용히 넘어가므로 검색이 실행되지는 않지만(대화가 결과 없는 검색으로
+  // 새지는 않는다), 토글 표시 자체는 사실과 맞춰 둔다.
+  useEffect(() => {
+    if (!hasUsableKnowledge && useKnowledge) setUseKnowledge(false);
+  }, [hasUsableKnowledge, useKnowledge]);
 
   // --- 대화 ---
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -941,12 +1065,14 @@ export function ChatScreen() {
         )}
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
-          {/* 지식 검색 대상 상태 — 지식 검색 자동화: 설치된 모든
-              Knowledge(Active 버전)를 자동으로 검색 대상으로 쓴다. 정상일
-              때는 위 슬림 헤더 한 줄로 충분하므로, 여기서는 안내가 필요한
-              경우(Loading/Empty/Error/경고)만 배너로 보여준다(CLAUDE.md:
-              Loading/Empty/Error 상태 유지 — 다만 화면의 주인공은 메시지
-              스레드와 입력창이어야 하므로 정상 상태에는 카드를 띄우지 않는다). */}
+          {/* 지식 검색 대상 상태 — 지식 검색 자동화 + D-079 이어 붙이기(활성화
+              인지): "설치됨"과 "활성화됨"은 서로 다른 사실이다. 정상(=1개
+              이상 활성화되어 있고 제외된 것이 없음)일 때는 위 슬림 헤더 한
+              줄로 충분하므로, 여기서는 안내가 필요한 경우(Loading/Empty/
+              Error/제외됨)만 배너로 보여준다(CLAUDE.md: Loading/Empty/Error
+              상태 유지). 활성화된 게 하나도 없으면 검색이 결과를 낼 수 없는
+              상태이므로 — 조용히 Ollama로만 넘어가지 않고 왜 그런지와 고치는
+              방법(활성화 버튼)을 항상 함께 보여준다. */}
           {bridge && installedKnowledge === null && !installedError && (
             <div className="mb-3 shrink-0">
               <LoadingState label="설치된 Knowledge를 불러오는 중..." />
@@ -965,22 +1091,68 @@ export function ChatScreen() {
               />
             </div>
           )}
-          {bridge && installedKnowledge !== null && installedKnowledge.length > 0 && knowledgeIds.length === 0 && (
-            <div className="mb-3 shrink-0">
-              <EmptyState
-                title="기본 Ollama 모델로 대화합니다"
-                description="설치된 Knowledge는 현재 검색할 수 없어 일반 대화로 실행합니다. 지식 답변이 필요하면 자산을 다시 반출·설치하세요."
-              />
+          {bridge && installedKnowledge !== null && installedKnowledge.length > 0 && knowledgePartition.usable.length === 0 && (
+            <div className="mb-3 shrink-0 rounded-card border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
+              <div className="flex items-start gap-2">
+                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+                <div className="min-w-0 flex-1">
+                  <p className="font-semibold">
+                    설치된 Knowledge {installedKnowledge.length}개가 모두 검색에 활성화되지 않아 지금은 지식 검색을
+                    실행할 수 없습니다 — 질문은 기본 Ollama 모델로만 답변됩니다. 아래에서 활성화하면 바로 검색에
+                    쓸 수 있습니다.
+                  </p>
+                  <ul className="mt-2 space-y-1.5">
+                    {knowledgePartition.excluded.map(({ asset, reason }) => (
+                      <ExcludedKnowledgeRow
+                        key={knowledgeAssetKey(asset)}
+                        asset={asset}
+                        reason={reason}
+                        busy={activatingKey === knowledgeAssetKey(asset)}
+                        feedback={activationFeedback[knowledgeAssetKey(asset)] ?? null}
+                        onActivate={() => void handleActivateKnowledge(asset)}
+                      />
+                    ))}
+                  </ul>
+                  {onGoToInstalledAssets && (
+                    <Button variant="secondary" size="sm" className="mt-2" onClick={onGoToInstalledAssets}>
+                      설치된 자산 화면 열기
+                    </Button>
+                  )}
+                </div>
+              </div>
             </div>
           )}
-          {bridge && installedKnowledge !== null && installedKnowledge.some((a) => !a.assetVersionId) && (
-            <p className="mb-3 flex shrink-0 items-start gap-1.5 text-caption text-warning">
-              <AlertTriangle size={13} className="mt-0.5 shrink-0" />
-              {LEGACY_BUNDLE_KNOWLEDGE_ID_REASON} 대상:{" "}
-              {installedKnowledge
-                .filter((a) => !a.assetVersionId)
-                .map((a) => `${a.name} v${a.version}`)
-                .join(", ")}
+          {bridge && knowledgePartition.usable.length > 0 && knowledgePartition.excluded.length > 0 && (
+            <details className="mb-3 shrink-0 rounded-card border border-warning/30 bg-warning/5">
+              <summary className="cursor-pointer select-none px-4 py-2.5 text-caption font-semibold text-warning">
+                Knowledge {knowledgePartition.usable.length}개 활성화됨 · {knowledgePartition.excluded.length}개
+                검색에서 제외됨 (자세히)
+              </summary>
+              <div className="space-y-2 border-t border-warning/20 p-4">
+                <ul className="space-y-1.5">
+                  {knowledgePartition.excluded.map(({ asset, reason }) => (
+                    <ExcludedKnowledgeRow
+                      key={knowledgeAssetKey(asset)}
+                      asset={asset}
+                      reason={reason}
+                      busy={activatingKey === knowledgeAssetKey(asset)}
+                      feedback={activationFeedback[knowledgeAssetKey(asset)] ?? null}
+                      onActivate={() => void handleActivateKnowledge(asset)}
+                    />
+                  ))}
+                </ul>
+                {onGoToInstalledAssets && (
+                  <Button variant="secondary" size="sm" onClick={onGoToInstalledAssets}>
+                    설치된 자산 화면 열기
+                  </Button>
+                )}
+              </div>
+            </details>
+          )}
+          {bridge && reconcileNotice && (
+            <p className="mb-3 flex shrink-0 items-start gap-1.5 text-caption text-text-muted">
+              <Info size={13} className="mt-0.5 shrink-0" />
+              활성화 상태 확인 불가: {reconcileNotice}
             </p>
           )}
 

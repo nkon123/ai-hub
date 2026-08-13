@@ -89,6 +89,39 @@ being searchable because the service was restarted). Defaults to a
 already owns — rather than inside it, so it can never be mistaken for a
 `knowledge_id` directory."""
 
+CORS_ORIGINS: tuple[str, ...] = tuple(
+    part.strip()
+    for part in os.environ.get(
+        "SEARCH_CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:5174,http://127.0.0.1:5174",
+    ).split(",")
+    if part.strip()
+)
+"""Browser origins allowed to read this service's responses.
+
+Why this exists at all: the Desktop Client's chat screen health-checks its
+dependencies from the **renderer** (`electron/connections.ts`, called directly
+from `ChatScreen.tsx`), and D-079 made search-runtime one of those
+dependencies. Without CORS headers the browser blocks the renderer from
+reading even a `GET /health`, so a perfectly healthy search-runtime reported
+as permanently disconnected — the exact "연결 판정 오탐" class of bug this
+repo already hit once with a hardcoded value shadowing
+`agent_runtime.config.AgentRuntimeSettings.cors_origins`. The default list
+mirrors that setting's (portal-web 3000, Desktop Vite 5174 in both host
+spellings) so the two services cannot disagree about who may call them.
+
+Security note, deliberately recorded rather than assumed away: this service
+has no authentication layer (see `access_control.py` — `clearance` is
+caller-asserted), and `/search/v1/local-indexes` is administrative. CORS is
+not what protects those endpoints, and never was: a cross-origin *simple*
+request is sent to the server regardless of this list — CORS only decides
+whether the initiating page may read the response. What this list does
+control is response readability and the preflight verdict for
+non-simple requests (a JSON `POST`, any `DELETE`), which is why it stays a
+tight allowlist of known local development/desktop origins instead of `*`.
+The actual protection for this service remains its deployment shape: a
+loopback-bound process whose `LOCAL_INDEX_ROOTS` is empty by default."""
+
 EMBED_MODEL: str = os.environ.get("SEARCH_EMBED_MODEL", "qwen3-embedding:0.6b")
 """Fallback query-embedding model — used ONLY when the Knowledge index being
 searched has no `embed_model` recorded in its own `index-meta.json` (an

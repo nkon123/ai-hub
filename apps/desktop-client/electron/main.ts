@@ -21,7 +21,11 @@ import {
   recoverLegacyKnowledgeAssetVersionIds,
   reverifyAssetChecksum,
 } from "./asset-management";
-import { activateInstalledKnowledge, deactivateInstalledKnowledge } from "./knowledge-activation";
+import {
+  activateInstalledKnowledge,
+  deactivateInstalledKnowledge,
+  reconcileInstalledKnowledgeActivations,
+} from "./knowledge-activation";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
@@ -57,6 +61,7 @@ import type {
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
   PortalSettingsPublic,
+  ReconcileKnowledgeActivationsResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -242,6 +247,25 @@ function registerIpcHandlers(): void {
         );
         return { ok: false, error: blockReasonMessage, blockedBy: guard.referencingServices };
       }
+      // D-079 이어 붙이기: Knowledge를 지우면서 search-runtime 등록을 남겨
+      //두지 않는다. search-runtime은 디렉터리가 사라진 등록을 스스로
+      // 정리하므로(self-heal) 이 호출이 실패해도 제거 자체를 막을 이유는
+      // 없다 — 그래도 명시적 등록 해제가 더 정직하므로 먼저 시도하고,
+      // 결과와 무관하게 제거를 계속 진행한다(CLAUDE.md: Desktop은 Runtime
+      // 장애 시 종료되지 않는다).
+      let deactivationWarning: string | null = null;
+      if (existing.assetType === "knowledge") {
+        const baseUrl = getDesktopSettingsStore().getPublic().searchRuntimeBaseUrl;
+        const deactivation = await deactivateInstalledKnowledge(store, baseUrl, { assetType, assetId, version });
+        if (!deactivation.ok) {
+          deactivationWarning = `search-runtime 등록 해제에 실패했습니다: ${deactivation.error ?? "알 수 없는 오류"} (제거는 계속 진행합니다)`;
+        } else if (deactivation.remoteWarning) {
+          deactivationWarning = deactivation.remoteWarning;
+        }
+        if (deactivationWarning) {
+          getLogger().warn("knowledge-activation", `자산 제거 중 활성화 해제 경고: ${assetType}/${assetId}@${version} — ${deactivationWarning}`);
+        }
+      }
       const dir = assetInstallDir(layout, assetType, assetId, version);
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -258,7 +282,7 @@ function registerIpcHandlers(): void {
         // (this is exactly the kind of "structural, minimal" info app-logger
         // is meant to carry, same spirit as everywhere else in this file).
         getLogger().info("asset-management", `자산 제거 완료: ${assetType}/${assetId}@${version} (사유: ${reason.trim()})`);
-        return { ok: true };
+        return { ok: true, warning: deactivationWarning };
       } catch (err) {
         getLogger().error("asset-management", `자산 제거 실패: ${assetType}/${assetId}@${version}`, {
           errorCode: "REMOVAL_FAILED",
@@ -372,6 +396,26 @@ function registerIpcHandlers(): void {
     },
   );
 
+  ipcMain.handle(
+    "knowledge:reconcileActivations",
+    async (): Promise<ReconcileKnowledgeActivationsResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const baseUrl = getDesktopSettingsStore().getPublic().searchRuntimeBaseUrl;
+      const result = await reconcileInstalledKnowledgeActivations(store, baseUrl);
+      if (!result.checked) {
+        getLogger().warn("knowledge-activation", `활성화 상태 재확인 불가: ${result.error}`);
+      } else if (result.downgradedCount > 0) {
+        getLogger().warn(
+          "knowledge-activation",
+          `활성화 상태 재확인 — search-runtime에 등록되지 않은 ${result.downgradedCount}건을 재활성화 필요 상태로 낮췄습니다.`,
+          { errorCode: "not_registered_on_server" },
+        );
+      }
+      return result;
+    },
+  );
+
   // --- D12 업데이트/복구 -------------------------------------------------------
   ipcMain.handle(
     "update:diffVersions",
@@ -435,6 +479,7 @@ function registerIpcHandlers(): void {
       ollamaBaseUrl: desktopSettings.ollamaBaseUrl,
       mcpServerUrl: desktopSettings.mcpServerUrl,
       mcpServerAlias: desktopSettings.mcpServerAlias,
+      searchRuntimeBaseUrl: desktopSettings.searchRuntimeBaseUrl,
     });
     const failed = results.filter((r) => !r.ok);
     if (failed.length > 0) {

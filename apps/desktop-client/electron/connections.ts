@@ -30,6 +30,11 @@ export interface ConnectionCheckSettings {
   runtimeBaseUrl?: string;
   mcpServerUrl?: string;
   mcpServerAlias?: string;
+  /** D-079 이어 붙이기 — 지금 대화가 실제로 의존하는 search-runtime의 Base
+   * URL. 없으면(설정 전, 또는 이 함수를 직접 호출하는 기존 테스트/호출부)
+   * `DEFAULT_SEARCH_RUNTIME_BASE_URL`로 동작한다(다른 세 Endpoint와 동일한
+   * 관례). */
+  searchRuntimeBaseUrl?: string;
 }
 
 export type ChatConnectionState = "healthy" | "blocked" | "limited";
@@ -44,6 +49,16 @@ export interface ChatConnectionAssessment {
  * 대화에 필수인 서비스와 선택 기능용 서비스를 한 곳에서 구분한다.
  * Local Agent Runtime과 Ollama 장애는 대화 자체를 막을 수 있지만, MCP 장애는
  * MCP Tool 질문만 제한하며 Knowledge 대화에는 영향을 주지 않는다.
+ *
+ * D-079 이어 붙이기: search-runtime 장애는 Knowledge 모드에서 Local Agent
+ * Runtime 장애와 동일하게 "blocked"로 취급한다 — Stage 1 로컬 검색 자체가
+ * search-runtime의 `/search/v1/query`에 의존하고, 활성화(등록) 역시
+ * search-runtime 없이는 불가능하므로(D-079), search-runtime이 죽으면
+ * Knowledge 대화는 사실상 전부 실패한다(MCP처럼 "일부 기능만 제한"이
+ * 아니다). Ollama 전용 모드(mode === "ollama")에서는 아직 Knowledge 검색을
+ * 쓰지 않으므로 Local Agent Runtime과 동일하게 feature-limited로만
+ * 표시한다 — 지금 당장 대화를 막을 이유가 없다(나중에 사용자가 Knowledge
+ * 토글을 켜면 그때 blocked로 바뀐다).
  */
 export function assessChatConnections(
   connections: readonly ConnectionStatus[],
@@ -51,11 +66,15 @@ export function assessChatConnections(
 ): ChatConnectionAssessment {
   const blockingFailures = connections.filter(
     (connection) =>
-      !connection.ok && (connection.id === "ollama" || (mode === "knowledge" && connection.id === "runtime")),
+      !connection.ok &&
+      (connection.id === "ollama" ||
+        (mode === "knowledge" && (connection.id === "runtime" || connection.id === "search"))),
   );
   const featureFailures = connections.filter(
     (connection) =>
-      !connection.ok && (connection.id === "mcp" || (mode === "ollama" && connection.id === "runtime")),
+      !connection.ok &&
+      (connection.id === "mcp" ||
+        (mode === "ollama" && (connection.id === "runtime" || connection.id === "search"))),
   );
 
   return {
@@ -199,13 +218,55 @@ async function checkMcp(baseUrl: string, alias: string): Promise<ConnectionStatu
   }
 }
 
+// D-079 이어 붙이기: search-runtime도 `/health`를 노출한다(다른 두 필수
+// Endpoint, runtime/mcp와 동일한 Health Check 계약).
+async function checkSearch(baseUrl: string): Promise<ConnectionStatus> {
+  const startedAt = Date.now();
+  const url = `${trimTrailingSlash(baseUrl)}/health`;
+  try {
+    const res = await fetchWithTimeout(url, TIMEOUT_MS);
+    const latencyMs = Date.now() - startedAt;
+    if (!res.ok) {
+      return {
+        id: "search",
+        label: "search-runtime",
+        ok: false,
+        detail: `응답 오류 (HTTP ${res.status})`,
+        checkedAt: new Date().toISOString(),
+        latencyMs,
+        recoveryHint: "search-runtime 프로세스를 재시작하세요.",
+      };
+    }
+    return {
+      id: "search",
+      label: "search-runtime",
+      ok: true,
+      detail: "정상 연결됨",
+      checkedAt: new Date().toISOString(),
+      latencyMs,
+      recoveryHint: null,
+    };
+  } catch (err) {
+    return {
+      id: "search",
+      label: "search-runtime",
+      ok: false,
+      detail: err instanceof Error ? err.message : "연결 실패",
+      checkedAt: new Date().toISOString(),
+      latencyMs: null,
+      recoveryHint: `search-runtime이 실행 중인지 확인하세요 (설정된 주소: ${baseUrl}).`,
+    };
+  }
+}
+
 export async function checkAllConnections(settings?: ConnectionCheckSettings): Promise<ConnectionStatus[]> {
-  const [runtime, ollama, mcp] = await Promise.all([
+  const [runtime, ollama, mcp, search] = await Promise.all([
     checkRuntime(settings?.runtimeBaseUrl ?? DEFAULT_RUNTIME_BASE_URL),
     checkOllama(settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL),
     checkMcp(settings?.mcpServerUrl ?? DEFAULT_MCP_SERVER_URL, settings?.mcpServerAlias ?? DEFAULT_MCP_SERVER_ALIAS),
+    checkSearch(settings?.searchRuntimeBaseUrl ?? DEFAULT_SEARCH_RUNTIME_BASE_URL),
   ]);
-  return [runtime, ollama, mcp];
+  return [runtime, ollama, mcp, search];
 }
 
 /** D01 4단계 "설치된 Chat/Embedding 모델 확인"이 쓰는 순수 조회 — `/api/tags`가

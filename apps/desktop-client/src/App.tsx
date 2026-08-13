@@ -120,7 +120,14 @@ export default function App() {
             상하 padding만 주고 좌우는 화면 자체가 관리한다(Ollama Desktop
             앱과 같은 방식). */}
         <main className={`flex-1 overflow-y-auto bg-background ${tab === "chat" ? "p-4" : "p-8"}`}>
-          {tab === "chat" && <ChatScreen />}
+          {tab === "chat" && (
+            <ChatScreen
+              onGoToInstalledAssets={() => {
+                setTab("hub");
+                setHubTab("assets");
+              }}
+            />
+          )}
 
           {tab === "hub" && (
             <div>

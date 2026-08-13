@@ -159,6 +159,10 @@ export function AssetsScreen({
   const [removalChecking, setRemovalChecking] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  // D-079 이어 붙이기: 제거 자체는 성공했지만 search-runtime 등록 해제가
+  // 실패/불가했을 때의 정보성 경고(제거를 막지 않는다) — Modal이 닫힌
+  // 뒤에도 사용자가 볼 수 있어야 하므로 별도 상태로 남긴다.
+  const [removeWarning, setRemoveWarning] = useState<string | null>(null);
   // CLAUDE.md: 제거는 확인과 사유를 요구한다 — 이 Modal은 참조/Run 정보를
   // 함께 보여줘야 해서 `ReasonConfirmDialog`를 그대로 쓰지 않고 자체 Modal에
   // 같은 필수-사유 규칙만 이식했다.
@@ -359,6 +363,9 @@ export function AssetsScreen({
         setRemoveError(result.error ?? "제거 중 오류가 발생했습니다.");
         return;
       }
+      // 제거 자체는 성공했지만 search-runtime 등록 해제를 확인하지 못했을 때
+      // — 조용히 삼키지 않는다(CLAUDE.md).
+      setRemoveWarning(result.warning ?? null);
       setRemovalTarget(null);
       await load();
     } catch (err) {
@@ -396,6 +403,18 @@ export function AssetsScreen({
       {error && (
         <div className="mb-4">
           <ErrorBanner message={error} />
+        </div>
+      )}
+
+      {removeWarning && (
+        <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-body text-warning">
+          <span className="flex items-start gap-2">
+            <AlertTriangle size={16} className="mt-0.5 shrink-0" />
+            {removeWarning}
+          </span>
+          <Button variant="secondary" size="sm" onClick={() => setRemoveWarning(null)}>
+            확인
+          </Button>
         </div>
       )}
 

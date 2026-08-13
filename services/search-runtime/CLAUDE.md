@@ -64,6 +64,13 @@ search_runtime.main:app --reload --port 8300`)
   재도입하는 것이다 — 절대 하드코딩 리터럴로 우회하지 말고 `SEARCH_ALLOW_UNKNOWN_CLASSIFICATION`
   env를 통해서만, 배포자가 명시적으로 선택하게 한다.
 
+- **CORS `allow_origins`는 반드시 `settings.CORS_ORIGINS`를 거친다** — `main.py`에 리터럴을
+  박지 않는다. agent-runtime이 정확히 그 실수를 한 적이 있고 증상이 지독하다(서버 로그는 200인데
+  브라우저가 응답을 통째로 버린다). 이 서비스에 CORS가 필요한 이유는 Desktop 채팅 화면이
+  **렌더러에서** search-runtime을 health-check하기 때문이다(D-079) — 없으면 정상인데도 영구
+  "연결 끊김"으로 표시된다. 두 서비스의 기본 Origin 목록이 갈라지면
+  `tests/unit/search_runtime/test_cors.py`가 깨진다. CORS가 관리용 엔드포인트를 보호하는 장치가
+  **아니라는** 점은 그 설정의 docstring에 기록되어 있다(이 서비스에는 인증 계층이 없다).
 - **색인 경로를 새로 만들지 않는다.** `Path(INDEX_BASE) / knowledge_id`를 직접 조립하는 코드를
   추가하면 D-079로 등록된 외부 색인이 그 경로에서만 조용히 누락된다 — 반드시
   `hybrid.resolve_index_dir(index_base, knowledge_id)`를 거친다(`resolve_embed_model`도 이미

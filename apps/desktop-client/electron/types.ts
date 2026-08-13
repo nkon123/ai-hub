@@ -232,6 +232,12 @@ export interface RemoveAssetResult {
    * lets the UI list the referencing Services by name instead of only a
    * generic error string. */
   blockedBy?: ReferencingServiceInfo[];
+  /** D-079 이어 붙이기: `ok === true`인데도 알려야 할 것이 있을 때만 채워진다
+   * — Knowledge 제거 중 search-runtime 등록 해제가 실패/불가했던 경우
+   * (제거 자체는 계속 진행되었다: search-runtime은 사라진 디렉터리의 등록을
+   * 스스로 정리하므로 제거를 막을 이유가 아니다, `electron/main.ts`의
+   * `assets:remove` 핸들러 참고). */
+  warning?: string | null;
 }
 
 export interface AssetManifestResult {
@@ -291,6 +297,19 @@ export interface ActivateKnowledgeResult {
    * 자산 유형은 활성화 대상이 아님 — 그 사유는 `error`에 담긴다. */
   activation: KnowledgeActivation | null;
   /** Non-null only when `activation` is `null` — see above. */
+  error: string | null;
+}
+
+/** D-079 이어 붙이기 — `electron/knowledge-activation.ts`의
+ * `reconcileInstalledKnowledgeActivations` 결과. `checked: false`는
+ * search-runtime에 도달하지 못해 확인 자체를 하지 못했다는 뜻이며(네트워크
+ * 장애를 "등록 안 됨"으로 지어내지 않는다), 이때 `error`에 서버/네트워크가
+ * 준 한국어 메시지가 담긴다. `checked: true`이면 실제로 비교가 수행된
+ * 것이며, `downgradedCount`는 로컬 ACTIVE였으나 search-runtime 목록에 없어
+ * FAILED로 낮춘 개수(0이면 전부 최신 상태). */
+export interface ReconcileKnowledgeActivationsResult {
+  checked: boolean;
+  downgradedCount: number;
   error: string | null;
 }
 
@@ -364,7 +383,11 @@ export interface DiagnosticBundle {
   logs: LogEntry[];
 }
 
-export type ConnectionId = "runtime" | "ollama" | "mcp";
+/** D-079 이어 붙이기: `"search"`(search-runtime)를 추가 — Knowledge 채팅이
+ * 로컬 검색·활성화 모두를 search-runtime에 의존하므로 D09 연결 상태에서
+ * 독립적으로 확인해야 한다(`electron/connections.ts`의
+ * `assessChatConnections` 문서 참고). */
+export type ConnectionId = "runtime" | "ollama" | "mcp" | "search";
 
 export interface ConnectionStatus {
   id: ConnectionId;
@@ -799,6 +822,12 @@ export interface DesktopBridge {
    * 활성화 상태는 항상 정리된다(정직하게 `remoteWarning`으로 알린다) —
    * Runtime 장애 때문에 제거/재설치가 막히지 않도록. */
   deactivateInstalledKnowledge(assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult>;
+  /** 로컬에 ACTIVE로 저장된 Knowledge가 search-runtime에 실제로도 등록되어
+   * 있는지 재확인하고, 어긋나면(재시작/레지스트리 초기화 등) 로컬 상태를
+   * FAILED로 낮춘다 — search-runtime에 도달할 수 없으면 아무것도 바꾸지
+   * 않는다(`checked: false`). `listInstalledAssets()` 호출 전에 불러 최신
+   * 상태를 보여주는 용도로 쓴다. */
+  reconcileKnowledgeActivations(): Promise<ReconcileKnowledgeActivationsResult>;
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   /** 두 설치된 버전의 Manifest를 비교한다(Manifest/Dependency/Permission 3축). */

@@ -19,6 +19,13 @@ function mockFetchOk(): void {
 }
 
 describe("checkAllConnections", () => {
+  it("checks exactly four connections (runtime, ollama, mcp, search — D-079 이어 붙이기)", async () => {
+    mockFetchOk();
+    const results = await checkAllConnections();
+    expect(results).toHaveLength(4);
+    expect(results.map((r) => r.id).sort()).toEqual(["mcp", "ollama", "runtime", "search"]);
+  });
+
   it("falls back to the documented default endpoints when no settings are passed", async () => {
     mockFetchOk();
     await checkAllConnections();
@@ -26,6 +33,7 @@ describe("checkAllConnections", () => {
     expect(calledUrls).toContain("http://127.0.0.1:8100/health");
     expect(calledUrls).toContain("http://127.0.0.1:11434/api/tags");
     expect(calledUrls).toContain("http://127.0.0.1:8500/health/live");
+    expect(calledUrls).toContain("http://127.0.0.1:8300/health");
   });
 
   it("uses the configured Ollama/MCP endpoints instead of the hardcoded defaults", async () => {
@@ -48,6 +56,16 @@ describe("checkAllConnections", () => {
     const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
     expect(calledUrls).toContain("http://127.0.0.1:8102/health");
     expect(calledUrls).not.toContain("http://127.0.0.1:8100/health");
+  });
+
+  it("uses the configured search-runtime endpoint instead of the default", async () => {
+    mockFetchOk();
+    const results = await checkAllConnections({ searchRuntimeBaseUrl: "http://127.0.0.1:8301" });
+    const calledUrls = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.map((call) => call[0]);
+    expect(calledUrls).toContain("http://127.0.0.1:8301/health");
+    expect(calledUrls).not.toContain("http://127.0.0.1:8300/health");
+    const search = results.find((r) => r.id === "search");
+    expect(search?.label).toBe("search-runtime");
   });
 
   it("labels the MCP connection with the configured alias", async () => {
@@ -118,10 +136,35 @@ describe("assessChatConnections", () => {
       connection("runtime", true),
       connection("ollama", true),
       connection("mcp", true),
+      connection("search", true),
     ]);
     expect(result.state).toBe("healthy");
     expect(result.blockingFailures).toEqual([]);
     expect(result.featureFailures).toEqual([]);
+  });
+
+  // D-079 이어 붙이기: search-runtime 없이는 Stage 1 로컬 검색도, 활성화도
+  // 불가능하므로 Knowledge 모드에서는 Local Agent Runtime과 동일하게 대화를
+  // 막아야 한다(위 assessChatConnections 문서 참고).
+  it("blocks Knowledge chat when search-runtime is unavailable", () => {
+    const result = assessChatConnections([
+      connection("runtime", true),
+      connection("ollama", true),
+      connection("mcp", true),
+      connection("search", false),
+    ]);
+    expect(result.state).toBe("blocked");
+    expect(result.blockingFailures.map((item) => item.id)).toEqual(["search"]);
+  });
+
+  it("treats a search-runtime outage as a feature limitation in Ollama-only mode (not yet depended on)", () => {
+    const result = assessChatConnections(
+      [connection("runtime", true), connection("ollama", true), connection("mcp", true), connection("search", false)],
+      "ollama",
+    );
+    expect(result.state).toBe("limited");
+    expect(result.blockingFailures).toEqual([]);
+    expect(result.featureFailures.map((item) => item.id)).toEqual(["search"]);
   });
 });
 

@@ -105,19 +105,81 @@ export function resolveKnowledgeSelection(asset: InstalledAsset | null): Knowled
   return { knowledgeId: asset.assetVersionId, disabledReason: null };
 }
 
-/** 지식 검색 자동화 — replaces the old "pick exactly one Knowledge" flow:
- * every installed Knowledge asset search-runtime can actually be searched
- * against, gathered in one call. Filters to Knowledge-type assets and reuses
- * `resolveKnowledgeSelection`'s per-asset D-060 decision (never duplicated
- * here) to drop legacy-Bundle installs with no AssetVersion id. Callers are
- * expected to have already excluded INACTIVE versions before calling this
- * (the same filter `ChatScreen`'s installed-Knowledge load already applies,
- * `InstalledAsset` itself carries no `status` field to check here). */
-export function resolveInstalledKnowledgeIds(assets: InstalledAsset[]): string[] {
-  return assets
-    .filter((a) => a.assetType === "knowledge")
-    .map((a) => resolveKnowledgeSelection(a).knowledgeId)
-    .filter((id) => id.length > 0);
+// D-079 이어 붙이기(activation-chat-wiring): "설치됨"과 "활성화됨"은 서로 다른
+// 사실이다(electron/types.ts의 `InstalledAsset.activation` 문서 참고). 이전에는
+// `resolveInstalledKnowledgeIds`가 assetVersionId만 확인하고 활성화 여부는
+// 전혀 보지 않아, 활성화되지 않은(또는 활성화 실패한) Knowledge까지 그대로
+// agent-runtime에 `knowledge_id`로 보내 조용히 Citation 0건을 만들었다 —
+// D-079가 없애려던 바로 그 실패가 한 단계 위(Desktop 채팅)에서 재발한 것.
+// 이 함수는 그 자리를 대신한다: 검색 가능한 것과 제외된 것을 사유와 함께
+// 나눈다. 옛 함수는 제거했다 — "활성화 여부와 무관하게 id만" 필요한
+// 정당한 호출자가 이제 없다(대화가 실제로 도달 가능한 id만 보내야 한다는
+// 게 이 작업의 핵심 요구사항이므로, 남겨 두면 그 자체가 함정이 된다).
+
+/** 채팅에서 실제로 검색 대상이 될 수 있는 Knowledge 하나. `T`를
+ * `InstalledAsset`로 고정하지 않고 제네릭으로 둔 이유: 호출자가
+ * `InstalledAssetWithStatus`(D08 `status` 필드가 추가된 형태)를 넘기면 그
+ * 타입 그대로 돌려받아야, 화면이 다시 캐스팅 없이 `status`를 읽을 수 있다. */
+export interface UsableKnowledge<T extends InstalledAsset = InstalledAsset> {
+  knowledgeId: string;
+  asset: T;
+}
+
+/** 채팅 검색 대상에서 제외된 Knowledge 하나와 그 사유(항상 한국어, 화면에
+ * 그대로 표시 가능). */
+export interface ExcludedKnowledge<T extends InstalledAsset = InstalledAsset> {
+  asset: T;
+  reason: string;
+}
+
+export interface KnowledgeActivationPartition<T extends InstalledAsset = InstalledAsset> {
+  usable: UsableKnowledge<T>[];
+  excluded: ExcludedKnowledge<T>[];
+}
+
+/** `activation` 필드가 없거나(미시도) 명시적으로 `null`(비활성화됨)인 경우
+ * 공통으로 쓰는 사유 — `installed-assets-store.ts`의 `updateActivation` 문서가
+ * 이미 밝힌 결정을 그대로 따른다: 두 경우 모두 화면에는 "활성화 안 됨"으로
+ * 동일하게 보인다(그것이 정확한 사실이며, 굳이 구분해 봐야 사용자가 할 일은
+ * 똑같이 "활성화"뿐이다). */
+export const KNOWLEDGE_NOT_ACTIVATED_REASON =
+  "이 Knowledge는 아직 검색에 활성화되지 않았습니다(활성화를 시도한 적이 없거나 비활성화된 상태입니다). 설치된 자산 화면에서 활성화할 수 있습니다.";
+
+/** 지식 검색 자동화 + D-079 활성화 인지 — 설치된 모든 Knowledge를 실제로
+ * 검색 가능한 것(usable)과 그럴 수 없는 것(excluded, 사유 포함)으로 나눈다.
+ * `resolveKnowledgeSelection`의 D-060 판단(legacy Bundle)을 먼저 적용하고,
+ * 그 다음에만 `activation.state`를 본다 — assetVersionId가 아예 없는
+ * 자산은 활성화를 시도할 수조차 없었으므로 활성화 사유보다 D-060 사유가
+ * 우선한다(실제로 `activateInstalledKnowledge`도 같은 순서로 거부한다). */
+export function partitionInstalledKnowledgeByActivation<T extends InstalledAsset>(
+  assets: T[],
+): KnowledgeActivationPartition<T> {
+  const usable: UsableKnowledge<T>[] = [];
+  const excluded: ExcludedKnowledge<T>[] = [];
+  for (const asset of assets) {
+    if (asset.assetType !== "knowledge") continue;
+    const selection = resolveKnowledgeSelection(asset);
+    if (!selection.knowledgeId) {
+      excluded.push({ asset, reason: selection.disabledReason ?? LEGACY_BUNDLE_KNOWLEDGE_ID_REASON });
+      continue;
+    }
+    if (asset.activation?.state === "ACTIVE") {
+      usable.push({ knowledgeId: selection.knowledgeId, asset });
+      continue;
+    }
+    if (asset.activation?.state === "FAILED") {
+      excluded.push({ asset, reason: asset.activation.message ?? "활성화에 실패했습니다." });
+      continue;
+    }
+    excluded.push({ asset, reason: KNOWLEDGE_NOT_ACTIVATED_REASON });
+  }
+  return { usable, excluded };
+}
+
+/** `partitionInstalledKnowledgeByActivation`의 usable 목록에서 id만 뽑는다 —
+ * agent-runtime `startRun`의 `knowledgeIds` 입력이 필요로 하는 형태. */
+export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[] {
+  return partitionInstalledKnowledgeByActivation(assets).usable.map((u) => u.knowledgeId);
 }
 
 // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
