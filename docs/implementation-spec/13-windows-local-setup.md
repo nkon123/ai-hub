@@ -388,19 +388,23 @@ export SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI
 
 **실측(2026-08-13, macOS)**: 현재 저장소의 `data/indexes/d9e660b7-...`(재택근무 정책 Knowledge) 색인은 아직 `bm25.pkl`만 가지고 있어 **그대로는 활성화되지 않는다** — `bm25_legacy_pickle_only`로 거절되는 것을 실제 서비스로 확인했다. `convert-bm25-format`으로 변환한 사본은 등록에 성공했고, 같은 질의(`장비 지원은 무엇이 있나요?`)가 활성화 전 0건 → 활성화 후 실제 Citation 1건(`장비 지원` 섹션, similarity 0.53) → 비활성화 후 다시 0건으로 바뀌는 것까지 확인했다. **Offline Bundle로 반출하기 전에 §2.2 변환을 먼저 수행할 것.**
 
-**이건 이 색인 하나만의 문제가 아니다(2026-08-13, 전수 조사)**: `data/indexes/` 아래 존재하는 5개 색인 전부를 실제로 확인한 결과, **예외 없이 전부 `bm25.pkl`만 있고 변환된 `bm25.json`이 없다.**
+**이건 이 색인 하나만의 문제가 아니었다(2026-08-13 오전, 전수 조사)**: `data/indexes/` 아래 존재하던 5개 색인을 전부 확인한 결과, 그 시점에는 **예외 없이 전부 `bm25.pkl`만 있고 변환된 `bm25.json`이 없었다.** 그리고 `87827bf9-…`는 청크 18개 전부 `classification`이 기록되지 않아 D-062(미분류 자산 fail-closed)에 걸려 어떤 클리어런스로도 결과를 반환하지 않았다.
 
-| 색인(AssetVersion id) | bm25 포맷 | 청크 classification |
+**같은 날 오후, 사용자 승인을 받아 두 조치를 실행해 해소했다(D-081, `open-decisions.md` 참고)**: 5개 색인 전부에 `convert-bm25-format`을 실행했고(전부 `"action": "converted"`를 보고, 재실행 시 전부 `"already_converted"`로 멱등성 확인), `87827bf9-…`는 사용자가 결정한 **INTERNAL** 등급으로 `stamp-classification`을 실행했다(청크 18개 전부). 현재 상태:
+
+| 색인(AssetVersion id) | bm25 포맷 (2026-08-13 조치 후) | 청크 classification |
 |---|---|---|
-| `43d83955-…` | `bm25.pkl`만 (미변환) | CONFIDENTIAL (청크 64개) |
-| `87827bf9-…` | `bm25.pkl`만 (미변환) | **없음 (청크 18개 전부 미기록)** |
-| `a038442d-…` | `bm25.pkl`만 (미변환) | INTERNAL (청크 11개) |
-| `d9e660b7-…` | `bm25.pkl`만 (미변환) | INTERNAL (청크 4개) |
-| `hr-policy-v1` | `bm25.pkl`만 (미변환) | INTERNAL (청크 4개) |
+| `43d83955-…` | `bm25.json` (변환 완료) | CONFIDENTIAL (청크 64개) |
+| `87827bf9-…` | `bm25.json` (변환 완료) | **INTERNAL (청크 18개, 이 세션에서 신규 stamp)** |
+| `a038442d-…` | `bm25.json` (변환 완료) | INTERNAL (청크 11개) |
+| `d9e660b7-…` | `bm25.json` (변환 완료) | INTERNAL (청크 4개) |
+| `hr-policy-v1` | `bm25.json` (변환 완료) | INTERNAL (청크 4개) |
 
-즉 오늘 시점에 이 5개 중 **어느 것을 반출해도** §2.2 변환 없이는 Desktop에서 `bm25_legacy_pickle_only`로 활성화가 거절된다 — 반출 전 §2.2를 예외 없이 거쳐야 한다. 이 표의 색인 5개는 아직 실제로 변환하지 않았다(라이브 운영 데이터를 바꾸는 결정이라 이 세션 범위 밖으로 남겨뒀다 — `open-decisions.md` D-081).
+이제 이 5개 색인은 그대로 반출해도 `bm25_legacy_pickle_only`로 거절되지 않는다. 변환이 검색 결과 자체를 바꾸지 않는다는 것도 별도 포트에서 자체 기동한 search-runtime으로 실측했다 — `d9e660b7`, 질의 `장비 지원은 무엇이 있나요?`, clearance INTERNAL: 변환 전후 모두 인용 1건·섹션 `장비 지원`·similarity 0.5265(차이 0.0000). `87827bf9-…`의 분류 차단 해소도 실측했다 — 같은 조건에서 스탬프 전 0건 → 후 5건(최상위 섹션 `AX를 위한 LLM 입문 자료 짧은 요약`, similarity 0.8991). 조치 전 `data/indexes/` 전체를 세션 scratchpad(임시 디렉터리이며 영구 rollback 수단으로 취급하지 않는다)에 백업했다.
 
-추가로 **`87827bf9-…`는 위 표의 `bm25.pkl` 문제를 해결해도 여전히 아무 결과도 반환하지 않는다** — 청크 18개 전부에 `classification`이 기록되어 있지 않고 D-062(미분류 자산 fail-closed)에 걸리기 때문이다. `SEARCH_ALLOW_UNKNOWN_CLASSIFICATION=false`(기본값)에서 0건, `=true`에서 3건(최고 유사도 0.90)으로 실측 확인했다 — 검색 품질 문제가 아니라 분류 미기록으로 인한 정책 차단이다. 어떤 등급을 스탬프할지는 문서 내용을 아는 사람의 결정이 필요해 이번 세션에서 `stamp-classification`을 실행하지 않았다(D-081). 아래 §8 표의 "챗봇/검색이 오류 없이 항상 '근거 없음'" 항목도 참고.
+**위 절차(`convert-bm25-format`/`stamp-classification`)는 이 5개 색인에 대해서는 이미 끝났지만, 앞으로 새로 만들어지는(또는 다른 PC에 있는) 색인에는 여전히 그대로 적용된다** — indexing-runtime이 새로 만드는 색인은 기본적으로 `bm25.json`을 생성하므로 보통은 필요 없지만, 구버전 파이프라인으로 만들어졌거나 이관된 색인이라면 §2.2 변환을 거쳐야 하고, classification이 기록되지 않은 색인은 `stamp-classification`으로 등급을 부여해야 검색된다. 아래 §8 표의 "챗봇/검색이 오류 없이 항상 '근거 없음'" 항목은 이 증상이 다른 색인에서 재발했을 때 그대로 쓸 수 있는 진단 가이드다.
+
+**아직 해소되지 않은 것**: Desktop 앱이 이 PC에 이미 설치해 둔 사본(`~/Library/Application Support/desktop-client/assets/knowledge/2f157a86-…/1.0.0/index`, macOS 기준)은 여전히 `bm25.pkl`만 있다 — 그 `knowledge_id`(`d9e660b7-…`)가 중앙 `INDEX_BASE`에 이미 있어 `central_index_exists`로 어차피 등록이 거절되므로 지금 변환해도 이득이 없어 의도적으로 범위 밖에 뒀다. 그리고 실행 중이던 `:8300` search-runtime 프로세스는 여전히 D-079 라우트가 없는 구버전이라 활성화 요청이 404 나며, 운영자가 재시작해야 해소된다 — 이번 조치에서 라이브 서비스 재시작은 하지 않았다.
 
 search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청이 전달하는 것은 그 PC의 로컬 절대 경로이므로, 원격 search-runtime은 그 디렉터리를 읽을 수 없다.
 

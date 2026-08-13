@@ -102,6 +102,23 @@ uv run pytest tests/ -q   # 전체(e2e/security는 루트 pyproject addopts로 �
   (`GET /asset-versions/{version_id}`)이 `reviews_router`의 리터럴
   `GET /asset-versions/lifecycle`을 가려버린 적이 있다(`test_lifecycle.py`
   404로 발견).
+- **검색 결과 0건을 전부 "결과 없음"으로 뭉개면 정책 차단을 품질 문제처럼
+  보여주게 된다(2026-08-13, `routers/knowledge_diagnostics.py`의 검색 품질
+  테스트 기능).** 이 라우터는 `default_search_clearance`(서버가 고정하는
+  값, 사용자가 올릴 방법이 없다 — D-062/D-015)로 search-runtime을 호출하는데,
+  자산의 `classification`이 그 clearance로는 아예 볼 수 없는 등급이면 결과는
+  항상 0건이고 관련도 임계값을 아무리 낮춰도(`ignore_relevance_threshold`)
+  달라지지 않는다. 그런데도 원인을 말해주지 않으면 등록자는 "내 문서가
+  검색이 안 된다"고만 보고 실제로는 정책상 전면 차단인 상황을 영원히 알 수
+  없다. 지금은 `no_result_reason`을 `INDEX_NOT_BUILT` /
+  `CLASSIFICATION_ABOVE_CLEARANCE` / `NO_CITATIONS` 셋으로 구분해 반환하고
+  (판정은 `security_policy.clearance_covers` 공개 API로만 하고, 자산
+  classification이 `Classification.UNKNOWN`이면 판정 근거 없음으로 보고
+  이 사유를 주장하지 않는다), `CLASSIFICATION_ABOVE_CLEARANCE`일 때는
+  `retry_without_threshold_available`을 강제로 `false`로 둔다 — 반드시
+  실패하는 재시도 행동을 안내하지 않기 위해서다. 새로운 "조용한 0건" 원인을
+  추가할 때는 반드시 구분되는 `no_result_reason` 값을 주고, 그 값이 재시도
+  안내를 정당화하는지부터 먼저 판단한다.
 
 ## 완료 전 확인
 

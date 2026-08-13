@@ -81,6 +81,17 @@ search_runtime.main:app --reload --port 8300`)
   전부 문서화되어 있다(계약과 코드가 갈라지면
   `tests/contract/test_knowledge_local_index_contract.py`가 깨진다). 새 거절 사유를 추가하면
   스키마 설명과 Desktop 쪽 분기까지 함께 갱신한다.
+- **떠 있는 프로세스가 소스보다 오래됐을 수 있다는 것을 `/health`로 확인할 수 없었다(2026-08-13
+  실사용 진단).** `/search/v1/local-indexes`(D-079)가 추가되기 전에 떠 있던 프로세스는 죽지 않고
+  계속 돌지만 그 라우트가 없어 모든 활성화 시도가 404 난다 — 그런데 이전 `/health`는
+  `{"status": "ok", "version": "0.1.0"}` 리터럴만 돌려줘서, 5분 전에 빌드된 프로세스와 5개월 전에
+  빌드된 프로세스를 구분할 방법이 `/openapi.json`을 손으로 읽는 것뿐이었다. 지금은
+  `settings.BUILD_VERSION`/`settings.COMMIT_SHA`(portal-api/distribution-service의
+  `build_version`/`commit_sha`와 동일한 계약, env `SEARCH_BUILD_VERSION`/`SEARCH_COMMIT_SHA`)를
+  시작 로그와 `/health` 양쪽에 싣는다 — 이 서비스를 재시작 없이 계속 실행하며 코드만 바꾸고 있다면,
+  새 라우트가 404 난다고 코드를 더 파기 전에 먼저 `/health`로 버전을 확인한다. CORS 관련 스테일
+  프로세스/설정 불일치는 별도 문제이며 위 CORS 항목에 이미 기록되어 있다 — 여기서 다루는 것은
+  "라우트 자체가 없는 오래된 프로세스" 케이스다.
 
 ## 완료 전 확인
 

@@ -101,6 +101,33 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
   `window.desktop`을 주면 `bridge.onStoreInstallProgress is not a function`으로 최상위 ErrorBoundary까지
   올라간다(수동 재현으로 확인, 이번 수정 범위 밖).
 
+- **활성화 상태를 "성공 아니면 실패"로만 모델링하면 정상 상태와 재시도해도 안 되는 실패를 구분하지
+  못한다(D-079 후속, 2026-08-13).** 네 가지가 한 세트로 얽혀 있었다:
+  1. `electron/connections.ts`의 `assessChatConnections`가 search-runtime 장애를 Knowledge 모드에서
+     `blocked`(대화 자체를 막는 배너)로 승격하는 것은, search-runtime이 **렌더러에서** 직접
+     health-check되기 때문에 CORS가 없으면 멀쩡한 서비스도 영구 `blocked`로 보인다는 전제가 맞을
+     때만 안전하다 — 그 전제는 `services/search-runtime`에 CORS 미들웨어가 실제로 붙어 있는지에
+     달려 있다(그쪽 CLAUDE.md에 기록됨). 이 파일에서 검사 대상이나 심각도를 바꿀 때는 상대편에
+     CORS가 있는지부터 확인한다.
+  2. `ChatScreen.tsx`의 `refreshConnections`는 `settingsBridge.getDesktopSettings()`로 읽은
+     `settings.searchRuntimeBaseUrl`을 넘긴다 — `connections.ts`의
+     `DEFAULT_SEARCH_RUNTIME_BASE_URL` 하드코딩 기본값으로만 검사하면, 사용자가 설정 화면에서 포트를
+     바꾸는 순간 멀쩡한 서비스가 다시 "연결 끊김"으로 보인다. `DEFAULT_RUNTIME_BASE_URL`(agent-runtime
+     쪽)은 아직 이 패턴을 따르지 않는다 — 위 "연결 판정 오탐(미해결)" 참고, 고칠 때 여기의 search
+     쪽 코드를 참조한다.
+  3. `electron/knowledge-activation.ts`의 `computeActivationReconcile`은 search-runtime이 돌려준
+     계약의 `local_indexes_enabled`(`listLocalKnowledgeIndexes`의 `localIndexesEnabled`)가 `false`면
+     `reason: "local_indexes_disabled"`로 분기해 "관리자에게 요청하세요"를 안내하고,
+     `true`인데 등록이 없으면 `reason: "not_registered_on_server"`로 "다시 활성화하세요"를 안내한다 —
+     두 원인을 하나로 뭉쳐 항상 "다시 활성화하세요"라고 하면, 전자의 경우 사용자는 반드시 다시
+     거절당하는 행동으로 안내받는다. 새로운 거절 원인을 이 reconcile에 추가할 때는 재시도가 실제로
+     성공할 수 있는 경우인지 먼저 판단하고 메시지를 분기한다.
+  4. search-runtime이 등록을 `central_index_exists`로 거절하는 것은 "이미 중앙 색인이 있어 등록
+     없이도 검색된다"는 뜻이지 실패가 아니다 — `knowledge-activation.ts`는 이를 `state: "FAILED"`가
+     아니라 별도의 `"ALREADY_ACTIVE"`(`electron/types.ts`)로 저장하고 `ok: true`를 반환한다. 이
+     구분이 없으면 정상 작동 중인 Knowledge가 빨간 "활성화 실패"로 보인다. 새로운 "거절이지만 사실은
+     정상" 케이스를 다룰 때는 `FAILED`에 합치지 말고 별도 state를 검토한다.
+
 ## 검증 (변경 후 반드시 실행)
 
 ```
