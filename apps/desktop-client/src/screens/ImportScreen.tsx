@@ -207,6 +207,15 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
                             </span>
                           </>
                         )}
+                        {outcome?.activation?.state === "ALREADY_ACTIVE" && (
+                          <>
+                            <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" />
+                            <span className="text-success">
+                              {target.name ?? target.assetId}: 이미 검색 가능한 상태입니다(중앙 색인에 등록됨) —
+                              별도 활성화가 필요하지 않습니다.
+                            </span>
+                          </>
+                        )}
                         {outcome?.activation?.state === "FAILED" && (
                           <>
                             <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />

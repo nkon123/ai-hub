@@ -55,16 +55,24 @@ const BINDING_LABEL: Record<BindingKind, string> = {
 // D-079: "설치됨"과 "활성화됨"은 서로 다른 사실이다 — `activation` 필드가
 // 없는 것(미시도)과 `state: "FAILED"`(시도했으나 실패)를 절대 같은 배지로
 // 뭉개지 않는다(electron/types.ts의 `KnowledgeActivation` 문서 참고).
-type ActivationDisplayState = "ACTIVE" | "FAILED" | "NONE";
+//
+// `ALREADY_ACTIVE`(central-index-exists-not-a-failure, 2026-08-13 실사용
+// 진단): search-runtime의 중앙 색인 경로에 이미 있는 Knowledge는 로컬 등록이
+// 거부되지만, 그 자체로 이미 검색 가능하다 — "실패"가 아니다. `FAILED`와
+// 같은 빨간 배지를 쓰면 멀쩡히 검색되는 자산에 거짓 알람을 띄우게 되므로
+// `ACTIVE`와 같은 톤(성공)에 다른 라벨로 구분한다.
+type ActivationDisplayState = "ACTIVE" | "ALREADY_ACTIVE" | "FAILED" | "NONE";
 
 const ACTIVATION_LABEL: Record<ActivationDisplayState, string> = {
   ACTIVE: "활성화됨",
+  ALREADY_ACTIVE: "이미 검색 가능(중앙 색인)",
   FAILED: "활성화 실패",
   NONE: "활성화 안 됨(미시도)",
 };
 
 const ACTIVATION_TONE: Record<ActivationDisplayState, string> = {
   ACTIVE: "bg-success/10 text-success",
+  ALREADY_ACTIVE: "bg-success/10 text-success",
   FAILED: "bg-danger/10 text-danger",
   NONE: "bg-slate-100 text-text-muted",
 };
@@ -504,6 +512,12 @@ export function AssetsScreen({
                         검색에 활성화되지 않았습니다: {asset.activation.message ?? "알 수 없는 오류"}
                       </p>
                     )}
+                    {asset.assetType === "knowledge" && asset.activation?.state === "ALREADY_ACTIVE" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-success">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        {asset.activation.message ?? "이미 검색 가능한 상태입니다."}
+                      </p>
+                    )}
                     {asset.assetType === "mcp_tool" && (
                       <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
                         <Info size={13} className="mt-0.5 shrink-0" />
@@ -562,7 +576,12 @@ export function AssetsScreen({
                     <Button
                       variant="secondary"
                       size="sm"
-                      disabled={activationBusy.has(key)}
+                      disabled={activationBusy.has(key) || activationDisplayState(asset) === "ALREADY_ACTIVE"}
+                      title={
+                        activationDisplayState(asset) === "ALREADY_ACTIVE"
+                          ? "이미 search-runtime의 중앙 색인 경로에 등록되어 있어 별도의 활성화/비활성화가 필요하지 않습니다."
+                          : undefined
+                      }
                       onClick={() =>
                         void (activationDisplayState(asset) === "ACTIVE"
                           ? runDeactivateKnowledge(asset)
@@ -573,9 +592,11 @@ export function AssetsScreen({
                         ? "처리 중..."
                         : activationDisplayState(asset) === "ACTIVE"
                           ? "비활성화"
-                          : activationDisplayState(asset) === "FAILED"
-                            ? "다시 활성화"
-                            : "활성화"}
+                          : activationDisplayState(asset) === "ALREADY_ACTIVE"
+                            ? "활성화 불필요"
+                            : activationDisplayState(asset) === "FAILED"
+                              ? "다시 활성화"
+                              : "활성화"}
                     </Button>
                   )}
                   {asset.assetType === "mcp_tool" && (

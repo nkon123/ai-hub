@@ -141,24 +141,48 @@ export interface InstalledAsset {
    * **Absence (the field itself being `undefined`) means "활성화를 시도한
    * 적이 없다" and must never be rendered as ACTIVE** — same "생략으로 결과를
    * 지어내지 않는다" rule `checksumVerification` above already follows. The
-   * UI must read this field explicitly and distinguish 세 가지: 필드 없음
-   * (미시도), `state: "FAILED"` (시도했으나 실패), `state: "ACTIVE"` (성공).
+   * UI must read this field explicitly and distinguish 네 가지: 필드 없음
+   * (미시도), `state: "FAILED"` (시도했으나 실패), `state: "ACTIVE"` (이
+   * Desktop이 search-runtime에 직접 등록해 검색 가능), `state:
+   * "ALREADY_ACTIVE"` (등록은 거부됐지만 `reason === "central_index_exists"`
+   * — 즉 이 Knowledge는 search-runtime의 중앙 INDEX_BASE에 이미 있어 별도
+   * 등록 없이도 검색 가능. 아래 `KnowledgeActivation` 문서 참고).
    * "설치됨"(이 레코드가 존재한다는 사실)과 "활성화됨"(이 필드가
-   * `state: "ACTIVE"`라는 사실)은 서로 다른 사실이다(open-decisions.md D-079). */
+   * `state: "ACTIVE"` 또는 `"ALREADY_ACTIVE"`라는 사실)은 서로 다른
+   * 사실이다(open-decisions.md D-079). */
   activation?: KnowledgeActivation | null;
 }
 
 /** D-079 활성화 결과 — `electron/knowledge-activation.ts`가 search-runtime
- * 응답(`electron/search-runtime-client.ts`)을 이 형태로 저장한다. */
+ * 응답(`electron/search-runtime-client.ts`)을 이 형태로 저장한다.
+ *
+ * 세 번째 state, `"ALREADY_ACTIVE"`(2026-08-13 실사용 진단): search-runtime은
+ * 이미 `INDEX_BASE`(중앙 색인 경로)에 존재하는 `knowledge_id`의 로컬 등록을
+ * 항상 `central_index_exists` 사유로 거부한다(서버 쪽 설계 불변식 — 중앙
+ * 색인이 항상 우선한다, `services/search-runtime`의 `local_index_registry.py`
+ * 참고, 이 저장소는 절대 바꾸지 않는다). 이 거부는 "검색이 안 됨"이 아니라
+ * "이미 검색 가능해서 등록이 필요 없음"이라는 뜻이다 — search-runtime이 그
+ * `knowledge_id`를 실제로 서빙하고 있기 때문이다. 이 사실을 `state: "FAILED"`
+ * (빨간 배지, "활성화 실패")로 보여주면 실제로는 멀쩡히 검색되는 자산에
+ * 거짓 알람을 띄우는 것이므로, 별도 state로 분리했다 — `state: "ACTIVE"`와
+ * 마찬가지로 채팅에서 검색 가능한 것으로 취급해야 하지만(`chatTypes.ts`의
+ * `partitionInstalledKnowledgeByActivation` 참고), Desktop이 실제로 그
+ * search-runtime에 등록을 소유한 것은 아니므로(등록 자체가 거부됐다) 별도
+ * 라벨로 구분해 보여준다. `ok: true`로 반환된다(사용자에게 실패로 보이지
+ * 않는다) — `electron/knowledge-activation.ts::activateInstalledKnowledge`
+ * 참고. */
 export interface KnowledgeActivation {
-  state: "ACTIVE" | "FAILED";
+  state: "ACTIVE" | "ALREADY_ACTIVE" | "FAILED";
   checkedAt: string;
   /** `SearchRuntimeRefusalReason`의 값 중 하나, 또는 로컬에서만 판정한 사유
    * (예: `"asset_version_id_missing"`, `"index_dir_missing"`) — 로직/Telemetry
    * 전용이며 화면 표시 문구는 항상 `message`를 쓴다. `state === "ACTIVE"`이면
-   * `null`. */
+   * `null`. `state === "ALREADY_ACTIVE"`이면 항상 `"central_index_exists"`. */
   reason: string | null;
-  /** 항상 한국어, 화면에 그대로 표시 가능. `state === "ACTIVE"`이면 `null`. */
+  /** 항상 한국어, 화면에 그대로 표시 가능. `state === "ACTIVE"`이면 `null`.
+   * `state === "ALREADY_ACTIVE"`이면 search-runtime이 보낸, 이미 검색
+   * 가능하다는 사실을 설명하는 안내 문구(실패 문구가 아니다) — 화면은 이
+   * 문구를 경고색이 아닌 안내/성공 톤으로 표시해야 한다. */
   message: string | null;
   /** 활성화를 시도한 절대 경로 — 성공/실패 모두에서 채워진다(어떤 경로가
    * 시도되었는지는 실패 원인 진단에도 필요하다). 경로 계산 자체가 불가능했던
@@ -289,12 +313,16 @@ export interface OrphanedInstallCleanupResult {
 // ---------------------------------------------------------------------------
 
 export interface ActivateKnowledgeResult {
+  /** `state: "ACTIVE"`와 `state: "ALREADY_ACTIVE"` 모두 `ok: true`다 — 사용자
+   * 입장에서 둘 다 "이제(또는 이미) 검색된다"는 같은 결론이고, 실패가
+   * 아니다(`KnowledgeActivation.state`의 `"ALREADY_ACTIVE"` 문서 참고).
+   * `state: "FAILED"`만 `ok: false`. */
   ok: boolean;
   /** Persisted onto the `InstalledAsset` record whenever an actual attempt
    * was made (assetVersionId 확인, index 폴더 확인, search-runtime 호출 —
-   * 성공/실패 모두). `null` only for the two refusals that never touch the
-   * record because there was nothing to attempt: 대상을 찾을 수 없음, 이
-   * 자산 유형은 활성화 대상이 아님 — 그 사유는 `error`에 담긴다. */
+   * 성공/실패/이미 등록됨 모두). `null` only for the two refusals that never
+   * touch the record because there was nothing to attempt: 대상을 찾을 수
+   * 없음, 이 자산 유형은 활성화 대상이 아님 — 그 사유는 `error`에 담긴다. */
   activation: KnowledgeActivation | null;
   /** Non-null only when `activation` is `null` — see above. */
   error: string | null;

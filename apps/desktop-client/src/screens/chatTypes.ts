@@ -163,7 +163,11 @@ export function partitionInstalledKnowledgeByActivation<T extends InstalledAsset
       excluded.push({ asset, reason: selection.disabledReason ?? LEGACY_BUNDLE_KNOWLEDGE_ID_REASON });
       continue;
     }
-    if (asset.activation?.state === "ACTIVE") {
+    // `ALREADY_ACTIVE`(central_index_exists)도 usable — search-runtime의
+    // 중앙 INDEX_BASE가 이미 이 knowledge_id를 서빙하고 있어 등록 없이도
+    // 검색된다. `ACTIVE`와 다른 점은 "누가 등록했는가"뿐, "검색 가능한가"는
+    // 동일한 사실이다(electron/types.ts의 `KnowledgeActivation` 문서 참고).
+    if (asset.activation?.state === "ACTIVE" || asset.activation?.state === "ALREADY_ACTIVE") {
       usable.push({ knowledgeId: selection.knowledgeId, asset });
       continue;
     }

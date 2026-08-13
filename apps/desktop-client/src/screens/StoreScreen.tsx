@@ -502,6 +502,13 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
                                 {target.name ?? target.assetId}: 검색에 활성화되었습니다.
                               </span>
                             )}
+                            {outcome?.activation?.state === "ALREADY_ACTIVE" && (
+                              <span className="text-success">
+                                <CheckCircle2 size={13} className="mr-1 inline-block align-text-bottom" />
+                                {target.name ?? target.assetId}: 이미 검색 가능한 상태입니다(중앙 색인에 등록됨) —
+                                별도 활성화가 필요하지 않습니다.
+                              </span>
+                            )}
                             {outcome?.activation?.state === "FAILED" && (
                               <span className="text-warning">
                                 <AlertTriangle size={13} className="mr-1 inline-block align-text-bottom" />

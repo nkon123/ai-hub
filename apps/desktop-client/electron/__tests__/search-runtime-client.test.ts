@@ -28,6 +28,14 @@ function nonJsonResponse(status: number): Response {
   } as unknown as Response;
 }
 
+// FastAPI's own default body for an unmatched route — never our Error
+// Envelope shape (no `error.message`). This is exactly what a
+// pre-D-079 search-runtime process returns for `/search/v1/local-indexes`,
+// since that route does not exist in its routing table at all.
+function bareNotFoundResponse(): Response {
+  return jsonResponse(404, { detail: "Not Found" });
+}
+
 describe("registerLocalKnowledgeIndex", () => {
   it("POSTs the request body and maps a successful entry to camelCase", async () => {
     const fetchImpl = vi.fn(async () =>
@@ -160,6 +168,25 @@ describe("registerLocalKnowledgeIndex", () => {
     }
   });
 
+  // 2026-08-13 실사용 진단: a bare HTTP 404 (no Error Envelope at all) means
+  // the route itself doesn't exist on the running process — the strongest
+  // signal that a pre-D-079 search-runtime is still up. This must map to its
+  // own actionable reason, not the generic "unknown" HTTP-500-style message.
+  it("maps a bare HTTP 404 (no Error Envelope) to 'activation_api_unavailable' with an actionable restart hint", async () => {
+    const fetchImpl = vi.fn(async () => bareNotFoundResponse()) as unknown as FetchLike;
+    const result = await registerLocalKnowledgeIndex(
+      "http://127.0.0.1:8300",
+      { knowledgeId: "kb-1", indexPath: "/x" },
+      fetchImpl,
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("activation_api_unavailable");
+      expect(result.message).toContain("404");
+      expect(result.message).toContain("재시작");
+    }
+  });
+
   it("treats a 200 response missing the entry field as reason 'unknown' rather than crashing", async () => {
     const fetchImpl = vi.fn(async () => jsonResponse(200, { trace_id: "t1" })) as unknown as FetchLike;
     const result = await registerLocalKnowledgeIndex(
@@ -194,6 +221,16 @@ describe("unregisterLocalKnowledgeIndex", () => {
     const result = await unregisterLocalKnowledgeIndex("http://127.0.0.1:8300", "kb-1", fetchImpl);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unreachable");
+  });
+
+  it("maps a bare HTTP 404 on DELETE to 'activation_api_unavailable' too", async () => {
+    const fetchImpl = vi.fn(async () => bareNotFoundResponse()) as unknown as FetchLike;
+    const result = await unregisterLocalKnowledgeIndex("http://127.0.0.1:8300", "kb-1", fetchImpl);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("activation_api_unavailable");
+      expect(result.message).toContain("재시작");
+    }
   });
 });
 
@@ -236,5 +273,15 @@ describe("listLocalKnowledgeIndexes", () => {
     const result = await listLocalKnowledgeIndexes("http://127.0.0.1:8300", fetchImpl);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe("unreachable");
+  });
+
+  it("maps a bare HTTP 404 on GET to 'activation_api_unavailable' too", async () => {
+    const fetchImpl = vi.fn(async () => bareNotFoundResponse()) as unknown as FetchLike;
+    const result = await listLocalKnowledgeIndexes("http://127.0.0.1:8300", fetchImpl);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("activation_api_unavailable");
+      expect(result.message).toContain("재시작");
+    }
   });
 });

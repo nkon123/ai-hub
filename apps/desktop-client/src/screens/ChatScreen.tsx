@@ -309,9 +309,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   }
 
   // 지식 검색 자동화 + D-079 이어 붙이기 — 설치된 모든 Knowledge 중
-  // 검색에 실제로 활성화된(activation.state === "ACTIVE") 것만 Stage 1
-  // 로컬 검색 대상으로 쓴다. 이전 형식 Bundle(D-060)과 활성화되지 않은/
-  // 실패한 Knowledge는 사유와 함께 `knowledgePartition.excluded`에 남는다.
+  // 검색에 실제로 활성화된(activation.state === "ACTIVE" 또는
+  // "ALREADY_ACTIVE" — 후자는 search-runtime의 중앙 색인에 이미 있어 로컬
+  // 등록 없이도 검색되는 경우다) 것만 Stage 1 로컬 검색 대상으로 쓴다. 이전
+  // 형식 Bundle(D-060)과 활성화되지 않은/실패한 Knowledge는 사유와 함께
+  // `knowledgePartition.excluded`에 남는다.
   const knowledgePartition = bridge
     ? partitionInstalledKnowledgeByActivation(installedKnowledge ?? [])
     : { usable: [], excluded: [] as ExcludedKnowledge<InstalledAssetWithStatus>[] };

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -18,6 +20,8 @@ from search_runtime.hybrid import INDEX_BASE, hybrid_search, resolve_embed_model
 from search_runtime.local_index_registry import LocalIndexError, get_registry
 from search_runtime.settings import (
     ALLOW_UNKNOWN_CLASSIFICATION,
+    BUILD_VERSION,
+    COMMIT_SHA,
     CORS_ORIGINS,
     DEFAULT_MIN_RELEVANCE_SCORE,
     DEFAULT_QUERY_INSTRUCT_PREFIX,
@@ -28,7 +32,21 @@ from search_runtime.settings import (
 configure_logging("search-runtime")
 _logger = logging.getLogger("search_runtime")
 
-app = FastAPI(title="Knowledge Search Runtime", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Same "one log line at startup" pattern as portal_api.main/
+    # distribution_service.main — see settings.BUILD_VERSION's docstring for
+    # the stale-process diagnosis this closes.
+    _logger.info(
+        "service.started service=search-runtime build_version=%s commit_sha=%s",
+        BUILD_VERSION,
+        COMMIT_SHA,
+    )
+    yield
+
+
+app = FastAPI(title="Knowledge Search Runtime", version=BUILD_VERSION, lifespan=lifespan)
 
 # Always read `settings.CORS_ORIGINS` — never inline a literal here. This
 # service's sibling (agent-runtime) once hardcoded a CORS value that silently
@@ -90,7 +108,9 @@ class RegisterLocalIndexRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    return JSONResponse(
+        {"status": "ok", "version": BUILD_VERSION, "commit_sha": COMMIT_SHA}
+    )
 
 
 # ---------------------------------------------------------------------------

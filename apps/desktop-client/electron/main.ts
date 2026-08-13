@@ -363,7 +363,10 @@ function registerIpcHandlers(): void {
       const baseUrl = getDesktopSettingsStore().getPublic().searchRuntimeBaseUrl;
       const result = await activateInstalledKnowledge(layout, store, baseUrl, { assetType, assetId, version });
       if (result.activation) {
-        const logFn = result.activation.state === "ACTIVE" ? "info" : "error";
+        // ALREADY_ACTIVE(central_index_exists)는 실패가 아니다 — ACTIVE와
+        // 함께 info로 남긴다. FAILED만 error 레벨(전자를 error로 로깅하면
+        // 실제로는 검색되는 자산이 운영 로그에서 실패로 보인다).
+        const logFn = result.activation.state === "FAILED" ? "error" : "info";
         getLogger()[logFn](
           "knowledge-activation",
           `Knowledge 활성화 ${result.activation.state}: ${assetType}/${assetId}@${version}` +

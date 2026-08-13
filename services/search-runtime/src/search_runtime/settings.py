@@ -29,6 +29,32 @@ from __future__ import annotations
 
 import os
 
+BUILD_VERSION: str = os.environ.get("SEARCH_BUILD_VERSION", "0.1.0")
+"""Deployment identity, exposed by `/health` and logged once at startup —
+mirrors `portal_api.config.Settings.build_version` and
+`distribution_service.config.Settings.build_version` byte-for-byte in intent
+(same default, same "release automation injects it, local dev is honestly
+unversioned" contract), adapted to this module's plain-`os.environ` style
+instead of pydantic-settings (see this module's docstring for why).
+
+This exists to close a real diagnosed gap, not a speculative one: a
+search-runtime process started before the D-079 local-index-activation
+endpoints existed keeps running (nothing crashes it), so `/openapi.json` on
+that process genuinely lacks `/search/v1/local-indexes` and every activation
+attempt 404s. Before this field, `/health` returned only a hardcoded
+`{"status": "ok", "version": "0.1.0"}` literal — identical whether the
+process was built five minutes or five months ago — so a stale process was
+indistinguishable from a current one short of reading `/openapi.json` by
+hand. `BUILD_VERSION`/`COMMIT_SHA` turn that into one glance, the same way
+they already do for portal-api and distribution-service."""
+
+COMMIT_SHA: str = os.environ.get("SEARCH_COMMIT_SHA", "unknown")
+"""Immutable commit SHA release automation injects alongside BUILD_VERSION
+above. Deliberately not derived by shelling out to `git` at runtime (that
+would make Git metadata a runtime dependency of a service that otherwise has
+none) — an un-injected local/dev process reports `"unknown"` honestly rather
+than guessing."""
+
 INDEX_BASE: str = os.environ.get(
     "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
 )

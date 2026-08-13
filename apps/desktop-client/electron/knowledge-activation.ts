@@ -46,6 +46,16 @@ function failedActivation(reason: string, message: string, indexPath: string | n
   return { state: "FAILED", checkedAt: nowIso(), reason, message, indexPath };
 }
 
+/** D-079 이어 붙이기(central-index-exists-not-a-failure, 2026-08-13 실사용
+ * 진단): search-runtime이 `central_index_exists`로 등록을 거부한 경우
+ * 전용 — 이 Knowledge는 search-runtime의 중앙 INDEX_BASE에 이미 있어 별도
+ * 등록 없이도 검색된다(서버 쪽 설계 불변식, 절대 바꾸지 않는다). `FAILED`와
+ * 구분되는 별도 state로 저장해야 화면이 "활성화 실패"라는 거짓 알람을
+ * 보여주지 않는다 — `electron/types.ts`의 `KnowledgeActivation` 문서 참고. */
+function alreadyActiveActivation(message: string, indexPath: string | null): KnowledgeActivation {
+  return { state: "ALREADY_ACTIVE", checkedAt: nowIso(), reason: "central_index_exists", message, indexPath };
+}
+
 /**
  * Looks up the installed record, verifies it is Knowledge with a real
  * AssetVersion id and an index folder on disk, then registers that folder
@@ -107,6 +117,14 @@ export async function activateInstalledKnowledge(
   );
 
   if (!result.ok) {
+    if (result.reason === "central_index_exists") {
+      // 실패가 아니라 "이미 검색 가능함" — 위 alreadyActiveActivation 참고.
+      // ok: true로 반환한다: 사용자 관점에서 이 Knowledge는 지금 채팅에서
+      // 바로 검색 가능하고, 그것이 "활성화"가 하려던 일 그 자체다.
+      const activation = alreadyActiveActivation(result.message, indexDir);
+      store.updateActivation(target.assetType, target.assetId, target.version, activation);
+      return { ok: true, activation, error: null };
+    }
     const activation = failedActivation(result.reason, result.message, indexDir);
     store.updateActivation(target.assetType, target.assetId, target.version, activation);
     return { ok: false, activation, error: null };
@@ -182,7 +200,16 @@ export interface ActivationDowngrade {
  * 뜻이다(search-runtime에 `SEARCH_LOCAL_INDEX_ROOTS` 미설정). 두 경우 모두
  * 로컬 ACTIVE는 거짓이므로 낮추는 것은 같지만, **안내가 달라야 한다** —
  * 전자에 "다시 활성화하세요"라고 말하면 사용자는 반드시 다시 실패하는 행동을
- * 하게 된다. 계약이 이 플래그를 따로 돌려주는 이유가 정확히 이 구분이다. */
+ * 하게 된다. 계약이 이 플래그를 따로 돌려주는 이유가 정확히 이 구분이다.
+ *
+ * `state: "ALREADY_ACTIVE"`(central_index_exists)는 이 비교에서 의도적으로
+ * 건드리지 않는다 — 이런 자산은 search-runtime에 로컬 등록을 시도조차
+ * 하지 않았으므로(등록 자체가 거부됐다) `listLocalKnowledgeIndexes`가 돌려주는
+ * `serverEntries`(로컬 등록 목록)에 애초에 나타날 수 없는 것이 정상이고,
+ * 검색은 여전히 search-runtime의 중앙 INDEX_BASE가 서빙한다. 아래 `!==
+ * "ACTIVE"` 검사가 이 state를 자동으로 건너뛴다 — `"ALREADY_ACTIVE"`를
+ * 로컬 등록 목록과 비교해 "없으니 낮춘다"고 하면 방금 고친 거짓 실패
+ * 알람을 reconcile 경로에서 그대로 재도입하는 것이다. */
 export function computeActivationReconcile(
   installed: readonly InstalledAsset[],
   serverEntries: readonly LocalIndexEntry[] | null,
@@ -195,7 +222,7 @@ export function computeActivationReconcile(
   const downgrades: ActivationDowngrade[] = [];
   for (const asset of installed) {
     if (asset.assetType !== "knowledge") continue;
-    if (asset.activation?.state !== "ACTIVE") continue;
+    if (asset.activation?.state !== "ACTIVE") continue; // ALREADY_ACTIVE never downgraded — see docstring above.
     if (!asset.assetVersionId) continue; // ACTIVE without an id should not happen, but never guess.
     if (registeredIds.has(asset.assetVersionId)) continue;
     downgrades.push({

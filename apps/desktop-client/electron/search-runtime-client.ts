@@ -28,11 +28,16 @@ export interface LocalIndexEntry {
 }
 
 /** Exactly the reasons documented on `RegisterLocalIndexResponse` in the
- * schema, plus two client-side ones: `"unreachable"` (network failure/timeout
- * — never sent by the server) and `"unknown"` (the server's Error Envelope
- * was present but didn't carry a recognized `details.reason`, or the body
- * wasn't parseable at all — never invent a more specific reason than the
- * server actually gave). */
+ * schema, plus three client-side ones — none of these three are ever sent by
+ * the server, they are this file's own diagnosis of an HTTP-level failure the
+ * Error Envelope shape cannot represent:
+ * `"unreachable"` (network failure/timeout), `"activation_api_unavailable"`
+ * (a bare HTTP 404 with no Error Envelope body at all — see
+ * `activationApiUnavailableFailure` below for why that specific shape means
+ * something diagnosable, not just "unknown"), and `"unknown"` (the server's
+ * Error Envelope was present but didn't carry a recognized `details.reason`,
+ * or the body wasn't parseable at all — never invent a more specific reason
+ * than the server actually gave). */
 export type SearchRuntimeRefusalReason =
   | "local_indexes_disabled"
   | "path_outside_allowed_roots"
@@ -49,6 +54,7 @@ export type SearchRuntimeRefusalReason =
   | "source_not_allowed"
   | "label_too_long"
   | "unreachable"
+  | "activation_api_unavailable"
   | "unknown";
 
 const KNOWN_REASONS = new Set<string>([
@@ -169,6 +175,28 @@ async function parseErrorEnvelope(res: Response): Promise<SearchRuntimeFailure> 
   return { ok: false, reason: "unknown", message: `search-runtime 응답을 해석할 수 없습니다 (HTTP ${res.status}).` };
 }
 
+/** 2026-08-13 실사용 진단: 사용자가 활성화를 눌렀는데 "search-runtime 응답을
+ * 해석할 수 없습니다 (HTTP 404)"만 뜬 사고를 조사한 결과, 원인은 이
+ * `/search/v1/local-indexes` 계약이 추가되기 전에 이미 떠 있던 구버전
+ * search-runtime 프로세스였다(그 프로세스의 `/openapi.json`에는 `/health`와
+ * `/search/v1/query`만 있었다) — 즉 이 URL 자체가 그 프로세스에 존재하지
+ * 않는다. FastAPI가 미매칭 경로에 내는 순수 404는 이 파일의 Error Envelope
+ * 파서가 이해하는 형식이 전혀 아니므로(`{"detail":"Not Found"}`, `error.message`
+ * 없음) `parseErrorEnvelope`를 거치면 진짜 원인을 전혀 알려주지 못하는 일반
+ * "unknown" 메시지로 뭉개진다. **정확한 진단은 아니다** — 이론상 다른 원인의
+ * 404일 수도 있으므로 "가장 가능성 높은 원인"이라고만 말하고 단정하지
+ * 않는다. */
+function activationApiUnavailableFailure(): SearchRuntimeFailure {
+  return {
+    ok: false,
+    reason: "activation_api_unavailable",
+    message:
+      "이 search-runtime에는 Knowledge 활성화 API(/search/v1/local-indexes)가 없습니다 (HTTP 404). " +
+      "가장 가능성 높은 원인은 이 기능이 추가되기 전에 시작된 search-runtime 프로세스가 재시작 없이 " +
+      "계속 실행 중인 것입니다 — search-runtime을 재시작한 뒤 다시 시도하세요.",
+  };
+}
+
 function unreachableFailure(err: unknown): SearchRuntimeFailure {
   const isTimeout = err instanceof Error && err.name === "AbortError";
   return {
@@ -210,6 +238,9 @@ export async function registerLocalKnowledgeIndex(
       ACTIVATION_TIMEOUT_MS,
     );
     if (!res.ok) {
+      if (res.status === 404) {
+        return activationApiUnavailableFailure();
+      }
       return await parseErrorEnvelope(res);
     }
     const body = (await res.json()) as { entry?: RawLocalIndexEntry };
@@ -235,6 +266,9 @@ export async function unregisterLocalKnowledgeIndex(
       ACTIVATION_TIMEOUT_MS,
     );
     if (!res.ok) {
+      if (res.status === 404) {
+        return activationApiUnavailableFailure();
+      }
       return await parseErrorEnvelope(res);
     }
     const body = (await res.json()) as { removed?: unknown };
@@ -256,6 +290,9 @@ export async function listLocalKnowledgeIndexes(
       ACTIVATION_TIMEOUT_MS,
     );
     if (!res.ok) {
+      if (res.status === 404) {
+        return activationApiUnavailableFailure();
+      }
       return await parseErrorEnvelope(res);
     }
     const body = (await res.json()) as { entries?: RawLocalIndexEntry[]; local_indexes_enabled?: unknown };

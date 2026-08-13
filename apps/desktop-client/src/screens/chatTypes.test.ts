@@ -162,6 +162,13 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
 });
 
 const ACTIVE = { state: "ACTIVE" as const, checkedAt: "2026-08-13T00:00:00.000Z", reason: null, message: null, indexPath: "/idx" };
+const ALREADY_ACTIVE = {
+  state: "ALREADY_ACTIVE" as const,
+  checkedAt: "2026-08-13T00:00:00.000Z",
+  reason: "central_index_exists",
+  message: "이 Knowledge는 이미 이 배포의 기본 색인 경로에 등록되어 있어 바로 검색 가능합니다.",
+  indexPath: "/idx",
+};
 const FAILED = (message: string) => ({
   state: "FAILED" as const,
   checkedAt: "2026-08-13T00:00:00.000Z",
@@ -236,6 +243,21 @@ describe("partitionInstalledKnowledgeByActivation / resolveActivatedKnowledgeIds
     ]);
     expect(result.excluded.map((e) => e.asset.assetId)).toEqual(["asset-2", "asset-4"]);
     expect(resolveActivatedKnowledgeIds(assets)).toEqual(["av-1", "av-3"]);
+  });
+
+  // central-index-exists-not-a-failure (2026-08-13 실사용 진단): search-runtime
+  // refuses local registration for a knowledge_id that already exists under
+  // its own central INDEX_BASE (reason "central_index_exists") — that
+  // Knowledge is already searchable, so it must count as usable for chat,
+  // exactly like a real ACTIVE registration, not as a failure.
+  it("treats an ALREADY_ACTIVE Knowledge (central_index_exists) as usable, same as ACTIVE", () => {
+    const alreadyActive = installedAsset({ assetId: "asset-1", assetVersionId: "av-1", activation: ALREADY_ACTIVE });
+
+    const result = partitionInstalledKnowledgeByActivation([alreadyActive]);
+
+    expect(result.usable).toEqual([{ knowledgeId: "av-1", asset: alreadyActive }]);
+    expect(result.excluded).toEqual([]);
+    expect(resolveActivatedKnowledgeIds([alreadyActive])).toEqual(["av-1"]);
   });
 });
 

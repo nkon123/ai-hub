@@ -224,6 +224,42 @@ describe("activateInstalledKnowledge", () => {
     expect(store.find("service", "svc-1", "1.0.0")?.activation).toBeUndefined();
   });
 
+  // central-index-exists-not-a-failure (2026-08-13 실사용 진단): the running
+  // search-runtime this repo already has may serve this knowledge_id from
+  // its own central INDEX_BASE. Registration is refused
+  // (`central_index_exists`, VALIDATION_ERROR/400), but the Knowledge is
+  // already searchable — this must surface as ok:true / state:
+  // "ALREADY_ACTIVE", never as a FAILED activation.
+  it("treats a 'central_index_exists' refusal as usable (ok:true, state ALREADY_ACTIVE), not a failure", async () => {
+    installKnowledgeWithIndex("know-central", "1.0.0");
+    const fetchImpl = (async () =>
+      jsonResponse(400, {
+        error: {
+          code: "VALIDATION_ERROR",
+          message:
+            "이 Knowledge는 이미 이 배포의 기본 색인 경로에 등록되어 있어 바로 검색 가능합니다 — 별도의 외부 색인 등록은 필요하지 않습니다.",
+          details: { reason: "central_index_exists" },
+        },
+      })) as unknown as FetchLike;
+
+    const result = await activateInstalledKnowledge(
+      layout,
+      store,
+      BASE_URL,
+      { assetType: "knowledge", assetId: "know-central", version: "1.0.0" },
+      fetchImpl,
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.activation?.state).toBe("ALREADY_ACTIVE");
+    expect(result.activation?.reason).toBe("central_index_exists");
+    expect(result.activation?.message).toContain("바로 검색 가능");
+    // Persisted as ALREADY_ACTIVE, not FAILED — the 설치된 자산 화면 must not
+    // show a red "활성화 실패" badge for an asset that is already searchable.
+    const persisted = store.find("knowledge", "know-central", "1.0.0")?.activation;
+    expect(persisted?.state).toBe("ALREADY_ACTIVE");
+  });
+
   it("reports 'not found' without persisting anything when no such record exists", async () => {
     const result = await activateInstalledKnowledge(
       layout,
@@ -395,6 +431,25 @@ describe("computeActivationReconcile (순수 비교 로직)", () => {
     expect(result).toEqual({ downgrades: [], checked: true });
   });
 
+  // central-index-exists-not-a-failure: an ALREADY_ACTIVE Knowledge was never
+  // locally registered with search-runtime (registration was refused because
+  // the central INDEX_BASE already serves it) — it can therefore never
+  // appear in `listLocalKnowledgeIndexes`'s entries by design. Reconcile must
+  // not read that absence as "registration lost" and downgrade it to FAILED.
+  it("never downgrades an ALREADY_ACTIVE (central_index_exists) Knowledge, even when the server's local-index list is empty", () => {
+    const asset = knowledgeAsset({
+      activation: {
+        state: "ALREADY_ACTIVE",
+        checkedAt: "2026-08-13T00:00:00.000Z",
+        reason: "central_index_exists",
+        message: "이미 검색 가능합니다.",
+        indexPath: "/idx",
+      },
+    });
+    const result = computeActivationReconcile([asset], []);
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
   it("ignores non-Knowledge assets even if somehow marked ACTIVE", () => {
     const asset = knowledgeAsset({ assetType: "service", activation: activeActivation() });
     const result = computeActivationReconcile([asset], []);
@@ -468,5 +523,25 @@ describe("reconcileInstalledKnowledgeActivations (main-process 오케스트레�
 
     expect(result).toEqual({ checked: true, downgradedCount: 0, error: null });
     expect(store.find("knowledge", "know-10", "1.0.0")?.activation?.state).toBe("ACTIVE");
+  });
+
+  it("leaves an ALREADY_ACTIVE (central_index_exists) entry untouched even though it never appears in the server's local-index list", async () => {
+    installKnowledgeWithIndex("know-11", "1.0.0");
+    store.updateActivation("knowledge", "know-11", "1.0.0", {
+      state: "ALREADY_ACTIVE",
+      checkedAt: "2026-08-13T00:00:00.000Z",
+      reason: "central_index_exists",
+      message: "이미 검색 가능합니다.",
+      indexPath: "/idx",
+    });
+    // The server's local-index registry is empty — expected, since this
+    // Knowledge was never registered there (it's served by the central
+    // INDEX_BASE instead).
+    const fetchImpl = (async () => jsonResponse(200, { entries: [], local_indexes_enabled: true })) as unknown as FetchLike;
+
+    const result = await reconcileInstalledKnowledgeActivations(store, BASE_URL, fetchImpl);
+
+    expect(result).toEqual({ checked: true, downgradedCount: 0, error: null });
+    expect(store.find("knowledge", "know-11", "1.0.0")?.activation?.state).toBe("ALREADY_ACTIVE");
   });
 });

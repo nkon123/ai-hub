@@ -286,11 +286,17 @@ class LocalIndexRegistry:
         # makes the whole feature incapable of changing an existing search
         # result — see this module's docstring (precedence rule).
         if (self._central_index_base / knowledge_id).exists():
+            # 실패가 아니라 사실 안내: 이 knowledge_id는 이미 이 배포의 기본
+            # 색인 경로(INDEX_BASE)에서 검색 가능하다(module docstring의
+            # precedence rule) — 등록이 "거부"되는 것은 맞지만, 호출자
+            # 입장에서는 검색이 이미 되고 있으니 실패로 읽혀서는 안 된다.
+            # 메시지 문구만 바꾼다 — code/reason("central_index_exists")과
+            # 동작(등록 거부)은 그대로다.
             raise LocalIndexError(
                 ErrorCode.VALIDATION_ERROR,
                 "central_index_exists",
-                "같은 knowledge_id의 색인이 이 서비스의 기본 색인 경로에 이미 있습니다 — "
-                "외부 색인으로 덮어쓸 수 없습니다.",
+                "이 Knowledge는 이미 이 배포의 기본 색인 경로에 등록되어 있어 "
+                "바로 검색 가능합니다 — 별도의 외부 색인 등록은 필요하지 않습니다.",
             )
 
         meta_path = candidate / INDEX_META_FILENAME
