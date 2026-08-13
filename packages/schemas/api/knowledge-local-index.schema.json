@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "knowledge-local-index",
+  "title": "Local Knowledge Index Registration (search-runtime, M08)",
+  "description": "D-079: the public Loopback contract that turns an *installed* Knowledge asset into an *activated* one. Before this contract existed, `services/search-runtime` could only search index directories it found under its own `INDEX_BASE` tree (written locally by indexing-runtime, M07) — so a Knowledge that arrived through the Offline Bundle path and was installed by Desktop (M04) into the per-user install root was on disk, listed as \"설치됨\", and yet unsearchable, with nothing in the product saying so. M04 must NOT fix that by writing into M08's INDEX_BASE tree or importing M08 internals (CLAUDE.md 구현 원칙 2); it registers the installed directory through these endpoints instead, and search-runtime decides — from its own deployment policy — whether that directory may be searched at all. Registration is deliberately refusable and every refusal is explicit: an index this service will not search must never look like an index that simply found no results. Scope note: this contract covers Knowledge only. Activating an installed MCP Tool (agent-runtime/Office Profile server+tool registry) is the other half of D-079 and is NOT covered here.",
+  "definitions": {
+    "LocalIndexSource": {
+      "type": "string",
+      "enum": ["DESKTOP_OFFLINE_BUNDLE"],
+      "description": "Provenance of the index directory being registered. A closed enum, not free text: search-runtime applies stricter artifact rules to distributed content than to locally-built content (see D-054 — a `bm25.pkl` that travelled inside a Bundle is executable content this service will not unpickle), so the caller has to name the channel it came from rather than describe it."
+    },
+    "LocalIndexEntry": {
+      "type": "object",
+      "required": ["knowledge_id", "index_path", "source", "registered_at"],
+      "additionalProperties": false,
+      "properties": {
+        "knowledge_id": {
+          "type": "string",
+          "format": "uuid",
+          "description": "The AssetVersion id this index was built for — the same id `knowledge-search.schema.json`'s SearchRequest.knowledge_id carries, NOT the parent Asset id (D-060). Verified against the index's own `index-meta.json` at registration time; a mismatch is refused rather than trusted."
+        },
+        "index_path": {
+          "type": "string",
+          "description": "Absolute, symlink-resolved directory containing this Knowledge's `index-meta.json`, `bm25.json` and `chroma/`. Echoed back so an operator/diagnostic screen can show exactly which directory was activated."
+        },
+        "source": { "$ref": "#/definitions/LocalIndexSource" },
+        "label": {
+          "type": ["string", "null"],
+          "maxLength": 200,
+          "description": "Optional human-readable Knowledge name for operator display (e.g. \"재택근무 정책 Knowledge v1.0.0\"). Display only — never used to resolve a path."
+        },
+        "registered_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "RegisterLocalIndexRequest": {
+      "type": "object",
+      "required": ["knowledge_id", "index_path", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "knowledge_id": { "type": "string", "format": "uuid" },
+        "index_path": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/definitions/LocalIndexSource" },
+        "label": { "type": ["string", "null"], "maxLength": 200 },
+        "trace_id": { "type": ["string", "null"] }
+      },
+      "description": "POST /search/v1/local-indexes. Idempotent per `knowledge_id`: re-registering the same id replaces the entry (a Desktop re-install of the same version must not need a delete first). Every field is caller-asserted and none of them is trusted on its own — see the refusal list on RegisterLocalIndexResponse."
+    },
+    "RegisterLocalIndexResponse": {
+      "type": "object",
+      "required": ["entry", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "$ref": "#/definitions/LocalIndexEntry" },
+        "trace_id": { "type": "string" }
+      },
+      "description": "200 only when the directory was accepted AND is searchable now. Refusals use the common Error Envelope (07-data-api-contracts.md §10.2) with `details.reason` naming exactly one cause, and `error.message` carrying a user-facing Korean sentence the caller can display verbatim. The complete reason list — a caller may switch on these, and the service raises no others: `local_indexes_disabled` (this deployment configured no allowed root — 403 PERMISSION_DENIED), `path_outside_allowed_roots` (403 PERMISSION_DENIED, checked after symlink resolution so a link pointing out of the root cannot smuggle a path past it), `path_not_absolute`, `path_not_a_directory`, `knowledge_id_invalid` (not an AssetVersion UUID — refused before the value can reach the path layer), `index_meta_missing`, `index_meta_unreadable`, `index_meta_knowledge_id_mismatch` (the directory's own metadata disagrees with the claimed id — the D-060 class of bug, refused instead of believed), `bm25_missing`, `bm25_legacy_pickle_only` (D-054: only an unmigrated executable `bm25.pkl` is present; run convert-bm25-format), `chroma_missing`, `central_index_exists` (a same-id index already exists under this service's own INDEX_BASE — refused so a registered directory can never silently shadow locally-built content), `source_not_allowed`, `label_too_long` — all 400 VALIDATION_ERROR unless noted."
+    },
+    "ListLocalIndexesResponse": {
+      "type": "object",
+      "required": ["entries", "local_indexes_enabled", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/LocalIndexEntry" }
+        },
+        "local_indexes_enabled": {
+          "type": "boolean",
+          "description": "False when this deployment configured no allowed root, i.e. registration would be refused. Exposed so a caller can distinguish \"nothing activated yet\" from \"activation is not available on this deployment\" without having to attempt a registration and read the error."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "GET /search/v1/local-indexes. Returns only entries that still pass re-validation at read time (the directory can be deleted or moved by the user after registration) — a stale entry is reported as `active: false` by the caller-side activation state, never silently listed as if it worked."
+    },
+    "DeleteLocalIndexResponse": {
+      "type": "object",
+      "required": ["knowledge_id", "removed", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "knowledge_id": { "type": "string", "format": "uuid" },
+        "removed": {
+          "type": "boolean",
+          "description": "False when no entry existed for this id. Deliberately a 200 with an explicit `false` rather than a 404: deactivation on uninstall must be safe to call unconditionally, but the caller still gets to see that nothing was actually deregistered."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "DELETE /search/v1/local-indexes/{knowledge_id}. Removes the registration only — this service never deletes the index files themselves, which belong to whoever installed them (M04)."
+    }
+  }
+}

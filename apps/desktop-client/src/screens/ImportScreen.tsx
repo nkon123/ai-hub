@@ -6,14 +6,19 @@
 // carries a single root asset, so splitting them into two navigable screens
 // would just add a click without adding clarity.
 import { useEffect, useRef, useState } from "react";
-import { FileArchive, FolderOpen, RotateCcw } from "lucide-react";
-import type { ImportProgressEvent, ImportResult } from "../../electron/types";
+import { AlertTriangle, CheckCircle2, FileArchive, FolderOpen, Loader2, RotateCcw } from "lucide-react";
+import type { ActivateKnowledgeResult, ImportProgressEvent, ImportResult } from "../../electron/types";
 import { STAGE_LABELS } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, PageHeader } from "../ui";
 import { assetTypeLabel, formatBytes } from "../format";
+import { knowledgeActivationTargets } from "./knowledgeActivation";
 
 type Phase = "IDLE" | "RUNNING" | "DONE";
+
+function activationKey(assetId: string, version: string): string {
+  return `${assetId}::${version}`;
+}
 
 export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
   const bridge = getDesktopBridge();
@@ -22,6 +27,10 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
   const [result, setResult] = useState<ImportResult | null>(null);
   const [pickerError, setPickerError] = useState<string | null>(null);
   const lastPickedPath = useRef<string | null>(null);
+  // D-079: 설치 성공 뒤 Knowledge 항목을 자동으로 활성화 시도한다 — 결과는
+  // 별도로 보여준다("설치는 완료되었지만 검색에 활성화되지 않았습니다" 규칙,
+  // 설치 성공 여부와 절대 섞이지 않는다).
+  const [activationResults, setActivationResults] = useState<Record<string, ActivateKnowledgeResult>>({});
 
   useEffect(() => {
     if (!bridge) return;
@@ -31,12 +40,33 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
     return unsubscribe;
   }, [bridge]);
 
+  useEffect(() => {
+    if (!bridge || !result || result.outcome !== "SUCCESS") return;
+    const targets = knowledgeActivationTargets(result.installPlan);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const target of targets) {
+        const outcome = await bridge.activateInstalledKnowledge("knowledge", target.assetId, target.version);
+        if (!cancelled) {
+          setActivationResults((prev) => ({ ...prev, [activationKey(target.assetId, target.version)]: outcome }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // `result`(객체 참조)가 바뀔 때만 재실행한다 — importBundle이 새 결과를
+    // 만들 때마다 정확히 한 번씩만 활성화를 시도한다.
+  }, [bridge, result]);
+
   async function runImport(filePath: string) {
     if (!bridge) return;
     lastPickedPath.current = filePath;
     setPickerError(null);
     setLiveEvents([]);
     setResult(null);
+    setActivationResults({});
     setPhase("RUNNING");
     try {
       const importResult = await bridge.importBundle(filePath);
@@ -86,15 +116,15 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
     return (
       <div>
         <PageHeader
-          title="Package 가져오기"
-          description="폐쇄망에서 반입한 Offline Bundle(.zip)을 검증하고 설치합니다."
+          title="ZIP 가져오기"
+          description="허브에서 받은 설치 ZIP을 선택하면 검증 후 자동으로 설치합니다."
           actions={
             <Button disabled title="Desktop 런타임이 연결되어 있지 않습니다">
               <FolderOpen size={14} /> 파일 선택
             </Button>
           }
         />
-        <BridgeUnavailableState detail="Offline Bundle 가져오기 및 설치는 Desktop(Electron) 앱에서 실행할 때만 사용할 수 있습니다." />
+        <BridgeUnavailableState detail="ZIP 가져오기와 설치는 Desktop(Electron) 앱에서 실행할 때만 사용할 수 있습니다." />
       </div>
     );
   }
@@ -102,8 +132,8 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
   return (
     <div>
       <PageHeader
-        title="Package 가져오기"
-        description="폐쇄망에서 반입한 Offline Bundle(.zip)을 검증하고 설치합니다."
+        title="ZIP 가져오기"
+        description="허브에서 받은 설치 ZIP을 선택하면 검증 후 자동으로 설치합니다."
         actions={
           <Button onClick={() => void handlePickFile()} disabled={phase === "RUNNING"}>
             <FolderOpen size={14} /> 파일 선택
@@ -120,9 +150,9 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
       {phase === "IDLE" && rows.length === 0 && (
         <Card className="flex flex-col items-center gap-2 border-dashed px-6 py-16 text-center shadow-none">
           <FileArchive size={28} className="text-slate-300" />
-          <p className="text-card-title font-medium text-text-primary">가져올 Offline Bundle을 선택하세요</p>
+          <p className="text-card-title font-medium text-text-primary">설치 ZIP을 선택하세요</p>
           <p className="text-body text-text-secondary">
-            ZIP 구조, Checksum, Manifest, Revocation, Runtime 호환성을 자동으로 검증합니다.
+            무결성·승인 상태·Runtime 호환성을 자동으로 확인합니다.
           </p>
         </Card>
       )}
@@ -154,6 +184,51 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
                   </div>
                 ))}
               </div>
+
+              {knowledgeActivationTargets(result.installPlan).length > 0 && (
+                <div className="mt-4 space-y-2 border-t border-success/20 pt-3">
+                  <p className="text-caption font-semibold text-text-muted">Knowledge 검색 활성화</p>
+                  {knowledgeActivationTargets(result.installPlan).map((target) => {
+                    const key = activationKey(target.assetId, target.version);
+                    const outcome = activationResults[key];
+                    return (
+                      <div key={key} className="flex items-start gap-1.5 text-caption">
+                        {!outcome && (
+                          <span className="flex items-center gap-1.5 text-text-secondary">
+                            <Loader2 size={13} className="animate-spin" />
+                            {target.name ?? target.assetId} 활성화 확인 중...
+                          </span>
+                        )}
+                        {outcome?.activation?.state === "ACTIVE" && (
+                          <>
+                            <CheckCircle2 size={14} className="mt-0.5 shrink-0 text-success" />
+                            <span className="text-success">
+                              {target.name ?? target.assetId}: 검색에 활성화되었습니다.
+                            </span>
+                          </>
+                        )}
+                        {outcome?.activation?.state === "FAILED" && (
+                          <>
+                            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+                            <span className="text-warning">
+                              설치는 완료되었지만 검색에 활성화되지 않았습니다: {outcome.activation.message ?? "알 수 없는 오류"}{" "}
+                              — 설치된 자산 화면에서 다시 시도할 수 있습니다.
+                            </span>
+                          </>
+                        )}
+                        {outcome && !outcome.activation && (
+                          <>
+                            <AlertTriangle size={14} className="mt-0.5 shrink-0 text-warning" />
+                            <span className="text-warning">
+                              설치는 완료되었지만 활성화를 시도하지 못했습니다: {outcome.error ?? "알 수 없는 오류"}
+                            </span>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </Card>
           ) : (
             <Card className="border-danger/30 bg-danger/5 p-5">

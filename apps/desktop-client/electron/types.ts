@@ -113,10 +113,10 @@ export interface ImportResult {
 export interface InstalledAsset {
   assetId: string;
   /** AssetVersion id carried through from `IncludedAssetSummary.asset_version_id`
-   * (D-060). `null` when the installing Bundle predates this field or the
-   * item is a STANDARD_LOCAL_COPY (agent/prompt) with no AssetVersion —
-   * callers (e.g. ChatScreen's Knowledge selector) must treat `null` as
-   * "cannot be used as a knowledge_id", never substitute assetId. */
+   * (D-060). A legacy Knowledge may be backfilled only from its
+   * checksum-verified installed index-meta.json. Otherwise `null` means
+   * "cannot be used as a knowledge_id" and callers must never substitute
+   * assetId. */
   assetVersionId: string | null;
   assetType: string;
   name: string;
@@ -135,6 +135,36 @@ export interface InstalledAsset {
    * has never been run. Never implies PASS by omission — the D08 UI must
    * read this field, not assume it. */
   checksumVerification?: ChecksumVerification | null;
+  /** Result of the most recent D-079 활성화(activation) attempt against
+   * search-runtime's Local Knowledge Index Registration contract, or `null`
+   * after an explicit 비활성화. Only ever set for `assetType === "knowledge"`.
+   * **Absence (the field itself being `undefined`) means "활성화를 시도한
+   * 적이 없다" and must never be rendered as ACTIVE** — same "생략으로 결과를
+   * 지어내지 않는다" rule `checksumVerification` above already follows. The
+   * UI must read this field explicitly and distinguish 세 가지: 필드 없음
+   * (미시도), `state: "FAILED"` (시도했으나 실패), `state: "ACTIVE"` (성공).
+   * "설치됨"(이 레코드가 존재한다는 사실)과 "활성화됨"(이 필드가
+   * `state: "ACTIVE"`라는 사실)은 서로 다른 사실이다(open-decisions.md D-079). */
+  activation?: KnowledgeActivation | null;
+}
+
+/** D-079 활성화 결과 — `electron/knowledge-activation.ts`가 search-runtime
+ * 응답(`electron/search-runtime-client.ts`)을 이 형태로 저장한다. */
+export interface KnowledgeActivation {
+  state: "ACTIVE" | "FAILED";
+  checkedAt: string;
+  /** `SearchRuntimeRefusalReason`의 값 중 하나, 또는 로컬에서만 판정한 사유
+   * (예: `"asset_version_id_missing"`, `"index_dir_missing"`) — 로직/Telemetry
+   * 전용이며 화면 표시 문구는 항상 `message`를 쓴다. `state === "ACTIVE"`이면
+   * `null`. */
+  reason: string | null;
+  /** 항상 한국어, 화면에 그대로 표시 가능. `state === "ACTIVE"`이면 `null`. */
+  message: string | null;
+  /** 활성화를 시도한 절대 경로 — 성공/실패 모두에서 채워진다(어떤 경로가
+   * 시도되었는지는 실패 원인 진단에도 필요하다). 경로 계산 자체가 불가능했던
+   * 경우(예: `assetVersionId`가 없어 애초에 요청을 만들 수 없었던 경우)에만
+   * `null`. */
+  indexPath: string | null;
 }
 
 /** `assets:list`'s actual return shape — `InstalledAsset` plus a `status`
@@ -246,6 +276,36 @@ export interface ActivateVersionResult {
 
 export interface OrphanedInstallCleanupResult {
   removed: Array<{ assetType: string; assetId: string; version: string }>;
+}
+
+// ---------------------------------------------------------------------------
+// D-079 Knowledge 활성화("설치됨" ≠ "활성화됨")
+// ---------------------------------------------------------------------------
+
+export interface ActivateKnowledgeResult {
+  ok: boolean;
+  /** Persisted onto the `InstalledAsset` record whenever an actual attempt
+   * was made (assetVersionId 확인, index 폴더 확인, search-runtime 호출 —
+   * 성공/실패 모두). `null` only for the two refusals that never touch the
+   * record because there was nothing to attempt: 대상을 찾을 수 없음, 이
+   * 자산 유형은 활성화 대상이 아님 — 그 사유는 `error`에 담긴다. */
+  activation: KnowledgeActivation | null;
+  /** Non-null only when `activation` is `null` — see above. */
+  error: string | null;
+}
+
+export interface DeactivateKnowledgeResult {
+  ok: boolean;
+  /** Non-null when the local activation state was cleared successfully but
+   * the DELETE call to search-runtime failed or was unreachable —
+   * informational only. Deactivation must still succeed locally in this case
+   * (CLAUDE.md: Desktop은 Runtime 장애 시 종료되지 않고 복구 안내를 제공한다) —
+   * otherwise a user could never uninstall cleanly while search-runtime is
+   * down. */
+  remoteWarning: string | null;
+  /** Non-null only when `ok === false` (대상을 찾을 수 없음, 또는 이 자산
+   * 유형은 활성화 대상이 아님). */
+  error: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -365,6 +425,11 @@ export interface DesktopSettingsPublic {
   embeddingModelAlias: string;
   mcpServerAlias: string;
   mcpServerUrl: string;
+  /** D-079 — search-runtime의 Local Knowledge Index Registration 계약
+   * Base URL. loopback만 허용된다(Ollama와 달리 원격 허용 예외 없음 —
+   * `network-policy.ts`의 `validateSearchRuntimeBaseUrl` 참고: 활성화
+   * 요청이 이 기기의 절대 경로를 담기 때문). */
+  searchRuntimeBaseUrl: string;
   maxConcurrentRuns: MaxConcurrentRunsInfo;
   setupCompletedAt: string | null;
   updatedAt: string | null;
@@ -381,6 +446,7 @@ export interface DesktopSettingsInput {
   embeddingModelAlias?: string;
   mcpServerAlias?: string;
   mcpServerUrl?: string;
+  searchRuntimeBaseUrl?: string;
 }
 
 export interface DesktopSettingsUpdateResult {
@@ -722,6 +788,17 @@ export interface DesktopBridge {
     version: string,
   ): Promise<{ available: boolean; reason: string | null; result: ChecksumVerification | null }>;
   getAssetDependencies(assetType: string, assetId: string, version: string): Promise<AssetDependencyView>;
+
+  // --- D-079 Knowledge 활성화 --------------------------------------------------
+  /** "설치됨"과 "활성화됨"은 서로 다른 사실이다 — 이 호출은 설치된 Knowledge의
+   * index 경로를 search-runtime에 등록해 실제로 검색 가능하게 만든다.
+   * Knowledge가 아닌 자산 유형이거나 레코드를 찾을 수 없으면 `activation: null`
+   * + `error`만 채워 반환한다(시도 자체가 없었으므로 저장할 결과가 없다). */
+  activateInstalledKnowledge(assetType: string, assetId: string, version: string): Promise<ActivateKnowledgeResult>;
+  /** search-runtime 등록을 해제한다. search-runtime이 응답하지 않아도 로컬
+   * 활성화 상태는 항상 정리된다(정직하게 `remoteWarning`으로 알린다) —
+   * Runtime 장애 때문에 제거/재설치가 막히지 않도록. */
+  deactivateInstalledKnowledge(assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult>;
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   /** 두 설치된 버전의 Manifest를 비교한다(Manifest/Dependency/Permission 3축). */

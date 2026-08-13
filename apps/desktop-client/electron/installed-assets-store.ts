@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { ChecksumVerification, InstalledAsset } from "./types";
+import type { ChecksumVerification, InstalledAsset, KnowledgeActivation } from "./types";
 
 export class InstalledAssetsStore {
   private readonly filePath: string;
@@ -68,6 +68,36 @@ export class InstalledAssetsStore {
     if (idx === -1) return;
     all[idx] = { ...all[idx], checksumVerification: verification };
     this.save(all);
+  }
+
+  /** D-079 "활성화" 결과를 기존 레코드에 병합 저장한다 —
+   * `updateChecksumVerification`과 동일한 패턴. 대상 레코드가 없으면 조용히
+   * 아무 것도 하지 않는다(호출자가 이미 `find`로 존재를 확인). `null`을
+   * 넘기면(명시적 비활성화) 필드 자체를 지운다 — "필드 없음(미시도)"과
+   * 구분되는 세 번째 값이 아니라, 두 경우 모두 `activation`이 falsy이므로
+   * 화면에는 동일하게 "활성화 안 됨"으로 보인다(그것이 정확한 사실이다). */
+  updateActivation(
+    assetType: string,
+    assetId: string,
+    version: string,
+    activation: KnowledgeActivation | null,
+  ): void {
+    const all = this.list();
+    const idx = all.findIndex((a) => a.assetType === assetType && a.assetId === assetId && a.version === version);
+    if (idx === -1) return;
+    all[idx] = { ...all[idx], activation };
+    this.save(all);
+  }
+
+  /** Records an independently verified AssetVersion id for a legacy
+   * installation. Existing non-null values are never overwritten. */
+  backfillAssetVersionId(assetType: string, assetId: string, version: string, assetVersionId: string): boolean {
+    const all = this.list();
+    const idx = all.findIndex((a) => a.assetType === assetType && a.assetId === assetId && a.version === version);
+    if (idx === -1 || all[idx].assetVersionId) return false;
+    all[idx] = { ...all[idx], assetVersionId };
+    this.save(all);
+    return true;
   }
 
   private save(records: InstalledAsset[]): void {

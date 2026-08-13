@@ -352,6 +352,44 @@ pnpm dev
 - **이 PoC 세션(macOS)에서는 Electron 앱을 한 번도 실제로 기동한 적이 없다**(사내 정책상 서명되지 않은 바이너리가 macOS Gatekeeper/XProtect에 격리됨, `progress-log.md` M04 항목 참고). 따라서 `pnpm dev`가 Windows에서 실제로 Electron 창을 띄우는지는 **미검증**이며, 지금까지의 M04 검증은 전부 코드/단위 테스트(`pnpm --filter desktop-client test`) 수준이다.
 - Windows 설치 패키지(NSIS)를 만들려면 `pnpm run dist:win`(electron-builder)을 사용한다 — 코드 서명 관련 세부사항은 `docs/implementation-spec/11-desktop-packaging-and-distribution.md` 참고.
 
+### 7.1 설치한 Knowledge를 실제로 검색에 활성화하기 (D-079)
+
+**"설치됨"은 "검색 가능"이 아니다.** Desktop이 ZIP을 15단계 검증 후 설치하면 색인 파일은 그 PC의 사용자 폴더(`%APPDATA%\Enterprise AI Asset Hub\assets\knowledge\...`)에 들어가지만, search-runtime은 자기 `INDEX_BASE` 트리만 검색한다. 그래서 활성화하지 않은 Knowledge는 오류 없이 **영원히 0건**을 반환한다 — 이것이 D-079가 닫은 공백이다.
+
+활성화는 search-runtime의 관리 API(`POST /search/v1/local-indexes`)로 이루어지며, 이 API는 **기본적으로 꺼져 있다.**
+
+| 서비스 | 환경 변수 | 기본값 | 의미 |
+|---|---|---|---|
+| search-runtime | `SEARCH_LOCAL_INDEX_ROOTS` | (비어 있음 = 기능 꺼짐) | 외부에 설치된 색인을 등록할 수 있는 상위 디렉터리 목록(`os.pathsep` 구분). 비어 있으면 모든 등록 요청이 403 `local_indexes_disabled`로 거절된다 |
+| search-runtime | `SEARCH_LOCAL_INDEX_REGISTRY` | `INDEX_BASE` 옆의 `local-indexes.json` | 등록 내역 저장 파일. 재기동 후에도 활성화 상태가 유지된다 |
+
+**Desktop이 있는 PC에서 search-runtime을 띄울 때:**
+
+```powershell
+$env:SEARCH_LOCAL_INDEX_ROOTS = "$env:APPDATA\Enterprise AI Asset Hub\assets"
+```
+
+```bash
+# macOS/Linux
+export SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI Asset Hub/assets"
+```
+
+**중앙에 배포된 search-runtime에는 이 값을 설정하지 않는다.** 기본값(비어 있음)이 곧 "이 서비스가 새로 접근할 수 있는 파일 경로가 늘어나지 않는다"는 뜻이다. 설정하더라도 등록은 그 루트 안쪽으로만 허용되고, 경계 검사는 symlink를 해석한 뒤에 수행하므로 루트 안에 심어 둔 링크로 바깥 디렉터리를 등록할 수 없다.
+
+**활성화가 거절되는 대표적인 경우 (모두 명시적 오류로 반환되며, 조용한 0건이 되지 않는다):**
+
+| `details.reason` | 뜻과 대처 |
+|---|---|
+| `local_indexes_disabled` | 위 `SEARCH_LOCAL_INDEX_ROOTS`가 설정되지 않았다 |
+| `bm25_legacy_pickle_only` | 색인에 `bm25.json` 없이 legacy `bm25.pkl`만 있다. **배포 채널로 들어온 pickle은 이 서비스가 절대 로드하지 않는다**(D-054) — §2.2 절차로 변환한 뒤 다시 반출/설치한다 |
+| `index_meta_knowledge_id_mismatch` | 색인 폴더의 `index-meta.json`이 다른 `knowledge_id`를 기록하고 있다. 잘못된 색인을 가리키고 있다는 뜻이므로 등록하지 않는다(D-060) |
+| `central_index_exists` | 같은 `knowledge_id` 색인이 이미 이 서비스의 `INDEX_BASE`에 있다. **중앙 색인이 항상 우선**하며, 외부 색인이 그것을 덮어쓸 수 없다 |
+| `path_outside_allowed_roots` | 허용 루트 밖의 경로다 |
+
+**실측(2026-08-13, macOS)**: 현재 저장소의 `data/indexes/d9e660b7-...`(재택근무 정책 Knowledge) 색인은 아직 `bm25.pkl`만 가지고 있어 **그대로는 활성화되지 않는다** — `bm25_legacy_pickle_only`로 거절되는 것을 실제 서비스로 확인했다. `convert-bm25-format`으로 변환한 사본은 등록에 성공했고, 같은 질의(`장비 지원은 무엇이 있나요?`)가 활성화 전 0건 → 활성화 후 실제 Citation 1건(`장비 지원` 섹션, similarity 0.53) → 비활성화 후 다시 0건으로 바뀌는 것까지 확인했다. **Offline Bundle로 반출하기 전에 §2.2 변환을 먼저 수행할 것.**
+
+search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청이 전달하는 것은 그 PC의 로컬 절대 경로이므로, 원격 search-runtime은 그 디렉터리를 읽을 수 없다.
+
 ## 8. 문제 해결
 
 | 증상 | 원인 후보 | 조치 |
@@ -399,3 +437,4 @@ npx next telemetry status   # Status: Disabled 이어야 한다
 - D-073 (`open-decisions.md`): indexing-runtime `INDEX_BASE` 하드코딩 수정, PDF/DOCX Loader 추가, Windows 실행 스크립트 신설 — 이 문서와 함께 기록됨.
 - D-075 (`open-decisions.md`): 임베딩 모델을 `INDEXING_EMBED_MODEL`/`SEARCH_EMBED_MODEL` 설정으로 분리, search-runtime이 검색 시 자기 설정이 아니라 대상 색인의 `index-meta.json`에 기록된 `embed_model`을 우선 사용하도록 수정 — §2.1 참고.
 - D-054 (`open-decisions.md`): `bm25.pkl`(Python pickle, 실행 가능한 포맷)을 `bm25.json`(비실행 JSON)으로 교체 — §2.2 참고. 기존 색인은 `convert-bm25-format`으로 운영자가 직접 변환해야 한다.
+- D-079 (`open-decisions.md`): Desktop이 설치한 Knowledge 색인을 search-runtime에 등록해야 실제로 검색된다(`SEARCH_LOCAL_INDEX_ROOTS`) — §7.1 참고. 계약은 `packages/schemas/api/knowledge-local-index.schema.json`.

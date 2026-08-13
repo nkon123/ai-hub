@@ -3,9 +3,10 @@ import {
   DEFAULT_MCP_SERVER_ALIAS,
   DEFAULT_MCP_SERVER_URL,
   DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_SEARCH_RUNTIME_BASE_URL,
   listOllamaModels,
 } from "../electron/connections";
-import { validateGenericUrl, validateNonEmpty, validateOllamaBaseUrl } from "../electron/network-policy";
+import { validateGenericUrl, validateNonEmpty, validateOllamaBaseUrl, validateSearchRuntimeBaseUrl } from "../electron/network-policy";
 import { DEFAULT_CHAT_MODEL_ALIAS } from "../electron/ollama-chat";
 import type {
   ConversationRecord,
@@ -49,6 +50,7 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     embeddingModelAlias: DEFAULT_EMBEDDING_MODEL_ALIAS,
     mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
     mcpServerUrl: DEFAULT_MCP_SERVER_URL,
+    searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
     maxConcurrentRuns: { value: 1, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
     setupCompletedAt: null,
     updatedAt: null,
@@ -92,6 +94,12 @@ export function applyBrowserPreviewSettingsPatch(
     next.mcpServerUrl = patch.mcpServerUrl.trim();
   }
 
+  if (patch.searchRuntimeBaseUrl !== undefined) {
+    const validation = validateSearchRuntimeBaseUrl(patch.searchRuntimeBaseUrl);
+    if (!validation.ok) return { ok: false, error: validation.error, settings: current };
+    next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
+  }
+
   next.updatedAt = new Date().toISOString();
   return { ok: true, error: null, settings: next };
 }
@@ -112,6 +120,8 @@ function readSettings(): DesktopSettingsPublic {
         typeof parsed.embeddingModelAlias === "string" ? parsed.embeddingModelAlias : defaults.embeddingModelAlias,
       mcpServerAlias: typeof parsed.mcpServerAlias === "string" ? parsed.mcpServerAlias : defaults.mcpServerAlias,
       mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : defaults.mcpServerUrl,
+      searchRuntimeBaseUrl:
+        typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : defaults.searchRuntimeBaseUrl,
       setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
     };

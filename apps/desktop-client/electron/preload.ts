@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ActivateKnowledgeResult,
   ActivateVersionResult,
   AssetDependencyView,
   AssetManifestResult,
@@ -10,6 +11,7 @@ import type {
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
+  DeactivateKnowledgeResult,
   DesktopBridge,
   DesktopSettingsInput,
   DesktopSettingsPublic,
@@ -73,6 +75,13 @@ const bridge: DesktopBridge = {
 
   getAssetDependencies: (assetType: string, assetId: string, version: string): Promise<AssetDependencyView> =>
     ipcRenderer.invoke("assets:getDependencies", assetType, assetId, version),
+
+  // --- D-079 Knowledge 활성화 --------------------------------------------------
+  activateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<ActivateKnowledgeResult> =>
+    ipcRenderer.invoke("knowledge:activate", assetType, assetId, version),
+
+  deactivateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult> =>
+    ipcRenderer.invoke("knowledge:deactivate", assetType, assetId, version),
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   diffAssetVersions: (

@@ -18,8 +18,10 @@ import {
   getAssetDependencyView,
   listInstalledAssetsWithStatus,
   readAssetManifest,
+  recoverLegacyKnowledgeAssetVersionIds,
   reverifyAssetChecksum,
 } from "./asset-management";
+import { activateInstalledKnowledge, deactivateInstalledKnowledge } from "./knowledge-activation";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
@@ -29,6 +31,7 @@ import { installFromStore, defaultSleep, type CancelToken } from "./store-instal
 import { getServiceDetailView } from "./service-detail";
 import { buildSystemInfo } from "./system-info";
 import type {
+  ActivateKnowledgeResult,
   ActivateVersionResult,
   AssetDependencyView,
   AssetManifestResult,
@@ -38,6 +41,7 @@ import type {
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
+  DeactivateKnowledgeResult,
   DesktopSettingsInput,
   DesktopSettingsPublic,
   DesktopSettingsUpdateResult,
@@ -190,7 +194,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle("assets:list", async (): Promise<InstalledAssetWithStatus[]> => {
     const layout = getLayout();
-    return listInstalledAssetsWithStatus(layout, new InstalledAssetsStore(layout.stateDir));
+    const store = new InstalledAssetsStore(layout.stateDir);
+    const recovered = recoverLegacyKnowledgeAssetVersionIds(layout, store);
+    if (recovered > 0) {
+      getLogger().info("asset-migration", `이전 Bundle의 Knowledge 식별자 ${recovered}건을 검증 후 복구했습니다.`);
+    }
+    return listInstalledAssetsWithStatus(layout, store);
   });
 
   ipcMain.handle(
@@ -318,6 +327,48 @@ function registerIpcHandlers(): void {
         };
       }
       return getAssetDependencyView(layout, store, asset);
+    },
+  );
+
+  // --- D-079 Knowledge 활성화 ("설치됨" ≠ "활성화됨") ---------------------------
+  ipcMain.handle(
+    "knowledge:activate",
+    async (_event, assetType: string, assetId: string, version: string): Promise<ActivateKnowledgeResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const baseUrl = getDesktopSettingsStore().getPublic().searchRuntimeBaseUrl;
+      const result = await activateInstalledKnowledge(layout, store, baseUrl, { assetType, assetId, version });
+      if (result.activation) {
+        const logFn = result.activation.state === "ACTIVE" ? "info" : "error";
+        getLogger()[logFn](
+          "knowledge-activation",
+          `Knowledge 활성화 ${result.activation.state}: ${assetType}/${assetId}@${version}` +
+            (result.activation.reason ? ` (사유: ${result.activation.reason})` : ""),
+          result.activation.state === "FAILED" ? { errorCode: result.activation.reason ?? undefined } : {},
+        );
+      } else {
+        getLogger().warn(
+          "knowledge-activation",
+          `Knowledge 활성화 요청을 시도할 수 없음: ${assetType}/${assetId}@${version} (${result.error})`,
+        );
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "knowledge:deactivate",
+    async (_event, assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const baseUrl = getDesktopSettingsStore().getPublic().searchRuntimeBaseUrl;
+      const result = await deactivateInstalledKnowledge(store, baseUrl, { assetType, assetId, version });
+      getLogger().info(
+        "knowledge-activation",
+        `Knowledge 비활성화: ${assetType}/${assetId}@${version}` +
+          (result.remoteWarning ? ` (원격 경고: ${result.remoteWarning})` : ""),
+      );
+      return result;
     },
   );
 

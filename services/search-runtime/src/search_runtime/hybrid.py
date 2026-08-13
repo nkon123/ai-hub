@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,19 +13,44 @@ import httpx
 from search_runtime.bm25_cache import get_cached_bm25
 from search_runtime.bm25_store import BM25_JSON_FILENAME, BM25_PICKLE_FILENAME
 from search_runtime.chroma_client_cache import get_chroma_client
+from search_runtime.local_index_registry import get_registry
 from search_runtime.settings import (
     ALLOW_LEGACY_PICKLE_BM25,
     DEFAULT_MIN_RELEVANCE_SCORE,
     DEFAULT_QUERY_INSTRUCT_PREFIX,
     EMBED_MODEL,
 )
+from search_runtime.settings import INDEX_BASE as INDEX_BASE
 
-INDEX_BASE = os.environ.get(
-    "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
-)
+# INDEX_BASE now lives in `settings` (so `local_index_registry` can read it
+# without importing this module, which imports the registry) and is
+# re-exported here unchanged — `from search_runtime.hybrid import INDEX_BASE`
+# remains the way the rest of this service and its tests get at it.
+
 OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
 
 _logger = logging.getLogger("search_runtime")
+
+
+def resolve_index_dir(index_base: str, knowledge_id: str) -> tuple[Path, bool]:
+    """Where this Knowledge's index actually lives, and whether it came from
+    the D-079 local registration table.
+
+    Returns `(path, is_registered_local)`. `INDEX_BASE/<knowledge_id>` always
+    wins when it exists, and the registry refuses to register an id that
+    exists there, so the second element can only ever be True for an id this
+    service had no index for at all before D-079 — no existing search can
+    change its answer because of this function.
+
+    The boolean matters beyond bookkeeping: a registered directory holds
+    content that arrived over a distribution channel, so `hybrid_search`
+    refuses to unpickle a legacy `bm25.pkl` from it even where the
+    deployment-wide `ALLOW_LEGACY_PICKLE_BM25` default would allow it for the
+    locally-built tree (D-054)."""
+    registered = get_registry().resolve(knowledge_id)
+    if registered is not None:
+        return registered, True
+    return Path(index_base) / knowledge_id, False
 
 
 def resolve_embed_model(
@@ -62,7 +86,12 @@ def resolve_embed_model(
     propagating, so a search against an unindexed/partially-built
     `knowledge_id` degrades the same way it always has (`hybrid_search`'s
     `bm25_path.exists()` check already returns `[]` for that case)."""
-    meta_path = Path(index_base) / knowledge_id / "index-meta.json"
+    # Resolved through the same D-079 lookup `hybrid_search` uses, so a
+    # registered local index is asked what model *it* was built with rather
+    # than falling through to this service's configured default — the exact
+    # silent-mismatch failure this function exists to prevent.
+    index_dir, _ = resolve_index_dir(index_base, knowledge_id)
+    meta_path = index_dir / "index-meta.json"
     if meta_path.exists():
         try:
             with open(meta_path, encoding="utf-8") as f:
@@ -174,7 +203,11 @@ async def hybrid_search(
     Raises `search_runtime.bm25_store.LegacyPickleBm25Refused` — see
     `allow_legacy_pickle_bm25` above.
     """
-    index_path = Path(index_base) / knowledge_id
+    index_path, is_registered_local = resolve_index_dir(index_base, knowledge_id)
+    if is_registered_local:
+        # D-054/D-079: distributed content is never unpickled, whatever the
+        # deployment-wide default says for its own locally-built tree.
+        allow_legacy_pickle_bm25 = False
     bm25_json_path = index_path / BM25_JSON_FILENAME
     bm25_pkl_path = index_path / BM25_PICKLE_FILENAME
     parents_path = index_path / "parents.json"

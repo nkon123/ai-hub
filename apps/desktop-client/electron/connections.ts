@@ -18,6 +18,12 @@ export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 export const DEFAULT_RUNTIME_BASE_URL = "http://127.0.0.1:8100";
 export const DEFAULT_MCP_SERVER_URL = "http://127.0.0.1:8500";
 export const DEFAULT_MCP_SERVER_ALIAS = "oracle-connector";
+// D-079: search-runtime's Local Knowledge Index Registration contract
+// (packages/schemas/api/knowledge-local-index.schema.json), used by
+// `knowledge-activation.ts` to turn an installed Knowledge into an activated
+// (searchable) one. 8300 matches the port documented for search-runtime
+// elsewhere in this module's CLAUDE.md ("함께 떠 있어야 하는 것").
+export const DEFAULT_SEARCH_RUNTIME_BASE_URL = "http://127.0.0.1:8300";
 
 export interface ConnectionCheckSettings {
   ollamaBaseUrl?: string;

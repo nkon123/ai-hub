@@ -52,6 +52,40 @@ const BINDING_LABEL: Record<BindingKind, string> = {
   prompt_bindings: "Prompt 연결",
 };
 
+// D-079: "설치됨"과 "활성화됨"은 서로 다른 사실이다 — `activation` 필드가
+// 없는 것(미시도)과 `state: "FAILED"`(시도했으나 실패)를 절대 같은 배지로
+// 뭉개지 않는다(electron/types.ts의 `KnowledgeActivation` 문서 참고).
+type ActivationDisplayState = "ACTIVE" | "FAILED" | "NONE";
+
+const ACTIVATION_LABEL: Record<ActivationDisplayState, string> = {
+  ACTIVE: "활성화됨",
+  FAILED: "활성화 실패",
+  NONE: "활성화 안 됨(미시도)",
+};
+
+const ACTIVATION_TONE: Record<ActivationDisplayState, string> = {
+  ACTIVE: "bg-success/10 text-success",
+  FAILED: "bg-danger/10 text-danger",
+  NONE: "bg-slate-100 text-text-muted",
+};
+
+function activationDisplayState(asset: InstalledAssetWithStatus): ActivationDisplayState {
+  return asset.activation?.state ?? "NONE";
+}
+
+/** D-079 범위 경계 — Knowledge만 이번 작업 대상이다. MCP Tool 활성화
+ * (agent-runtime/Office Profile 실행 레지스트리 연결)는 D-079의 나머지
+ * 절반이며 아직 구현되지 않았다 — "설치됨"을 "곧바로 쓸 수 있음"으로
+ * 오해하지 않도록 이유를 함께 보여준다(CLAUDE.md: 호환되지 않는 선택지는
+ * 이유와 함께 비활성화한다). `null`이면 활성화 대상(Knowledge)이다. */
+function activationUnsupportedReason(asset: InstalledAssetWithStatus): string | null {
+  if (asset.assetType === "knowledge") return null;
+  if (asset.assetType === "mcp_tool") {
+    return "MCP Tool은 아직 실행 레지스트리에 자동 연결되지 않습니다 — 설치되었지만 대화/실행에서 바로 쓸 수 없습니다 (D-079의 나머지 절반, 별도 작업 예정).";
+  }
+  return "이 자산 유형은 활성화 대상이 아닙니다.";
+}
+
 const SORT_OPTIONS: Array<{ key: AssetSortKey; label: string }> = [
   { key: "installedAt", label: "설치일" },
   { key: "version", label: "버전" },
@@ -111,6 +145,14 @@ export function AssetsScreen({
 
   const [checksumBusy, setChecksumBusy] = useState<Set<string>>(new Set());
   const [checksumMessage, setChecksumMessage] = useState<Record<string, ChecksumVerification>>({});
+
+  // D-079 Knowledge 활성화/비활성화 — 결과(성공/실패)는 서버 응답을 통해
+  // `installations.json`에 이미 영속화되므로 `load()`가 새로고침한
+  // `asset.activation`이 진짜 출처다. 이 두 상태는 그 사이의 즉각적인
+  // 피드백(진행 중 표시, 대상을 찾을 수 없음 같은 로컬 전용 오류, 원격
+  // 등록 해제 실패 경고)만 담는다.
+  const [activationBusy, setActivationBusy] = useState<Set<string>>(new Set());
+  const [activationNote, setActivationNote] = useState<Record<string, string>>({});
 
   const [removalTarget, setRemovalTarget] = useState<InstalledAssetWithStatus | null>(null);
   const [removalCheck, setRemovalCheck] = useState<AssetRemovalCheck | null>(null);
@@ -195,6 +237,70 @@ export function AssetsScreen({
       }
     } finally {
       setChecksumBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  async function runActivateKnowledge(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setActivationBusy((prev) => new Set(prev).add(key));
+    setActivationNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.activateInstalledKnowledge(asset.assetType, asset.assetId, asset.version);
+      // `error`(대상을 찾을 수 없음/유형이 아님)는 정상 흐름에서는 나오지 않는다
+      // (이 버튼 자체가 Knowledge에만 노출된다) — 그래도 조용히 삼키지 않는다.
+      if (!result.activation && result.error) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.error! }));
+      }
+      await load();
+    } catch (err) {
+      setActivationNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "활성화 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setActivationBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  async function runDeactivateKnowledge(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setActivationBusy((prev) => new Set(prev).add(key));
+    setActivationNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.deactivateInstalledKnowledge(asset.assetType, asset.assetId, asset.version);
+      if (!result.ok && result.error) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.error! }));
+      } else if (result.remoteWarning) {
+        // 로컬 상태는 정리되었지만 search-runtime에 정말 등록 해제됐는지는
+        // 확인하지 못했다 — 조용히 성공으로 보여주지 않는다.
+        setActivationNote((prev) => ({ ...prev, [key]: result.remoteWarning! }));
+      }
+      await load();
+    } catch (err) {
+      setActivationNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "비활성화 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setActivationBusy((prev) => {
         const next = new Set(prev);
         next.delete(key);
         return next;
@@ -362,10 +468,35 @@ export function AssetsScreen({
                       <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${STATUS_TONE[asset.status]}`}>
                         {STATUS_LABEL[asset.status]}
                       </span>
+                      {asset.assetType === "knowledge" && (
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${ACTIVATION_TONE[activationDisplayState(asset)]}`}
+                        >
+                          {ACTIVATION_LABEL[activationDisplayState(asset)]}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1 text-caption text-text-secondary">
                       설치일 {formatDateTime(asset.installedAt)} · {formatBytes(asset.sizeBytes)}
                     </p>
+                    {asset.assetType === "knowledge" && asset.activation?.state === "FAILED" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-danger">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        검색에 활성화되지 않았습니다: {asset.activation.message ?? "알 수 없는 오류"}
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_tool" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        {activationUnsupportedReason(asset)}
+                      </p>
+                    )}
+                    {activationNote[key] && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-warning">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        {activationNote[key]}
+                      </p>
+                    )}
                     {lastCheck && (
                       <p
                         className={`mt-1 text-caption ${lastCheck.result === "PASS" ? "text-success" : "text-danger"}`}
@@ -408,6 +539,31 @@ export function AssetsScreen({
                   >
                     <Eye size={14} /> Smoke Test
                   </Button>
+                  {asset.assetType === "knowledge" && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={activationBusy.has(key)}
+                      onClick={() =>
+                        void (activationDisplayState(asset) === "ACTIVE"
+                          ? runDeactivateKnowledge(asset)
+                          : runActivateKnowledge(asset))
+                      }
+                    >
+                      {activationBusy.has(key)
+                        ? "처리 중..."
+                        : activationDisplayState(asset) === "ACTIVE"
+                          ? "비활성화"
+                          : activationDisplayState(asset) === "FAILED"
+                            ? "다시 활성화"
+                            : "활성화"}
+                    </Button>
+                  )}
+                  {asset.assetType === "mcp_tool" && (
+                    <Button variant="secondary" size="sm" disabled title={activationUnsupportedReason(asset) ?? undefined}>
+                      활성화
+                    </Button>
+                  )}
                   <Button
                     variant="secondary"
                     size="sm"

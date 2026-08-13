@@ -14,6 +14,7 @@ from search_runtime import access_control
 from search_runtime.bm25_store import LegacyPickleBm25Refused
 from search_runtime.errors import ErrorCode, error_envelope, status_for
 from search_runtime.hybrid import INDEX_BASE, hybrid_search, resolve_embed_model
+from search_runtime.local_index_registry import LocalIndexError, get_registry
 from search_runtime.settings import (
     ALLOW_UNKNOWN_CLASSIFICATION,
     DEFAULT_MIN_RELEVANCE_SCORE,
@@ -59,9 +60,77 @@ class SearchRequest(BaseModel):
     query_instruct_prefix: str = DEFAULT_QUERY_INSTRUCT_PREFIX
 
 
+class RegisterLocalIndexRequest(BaseModel):
+    """D-079 — `packages/schemas/api/knowledge-local-index.schema.json`
+    RegisterLocalIndexRequest. Field names mirror that contract exactly."""
+
+    knowledge_id: str
+    index_path: str
+    source: str
+    label: str | None = None
+    trace_id: str | None = None
+
+
 @app.get("/health")
 async def health() -> JSONResponse:
     return JSONResponse({"status": "ok", "version": "0.1.0"})
+
+
+# ---------------------------------------------------------------------------
+# D-079 로컬 색인 등록 — 설치된 Knowledge를 실제로 검색 가능하게 만드는 계약.
+# 자세한 근거는 `local_index_registry.py` 모듈 docstring과
+# `packages/schemas/api/knowledge-local-index.schema.json` 참고.
+# ---------------------------------------------------------------------------
+
+
+@app.post("/search/v1/local-indexes")
+async def register_local_index(req: RegisterLocalIndexRequest) -> JSONResponse:
+    trace_id = req.trace_id or str(uuid.uuid4())
+    bind_trace_id(trace_id)
+    try:
+        entry = get_registry().register(
+            knowledge_id=req.knowledge_id,
+            index_path=req.index_path,
+            source=req.source,
+            label=req.label,
+        )
+    except LocalIndexError as exc:
+        # Every refusal is returned as a named reason. The caller (Desktop)
+        # shows it verbatim next to the asset, so "설치됨" never quietly
+        # implies "검색 가능".
+        _logger.warning(
+            "search.local_index.register_refused knowledge_id=%s reason=%s",
+            req.knowledge_id,
+            exc.reason,
+        )
+        return JSONResponse(
+            status_code=status_for(exc.code),
+            content=error_envelope(exc.code, exc.message, trace_id, details=exc.details),
+        )
+    return JSONResponse({"entry": entry.to_dict(), "trace_id": trace_id})
+
+
+@app.get("/search/v1/local-indexes")
+async def list_local_indexes() -> JSONResponse:
+    trace_id = str(uuid.uuid4())
+    bind_trace_id(trace_id)
+    registry = get_registry()
+    return JSONResponse({
+        "entries": [e.to_dict() for e in registry.list_entries()],
+        "local_indexes_enabled": registry.enabled,
+        "trace_id": trace_id,
+    })
+
+
+@app.delete("/search/v1/local-indexes/{knowledge_id}")
+async def delete_local_index(knowledge_id: str) -> JSONResponse:
+    trace_id = str(uuid.uuid4())
+    bind_trace_id(trace_id)
+    removed = get_registry().unregister(knowledge_id)
+    # 200 with removed=false rather than 404: deactivation runs on every
+    # uninstall and must be safe to call unconditionally, while still telling
+    # the caller whether anything was actually deregistered.
+    return JSONResponse({"knowledge_id": knowledge_id, "removed": removed, "trace_id": trace_id})
 
 
 @app.post("/search/v1/query")

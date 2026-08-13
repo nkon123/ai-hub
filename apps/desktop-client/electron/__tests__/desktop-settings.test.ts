@@ -29,7 +29,23 @@ describe("DesktopSettingsStore", () => {
     expect(settings.embeddingModelAlias).toBe("default-embedding");
     expect(settings.mcpServerAlias).toBe("oracle-connector");
     expect(settings.mcpServerUrl).toBe("http://127.0.0.1:8500");
+    expect(settings.searchRuntimeBaseUrl).toBe("http://127.0.0.1:8300");
     expect(settings.setupCompletedAt).toBeNull();
+  });
+
+  it("D-079: rejects a non-loopback search-runtime URL — no override exists for this field", () => {
+    const store = new DesktopSettingsStore(tmpDir);
+    const result = store.update({ searchRuntimeBaseUrl: "http://10.0.0.5:8300" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("loopback");
+    expect(store.getPublic().searchRuntimeBaseUrl).toBe("http://127.0.0.1:8300");
+  });
+
+  it("D-079: persists a valid loopback search-runtime URL", () => {
+    const store = new DesktopSettingsStore(tmpDir);
+    const result = store.update({ searchRuntimeBaseUrl: "http://127.0.0.1:8399" });
+    expect(result.ok).toBe(true);
+    expect(result.settings.searchRuntimeBaseUrl).toBe("http://127.0.0.1:8399");
   });
 
   it("never exposes 최대 동시 Run 수 as a plain editable number — always the fixed/unenforced structure", () => {

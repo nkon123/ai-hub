@@ -19,14 +19,19 @@ import path from "node:path";
 // Endpoint 기본값은 connections.ts가 유일한 출처다 — 여기서 다시 상수를
 // 정의하면 두 파일이 서로 다른 기본값으로 갈라질 위험이 생긴다(D01 3/5단계와
 // D09가 결국 같은 값을 봐야 한다).
-import { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL } from "./connections";
-import { validateGenericUrl, validateOllamaBaseUrl } from "./network-policy";
+import {
+  DEFAULT_MCP_SERVER_ALIAS,
+  DEFAULT_MCP_SERVER_URL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_SEARCH_RUNTIME_BASE_URL,
+} from "./connections";
+import { validateGenericUrl, validateOllamaBaseUrl, validateSearchRuntimeBaseUrl } from "./network-policy";
 import { DEFAULT_CHAT_MODEL_ALIAS } from "./ollama-chat";
 import type { DesktopSettingsInput, DesktopSettingsPublic, DesktopSettingsUpdateResult } from "./types";
 
 export { DEFAULT_CHAT_MODEL_ALIAS };
 export const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
-export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL };
+export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_SEARCH_RUNTIME_BASE_URL };
 
 // D-074(open-decisions.md): 오늘 Desktop은 창 하나·대화 하나에서만 Run을
 // 실행할 수 있다(ChatScreen의 `isRunning` 게이트, 다중 창/다중 대화 UI 없음,
@@ -48,6 +53,7 @@ interface DesktopSettingsFile {
   embeddingModelAlias: string;
   mcpServerAlias: string;
   mcpServerUrl: string;
+  searchRuntimeBaseUrl: string;
   setupCompletedAt: string | null;
   updatedAt: string | null;
 }
@@ -61,6 +67,7 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   embeddingModelAlias: DEFAULT_EMBEDDING_MODEL_ALIAS,
   mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
   mcpServerUrl: DEFAULT_MCP_SERVER_URL,
+  searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
   setupCompletedAt: null,
   updatedAt: null,
 };
@@ -87,6 +94,8 @@ export class DesktopSettingsStore {
           typeof parsed.embeddingModelAlias === "string" ? parsed.embeddingModelAlias : DEFAULT_EMBEDDING_MODEL_ALIAS,
         mcpServerAlias: typeof parsed.mcpServerAlias === "string" ? parsed.mcpServerAlias : DEFAULT_MCP_SERVER_ALIAS,
         mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : DEFAULT_MCP_SERVER_URL,
+        searchRuntimeBaseUrl:
+          typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : DEFAULT_SEARCH_RUNTIME_BASE_URL,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       };
@@ -112,6 +121,7 @@ export class DesktopSettingsStore {
       embeddingModelAlias: current.embeddingModelAlias,
       mcpServerAlias: current.mcpServerAlias,
       mcpServerUrl: current.mcpServerUrl,
+      searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
       updatedAt: current.updatedAt,
@@ -166,6 +176,11 @@ export class DesktopSettingsStore {
       const check = validateGenericUrl(patch.mcpServerUrl, "MCP Server URL");
       if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
       next.mcpServerUrl = patch.mcpServerUrl.trim();
+    }
+    if (patch.searchRuntimeBaseUrl !== undefined) {
+      const check = validateSearchRuntimeBaseUrl(patch.searchRuntimeBaseUrl);
+      if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
+      next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
     }
 
     next.updatedAt = new Date().toISOString();

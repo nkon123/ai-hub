@@ -71,3 +71,21 @@ export function validateNonEmpty(raw: string, fieldLabel: string): UrlValidation
   if (!raw.trim()) return { ok: false, error: `${fieldLabel}을(를) 입력하세요.` };
   return { ok: true, error: null };
 }
+
+/** search-runtime Base URL 검증(D-079) — Ollama처럼 명시적으로 켤 수 있는
+ * "원격 허용" 예외를 두지 않고 항상 loopback만 허용한다. Knowledge 활성화
+ * 요청은 이 기기의 절대 파일 경로(`index_path`)를 그대로 담아 보낸다 — 원격
+ * 주소로 보내면 로컬 경로가 유출될 뿐 아니라, 원격 search-runtime은 애초에
+ * 이 기기의 디스크를 읽을 수 없어 동작 자체가 불가능하다. */
+export function validateSearchRuntimeBaseUrl(raw: string): UrlValidationResult {
+  const parsedResult = parseHttpUrl(raw);
+  if (!parsedResult.ok) return { ok: false, error: parsedResult.error };
+  if (!isLoopbackHostname(parsedResult.url.hostname)) {
+    return {
+      ok: false,
+      error:
+        "search-runtime 주소는 loopback(127.0.0.1/localhost)만 허용됩니다. 활성화 요청이 이 기기의 절대 경로를 담고 있어 원격 주소로는 보낼 수 없습니다.",
+    };
+  }
+  return { ok: true, error: null };
+}
