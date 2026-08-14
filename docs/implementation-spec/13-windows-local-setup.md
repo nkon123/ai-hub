@@ -94,6 +94,43 @@ uv run --project services/indexing-runtime convert-bm25-format data\indexes\<Ass
 uv run --project services/indexing-runtime stamp-classification data\indexes\<AssetVersion id> --classification INTERNAL
 ```
 
+## 2.6 Node 의존성과 폐쇄망 반입 (Desktop 채팅의 Markdown 렌더링 포함)
+
+Node 의존성은 `pnpm install` 로 설치하며 `pnpm-lock.yaml` 이 버전을 고정한다.
+폐쇄망 PC 에는 npm 레지스트리 접근이 없을 수 있으므로, **인터넷이 되는 곳에서
+받아 통째로 옮기는 것**이 기본 절차다.
+
+```powershell
+# (1) 인터넷이 되는 PC 에서 — 저장소 루트
+$env:ELECTRON_SKIP_BINARY_DOWNLOAD = "1"   # Electron 바이너리는 별도 반입(§7)
+pnpm install --frozen-lockfile
+pnpm store prune                            # 쓰지 않는 캐시 정리
+```
+
+옮기는 방법은 둘 중 하나다.
+
+| 방법 | 무엇을 옮기나 | 비고 |
+|---|---|---|
+| `node_modules` 통째 복사 | 저장소 루트와 각 워크스페이스의 `node_modules` | 가장 단순하다. 대상 PC 의 OS/아키텍처가 같아야 한다 |
+| pnpm store 반입 | `pnpm store path` 가 알려주는 디렉터리 | 대상 PC 에서 `pnpm install --offline` 이 이 store 만 보고 설치한다. 여러 저장소를 반입할 때 유리하다 |
+
+`pnpm install --offline` 은 네트워크를 아예 시도하지 않으므로, 반입이 빠졌으면
+조용히 옛 상태로 도는 대신 **실패한다** — 이 PoC 에서 원하는 동작이다.
+
+### Desktop 채팅의 Markdown 렌더링 (2026-08-14 추가)
+
+`apps/desktop-client` 가 `react-markdown` 과 `remark-gfm` 을 쓴다. 모델 답변이
+제목·목록·표·코드블록을 자유롭게 쓰는데 그것을 평문으로 보여주면 읽기 어렵기
+때문이다(루트 `CLAUDE.md`: 새 의존성은 이유와 폐쇄망 설치 방법을 문서화한다).
+
+- **순수 JavaScript 패키지**다. 네이티브 빌드나 별도 바이너리 다운로드가 없으므로
+  위 절차 그대로 반입된다 — Electron 바이너리처럼 따로 챙길 것이 없다.
+- 렌더링은 `src/screens/AnswerMarkdown.tsx` 한 곳에서만 한다. 그 파일은 두 가지를
+  의도적으로 하지 않는다: **raw HTML 활성화**(`rehype-raw` 를 넣지 않는다 — 모델이
+  만든 텍스트를 HTML 로 실행시키는 경로가 된다)와 **이동 가능한 링크 생성**
+  (Electron 렌더러에서 링크를 열면 SPA 문서 자체가 대체된다). 링크는 주소를 함께
+  보여주되 클릭 대상이 아니고, 이미지는 대체 텍스트만 남긴다.
+
 ## 2.5 Python 의존성 설치 (pip)
 
 **Windows 로컬 실행은 pip 만 쓴다.** uv 는 필요하지 않다.
