@@ -150,6 +150,71 @@ paths:
               schema:
                 $ref: "#/components/schemas/RuntimeSSEEvent"
 
+  /local/v1/mcp-tools:
+    post:
+      summary: >
+        D-080 — register an installed MCP Tool asset's input_schema/
+        confirmation_policy so ANALYZE (`agent_runtime.mcp_tools
+        .validate_tool_input`) recognizes it. Full contract, including the
+        complete refusal reason list and the safety boundary this endpoint
+        enforces (registration can only describe permission the active
+        Office Profile already grants — it can never widen it):
+        `packages/schemas/api/mcp-tool-registration.schema.json`.
+      operationId: register_mcp_tool
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterMcpToolRequest"
+      responses:
+        "200":
+          description: Registered and immediately usable by ANALYZE
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterMcpToolResponse"
+        "400":
+          description: >
+            Malformed registration (VALIDATION_ERROR) — see the schema
+            file's reason list.
+        "403":
+          description: >
+            Refused by deployment policy (PERMISSION_DENIED) — includes the
+            two refusals that would otherwise turn this feature into a
+            vulnerability: `tool_not_in_server_allowlist` (the Office
+            Profile does not already permit this tool) and
+            `confirmation_policy_weaker_than_builtin` (an attempt to loosen
+            a built-in Tool's confirmation requirement).
+    get:
+      summary: List currently-active MCP Tool registrations
+      operationId: list_mcp_tools
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListMcpToolsResponse"
+
+  /local/v1/mcp-tools/{tool_name}:
+    delete:
+      summary: Deregister an MCP Tool (safe to call unconditionally on uninstall)
+      operationId: deregister_mcp_tool
+      parameters:
+        - name: tool_name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK (removed=false when nothing was registered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeregisterMcpToolResponse"
+
 components:
   parameters:
     ServiceId:
@@ -395,6 +460,98 @@ components:
           items:
             type: string
         classification:
+          type: string
+
+    MCPConfirmationPolicy:
+      type: string
+      enum: [NEVER, ON_PARAMETER, ALWAYS]
+
+    MCPToolRiskLevel:
+      type: string
+      enum: [READ_ONLY]
+
+    MCPToolRegistrationEntry:
+      type: object
+      required: [tool_name, server_alias, input_schema, confirmation_policy, risk_level, registered_at]
+      properties:
+        tool_name:
+          type: string
+        server_alias:
+          type: string
+          description: >
+            Must already name an entry in office-profile.json's
+            allowed_mcp_servers. NOT an endpoint/URL.
+        input_schema:
+          type: object
+        confirmation_policy:
+          $ref: "#/components/schemas/MCPConfirmationPolicy"
+        risk_level:
+          $ref: "#/components/schemas/MCPToolRiskLevel"
+        label:
+          type: string
+          nullable: true
+        registered_at:
+          type: string
+          format: date-time
+
+    RegisterMcpToolRequest:
+      type: object
+      description: >
+        D-080. Deliberately has no endpoint/server_url/connector field of
+        any kind — the network destination a call dispatches to always
+        comes from office-profile.json, never from this payload (구현
+        원칙 7). See mcp-tool-registration.schema.json for the full
+        refusal reason list this request can trigger.
+      required: [tool_name, server_alias, input_schema, confirmation_policy, risk_level]
+      properties:
+        tool_name:
+          type: string
+        server_alias:
+          type: string
+        input_schema:
+          type: object
+        confirmation_policy:
+          $ref: "#/components/schemas/MCPConfirmationPolicy"
+        risk_level:
+          $ref: "#/components/schemas/MCPToolRiskLevel"
+        label:
+          type: string
+          nullable: true
+        trace_id:
+          type: string
+          nullable: true
+
+    RegisterMcpToolResponse:
+      type: object
+      required: [entry, trace_id]
+      properties:
+        entry:
+          $ref: "#/components/schemas/MCPToolRegistrationEntry"
+        trace_id:
+          type: string
+
+    ListMcpToolsResponse:
+      type: object
+      required: [entries, mcp_tool_registration_enabled, trace_id]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/MCPToolRegistrationEntry"
+        mcp_tool_registration_enabled:
+          type: boolean
+        trace_id:
+          type: string
+
+    DeregisterMcpToolResponse:
+      type: object
+      required: [tool_name, removed, trace_id]
+      properties:
+        tool_name:
+          type: string
+        removed:
+          type: boolean
+        trace_id:
           type: string
 
     RuntimeSSEEvent:

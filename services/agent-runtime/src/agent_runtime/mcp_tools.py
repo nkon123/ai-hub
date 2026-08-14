@@ -21,6 +21,21 @@ is the "명시적 Workflow와 Schema 기반 호출" the LLM Adapter section of
 02-desktop-and-agent-runtime.md §5.2 calls for instead of model-driven tool
 calling: the Runtime decides deterministically from an explicit field on
 the run's `input`, not from parsing free-form model output.
+
+D-080: `validate_tool_input`/`confirmation_policy_for` are the single
+chokepoint ANALYZE calls, so they are also the single place a *registered*
+tool (`mcp_tool_registry.py`) can supply the input_schema/confirmation_policy
+this static table does not have for it. `_spec_for` below is the resolution
+order: `MCP_TOOL_SPECS` (this file) always wins first and is never
+shadowed — only a `tool_name` that is NOT a built-in ever falls through to
+the registry. Registering a tool_name that happens to collide with a
+built-in therefore has no effect on what gets validated against; see
+`mcp_tool_registry.py`'s module docstring for why that module still
+constrains such a registration's `confirmation_policy` anyway (defense in
+depth in case this ordering ever changes). `resolve_allowed_alias` below is
+untouched by any of this — the Office Profile allowlist it checks is the
+actual permission gate, and registration can only ever describe a tool the
+Office Profile already permits (see `mcp_tool_registry.py`), never widen it.
 """
 
 from __future__ import annotations
@@ -109,13 +124,33 @@ def resolve_allowed_alias(office_profile: dict[str, Any], tool_name: str) -> str
     return None
 
 
+def _spec_for(tool_name: str) -> dict[str, Any] | None:
+    """D-080 resolution order: `MCP_TOOL_SPECS` first and always — a
+    registered entry for a built-in `tool_name` is never consulted here.
+    Only a `tool_name` absent from the static table falls through to the
+    registry. Local import: `mcp_tool_registry` imports this module at its
+    own top level (for `MCP_TOOL_SPECS`/`NEVER`/`ON_PARAMETER`/`ALWAYS`), so
+    importing it back at this module's top level would be a cycle."""
+    spec = MCP_TOOL_SPECS.get(tool_name)
+    if spec is not None:
+        return spec
+    from agent_runtime.mcp_tool_registry import get_registry
+
+    entry = get_registry().resolve(tool_name)
+    if entry is None:
+        return None
+    return {"input_schema": entry.input_schema, "confirmation_policy": entry.confirmation_policy}
+
+
 def validate_tool_input(tool_name: str, raw_input: dict[str, Any]) -> list[str]:
     """Structural Input Schema validation (02-...md §5.2 MCP Client rule
-    "Input Schema 검사"), run against the local static copy above — returns
-    a sorted list of human-readable error messages (empty means valid).
-    Unknown tool names return a single generic error rather than raising, so
+    "Input Schema 검사"), run against the local static copy above, falling
+    back to a D-080 registered tool's schema when `tool_name` is not a
+    built-in (`_spec_for`) — returns a sorted list of human-readable error
+    messages (empty means valid). Unknown tool names (neither built-in nor
+    registered) return a single generic error rather than raising, so
     callers have one uniform "not valid" signal regardless of cause."""
-    spec = MCP_TOOL_SPECS.get(tool_name)
+    spec = _spec_for(tool_name)
     if spec is None:
         return [f"알 수 없는 Tool입니다: {tool_name}"]
     if not isinstance(raw_input, dict):
@@ -125,5 +160,5 @@ def validate_tool_input(tool_name: str, raw_input: dict[str, Any]) -> list[str]:
 
 
 def confirmation_policy_for(tool_name: str) -> str | None:
-    spec = MCP_TOOL_SPECS.get(tool_name)
+    spec = _spec_for(tool_name)
     return spec["confirmation_policy"] if spec else None

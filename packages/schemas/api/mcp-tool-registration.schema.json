@@ -1,0 +1,103 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-tool-registration",
+  "title": "MCP Tool Activation (agent-runtime, M05)",
+  "description": "D-080: the other half of D-079's \"설치됨\" != \"호출 가능\" gap — this half for MCP Tools instead of Knowledge. Before this contract existed, `services/agent-runtime` could only validate a caller-declared `mcp_tool`/`mcp_tool_input` against `agent_runtime.mcp_tools.MCP_TOOL_SPECS`, a hand-copied static table of the 3 built-in office-mcp-server tools — so an MCP Tool asset Desktop (M04) installed had no path to becoming callable even after an operator added it to the Office Profile's `allowed_mcp_servers[].allowed_tools`. Registration through these endpoints supplies the missing `input_schema`/`confirmation_policy` metadata for such a tool. THE SAFETY BOUNDARY: registration may only describe execution permission the deployment's Office Profile already granted — it can never widen it. Concretely: (1) there is no field on this contract for a network endpoint/URL anywhere — the endpoint a call dispatches to always comes from `office-profile.json`, never from a registration payload (구현 원칙 7); (2) `server_alias` must already exist in the active Office Profile and `tool_name` must already be listed in that server's `allowed_tools` — a registration naming a tool/server combination the Office Profile does not already permit is refused before it is ever stored; (3) `risk_level` must be `READ_ONLY` (구현 원칙 8); (4) a `tool_name` that collides with a built-in in `MCP_TOOL_SPECS` may only register a `confirmation_policy` equal to or stricter than the built-in's, never weaker, and the built-in's own schema is never shadowed regardless (agent-runtime's static table always wins resolution); (5) this deployment must have separately opted the target `server_alias` into dynamic registration at all (`AgentRuntimeSettings.mcp_tool_registration_allowed_aliases`, empty by default — every registration refused until an operator lists specific aliases, mirroring D-079's `SEARCH_LOCAL_INDEX_ROOTS`). Consequence stated plainly: installing a new MCP Tool asset does NOT by itself make it callable. An operator must still add the tool to the Office Profile's `allowed_tools` AND opt the server alias into dynamic registration — granting execution permission stays an explicit operator action, never a side effect of installing a Bundle. Defense in depth this contract does not replace: office-mcp-server independently re-validates every call against its own authoritative schema before touching a Connector — a loose or stale registered schema can only cause a downstream rejection there, never an unauthorized call.",
+  "definitions": {
+    "MCPConfirmationPolicy": {
+      "type": "string",
+      "enum": ["NEVER", "ON_PARAMETER", "ALWAYS"],
+      "description": "05-mcp-security-governance.md §8.4 사용자 확인 정책, ordered NEVER < ON_PARAMETER < ALWAYS (least to most confirmation required). A registration colliding with a built-in tool_name may only choose a value at or above the built-in's rank."
+    },
+    "MCPToolRiskLevel": {
+      "type": "string",
+      "enum": ["READ_ONLY"],
+      "description": "A closed, single-value enum on purpose (구현 원칙 8 — this PoC's MCP surface is read-only end to end). Present as an explicit field rather than assumed so a registration payload states the property it is being held to, not just satisfies it silently."
+    },
+    "MCPToolRegistrationEntry": {
+      "type": "object",
+      "required": ["tool_name", "server_alias", "input_schema", "confirmation_policy", "risk_level", "registered_at"],
+      "additionalProperties": false,
+      "properties": {
+        "tool_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_]+\\.[A-Za-z0-9_]+$",
+          "maxLength": 128,
+          "description": "'server.action' shape, matching office-mcp-server's own tool naming (e.g. `db_metadata.get_tables`). Verified against the Office Profile's `allowed_mcp_servers[].allowed_tools` at registration time — never trusted on its own."
+        },
+        "server_alias": {
+          "type": "string",
+          "description": "Must name an entry already present in `office-profile.json`'s `allowed_mcp_servers`. NOT an endpoint/URL — the endpoint is resolved server-side from that Office Profile entry, never from this payload."
+        },
+        "input_schema": {
+          "type": "object",
+          "description": "A JSON Schema (Draft 2020-12) object used for pre-call structural validation (`agent_runtime.mcp_tools.validate_tool_input`). Must not declare `user`/`role`/`roles`/`org`/`organization_id` as a top-level property — identity travels only through the server-built `audit_context`, never through caller-supplied tool input."
+        },
+        "confirmation_policy": { "$ref": "#/definitions/MCPConfirmationPolicy" },
+        "risk_level": { "$ref": "#/definitions/MCPToolRiskLevel" },
+        "label": {
+          "type": ["string", "null"],
+          "maxLength": 200,
+          "description": "Optional human-readable name for operator display. Display only — never used to resolve permission or a network destination."
+        },
+        "registered_at": { "type": "string", "format": "date-time" }
+      }
+    },
+    "RegisterMcpToolRequest": {
+      "type": "object",
+      "required": ["tool_name", "server_alias", "input_schema", "confirmation_policy", "risk_level"],
+      "additionalProperties": false,
+      "properties": {
+        "tool_name": { "type": "string" },
+        "server_alias": { "type": "string" },
+        "input_schema": { "type": "object" },
+        "confirmation_policy": { "$ref": "#/definitions/MCPConfirmationPolicy" },
+        "risk_level": { "$ref": "#/definitions/MCPToolRiskLevel" },
+        "label": { "type": ["string", "null"], "maxLength": 200 },
+        "trace_id": { "type": ["string", "null"] }
+      },
+      "description": "POST /local/v1/mcp-tools. Idempotent per `tool_name`: re-registering the same tool_name replaces the entry (a Desktop re-install of the same MCP Tool asset version must not need a delete first). Deliberately has NO `endpoint`/`server_url`/`connector` field of any kind — see this file's top-level description, point (1). Every field is caller-asserted and none is trusted on its own; see the refusal list on RegisterMcpToolResponse."
+    },
+    "RegisterMcpToolResponse": {
+      "type": "object",
+      "required": ["entry", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "$ref": "#/definitions/MCPToolRegistrationEntry" },
+        "trace_id": { "type": "string" }
+      },
+      "description": "200 only when the tool contract was accepted AND is usable by ANALYZE now. Refusals use the common Error Envelope (07-data-api-contracts.md §10.2) with `details.reason` naming exactly one cause and `error.message` a Korean sentence safe to display verbatim. The complete reason list — a caller may switch on these, and the service raises no others: `mcp_tool_registration_disabled` (this deployment opted no server alias into dynamic registration — 403 PERMISSION_DENIED), `tool_name_invalid`, `risk_level_not_read_only` (400 VALIDATION_ERROR — only READ_ONLY may be registered, 구현 원칙 8), `confirmation_policy_invalid`, `label_too_long`, `server_alias_not_in_profile` (400 VALIDATION_ERROR — the Office Profile has no such server at all), `server_alias_not_allowed_for_registration` (403 PERMISSION_DENIED — the Office Profile has the server, but this deployment has not opted it into dynamic registration), `tool_not_in_server_allowlist` (403 PERMISSION_DENIED — the single most load-bearing refusal: registration cannot grant a tool permission the Office Profile's `allowed_tools` does not already grant), `input_schema_invalid`, `input_schema_declares_identity_field` (400 VALIDATION_ERROR — identity fields are not allowed in a Tool's input_schema), `confirmation_policy_weaker_than_builtin` (403 PERMISSION_DENIED — this tool_name already names a built-in in `MCP_TOOL_SPECS`, and the requested policy is looser than the built-in's) — all 400 VALIDATION_ERROR unless noted 403 PERMISSION_DENIED."
+    },
+    "ListMcpToolsResponse": {
+      "type": "object",
+      "required": ["entries", "mcp_tool_registration_enabled", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MCPToolRegistrationEntry" }
+        },
+        "mcp_tool_registration_enabled": {
+          "type": "boolean",
+          "description": "False when this deployment opted no server alias into dynamic registration, i.e. every registration attempt would be refused. Exposed so a caller can distinguish \"nothing registered yet\" from \"registration is not available on this deployment\" without attempting a registration and reading the error."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "GET /local/v1/mcp-tools. Returns only entries that still pass re-validation at read time — an operator narrowing the Office Profile's `allowed_tools` or the deployment's opt-in list after registration takes effect immediately, and a stale entry is omitted rather than listed as if it still worked."
+    },
+    "DeregisterMcpToolResponse": {
+      "type": "object",
+      "required": ["tool_name", "removed", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "tool_name": { "type": "string" },
+        "removed": {
+          "type": "boolean",
+          "description": "False when no entry existed for this tool_name. Deliberately a 200 with an explicit `false` rather than a 404 — deregistration on asset uninstall must be safe to call unconditionally."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "DELETE /local/v1/mcp-tools/{tool_name}. Removes the registration only — it never touches `office-profile.json` or office-mcp-server's own tool registry, and it never revokes anything a built-in `MCP_TOOL_SPECS` entry already provides."
+    }
+  }
+}

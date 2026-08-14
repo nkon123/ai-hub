@@ -119,6 +119,23 @@ class AgentRuntimeSettings(BaseSettings):
     # zero, never a guessed-at subset — see knowledge_router.py).
     knowledge_route_timeout_seconds: float = 8.0
 
+    # D-080: registration table that turns an *installed* MCP Tool asset's
+    # contract into one `mcp_tools.validate_tool_input` will actually
+    # recognize (see `mcp_tool_registry.py` module docstring for the full
+    # design). Empty by default, exactly like search-runtime's D-079
+    # `SEARCH_LOCAL_INDEX_ROOTS` (`LOCAL_INDEX_ROOTS`) — an empty tuple means
+    # every registration attempt is refused (`mcp_tool_registration_disabled`),
+    # fail-closed. An operator opts a specific Office Profile
+    # `allowed_mcp_servers[].alias` into dynamic registration by listing it
+    # here; this is deliberately narrower than "registration is on/off" —
+    # it is "registration is on for these already-office-profile-approved
+    # servers", so turning it on can never by itself grant a new server any
+    # permission it did not already have in `office-profile.json`.
+    mcp_tool_registration_allowed_aliases: tuple[str, ...] = ()
+    # Persistent JSON file backing the registry (same "rewrite whole file
+    # under a lock" design as search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
+    mcp_tool_registry_path: Path = _REPO_ROOT / "data" / "agent-runtime" / "mcp-tool-registry.json"
+
     class Config:
         env_prefix = "AGENT_RUNTIME_"
 

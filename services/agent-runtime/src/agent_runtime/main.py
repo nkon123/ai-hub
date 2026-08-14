@@ -18,7 +18,7 @@ from observability import configure_logging
 
 from agent_runtime import manifests
 from agent_runtime.config import settings
-from agent_runtime.routers import chat, runs
+from agent_runtime.routers import chat, mcp_tools, runs
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn
@@ -90,6 +90,7 @@ async def detailed_health() -> JSONResponse:
 
 
 app.include_router(runs.router, prefix="/local/v1")
+app.include_router(mcp_tools.router, prefix="/local/v1")
 app.include_router(chat.router, prefix="/chat-api/v1")
 
 # `/local/v1/services*` is out of scope for this phase — M02 Registry (Agent/
