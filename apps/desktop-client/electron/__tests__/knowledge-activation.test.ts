@@ -151,6 +151,14 @@ describe("activateInstalledKnowledge", () => {
     expect(called).toBe(false);
     expect(result.activation?.state).toBe("FAILED");
     expect(result.activation?.reason).toBe("index_dir_missing");
+    // Reinstalling cannot fix this — the Bundle itself has no index/, so the
+    // same Bundle produces the same result. The message must not instruct
+    // the user to reinstall (the old, broken advice); it may still explain
+    // *why* reinstalling won't help while pointing at Portal's indexing
+    // status as the real next step.
+    expect(result.activation?.message).not.toMatch(/설치하세요/);
+    expect(result.activation?.message).toContain("Portal");
+    expect(result.activation?.message).toContain("색인");
     expect(store.find("knowledge", "know-3", "1.0.0")?.activation?.state).toBe("FAILED");
   });
 

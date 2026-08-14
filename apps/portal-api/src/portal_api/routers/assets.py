@@ -100,7 +100,7 @@ SessionFactory = Callable[[], AsyncSession]
 
 
 async def _call_indexing_runtime_http(payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=300) as client:
+    async with httpx.AsyncClient(timeout=settings.indexing_runtime_timeout_seconds) as client:
         resp = await client.post(
             f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload
         )
@@ -109,6 +109,48 @@ async def _call_indexing_runtime_http(payload: dict) -> dict:
         # parsed and stored via IndexingJob.status = result.get("status",
         # "COMPLETED") below, same as before this refactor.
         return resp.json()
+
+
+def describe_indexing_failure(exc: Exception, timeout_seconds: float) -> str:
+    """Turns any exception raised while calling indexing-runtime into a
+    non-empty, Korean, user-facing message for `IndexingJob.error_message`.
+
+    Real incident this exists to prevent: `job.error_message = str(e)` left
+    the column as the empty string `''` for a real indexing job that timed
+    out after exactly `indexing_runtime_timeout_seconds` — `str()` on an
+    `httpx` timeout exception carries no text at all. The background task's
+    `except Exception` believed it had recorded a reason; it had recorded
+    nothing, and an operator looking at a FAILED job had no way to learn
+    indexing-runtime simply never answered within the configured budget.
+    Two rules follow, checked in this order:
+
+    1. The exception TYPE NAME is always included, so even an exception
+       whose own `str()` is empty still identifies itself.
+    2. `httpx` exceptions are described in business terms (the configured
+       timeout budget, or "통신 오류") instead of forwarding their own
+       `str()` — an `httpx` exception's text can embed the outbound call's
+       URL (`settings.indexing_runtime_url`), an internal detail this API
+       must not hand back to a Portal screen
+       (07-data-api-contracts.md §9 "Error Detail은 허용된 Field만 반환한다";
+       no stack trace, no internal filesystem path). Any other exception's
+       own text is preserved (bounded) — that text is raised by this
+       codebase's own code, not by an HTTP client whose message content is
+       out of our control.
+
+    The result is guaranteed non-empty for any `exc`.
+    """
+    exc_type = type(exc).__name__
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"indexing-runtime 응답이 설정된 대기 시간({timeout_seconds:.0f}초) 안에 "
+            f"오지 않아 색인 작업을 실패로 처리했습니다({exc_type})."
+        )
+    if isinstance(exc, httpx.HTTPError):
+        return f"indexing-runtime과 통신하는 중 오류가 발생했습니다({exc_type})."
+    detail = str(exc).strip()
+    if not detail:
+        return f"색인 작업이 실패했습니다({exc_type}) — 원인 메시지가 비어 있습니다."
+    return f"색인 작업이 실패했습니다({exc_type}): {detail[:500]}"
 
 
 def get_indexing_caller() -> IndexingCaller:
@@ -1408,7 +1450,9 @@ async def _trigger_indexing(
             ).scalar_one_or_none()
             if job:
                 job.status = "FAILED"
-                job.error_message = str(e)
+                job.error_message = describe_indexing_failure(
+                    e, settings.indexing_runtime_timeout_seconds
+                )
                 job.completed_at = datetime.now(UTC)
                 await db.commit()
         return

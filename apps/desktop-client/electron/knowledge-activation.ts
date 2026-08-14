@@ -101,9 +101,16 @@ export async function activateInstalledKnowledge(
     indexDirExists = false;
   }
   if (!indexDirExists) {
+    // 다시 설치해도 소용없다 — 이 Bundle 자체(source/ + manifest.json)에
+    // index/ 가 없으므로 같은 Bundle을 다시 풀면 같은 결과가 나온다(실사용
+    // 장애 2026-08-14: "LLM 요약" Knowledge가 색인 시도조차 성공한 적이
+    // 없었다). 검색 가능하려면 이 Knowledge가 Portal에서 먼저 색인을
+    // 마쳐야 하므로, 안내도 재설치가 아니라 그 사실과 확인 방법을 가리켜야
+    // 한다 — search-runtime-client.ts가 2026-08-14에 정리한 순서(조치 먼저,
+    // 이유는 뒤)를 따른다.
     const activation = failedActivation(
       "index_dir_missing",
-      "자산을 다시 설치하세요 — 설치된 자산에 index 폴더가 없어 활성화할 수 없습니다.",
+      "Portal에서 이 Knowledge의 색인(인덱싱) 상태를 확인하세요 — 검색 인덱스 없이 배포된 자산이라 다시 설치해도 결과가 같습니다. 색인이 완료된 뒤에만 활성화할 수 있습니다.",
       indexDir,
     );
     store.updateActivation(target.assetType, target.assetId, target.version, activation);

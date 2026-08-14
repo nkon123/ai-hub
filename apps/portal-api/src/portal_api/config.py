@@ -33,6 +33,14 @@ class Settings(BaseSettings):
     storage_root: Path = Path("./storage")
     index_base: Path = _REPO_ROOT / "data" / "indexes"
     indexing_runtime_url: str = "http://localhost:8200"
+    # `_call_indexing_runtime_http`(routers/assets.py)의 httpx 타임아웃. 예전에는
+    # `httpx.AsyncClient(timeout=300)`으로 코드에 직접 박혀 있었다 — 이 값을 바꿔도
+    # 실제 호출은 여전히 옛 리터럴로 동작하는, `services/agent-runtime/src/
+    # agent_runtime/config.py`가 이미 문서화한 것과 같은 사고 패턴(설정이 있는데
+    # 리터럴이 그것을 가림)이다. `_trigger_indexing`의 실패 메시지
+    # (`describe_indexing_failure`)도 이 값을 그대로 읽어, "타임아웃 예산이
+    # 몇 초였다"는 안내와 실제 동작이 절대 어긋나지 않게 한다.
+    indexing_runtime_timeout_seconds: float = 300.0
     distribution_service_url: str = "http://localhost:8400"
     secret_key: str = "dev-secret-key-change-in-production"
     base_url: str = "http://localhost:8000"
