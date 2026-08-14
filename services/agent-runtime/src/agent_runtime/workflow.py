@@ -645,9 +645,7 @@ async def run_knowledge_chat(
         )
 
         if not preflight_passed:
-            _fail(
-                run_store, run_id, trace_id, "PREFLIGHT_FAILED", "preflight checks did not pass"
-            )
+            _fail(run_store, run_id, trace_id, "PREFLIGHT_FAILED", "preflight checks did not pass")
             return
 
         # --- ANALYZE (implicit) + KNOWLEDGE_SEARCH (0..n) ---
@@ -737,24 +735,42 @@ async def run_knowledge_chat(
                 or settings.default_search_clearance,
             }
 
-            async def _search_one(kid: str) -> dict[str, Any]:
-                return await knowledge_adapter.search(
-                    {
-                        "query": search_query,
-                        "knowledge_id": kid,
-                        "knowledge_version": "latest",
-                        "top_k": 5,
-                        "alpha": 0.5,
-                        "trace_id": trace_id,
-                        "run_id": run_id,
-                        "access_context": access_context,
-                    }
+            candidate_retrieval_profiles: dict[str, dict[str, Any]] = {}
+            for candidate in knowledge_candidates or []:
+                candidate_id = (
+                    candidate.get("knowledge_id") if isinstance(candidate, dict) else None
                 )
+                profile = (
+                    candidate.get("retrieval_profile") if isinstance(candidate, dict) else None
+                )
+                if isinstance(candidate_id, str) and isinstance(profile, dict):
+                    candidate_retrieval_profiles[candidate_id] = profile
+
+            async def _search_one(kid: str) -> dict[str, Any]:
+                profile = candidate_retrieval_profiles.get(kid, {})
+                raw_top_k = profile.get("top_k")
+                raw_alpha = profile.get("hybrid_alpha")
+                raw_min_score = profile.get("min_relevance_score")
+                applied_top_k = raw_top_k if type(raw_top_k) is int and 1 <= raw_top_k <= 50 else 5
+                applied_alpha = (
+                    raw_alpha if type(raw_alpha) in {int, float} and 0 <= raw_alpha <= 1 else 0.5
+                )
+                payload: dict[str, Any] = {
+                    "query": search_query,
+                    "knowledge_id": kid,
+                    "knowledge_version": "latest",
+                    "top_k": applied_top_k,
+                    "alpha": applied_alpha,
+                    "trace_id": trace_id,
+                    "run_id": run_id,
+                    "access_context": access_context,
+                }
+                if type(raw_min_score) in {int, float} and 0 <= raw_min_score <= 1:
+                    payload["min_relevance_score"] = raw_min_score
+                return await knowledge_adapter.search(payload)
 
             try:
-                search_results = await asyncio.gather(
-                    *(_search_one(kid) for kid in ids_to_search)
-                )
+                search_results = await asyncio.gather(*(_search_one(kid) for kid in ids_to_search))
             except KnowledgeSearchError as exc:
                 # Surfaces search-runtime's own code (e.g. KNOWLEDGE_ACCESS_DENIED
                 # — §3.8) instead of falling through to the generic
@@ -785,9 +801,7 @@ async def run_knowledge_chat(
                 "knowledge.search.completed",
                 {"citation_count": len(citations), "latency_ms": latency_ms},
             )
-            logger.info(
-                "run.knowledge_search run_id=%s citation_count=%d", run_id, len(citations)
-            )
+            logger.info("run.knowledge_search run_id=%s citation_count=%d", run_id, len(citations))
             for citation in citations:
                 run_store.append_event(run_id, "citation.added", citation)
 
@@ -801,9 +815,7 @@ async def run_knowledge_chat(
         if len(citations) == 0 and allow_hub_lookup and hub_search_adapter is not None:
             hub_query = build_hub_query(question, bounded_history)
             try:
-                hub_result = await hub_search_adapter.search(
-                    hub_query, top_k=5, trace_id=trace_id
-                )
+                hub_result = await hub_search_adapter.search(hub_query, top_k=5, trace_id=trace_id)
             except HubSearchError as exc:
                 # Hub unreachable/erroring must never fail the Run — Stage 2
                 # simply contributes nothing, falling through to the same
@@ -935,9 +947,7 @@ async def run_knowledge_chat(
         # --- COMPLETE ---
         output = {"answer": full_answer, "citations": citations}
         run_store.set_status(run_id, "SUCCEEDED", output=output)
-        run_store.append_event(
-            run_id, "run.completed", {"status": "SUCCEEDED", "output": output}
-        )
+        run_store.append_event(run_id, "run.completed", {"status": "SUCCEEDED", "output": output})
 
     except Exception:  # noqa: BLE001 - a bug here must never leave a run RUNNING
         logger.exception("run.internal_error run_id=%s", run_id)

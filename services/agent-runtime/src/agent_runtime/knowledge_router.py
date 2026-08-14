@@ -59,6 +59,7 @@ class KnowledgeCandidate(TypedDict, total=False):
     description: str
     tags: list[str]
     classification: str
+    retrieval_profile: dict[str, Any]
 
 
 class KnowledgeRouteChoice(TypedDict):
@@ -286,9 +287,7 @@ async def route_knowledge_candidates(
         if not kid:
             continue
         if kid not in candidate_ids:
-            logger.info(
-                "knowledge.route.fallback reason=invalid_ids latency_ms=%d", latency_ms
-            )
+            logger.info("knowledge.route.fallback reason=invalid_ids latency_ms=%d", latency_ms)
             result = _search_all(
                 normalized,
                 "라우팅 결과에 알 수 없는 지식 자산이 포함되어 전체를 검색합니다.",
@@ -324,9 +323,7 @@ async def route_knowledge_candidates(
             kid = str(entry.get("knowledge_id") or "").strip()
             if kid in candidate_ids and kid not in selected_reasons:
                 reason = entry.get("reason")
-                excluded_reasons[kid] = (
-                    str(reason) if reason else "관련성이 낮아 제외되었습니다."
-                )
+                excluded_reasons[kid] = str(reason) if reason else "관련성이 낮아 제외되었습니다."
 
     selected_choices: list[KnowledgeRouteChoice] = [
         {"knowledge_id": kid, "reason": selected_reasons[kid]} for kid in selected_ids

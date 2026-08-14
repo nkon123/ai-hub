@@ -11,10 +11,39 @@ interface IndexingJob {
   error_message: string | null;
 }
 
+const INDEXING_PRESETS = {
+  parent_child: {
+    label: "문맥 보존",
+    description: "긴 규정·업무 문서에 적합합니다. 작은 검색 조각과 넓은 문맥을 함께 만듭니다.",
+    ref: "balanced-parent-child",
+    profile: { chunking_strategy: "parent_child", chunk_size: 512, chunk_overlap: 64, parent_chunk_size: 2048, minimum_size: 64, language: "ko" },
+  },
+  markdown: {
+    label: "문서 구조 우선",
+    description: "제목과 절 구성이 중요한 매뉴얼·가이드에 적합합니다.",
+    ref: "structured-markdown",
+    profile: { chunking_strategy: "markdown", chunk_size: 768, chunk_overlap: 80, parent_chunk_size: 2048, minimum_size: 80, language: "ko" },
+  },
+  recursive: {
+    label: "짧은 조각",
+    description: "형식이 일정하지 않은 메모·텍스트를 촘촘하게 나눕니다.",
+    ref: "compact-recursive",
+    profile: { chunking_strategy: "recursive", chunk_size: 384, chunk_overlap: 48, parent_chunk_size: 1536, minimum_size: 48, language: "ko" },
+  },
+} as const;
+
+const RETRIEVAL_PRESETS = {
+  balanced_hybrid: { label: "균형 검색", description: "의미와 키워드를 같은 비중으로 찾습니다.", profile: { strategy: "balanced_hybrid", top_k: 5, hybrid_alpha: 0.5, min_relevance_score: 0.42, enable_parent_expansion: true } },
+  keyword_priority: { label: "키워드 우선", description: "제품명·규정 번호처럼 정확한 용어 일치를 더 중시합니다.", profile: { strategy: "keyword_priority", top_k: 8, hybrid_alpha: 0.25, min_relevance_score: 0.42, enable_parent_expansion: true } },
+  semantic_priority: { label: "의미 우선", description: "표현이 달라도 의미가 가까운 문장을 더 중시합니다.", profile: { strategy: "semantic_priority", top_k: 5, hybrid_alpha: 0.8, min_relevance_score: 0.45, enable_parent_expansion: true } },
+} as const;
+
 export default function NewKnowledgePage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [classification, setClassification] = useState("INTERNAL");
+  const [indexingStrategy, setIndexingStrategy] = useState<keyof typeof INDEXING_PRESETS>("parent_child");
+  const [retrievalStrategy, setRetrievalStrategy] = useState<keyof typeof RETRIEVAL_PRESETS>("balanced_hybrid");
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ assetVersionId: string; assetId: string } | null>(null);
@@ -52,7 +81,9 @@ export default function NewKnowledgePage() {
           sha256: "0".repeat(64),
         })),
       },
-      indexing_profile_ref: { name: "default-korean-parent-child", version: "1.0.0" },
+      indexing_profile_ref: { name: INDEXING_PRESETS[indexingStrategy].ref, version: "1.0.0" },
+      indexing_profile: INDEXING_PRESETS[indexingStrategy].profile,
+      retrieval_profile: RETRIEVAL_PRESETS[retrievalStrategy].profile,
     };
 
     const formData = new FormData();
@@ -188,6 +219,33 @@ export default function NewKnowledgePage() {
                 <option value="CONFIDENTIAL">CONFIDENTIAL — 기밀</option>
               </select>
             </FormField>
+
+            <div className="grid gap-5 border-y border-border py-5 sm:grid-cols-2">
+              <FormField label="문서를 나누는 방법" required>
+                <select
+                  value={indexingStrategy}
+                  onChange={(event) => setIndexingStrategy(event.target.value as keyof typeof INDEXING_PRESETS)}
+                  className={inputClass}
+                >
+                  {Object.entries(INDEXING_PRESETS).map(([value, preset]) => (
+                    <option key={value} value={value}>{preset.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-caption text-text-muted">{INDEXING_PRESETS[indexingStrategy].description}</p>
+              </FormField>
+              <FormField label="검색 방법" required>
+                <select
+                  value={retrievalStrategy}
+                  onChange={(event) => setRetrievalStrategy(event.target.value as keyof typeof RETRIEVAL_PRESETS)}
+                  className={inputClass}
+                >
+                  {Object.entries(RETRIEVAL_PRESETS).map(([value, preset]) => (
+                    <option key={value} value={value}>{preset.label}</option>
+                  ))}
+                </select>
+                <p className="mt-1.5 text-caption text-text-muted">{RETRIEVAL_PRESETS[retrievalStrategy].description}</p>
+              </FormField>
+            </div>
 
             <FormField label="문서 업로드" required>
               <div

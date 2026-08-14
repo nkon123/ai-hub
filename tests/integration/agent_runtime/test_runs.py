@@ -55,8 +55,7 @@ def _assert_subsequence(event_names: list[str], expected: list[str]) -> None:
             found_at = event_names.index(name, search_from)
         except ValueError:
             raise AssertionError(
-                f"Expected event {name!r} not found after index {search_from} "
-                f"in {event_names!r}"
+                f"Expected event {name!r} not found after index {search_from} in {event_names!r}"
             ) from None
         search_from = found_at + 1
 
@@ -826,6 +825,39 @@ async def test_knowledge_candidates_below_threshold_skips_llm_routing_call(
     # Exactly one LLM call total (ANSWER_GENERATE) — the router itself never
     # calls the adapter when skipped.
     assert fake_llm_adapter.call_count == 1
+
+
+async def test_knowledge_candidate_retrieval_profile_controls_its_search_only(
+    client: httpx.AsyncClient,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    candidate = {
+        "knowledge_id": "profiled-knowledge",
+        "name": "검색 전략 Knowledge",
+        "retrieval_profile": {
+            "strategy": "keyword_priority",
+            "top_k": 8,
+            "hybrid_alpha": 0.25,
+            "min_relevance_score": 0.42,
+            # Must never override the server-derived context below.
+            "access_context": {"clearance": "RESTRICTED"},
+        },
+    }
+    resp = await client.post(
+        "/local/v1/runs",
+        json={
+            "service_id": "hr-chatbot-service",
+            "input": {"question": "규정 번호", "knowledge_candidates": [candidate]},
+        },
+    )
+    run_id = resp.json()["id"]
+    await _read_all_sse_events(client, run_id)
+    assert len(fake_knowledge_adapter.calls) == 1
+    call = fake_knowledge_adapter.calls[0]
+    assert call["top_k"] == 8
+    assert call["alpha"] == 0.25
+    assert call["min_relevance_score"] == 0.42
+    assert call["access_context"]["clearance"] != "RESTRICTED"
 
 
 async def test_knowledge_ids_only_callers_are_unaffected_by_routing(

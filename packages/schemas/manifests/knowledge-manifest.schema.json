@@ -73,6 +73,33 @@
         "version": { "type": "string" }
       }
     },
+    "indexing_profile": {
+      "type": "object",
+      "description": "Resolved, immutable indexing settings selected when this Knowledge version is registered. This snapshot is sent to indexing-runtime; indexing_profile_ref remains the human-readable profile identity.",
+      "required": ["chunking_strategy", "chunk_size", "chunk_overlap", "minimum_size"],
+      "additionalProperties": false,
+      "properties": {
+        "chunking_strategy": { "type": "string", "enum": ["recursive", "markdown", "parent_child"] },
+        "chunk_size": { "type": "integer", "minimum": 64, "maximum": 4096 },
+        "chunk_overlap": { "type": "integer", "minimum": 0, "maximum": 512 },
+        "parent_chunk_size": { "type": "integer", "minimum": 256 },
+        "minimum_size": { "type": "integer", "minimum": 1, "maximum": 4096 },
+        "language": { "type": "string" }
+      }
+    },
+    "retrieval_profile": {
+      "type": "object",
+      "description": "Resolved default search settings for this Knowledge version. Callers may narrow top_k but must not use this object to override access control.",
+      "required": ["strategy", "top_k", "hybrid_alpha", "min_relevance_score"],
+      "additionalProperties": false,
+      "properties": {
+        "strategy": { "type": "string", "enum": ["balanced_hybrid", "keyword_priority", "semantic_priority"] },
+        "top_k": { "type": "integer", "minimum": 1, "maximum": 50 },
+        "hybrid_alpha": { "type": "number", "minimum": 0, "maximum": 1 },
+        "min_relevance_score": { "type": "number", "minimum": 0, "maximum": 1 },
+        "enable_parent_expansion": { "type": "boolean" }
+      }
+    },
     "access_control": {
       "type": "object",
       "additionalProperties": false,

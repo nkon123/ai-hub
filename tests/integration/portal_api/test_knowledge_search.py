@@ -96,6 +96,40 @@ async def test_knowledge_search_returns_citations_tagged_with_asset_info(
     assert calls[0]["access_context"]["clearance"] == "INTERNAL"
 
 
+async def test_knowledge_search_applies_each_versions_retrieval_profile(
+    client: httpx.AsyncClient, db
+) -> None:
+    knowledge = await make_indexed_knowledge(db)
+    knowledge.manifest = {
+        **dict(knowledge.manifest or {}),
+        "retrieval_profile": {
+            "strategy": "semantic_priority",
+            "top_k": 3,
+            "hybrid_alpha": 0.8,
+            "min_relevance_score": 0.45,
+            "enable_parent_expansion": True,
+        },
+    }
+    await db.commit()
+    calls: list[dict] = []
+
+    async def fake_caller(payload: dict) -> dict:
+        calls.append(payload)
+        return {"citations": []}
+
+    app.dependency_overrides[get_search_caller] = lambda: fake_caller
+    resp = await client.post(
+        "/api/v1/knowledge-search",
+        json={"query": "질문", "top_k": 10, "knowledge_ids": [knowledge.id]},
+        headers=auth_header(),
+    )
+    assert resp.status_code == 200, resp.text
+    assert calls[0]["top_k"] == 3
+    assert calls[0]["alpha"] == 0.8
+    assert calls[0]["min_relevance_score"] == 0.45
+    assert "access_context" not in calls[0]["retrieval_profile"]
+
+
 async def test_knowledge_search_scopes_to_requested_knowledge_ids(
     client: httpx.AsyncClient, db
 ) -> None:

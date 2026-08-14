@@ -195,6 +195,16 @@ compatibility:
 
 `model_identity`는 호환성 확인에 사용하며 Endpoint는 Office Profile에서 해석한다.
 
+Portal에서 새 Knowledge 버전을 등록할 때 선택한 전략은 source Manifest의
+`indexing_profile`과 `retrieval_profile`에 **해석된 값의 스냅샷**으로 함께
+보존한다. `indexing_profile_ref`만 저장하고 실행 시점의 전역 기본값으로 다시
+해석하면 같은 승인 버전을 재색인했을 때 결과가 달라질 수 있기 때문이다.
+`indexing_profile`은 indexing-runtime의 `profile` 입력으로 전달되며,
+`retrieval_profile`은 `top_k`·Hybrid Alpha·최소 관련도처럼 순위에만 영향을
+준다. 신원·보안등급·ACL은 Retrieval Profile에 포함할 수 없고 서버가 만든
+`access_context`만 사용한다. 필드가 없는 이전 Manifest는 기존 기본 전략을
+그대로 사용한다.
+
 ## 5. Indexing Profile
 
 ```yaml
@@ -553,4 +563,3 @@ asset-hub-schema checksums verify <directory>
 - Portal, Bundle Builder, Desktop, Runtime이 같은 Validator Fixture를 통과한다.
 - Service Definition의 잘못된 Knowledge/MCP/Prompt 조합을 저장 전에 탐지한다.
 - Schema 변경은 Migration Guide와 이전 버전 Fixture를 포함한다.
-

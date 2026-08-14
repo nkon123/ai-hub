@@ -76,9 +76,7 @@ SearchCaller = Callable[[dict], Awaitable[dict]]
 
 async def _call_search_runtime_http(payload: dict) -> dict:
     async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.post(
-            f"{settings.search_runtime_url}/search/v1/query", json=payload
-        )
+        resp = await client.post(f"{settings.search_runtime_url}/search/v1/query", json=payload)
         resp.raise_for_status()
         return resp.json()
 
@@ -133,11 +131,16 @@ async def _search_one(
     `succeeded` distinguishes "search-runtime answered with zero hits" from
     "the call itself failed", so the caller can report `knowledge_ids_searched`
     accurately and degrade gracefully on partial failure (never raises)."""
+    manifest = dict(version.manifest or {})
+    retrieval_profile = manifest.get("retrieval_profile")
+    retrieval_profile = retrieval_profile if isinstance(retrieval_profile, dict) else {}
+    profile_top_k = retrieval_profile.get("top_k")
+    applied_top_k = min(top_k, profile_top_k) if type(profile_top_k) is int else top_k
     payload = {
         "query": query,
         "knowledge_id": version.id,
         "knowledge_version": "latest",
-        "top_k": top_k,
+        "top_k": applied_top_k,
         "access_context": {
             "clearance": settings.default_search_clearance,
             "user_id": user.user_id,
@@ -146,6 +149,12 @@ async def _search_one(
         },
         "trace_id": trace_id,
     }
+    if type(retrieval_profile.get("hybrid_alpha")) in {int, float}:
+        payload["alpha"] = retrieval_profile["hybrid_alpha"]
+    if type(retrieval_profile.get("min_relevance_score")) in {int, float}:
+        payload["min_relevance_score"] = retrieval_profile["min_relevance_score"]
+    if retrieval_profile:
+        payload["retrieval_profile"] = retrieval_profile
     try:
         result = await caller(payload)
     except Exception:
@@ -256,6 +265,7 @@ async def knowledge_search(
         )
 
     all_citations: list[dict] = [c for _succeeded, citations in outcomes for c in citations]
+
     # D-046-style ranking: similarity when present, falling back to score —
     # same fallback search-runtime's own consumers already use (see
     # hybrid.py's docstring: similarity is null only for BM25-only chunks).
