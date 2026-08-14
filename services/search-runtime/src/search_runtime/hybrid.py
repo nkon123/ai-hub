@@ -155,10 +155,14 @@ async def hybrid_search(
         because embeddings from a different model than the index was built
         with are not comparable (silently meaningless results, no error).
     min_relevance_score: D-046 relevance floor, evaluated on cosine
-        similarity (1 - Chroma distance) of each chunk's best vector match,
-        AFTER RRF fusion picks the top_k candidates — never on the fused RRF
-        score itself, which is rank-based (1/(k+rank)) and carries no
-        absolute meaning. 0 disables filtering. A chunk that only BM25
+        similarity (1 - Chroma distance) of each chunk's best vector match —
+        never on the fused RRF score itself, which is rank-based
+        (1/(k+rank)) and carries no absolute meaning. Applied **before** the
+        top_k truncation (changed 2026-08-14): applying it after made results
+        non-monotonic in top_k — weak chunks could consume the budget and
+        then be filtered out, leaving zero results for a query the index
+        plainly answered. See the comment at the filter itself.
+        0 disables filtering. A chunk that only BM25
         found (no vector distance available) is dropped whenever filtering
         is enabled: there is no similarity evidence it clears the bar, and
         keeping it would let an exact keyword match slip an off-topic chunk
@@ -315,17 +319,37 @@ async def hybrid_search(
     for rank, (cid, _dist) in enumerate(zip(vector_ids, vector_distances)):
         score_map[cid] = score_map.get(cid, 0) + alpha * _rrf_score(rank)
 
-    # Sort by fused score and take top_k
-    ranked_ids = sorted(score_map, key=lambda x: score_map[x], reverse=True)[:top_k]
+    ranked_ids = sorted(score_map, key=lambda x: score_map[x], reverse=True)
 
-    # D-046 relevance filter — see hybrid_search docstring for the
-    # BM25-only-chunk rule and why this uses similarity_map, not score_map.
+    # D-046 relevance filter — applied **before** the top_k truncation below.
+    #
+    # It used to run after, and that made results non-monotonic in `top_k`: a
+    # measured case (2026-08-14) returned 1 citation at top_k=2/3/10 but **0**
+    # at top_k=1/5 for the same query and index. RRF fuses by *rank*, not by
+    # similarity, so a genuinely relevant chunk (cosine 0.5887, far above the
+    # 0.42 floor) sat at fused rank 3 while low-similarity chunks (0.34, 0.29)
+    # outranked it. Truncating first let those weak chunks consume the top_k
+    # budget; the floor then removed them and left nothing — a document that
+    # plainly answered the question came back as "근거 없음". Raising top_k
+    # brought it back, which is the tell: more candidates must never yield
+    # fewer results.
+    #
+    # Filtering first fixes the ordering bug and matches what this function
+    # already does for the ACL predicate (applied before candidate
+    # truncation, see `metadata_predicate` in the docstring) — the two are
+    # the same shape of mistake, and D-046's own docstring called the
+    # post-truncation position a known limitation.
+    #
+    # The BM25-only rule is unchanged: a chunk with no vector match has no
+    # similarity evidence, so it is dropped whenever filtering is enabled.
     if min_relevance_score > 0:
         ranked_ids = [
             cid
             for cid in ranked_ids
             if cid in similarity_map and similarity_map[cid] >= min_relevance_score
         ]
+
+    ranked_ids = ranked_ids[:top_k]
 
     # Build citation dicts with parent expansion (id_to_idx computed earlier)
     citations: list[dict] = []
