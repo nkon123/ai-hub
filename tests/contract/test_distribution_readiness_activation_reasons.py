@@ -22,21 +22,13 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 import pytest
 
 from .conftest import API_DIR
 
 SCHEMA_PATH = API_DIR / "knowledge-local-index.schema.json"
-DIAGNOSTICS_SOURCE_PATH = (
-    API_DIR.parent.parent.parent
-    / "apps"
-    / "portal-api"
-    / "src"
-    / "portal_api"
-    / "routers"
-    / "knowledge_diagnostics.py"
-)
 
 
 @pytest.fixture(scope="module")
@@ -51,17 +43,28 @@ def documented_reasons() -> set[str]:
 
 @pytest.fixture(scope="module")
 def emitted_reasons() -> set[str]:
-    """Every `activation_reason` value `_distribution_readiness_checks` can
-    emit, extracted from its own `_REASON_*` constants — not re-typed by
-    hand here, so a renamed constant can't silently desync this test from
-    the actual source."""
-    source = DIAGNOSTICS_SOURCE_PATH.read_text(encoding="utf-8")
-    return set(re.findall(r'^_REASON_[A-Z0-9_]+ = "([a-z0-9_]+)"', source, re.MULTILINE))
+    """Every `activation_reason` value `distribution_readiness_checks` can
+    emit, read from the module's own `REASON_*` constants.
+
+    Reads the real values by import rather than by regexing source text.
+    The earlier regex version broke the moment these constants were moved
+    out of `routers/knowledge_diagnostics.py` into `knowledge_readiness.py`
+    — and it broke by finding *nothing*, which would have made the real
+    assertion below pass vacuously if the sanity check were not there. An
+    import cannot drift that way: if the module or a name disappears, this
+    fails loudly instead of quietly matching zero."""
+    import portal_api.knowledge_readiness as readiness
+
+    return {
+        value
+        for name, value in vars(readiness).items()
+        if name.startswith("REASON_") and isinstance(value, str)
+    }
 
 
-def test_diagnostics_source_defines_at_least_one_reason(emitted_reasons: set[str]) -> None:
-    # Sanity check on the extraction regex itself — if this ever finds
-    # zero reasons, the real assertion below would pass vacuously.
+def test_readiness_module_defines_at_least_one_reason(emitted_reasons: set[str]) -> None:
+    # Guards the extraction itself — zero reasons would make the real
+    # assertion below pass without checking anything.
     assert len(emitted_reasons) >= 5
 
 
@@ -75,12 +78,16 @@ def test_every_emitted_activation_reason_is_documented_in_the_contract(
     )
 
 
-def test_every_emitted_reason_actually_appears_as_a_string_literal_in_the_router() -> None:
-    """Belt-and-suspenders: confirm the reasons are wired into an actual
-    `activation_reason=` call, not just declared as unused constants."""
-    source = DIAGNOSTICS_SOURCE_PATH.read_text(encoding="utf-8")
-    reason_constants = re.findall(r"^(_REASON_[A-Z0-9_]+) = ", source, re.MULTILINE)
-    for const in reason_constants:
+def test_every_declared_reason_is_actually_wired_into_a_check() -> None:
+    """Belt-and-suspenders: a constant that is declared but never passed as
+    `activation_reason=` would satisfy the contract test while predicting
+    nothing in practice."""
+    import portal_api.knowledge_readiness as readiness
+
+    source = Path(readiness.__file__).read_text(encoding="utf-8")
+    declared = [n for n in vars(readiness) if n.startswith("REASON_")]
+    assert declared, "no REASON_* constants found in knowledge_readiness"
+    for const in declared:
         assert f"activation_reason={const}" in source, (
-            f"{const} is declared but never passed as activation_reason in the router"
+            f"{const} is declared but never passed as activation_reason"
         )
