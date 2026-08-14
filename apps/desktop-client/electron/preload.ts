@@ -22,6 +22,7 @@ import type {
   ImportResult,
   InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
   LogEntry,
   LogFilters,
@@ -60,6 +61,8 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke("assets:remove", assetType, assetId, version, reason),
 
   checkConnections: (): Promise<ConnectionStatus[]> => ipcRenderer.invoke("connections:check"),
+  getKnowledgeEmbedModels: (): Promise<KnowledgeEmbedModelInfo[]> =>
+    ipcRenderer.invoke("knowledge:getEmbedModels"),
 
   getInstallRootPath: (): Promise<string> => ipcRenderer.invoke("app:getInstallRootPath"),
 

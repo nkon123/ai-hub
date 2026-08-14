@@ -14,7 +14,6 @@ const SETTINGS: DesktopSettingsPublic = {
   ollamaBaseUrl: "http://127.0.0.1:11434",
   ollamaAllowNonLoopback: false,
   chatModelAlias: "default-chat",
-  embeddingModelAlias: "default-embedding",
   mcpServerAlias: "default-mcp",
   mcpServerUrl: "http://127.0.0.1:8500",
   searchRuntimeBaseUrl: "http://127.0.0.1:8300",
@@ -213,6 +212,9 @@ function createCompleteBridge(): DesktopBridge {
     },
     async appendConversationTurn() {
       return null;
+    },
+    async getKnowledgeEmbedModels() {
+      return [];
     },
     async deleteConversation() {
       return { ok: true, error: null };

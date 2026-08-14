@@ -26,7 +26,6 @@ describe("DesktopSettingsStore", () => {
     expect(settings.ollamaBaseUrl).toBe("http://127.0.0.1:11434");
     expect(settings.ollamaAllowNonLoopback).toBe(false);
     expect(settings.chatModelAlias).toBe("default-chat");
-    expect(settings.embeddingModelAlias).toBe("default-embedding");
     expect(settings.mcpServerAlias).toBe("oracle-connector");
     expect(settings.mcpServerUrl).toBe("http://127.0.0.1:8500");
     expect(settings.searchRuntimeBaseUrl).toBe("http://127.0.0.1:8300");
@@ -98,10 +97,26 @@ describe("DesktopSettingsStore", () => {
     expect(store.getPublic().clientDisplayName).toBeNull();
   });
 
+  it("loads an existing settings file that still has the removed embeddingModelAlias key", () => {
+    // 2026-08-14에 `embeddingModelAlias`(아무 데도 전달되지 않던 자유 입력)를
+    // 제거했다. 이미 그 키가 저장된 사용자 파일이 존재하므로, 그것을 읽을 때
+    // 조용히 무시될 뿐 오류나 기본값 초기화로 이어지면 안 된다.
+    fs.writeFileSync(
+      path.join(tmpDir, "desktop-settings.json"),
+      JSON.stringify({ chatModelAlias: "my-chat", embeddingModelAlias: "무시되어야 함", siteId: "SITE-1" }),
+      "utf-8",
+    );
+
+    const settings = new DesktopSettingsStore(tmpDir).getPublic();
+
+    expect(settings.chatModelAlias).toBe("my-chat");
+    expect(settings.siteId).toBe("SITE-1");
+    expect("embeddingModelAlias" in settings).toBe(false);
+  });
+
   it("rejects blank model aliases", () => {
     const store = new DesktopSettingsStore(tmpDir);
     expect(store.update({ chatModelAlias: "   " }).ok).toBe(false);
-    expect(store.update({ embeddingModelAlias: "" }).ok).toBe(false);
     expect(store.update({ mcpServerAlias: "  " }).ok).toBe(false);
   });
 

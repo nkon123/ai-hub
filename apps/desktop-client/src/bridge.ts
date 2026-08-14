@@ -37,6 +37,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   listInstalledAssets: true,
   removeInstalledAsset: true,
   checkConnections: true,
+  getKnowledgeEmbedModels: true,
   getInstallRootPath: true,
   checkAssetRemoval: true,
   getAssetManifest: true,

@@ -9,7 +9,12 @@
 // PoC의 폐쇄망 기본 정책 자체가 그렇게 고정했기 때문이다.
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, RefreshCw, Save, Sparkles } from "lucide-react";
-import type { ConnectionStatus, DesktopSettingsPublic, OllamaModelsResult } from "../../electron/types";
+import type {
+  ConnectionStatus,
+  DesktopSettingsPublic,
+  KnowledgeEmbedModelInfo,
+  OllamaModelsResult,
+} from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge, isBrowserDesktopPreviewEnabled } from "../browserPreviewBridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, LabeledInput, LoadingState, PageHeader, ReadOnlyField } from "../ui";
@@ -34,7 +39,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
   const [ollamaAllowNonLoopback, setOllamaAllowNonLoopback] = useState(false);
   const [chatModelAlias, setChatModelAlias] = useState("");
-  const [embeddingModelAlias, setEmbeddingModelAlias] = useState("");
+  const [embedModels, setEmbedModels] = useState<KnowledgeEmbedModelInfo[] | null>(null);
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
   const [searchRuntimeBaseUrl, setSearchRuntimeBaseUrl] = useState("");
@@ -55,10 +60,19 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setOllamaBaseUrl(s.ollamaBaseUrl);
     setOllamaAllowNonLoopback(s.ollamaAllowNonLoopback);
     setChatModelAlias(s.chatModelAlias);
-    setEmbeddingModelAlias(s.embeddingModelAlias);
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
     setSearchRuntimeBaseUrl(s.searchRuntimeBaseUrl);
+  }, []);
+
+  // 편집값이 아니라 사실 조회라 설정 저장/복원 흐름과 분리한다 — bridge 가
+  // 없으면(브라우저 개발 모드) 빈 목록이 정직한 답이다.
+  const loadEmbedModels = useCallback(async () => {
+    try {
+      setEmbedModels((await bridge?.getKnowledgeEmbedModels()) ?? []);
+    } catch {
+      setEmbedModels([]);
+    }
   }, []);
 
   const loadOllamaModels = useCallback(
@@ -103,6 +117,10 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    void loadEmbedModels();
+  }, [loadEmbedModels]);
 
   async function saveSection(section: string, patch: Record<string, unknown>) {
     if (!bridge) return;
@@ -246,10 +264,49 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
       </Card>
 
       <Card className="p-6">
+        <SectionHeader title="지식 검색 임베딩 모델" />
+        {/* 편집 필드가 아니다. 질의 임베딩에 실제로 쓰이는 모델은 그 Knowledge
+            색인이 만들어질 때 기록된 값이고(D-075), 여기서 다른 값을 고르게
+            하면 검색이 조용히 망가진다 — 옛 "기본 Embedding Model Alias" 자유
+            입력은 아무 데도 전달되지 않는 값이었다. */}
+        <p className="mb-3 text-body text-text-secondary">
+          질의는 각 Knowledge가 <strong>색인될 때 사용한 모델</strong>로 임베딩됩니다. 다른 모델로 바꾸려면 그
+          Knowledge를 다시 색인해야 하며, 재색인은 Portal에서 수행합니다 — 그래서 여기서는 선택할 수 없고 현재 값을
+          보여 드립니다.
+        </p>
+        {embedModels === null ? (
+          <p className="text-caption text-text-muted">확인 중...</p>
+        ) : embedModels.length === 0 ? (
+          <p className="text-caption text-text-muted">설치된 Knowledge가 없습니다.</p>
+        ) : (
+          <ul className="space-y-2">
+            {embedModels.map((info) => (
+              <li key={`${info.assetId}@${info.version}`} className="rounded-lg border border-border p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-body font-medium text-text-primary">
+                    {info.name} v{info.version}
+                  </span>
+                  {info.state === "RECORDED" ? (
+                    <span className="rounded-full bg-success/10 px-2 py-0.5 text-[11px] font-semibold text-success">
+                      {info.embedModel}
+                    </span>
+                  ) : (
+                    <span className="rounded-full bg-warning/10 px-2 py-0.5 text-[11px] font-semibold text-warning">
+                      {info.state === "ASSUMED_FALLBACK" ? "기록 없음(추정)" : "확인 불가"}
+                    </span>
+                  )}
+                </div>
+                <p className="mt-1 text-caption text-text-secondary">{info.detail}</p>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+
+      <Card className="p-6">
         <SectionHeader title="Ollama 모델" />
         <p className="mb-3 text-body text-text-secondary">
-          기본 채팅에서 사용할 실제 Ollama 모델을 선택합니다. Embedding Alias는 Knowledge 인덱스 호환성을 위해 기존
-          설정값을 유지합니다.
+          기본 채팅에서 사용할 실제 Ollama 모델을 선택합니다.
         </p>
         <div className="grid gap-3 sm:grid-cols-2">
           <div>
@@ -277,12 +334,11 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
               {cannotSaveModelsReason ?? `${installedChatModels.length}개의 채팅 모델을 선택할 수 있습니다.`}
             </p>
           </div>
-          <LabeledInput id="settings-embedding-alias" label="기본 Embedding Model Alias" value={embeddingModelAlias} onChange={setEmbeddingModelAlias} placeholder="default-embedding" />
         </div>
         <div className="mt-3 flex items-center gap-3">
           <Button
             variant="secondary"
-            onClick={() => void saveSection("models", { chatModelAlias, embeddingModelAlias })}
+            onClick={() => void saveSection("models", { chatModelAlias })}
             disabled={savingSection === "models" || cannotSaveModelsReason !== null}
             title={cannotSaveModelsReason ?? undefined}
           >

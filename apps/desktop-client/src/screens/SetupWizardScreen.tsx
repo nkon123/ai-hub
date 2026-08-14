@@ -34,7 +34,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
   const [ollamaAllowNonLoopback, setOllamaAllowNonLoopback] = useState(false);
   const [chatModelAlias, setChatModelAlias] = useState("");
-  const [embeddingModelAlias, setEmbeddingModelAlias] = useState("");
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
 
@@ -60,7 +59,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
     setOllamaBaseUrl(s.ollamaBaseUrl);
     setOllamaAllowNonLoopback(s.ollamaAllowNonLoopback);
     setChatModelAlias(s.chatModelAlias);
-    setEmbeddingModelAlias(s.embeddingModelAlias);
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
     setMaxConcurrentRunsReason(s.maxConcurrentRuns.reason);
@@ -315,7 +313,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <LabeledInput id="wizard-chat-alias" label="기본 Chat Model Alias" value={chatModelAlias} onChange={setChatModelAlias} placeholder="default-chat" />
-              <LabeledInput id="wizard-embedding-alias" label="기본 Embedding Model Alias" value={embeddingModelAlias} onChange={setEmbeddingModelAlias} placeholder="default-embedding" />
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -326,7 +323,7 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
                     setSaving(true);
                     setSaveError(null);
                     try {
-                      const result = await bridge.updateDesktopSettings({ chatModelAlias, embeddingModelAlias });
+                      const result = await bridge.updateDesktopSettings({ chatModelAlias });
                       if (!result.ok) {
                         setSaveError(result.error);
                         return;

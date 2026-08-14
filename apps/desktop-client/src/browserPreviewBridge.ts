@@ -53,7 +53,6 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     ollamaBaseUrl: DEFAULT_OLLAMA_BASE_URL,
     ollamaAllowNonLoopback: false,
     chatModelAlias: DEFAULT_CHAT_MODEL_ALIAS,
-    embeddingModelAlias: DEFAULT_EMBEDDING_MODEL_ALIAS,
     mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
     mcpServerUrl: DEFAULT_MCP_SERVER_URL,
     searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
@@ -81,9 +80,8 @@ export function applyBrowserPreviewSettingsPatch(
     next.ollamaAllowNonLoopback = allowNonLoopback;
   }
 
-  const nonEmptyFields: Array<[keyof Pick<DesktopSettingsInput, "chatModelAlias" | "embeddingModelAlias" | "mcpServerAlias">, string]> = [
+  const nonEmptyFields: Array<[keyof Pick<DesktopSettingsInput, "chatModelAlias" | "mcpServerAlias">, string]> = [
     ["chatModelAlias", "기본 Chat Model Alias"],
-    ["embeddingModelAlias", "기본 Embedding Model Alias"],
     ["mcpServerAlias", "MCP Server Alias"],
   ];
   for (const [key, label] of nonEmptyFields) {
@@ -122,8 +120,6 @@ function readSettings(): DesktopSettingsPublic {
       ollamaBaseUrl: typeof parsed.ollamaBaseUrl === "string" ? parsed.ollamaBaseUrl : defaults.ollamaBaseUrl,
       ollamaAllowNonLoopback: parsed.ollamaAllowNonLoopback === true,
       chatModelAlias: typeof parsed.chatModelAlias === "string" ? parsed.chatModelAlias : defaults.chatModelAlias,
-      embeddingModelAlias:
-        typeof parsed.embeddingModelAlias === "string" ? parsed.embeddingModelAlias : defaults.embeddingModelAlias,
       mcpServerAlias: typeof parsed.mcpServerAlias === "string" ? parsed.mcpServerAlias : defaults.mcpServerAlias,
       mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : defaults.mcpServerUrl,
       searchRuntimeBaseUrl:
@@ -216,6 +212,12 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async listOllamaModels(ollamaBaseUrl) {
       return listOllamaModels(ollamaBaseUrl);
     },
+    // 브라우저 개발 모드에는 설치된 자산도 파일시스템도 없다 — 빈 목록이
+    // 정직한 답이다(가짜 모델명을 지어내지 않는다).
+    async getKnowledgeEmbedModels() {
+      return [];
+    },
+
     async checkConnections() {
       const settings = readSettings();
       return checkAllConnections({

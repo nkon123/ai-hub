@@ -30,8 +30,18 @@ import { DEFAULT_CHAT_MODEL_ALIAS } from "./ollama-chat";
 import type { DesktopSettingsInput, DesktopSettingsPublic, DesktopSettingsUpdateResult } from "./types";
 
 export { DEFAULT_CHAT_MODEL_ALIAS };
-export const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
 export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_SEARCH_RUNTIME_BASE_URL };
+
+// `embeddingModelAlias`(자유 입력 텍스트 필드)는 2026-08-14 제거되었다 —
+// 전체 참조 검색 결과 이 값을 저장 이후 실제로 읽는 코드가 어디에도 없었다
+// (search-runtime/indexing-runtime/agent-runtime 어디에도 전달되지 않음).
+// "바꿔도 아무것도 달라지지 않는 설정은 없는 것보다 나쁘다"는 이 파일의
+// `MAX_CONCURRENT_RUNS_*`(D-074)와 같은 원칙을 그대로 따른 것 — 다만
+// 여기서는 대체할 고정값이 하나가 아니라(Knowledge마다 다를 수 있음) D10이
+// `getKnowledgeEmbedModels()`(asset-management.ts)로 설치된 Knowledge마다
+// 실제 색인 기록을 직접 읽어 보여준다. `desktop-settings.json`에 예전 값이
+// 남아 있어도 아래 `read()`가 알려진 필드만 골라 읽으므로 조용히 무시되고
+// 로드는 계속 성공한다(마이그레이션 없이도 깨지지 않음).
 
 // D-074(open-decisions.md): 오늘 Desktop은 창 하나·대화 하나에서만 Run을
 // 실행할 수 있다(ChatScreen의 `isRunning` 게이트, 다중 창/다중 대화 UI 없음,
@@ -50,7 +60,6 @@ interface DesktopSettingsFile {
   ollamaBaseUrl: string;
   ollamaAllowNonLoopback: boolean;
   chatModelAlias: string;
-  embeddingModelAlias: string;
   mcpServerAlias: string;
   mcpServerUrl: string;
   searchRuntimeBaseUrl: string;
@@ -64,7 +73,6 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   ollamaBaseUrl: DEFAULT_OLLAMA_BASE_URL,
   ollamaAllowNonLoopback: false,
   chatModelAlias: DEFAULT_CHAT_MODEL_ALIAS,
-  embeddingModelAlias: DEFAULT_EMBEDDING_MODEL_ALIAS,
   mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
   mcpServerUrl: DEFAULT_MCP_SERVER_URL,
   searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
@@ -90,8 +98,6 @@ export class DesktopSettingsStore {
         ollamaBaseUrl: typeof parsed.ollamaBaseUrl === "string" ? parsed.ollamaBaseUrl : DEFAULT_OLLAMA_BASE_URL,
         ollamaAllowNonLoopback: parsed.ollamaAllowNonLoopback === true,
         chatModelAlias: typeof parsed.chatModelAlias === "string" ? parsed.chatModelAlias : DEFAULT_CHAT_MODEL_ALIAS,
-        embeddingModelAlias:
-          typeof parsed.embeddingModelAlias === "string" ? parsed.embeddingModelAlias : DEFAULT_EMBEDDING_MODEL_ALIAS,
         mcpServerAlias: typeof parsed.mcpServerAlias === "string" ? parsed.mcpServerAlias : DEFAULT_MCP_SERVER_ALIAS,
         mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : DEFAULT_MCP_SERVER_URL,
         searchRuntimeBaseUrl:
@@ -118,7 +124,6 @@ export class DesktopSettingsStore {
       ollamaBaseUrl: current.ollamaBaseUrl,
       ollamaAllowNonLoopback: current.ollamaAllowNonLoopback,
       chatModelAlias: current.chatModelAlias,
-      embeddingModelAlias: current.embeddingModelAlias,
       mcpServerAlias: current.mcpServerAlias,
       mcpServerUrl: current.mcpServerUrl,
       searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
@@ -159,12 +164,6 @@ export class DesktopSettingsStore {
         return { ok: false, error: "기본 Chat Model Alias를 입력하세요.", settings: this.getPublic() };
       }
       next.chatModelAlias = patch.chatModelAlias.trim();
-    }
-    if (patch.embeddingModelAlias !== undefined) {
-      if (!patch.embeddingModelAlias.trim()) {
-        return { ok: false, error: "기본 Embedding Model Alias를 입력하세요.", settings: this.getPublic() };
-      }
-      next.embeddingModelAlias = patch.embeddingModelAlias.trim();
     }
     if (patch.mcpServerAlias !== undefined) {
       if (!patch.mcpServerAlias.trim()) {

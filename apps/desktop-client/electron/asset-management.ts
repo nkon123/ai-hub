@@ -11,6 +11,10 @@ import { ASSET_TYPE_FOLDER, sha256OfFile, walkFiles, type InstallRootLayout } fr
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { computeAssetStatus } from "./asset-status";
+import {
+  resolveKnowledgeEmbedModelInfo,
+  type KnowledgeIndexMetaReadResult,
+} from "./knowledge-embed-model";
 import { findReferencingServices, parseServiceDefinition, type InstalledServiceBindings } from "./service-dependencies";
 import { evaluateAssetRemoval, type ActivePointerInput } from "./removal-guard";
 import { computeManifestDiff, manifestFileNameHint } from "./version-diff";
@@ -25,6 +29,7 @@ import type {
   ChecksumVerification,
   InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
   OrphanedInstallCleanupResult,
 } from "./types";
@@ -85,6 +90,42 @@ export function recoverLegacyKnowledgeAssetVersionIds(
   }
 
   return recovered;
+}
+
+// ---------------------------------------------------------------------------
+// D10 설정 — 설치된 Knowledge가 실제로 어떤 임베딩 모델로 색인되었는가
+// ---------------------------------------------------------------------------
+
+/** 색인 메타데이터를 읽어 "없음"과 "손상됨"을 구분해 돌려준다 — 두 경우는
+ * 사용자에게 보여줄 문구가 다르므로 하나로 합치지 않는다. 판정 자체는
+ * `knowledge-embed-model.ts`(순수)가 하고 이 함수는 fs 읽기만 담당한다. */
+function readKnowledgeIndexMeta(layout: InstallRootLayout, asset: InstalledAsset): KnowledgeIndexMetaReadResult {
+  const metaPath = path.join(
+    assetInstallDir(layout, "knowledge", asset.assetId, asset.version),
+    KNOWLEDGE_INDEX_META_PATH,
+  );
+  if (!fs.existsSync(metaPath)) return { status: "MISSING" };
+  const raw = readJsonIfExists(metaPath);
+  if (raw === null) return { status: "UNREADABLE" };
+  return { status: "OK", raw };
+}
+
+/** 설치된 Knowledge 각각에 대해 "검색이 실제로 쓸 임베딩 모델"을 판정한다.
+ * Knowledge마다 색인 시점이 다르면 모델도 다를 수 있으므로 하나의 전역 값으로
+ * 합치지 않고 자산별로 돌려준다. */
+export function listKnowledgeEmbedModels(
+  layout: InstallRootLayout,
+  store: InstalledAssetsStore,
+): KnowledgeEmbedModelInfo[] {
+  return store
+    .list()
+    .filter((a) => a.assetType === "knowledge")
+    .map((a) =>
+      resolveKnowledgeEmbedModelInfo(
+        { assetId: a.assetId, name: a.name, version: a.version },
+        readKnowledgeIndexMeta(layout, a),
+      ),
+    );
 }
 
 // ---------------------------------------------------------------------------

@@ -296,6 +296,31 @@ export interface KnowledgeCandidate {
   classification?: string;
 }
 
+/** D10 설정 — 설치된 Knowledge 하나의 "실제로 검색에 쓰일 임베딩 모델"을
+ * 보여준다(`electron/knowledge-embed-model.ts`의 `resolveKnowledgeEmbedModelInfo`
+ * 가 만든다, fs 읽기는 `asset-management.ts`의 `listKnowledgeEmbedModels`).
+ * 옛 `DesktopSettingsPublic.embeddingModelAlias`(자유 입력, 아무도 읽지
+ * 않았음)를 대체한다 — 이 값은 사용자가 편집하는 설정이 아니라 각 Knowledge
+ * 색인 자신이 이미 가진 사실이다(D-075 `resolve_embed_model`가 검색 시점에
+ * 실제로 적용하는 모델과 동일한 출처: 그 Knowledge의 `index/index-meta.json`).
+ * `state`를 반드시 구분해서 렌더링한다 — `RECORDED`가 아닌 경우 `embedModel`
+ * 이름을 지어내 보여주면 안 된다. */
+export interface KnowledgeEmbedModelInfo {
+  assetId: string;
+  name: string;
+  version: string;
+  /** `RECORDED`: index-meta.json에 실제로 기록된 모델(`embedModel`에 채워짐).
+   * `ASSUMED_FALLBACK`: 기록이 없어 search-runtime이 자신의 기본 설정으로
+   * 대체한다는 뜻 — 그 기본값 자체는 Desktop이 알 수 없으므로 `embedModel`은
+   * `null`로 남는다(추정치를 지어내지 않는다). `UNREADABLE`: 색인 디렉터리가
+   * 없거나 손상되어 확인 자체가 불가능하다. */
+  state: "RECORDED" | "ASSUMED_FALLBACK" | "UNREADABLE";
+  /** `state === "RECORDED"`일 때만 채워진다. */
+  embedModel: string | null;
+  /** 화면에 그대로 표시 가능한 한국어 설명(위 세 상태를 이미 반영한 문구). */
+  detail: string;
+}
+
 export interface AssetDependencyView {
   /** This asset's own declared dependencies. Only Service assets carry real
    * entries here — an Agent/Knowledge/Prompt/MCP Package manifest declares
@@ -497,7 +522,15 @@ export interface DesktopSettingsPublic {
   ollamaBaseUrl: string;
   ollamaAllowNonLoopback: boolean;
   chatModelAlias: string;
-  embeddingModelAlias: string;
+  // `embeddingModelAlias`(자유 입력 Alias)는 2026-08-14 제거되었다 — 어떤
+  // 코드도 이 값을 읽지 않았다(search-runtime/indexing-runtime/agent-runtime
+  // 어디에도 도달하지 않음, `desktop-settings.ts` 참고). "바꿔도 아무것도
+  // 달라지지 않는 설정은 없는 것보다 나쁘다"(`MAX_CONCURRENT_RUNS_*`와 같은
+  // 원칙). 실제로 검색에 쓰이는 임베딩 모델은 사용자가 고르는 값이 아니라
+  // Knowledge 색인 자신이 `index-meta.json`에 이미 기록해 둔 사실이다 —
+  // `getKnowledgeEmbedModels()`가 그 사실을 설치된 Knowledge마다 읽기 전용
+  // 으로 보여준다(D10 SettingsScreen). 재색인(모델 교체)은 Portal
+  // `/admin/settings`(P15)가 소유한다.
   mcpServerAlias: string;
   mcpServerUrl: string;
   /** D-079 — search-runtime의 Local Knowledge Index Registration 계약
@@ -518,7 +551,6 @@ export interface DesktopSettingsInput {
   ollamaBaseUrl?: string;
   ollamaAllowNonLoopback?: boolean;
   chatModelAlias?: string;
-  embeddingModelAlias?: string;
   mcpServerAlias?: string;
   mcpServerUrl?: string;
   searchRuntimeBaseUrl?: string;
@@ -874,6 +906,14 @@ export interface DesktopBridge {
    * 방어적으로 결과에서 제외된다(발명하지 않는다) — 조립 규칙 자체는
    * `electron/knowledge-candidates.ts`의 순수 함수를 그대로 쓴다. */
   getKnowledgeCandidates(assets: InstalledAsset[]): Promise<KnowledgeCandidate[]>;
+
+  // --- D10 설정: Knowledge별 실제 임베딩 모델 ----------------------------------
+  /** 설치된 모든 Knowledge(활성화 여부와 무관)를 대상으로, 각자의
+   * `index/index-meta.json`에 기록된(또는 기록되지 않은) 임베딩 모델을
+   * 읽기 전용으로 보여준다. 설치된 Knowledge가 없으면 빈 배열(오류 아님).
+   * 옛 `embeddingModelAlias` 자유 입력 필드를 대체한다 — 위 `KnowledgeEmbedModelInfo`
+   * 문서 참고. */
+  getKnowledgeEmbedModels(): Promise<KnowledgeEmbedModelInfo[]>;
 
   // --- D-079 Knowledge 활성화 --------------------------------------------------
   /** "설치됨"과 "활성화됨"은 서로 다른 사실이다 — 이 호출은 설치된 Knowledge의

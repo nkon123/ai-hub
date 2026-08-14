@@ -18,6 +18,7 @@ import {
   diffAssetVersions,
   getAssetDependencyView,
   listInstalledAssetsWithStatus,
+  listKnowledgeEmbedModels,
   readAssetManifest,
   recoverLegacyKnowledgeAssetVersionIds,
   reverifyAssetChecksum,
@@ -55,6 +56,7 @@ import type {
   ImportProgressEvent,
   InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
   LogEntry,
   LogFilters,
@@ -198,6 +200,13 @@ function registerIpcHandlers(): void {
       });
     }
     return result;
+  });
+
+  // D10 설정 — 편집 가능한 "임베딩 모델" 입력을 대체한다. 사용자가 고르는
+  // 값이 아니라 각 Knowledge 색인이 이미 가진 사실을 읽어 보여줄 뿐이다.
+  ipcMain.handle("knowledge:getEmbedModels", async (): Promise<KnowledgeEmbedModelInfo[]> => {
+    const layout = getLayout();
+    return listKnowledgeEmbedModels(layout, new InstalledAssetsStore(layout.stateDir));
   });
 
   ipcMain.handle("assets:list", async (): Promise<InstalledAssetWithStatus[]> => {
