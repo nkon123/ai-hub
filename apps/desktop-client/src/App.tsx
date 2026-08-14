@@ -92,42 +92,61 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col">
-      {/* Style guide §4.3: 64-72px header, white, bottom border. */}
-      <header className="flex h-[68px] shrink-0 items-center justify-between border-b border-border bg-surface px-6">
-        <div className="flex items-center gap-2.5">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-brand-500 text-xs font-bold text-white">
-            AI
-          </div>
-          <div className="leading-tight">
-            <div className="text-card-title font-semibold text-text-primary">AI Asset Hub</div>
-            <div className="text-caption text-text-muted">Desktop · 폐쇄망 클라이언트</div>
-          </div>
-        </div>
-      </header>
+      {/* 상단 브랜딩 바는 2026-08-14에 제거했다 — 로고와 앱 이름만 있고
+          동작이 하나도 없어서 68px을 그냥 쓰고 있었다. 앱 이름은 Electron
+          `BrowserWindow`의 title(=OS 창 제목)이 이미 보여주므로 정보가
+          사라지지도 않는다. 아래 StaleBridgeBuildBanner는 그대로 남는다 —
+          실행 중인 빌드가 낡았다는 것을 알리는 유일한 신호라, 헤더를
+          치우면서 같이 지우면 이번 주에 고친 문제가 되살아난다. */}
 
       <StaleBridgeBuildBanner missingMethods={missingBridgeMethods} />
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Style guide §4.2: ~240px sidebar, white, right border. */}
-        <nav className="w-60 shrink-0 border-r border-border bg-surface p-4">
-          <ul className="space-y-1">
-            {MAIN_TABS.map(({ id, label, icon: Icon }) => (
-              <li key={id}>
-                <button
-                  onClick={() => setTab(id)}
-                  className={`flex w-full items-center gap-2 rounded-lg px-3 py-2.5 text-left text-body font-medium transition-colors ${
-                    // "detail"/"setup"은 사이드바에 없지만, 그 상위 메인 탭이
-                    // 계속 강조돼야 사용자가 길을 잃지 않는다.
-                    tab === id || (tab === "detail" && id === "hub") || (tab === "setup" && id === "settings")
-                      ? "bg-brand-50 text-brand-700"
-                      : "text-text-secondary hover:bg-background"
-                  }`}
-                >
-                  <Icon size={16} />
-                  {label}
-                </button>
-              </li>
-            ))}
+        {/* 아이콘 전용 세로 내비게이션(2026-08-14). 예전에는 240px 폭에
+            아이콘+텍스트였다. 텍스트를 없앴으므로 **접근성 이름은 반드시
+            남긴다** — `aria-label`이 없으면 화면 낭독기 사용자에게는 이름
+            없는 버튼 3개가 되고, 그건 단순화가 아니라 퇴행이다. hover/focus
+            시 툴팁으로 눈에 보이는 이름도 함께 준다.
+            선택 상태는 색만으로 구분하지 않는다 — 좌측 세로 막대를 함께 두어
+            색 대비가 약한 환경에서도 위치로 읽히게 한다. */}
+        <nav aria-label="주 메뉴" className="w-16 shrink-0 border-r border-border bg-surface py-3">
+          <ul className="flex flex-col items-center gap-1">
+            {MAIN_TABS.map(({ id, label, icon: Icon }) => {
+              // "detail"/"setup"은 사이드바에 없지만, 그 상위 메인 탭이 계속
+              // 강조돼야 사용자가 길을 잃지 않는다.
+              const active =
+                tab === id || (tab === "detail" && id === "hub") || (tab === "setup" && id === "settings");
+              return (
+                <li key={id} className="group relative">
+                  <button
+                    type="button"
+                    onClick={() => setTab(id)}
+                    aria-label={label}
+                    aria-current={active ? "page" : undefined}
+                    title={label}
+                    className={`relative flex h-11 w-11 items-center justify-center rounded-lg transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                      active ? "bg-brand-50 text-brand-700" : "text-text-secondary hover:bg-background"
+                    }`}
+                  >
+                    {active && (
+                      <span
+                        aria-hidden="true"
+                        className="absolute -left-3 top-1/2 h-6 w-1 -translate-y-1/2 rounded-r bg-brand-500"
+                      />
+                    )}
+                    <Icon size={20} />
+                  </button>
+                  {/* 툴팁 — 텍스트 라벨이 사라진 자리를 눈으로도 메운다.
+                      `pointer-events-none`이라 클릭을 가로채지 않는다. */}
+                  <span
+                    role="tooltip"
+                    className="pointer-events-none absolute left-full top-1/2 z-40 ml-2 -translate-y-1/2 whitespace-nowrap rounded-md bg-slate-900 px-2 py-1 text-xs text-slate-50 opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                  >
+                    {label}
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </nav>
 

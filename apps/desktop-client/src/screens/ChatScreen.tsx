@@ -35,6 +35,7 @@ import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
+import { AnswerMarkdown } from "./AnswerMarkdown";
 import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
@@ -1261,19 +1262,28 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               )}
               {conversations !== null &&
                 conversations.map((c) => (
-                  <div key={c.id} className="group flex items-center gap-1">
+                  // 삭제 버튼은 행 위에 겹쳐 놓는다(2026-08-14). 예전에는
+                  // 옆 칸을 항상 차지한 채 `opacity-0`으로 숨어 있어서, 목록
+                  // 오른쪽에 늘 빈 공간이 남았다. `group-focus-within`은
+                  // 유지한다 — hover 전용으로 바꾸면 키보드만 쓰는 사용자는
+                  // 대화를 삭제할 방법이 사라진다.
+                  <div key={c.id} className="group relative">
                     <button
                       type="button"
                       onClick={() => void handleSelectConversation(c.id)}
                       disabled={isRunning}
-                      className={`min-w-0 flex-1 rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                      className={`w-full rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
                         currentConversationId === c.id
                           ? "border-brand-500 bg-brand-50 text-brand-700"
                           : "border-border bg-white text-text-secondary hover:bg-slate-50"
                       }`}
                     >
-                      <span className="block truncate font-medium">{c.title}</span>
-                      <span className="block truncate text-[11px] text-text-muted">
+                      {/* 겹쳐 놓은 버튼이 긴 제목을 가리지 않도록, 버튼이
+                          보이는 동안에만 오른쪽 여백을 준다. */}
+                      <span className="block truncate pr-0 font-medium transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
+                        {c.title}
+                      </span>
+                      <span className="block truncate text-[11px] text-text-muted transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
                         {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
                       </span>
                     </button>
@@ -1282,7 +1292,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       size="sm"
                       onClick={() => requestDeleteConversation(c)}
                       title="이 대화 삭제"
-                      className="shrink-0 px-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                      aria-label={`'${c.title}' 대화 삭제`}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 px-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
                     >
                       <Trash2 size={13} />
                     </Button>
@@ -1738,7 +1749,9 @@ function ChatTurn({
         {message.status === "running" && (
           <div className="flex items-center gap-2 text-body text-text-secondary">
             <span className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-brand-400" />
-            <span className="whitespace-pre-wrap">{message.answer ? message.answer : "처리하는 중..."}</span>
+            <span className="min-w-0">
+              {message.answer ? <AnswerMarkdown source={message.answer} /> : "처리하는 중..."}
+            </span>
           </div>
         )}
 
@@ -1753,7 +1766,9 @@ function ChatTurn({
         )}
 
         {message.status === "succeeded" && (
-          <div className="whitespace-pre-wrap text-body text-text-primary">{message.answer || "답변이 없습니다."}</div>
+          <div className="text-body text-text-primary">
+            {message.answer ? <AnswerMarkdown source={message.answer} /> : "답변이 없습니다."}
+          </div>
         )}
 
         {message.status === "insufficient_evidence" && (
