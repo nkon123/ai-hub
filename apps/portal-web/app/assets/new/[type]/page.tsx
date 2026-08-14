@@ -38,6 +38,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   AlertTriangle,
+  Braces,
   CheckCircle2,
   ChevronRight,
   Download,
@@ -64,6 +65,7 @@ import { ASSET_TYPE_LABEL } from "../../../_components/review-meta";
 // Permission.ASSET_CREATE holders (security_policy.roles.ROLE_PERMISSIONS) —
 // required for both POST /api/v1/manifests/validate and POST /api/v1/assets.
 const ASSET_CREATE_ROLES = new Set(["CREATOR", "ADMIN"]);
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 type WizardType = "agent" | "prompt" | "mcp_tool";
 
@@ -223,6 +225,22 @@ function buildSkeleton(type: WizardType, id: string, basic: BasicInfo): Record<s
 }
 
 type ParseResult = { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
+
+interface PythonSignatureConversion {
+  function_name: string;
+  input_schema: Record<string, unknown>;
+  parameters: Array<{ name: string; schema_type: string; required: boolean; default_included: boolean }>;
+  discarded: {
+    body_statement_count: number;
+    decorator_count: number;
+    docstring_present: boolean;
+    return_annotation_present: boolean;
+    top_level_statement_count: number;
+    source_persisted: false;
+    source_executed: false;
+  };
+  warnings: string[];
+}
 
 function parseManifestText(text: string): ParseResult {
   if (!text.trim()) return { ok: false, error: "Manifest가 비어 있습니다." };
@@ -925,6 +943,7 @@ function McpManifestFields({
   parsed: ParseResult;
   onChange: (value: string) => void;
 }) {
+  const { role } = useRole();
   const manifest = parsed.ok ? parsed.value : {};
   const guards =
     typeof manifest.execution_guards === "object" && manifest.execution_guards !== null
@@ -944,6 +963,43 @@ function McpManifestFields({
         [key]: value,
       },
     });
+  }
+
+  const [pythonSource, setPythonSource] = useState("");
+  const [conversion, setConversion] = useState<PythonSignatureConversion | null>(null);
+  const [conversionState, setConversionState] = useState<"idle" | "loading" | "error">("idle");
+  const [conversionError, setConversionError] = useState<ServerErrorInfo | null>(null);
+
+  async function convertPythonSignature() {
+    if (!pythonSource.trim() || conversionState === "loading") return;
+    setConversionState("loading");
+    setConversionError(null);
+    setConversion(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/manifests/mcp-tool/from-python-signature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${role.token}` },
+        body: JSON.stringify({ source: pythonSource }),
+      });
+      const body = await safeJson(res);
+      if (!res.ok) {
+        setConversionState("error");
+        setConversionError(extractServerError(res.status, body));
+        return;
+      }
+      const result = body as PythonSignatureConversion;
+      setConversion(result);
+      setConversionState("idle");
+      updateManifest({
+        input_schema: result.input_schema,
+        ...(typeof manifest.tool_name !== "string" || !manifest.tool_name.trim()
+          ? { tool_name: result.function_name }
+          : {}),
+      });
+    } catch {
+      setConversionState("error");
+      setConversionError({ message: "변환 서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요." });
+    }
   }
 
   return (
@@ -967,6 +1023,83 @@ function McpManifestFields({
         />
         <p className="mt-1 text-caption text-text-muted">영문·숫자·밑줄을 사용하고, 그룹은 점(.)으로 구분합니다.</p>
       </FormField>
+
+      <section className="border-y border-border py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-body font-semibold text-text-primary">
+              <Braces size={16} className="text-brand-600" />
+              Python 함수에서 입력 형식 가져오기
+            </div>
+            <p className="mt-1 text-caption text-text-secondary">
+              함수 시그니처만 정적으로 읽습니다. 코드는 실행·저장하지 않으며 본문과 반환 타입은 Manifest에 포함하지 않습니다.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={!pythonSource.trim() || conversionState === "loading"}
+            onClick={() => void convertPythonSignature()}
+          >
+            {conversionState === "loading" ? <Loader2 size={13} className="animate-spin" /> : <Braces size={13} />}
+            {conversionState === "loading" ? "분석 중..." : "입력 형식 추출"}
+          </Button>
+        </div>
+        <textarea
+          value={pythonSource}
+          onChange={(event) => {
+            setPythonSource(event.target.value);
+            setConversion(null);
+            setConversionError(null);
+            setConversionState("idle");
+          }}
+          rows={7}
+          spellCheck={false}
+          placeholder={'def get_tables(schema: str, limit: int = 20) -> list[str]:\n    ...'}
+          aria-label="Python 함수 시그니처"
+          className={`${inputClass} mt-3 resize-y font-mono text-caption`}
+        />
+        {conversionError && (
+          <div className="mt-3">
+            <ErrorBanner
+              message={`${conversionError.message}${conversionError.traceId ? ` (Trace ID: ${conversionError.traceId})` : ""}`}
+            />
+          </div>
+        )}
+        {conversion && (
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+            <div>
+              <p className="text-caption font-semibold text-success">Manifest에 반영됨</p>
+              <p className="mt-1 text-caption text-text-secondary">
+                함수 <code>{conversion.function_name}</code> · 파라미터 {conversion.parameters.length}개
+              </p>
+              <ul className="mt-2 space-y-1 text-caption text-text-primary">
+                {conversion.parameters.length === 0 && <li>입력 파라미터 없음</li>}
+                {conversion.parameters.map((parameter) => (
+                  <li key={parameter.name}>
+                    <code>{parameter.name}</code> · {parameter.schema_type} · {parameter.required ? "필수" : "선택"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="text-caption font-semibold text-text-muted">실행하지 않고 버림</p>
+              <ul className="mt-1 space-y-1 text-caption text-text-secondary">
+                <li>함수 본문 {conversion.discarded.body_statement_count}개 문장</li>
+                <li>Decorator {conversion.discarded.decorator_count}개</li>
+                <li>Docstring {conversion.discarded.docstring_present ? "있음" : "없음"}</li>
+                <li>반환 타입 {conversion.discarded.return_annotation_present ? "있음" : "없음"}</li>
+                <li>코드 실행 안 함 · 원문 저장 안 함</li>
+              </ul>
+            </div>
+            {conversion.warnings.length > 0 && (
+              <div className="sm:col-span-2 text-caption text-warning">
+                {conversion.warnings.map((warning) => <p key={warning}>· {warning}</p>)}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
 
       <div className="grid gap-4 sm:grid-cols-2">
         <FormField label="응답 제한 시간">

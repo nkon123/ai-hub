@@ -610,6 +610,37 @@ paths:
         "403":
           $ref: "#/components/responses/Forbidden"
 
+  /api/v1/manifests/mcp-tool/from-python-signature:
+    post:
+      tags: [assets]
+      summary: Convert one Python function signature into an MCP Tool input Schema
+      description: |
+        Static AST-only helper for the P05 MCP Tool registration Wizard. The
+        submitted source is never executed, imported, compiled, logged, or
+        persisted. Only a top-level function signature is inspected; function
+        body, decorators, docstring, return annotation, and unrelated top-level
+        statements are discarded and reported only as structural counts/flags.
+      operationId: convert_mcp_tool_python_signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PythonSignatureConvertRequest"
+      responses:
+        "200":
+          description: Converted input Schema and transparent discard report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PythonSignatureConvertResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/asset-versions/{version_id}/submit:
     post:
       tags: [assets]
@@ -1916,6 +1947,59 @@ components:
           type: array
           items:
             type: string
+
+    PythonSignatureConvertRequest:
+      type: object
+      required: [source]
+      additionalProperties: false
+      properties:
+        source:
+          type: string
+          minLength: 1
+          maxLength: 20000
+        function_name:
+          type: string
+          description: Optional only for callers selecting one function explicitly.
+
+    PythonSignatureParameter:
+      type: object
+      required: [name, schema_type, required, default_included]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        schema_type: { type: string }
+        required: { type: boolean }
+        default_included: { type: boolean }
+
+    PythonSignatureDiscarded:
+      type: object
+      required: [body_statement_count, decorator_count, docstring_present, return_annotation_present, top_level_statement_count, source_persisted, source_executed]
+      additionalProperties: false
+      properties:
+        body_statement_count: { type: integer, minimum: 0 }
+        decorator_count: { type: integer, minimum: 0 }
+        docstring_present: { type: boolean }
+        return_annotation_present: { type: boolean }
+        top_level_statement_count: { type: integer, minimum: 0 }
+        source_persisted: { type: boolean, const: false }
+        source_executed: { type: boolean, const: false }
+
+    PythonSignatureConvertResponse:
+      type: object
+      required: [function_name, input_schema, parameters, discarded, warnings]
+      additionalProperties: false
+      properties:
+        function_name: { type: string }
+        input_schema: { type: object }
+        parameters:
+          type: array
+          items:
+            $ref: "#/components/schemas/PythonSignatureParameter"
+        discarded:
+          $ref: "#/components/schemas/PythonSignatureDiscarded"
+        warnings:
+          type: array
+          items: { type: string }
 
     KnowledgeSearchRequest:
       type: object

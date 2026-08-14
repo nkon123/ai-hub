@@ -271,6 +271,71 @@ async def test_validate_endpoint_unsupported_type(client) -> None:
     assert resp.status_code == 400, resp.text
 
 
+# --- POST /api/v1/manifests/mcp-tool/from-python-signature ----------------
+
+
+async def test_python_signature_conversion_is_static_and_transparent(client) -> None:
+    source = (
+        "@dangerous_decorator()\n"
+        "def get_tables(schema: str, limit: int = 20) -> list[str]:\n"
+        '    """This docstring and body must not cross the response boundary."""\n'
+        '    raise RuntimeError("must never execute")\n'
+    )
+    resp = await client.post(
+        "/api/v1/manifests/mcp-tool/from-python-signature",
+        json={"source": source},
+        headers=auth_header(),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["function_name"] == "get_tables"
+    assert body["input_schema"]["properties"] == {
+        "schema": {"type": "string"},
+        "limit": {"type": "integer", "default": 20},
+    }
+    assert body["input_schema"]["required"] == ["schema"]
+    assert body["discarded"] == {
+        "body_statement_count": 2,
+        "decorator_count": 1,
+        "docstring_present": True,
+        "return_annotation_present": True,
+        "top_level_statement_count": 0,
+        "source_persisted": False,
+        "source_executed": False,
+    }
+    assert "must never execute" not in resp.text
+
+
+async def test_python_signature_conversion_rejects_identity_and_ambiguous_functions(client) -> None:
+    identity = await client.post(
+        "/api/v1/manifests/mcp-tool/from-python-signature",
+        json={"source": "def query(user: str):\n    pass\n"},
+        headers=auth_header(),
+    )
+    assert identity.status_code == 400
+    assert identity.json()["error"]["details"]["reason"] == "identity_parameter_forbidden"
+
+    ambiguous = await client.post(
+        "/api/v1/manifests/mcp-tool/from-python-signature",
+        json={"source": "def one(x: str): pass\ndef two(y: int): pass\n"},
+        headers=auth_header(),
+    )
+    assert ambiguous.status_code == 400
+    assert ambiguous.json()["error"]["details"] == {
+        "reason": "multiple_functions_found",
+        "candidates": ["one", "two"],
+    }
+
+
+async def test_python_signature_conversion_requires_create_permission(client) -> None:
+    resp = await client.post(
+        "/api/v1/manifests/mcp-tool/from-python-signature",
+        json={"source": "def query(schema: str): pass\n"},
+        headers=auth_header("dev-auditor-token"),
+    )
+    assert resp.status_code == 403
+
+
 # --- GET /api/v1/asset-versions/{version_id}[/template] --------------------
 
 

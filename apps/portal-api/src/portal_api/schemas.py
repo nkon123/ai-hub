@@ -101,6 +101,36 @@ class ManifestValidateResponseOut(BaseModel):
     errors: list[str] = []
 
 
+class PythonSignatureConvertRequest(BaseModel):
+    source: str
+    function_name: str | None = None
+
+
+class PythonSignatureParameterOut(BaseModel):
+    name: str
+    schema_type: str
+    required: bool
+    default_included: bool
+
+
+class PythonSignatureDiscardedOut(BaseModel):
+    body_statement_count: int
+    decorator_count: int
+    docstring_present: bool
+    return_annotation_present: bool
+    top_level_statement_count: int
+    source_persisted: bool
+    source_executed: bool
+
+
+class PythonSignatureConvertResponseOut(BaseModel):
+    function_name: str
+    input_schema: dict
+    parameters: list[PythonSignatureParameterOut]
+    discarded: PythonSignatureDiscardedOut
+    warnings: list[str] = []
+
+
 class PromptTemplateOut(BaseModel):
     content: str
 

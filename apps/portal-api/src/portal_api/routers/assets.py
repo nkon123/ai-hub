@@ -42,6 +42,7 @@ from portal_api.models import Asset, AssetVersion, AssetVersionRevocation, Index
 from portal_api.models.review import ReviewDecision, ReviewRequest
 from portal_api.models.revocation import effective_filter
 from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting
+from portal_api.python_signature import PythonSignatureError, convert_python_signature
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AssetListResponse,
@@ -57,6 +58,8 @@ from portal_api.schemas import (
     MyAssetsResponseOut,
     MyAssetVersionRowOut,
     PromptTemplateOut,
+    PythonSignatureConvertRequest,
+    PythonSignatureConvertResponseOut,
     UpdateAssetVersionRequest,
 )
 from portal_api.semver import is_strictly_greater
@@ -101,9 +104,7 @@ SessionFactory = Callable[[], AsyncSession]
 
 async def _call_indexing_runtime_http(payload: dict) -> dict:
     async with httpx.AsyncClient(timeout=settings.indexing_runtime_timeout_seconds) as client:
-        resp = await client.post(
-            f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload
-        )
+        resp = await client.post(f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload)
         # No raise_for_status() here, deliberately unchanged from this
         # function's pre-DI-seam behavior: a non-2xx response body is still
         # parsed and stored via IndexingJob.status = result.get("status",
@@ -302,8 +303,12 @@ async def get_asset(
 ) -> AssetOut | JSONResponse:
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -366,8 +371,12 @@ async def get_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -396,8 +405,12 @@ async def get_prompt_template(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -465,6 +478,43 @@ async def validate_manifest_draft(
             valid=False, errors=list(e.errors) if e.errors else [str(e)]
         )
     return ManifestValidateResponseOut(valid=True, errors=[])
+
+
+@router.post(
+    "/manifests/mcp-tool/from-python-signature",
+    response_model=PythonSignatureConvertResponseOut,
+)
+async def convert_mcp_tool_python_signature(
+    body: PythonSignatureConvertRequest,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> PythonSignatureConvertResponseOut | JSONResponse:
+    """Stateless AST-only helper for P05. Submitted source is never executed,
+    imported, compiled, logged, or persisted; only the derived input Schema
+    and a structural discard report cross the response boundary."""
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_CREATE, trace_id=trace_id, resource_type="ASSET"
+    )
+    if denial:
+        return denial
+    try:
+        result = convert_python_signature(body.source, body.function_name)
+    except PythonSignatureError as exc:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            str(exc),
+            trace_id,
+            details={"reason": exc.reason, "candidates": exc.candidates},
+        )
+    return PythonSignatureConvertResponseOut(
+        function_name=result.function_name,
+        input_schema=result.input_schema,
+        parameters=result.parameters,
+        discarded=result.discarded,
+        warnings=result.warnings,
+    )
 
 
 @router.post("/assets", response_model=AssetVersionOut, status_code=status.HTTP_201_CREATED)
@@ -614,6 +664,7 @@ async def create_asset(
             configured_embed_model,
             indexing_caller,
             indexing_session_factory,
+            manifest_dict.get("indexing_profile"),
         )
 
     return AssetVersionOut.model_validate(version)
@@ -678,15 +729,23 @@ async def create_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_CREATE, trace_id=trace_id,
-        resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_CREATE,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
 
     asset, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
         denied_event="ASSET_VERSION_CREATE_DENIED",
         denied_message="본인이 소유한 자산만 새 버전을 만들 수 있습니다.",
     )
@@ -807,15 +866,23 @@ async def update_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_EDIT_DRAFT, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_EDIT_DRAFT,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_EDIT_DENIED",
         denied_message="본인이 소유한 자산만 수정할 수 있습니다.",
     )
@@ -896,9 +963,7 @@ async def update_asset_version(
     return AssetVersionOut.model_validate(version)
 
 
-@router.post(
-    "/assets/{asset_id}/versions/{version_id}/validate", response_model=AssetVersionOut
-)
+@router.post("/assets/{asset_id}/versions/{version_id}/validate", response_model=AssetVersionOut)
 async def validate_asset_version(
     asset_id: str,
     version_id: str,
@@ -915,15 +980,23 @@ async def validate_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_VALIDATE, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_VALIDATE,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_VALIDATE_DENIED",
         denied_message="본인이 소유한 자산만 검증할 수 있습니다.",
     )
@@ -996,15 +1069,23 @@ async def diff_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_DIFF_DENIED",
         denied_message="본인이 소유한 자산만 비교할 수 있습니다.",
     )
@@ -1114,9 +1195,7 @@ async def list_my_assets(
         asset.id for version, asset in rows if version.status == VersionStatus.APPROVED.value
     }
 
-    buckets: dict[str, list[MyAssetVersionRowOut]] = {
-        code: [] for code in _MY_ASSET_CATEGORY_ORDER
-    }
+    buckets: dict[str, list[MyAssetVersionRowOut]] = {code: [] for code in _MY_ASSET_CATEGORY_ORDER}
     for version, asset in rows:
         category = _my_asset_category(version)
         if category is None:
@@ -1167,8 +1246,12 @@ async def list_indexing_jobs(
 ) -> list[IndexingJobOut] | JSONResponse:
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -1226,8 +1309,12 @@ async def get_knowledge_info(
     """Return combined Knowledge detail: versions, indexing metadata, chunk preview."""
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -1282,23 +1369,29 @@ async def get_knowledge_info(
                 cp["tags"] = []
         indexing_profile = manifest.get("indexing_profile_ref", {})
 
-        versions_info.append({
-            "id": ver.id,
-            "version": ver.version,
-            "status": ver.status,
-            "created_at": ver.created_at.isoformat(),
-            "indexing_job": {
-                "id": job.id if job else None,
-                "status": job.status if job else None,
-                "chunk_count": job.chunk_count if job else None,
-                "completed_at": job.completed_at.isoformat() if job and job.completed_at else None,
-                "index_path": job.index_path if job else None,
-            } if job else None,
-            "index_meta": index_meta,
-            "indexing_profile_ref": indexing_profile,
-            "chunks_preview": chunks_preview,
-            "source_documents": manifest.get("source", {}).get("documents", []),
-        })
+        versions_info.append(
+            {
+                "id": ver.id,
+                "version": ver.version,
+                "status": ver.status,
+                "created_at": ver.created_at.isoformat(),
+                "indexing_job": {
+                    "id": job.id if job else None,
+                    "status": job.status if job else None,
+                    "chunk_count": job.chunk_count if job else None,
+                    "completed_at": job.completed_at.isoformat()
+                    if job and job.completed_at
+                    else None,
+                    "index_path": job.index_path if job else None,
+                }
+                if job
+                else None,
+                "index_meta": index_meta,
+                "indexing_profile_ref": indexing_profile,
+                "chunks_preview": chunks_preview,
+                "source_documents": manifest.get("source", {}).get("documents", []),
+            }
+        )
 
     return {
         "id": asset.id,
@@ -1337,8 +1430,12 @@ async def update_chunk_tags(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_EDIT_DRAFT, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_EDIT_DRAFT,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -1386,6 +1483,7 @@ async def _trigger_indexing(
     embed_model: str | None,
     caller: IndexingCaller,
     session_factory: SessionFactory,
+    indexing_profile: dict | None = None,
 ) -> None:
     """Background task: call indexing-runtime to index the Knowledge package.
 
@@ -1440,6 +1538,11 @@ async def _trigger_indexing(
     # then applies, exactly like every caller before this change.
     if embed_model is not None:
         job_body["embed_model"] = embed_model
+    if indexing_profile is not None:
+        # The Knowledge manifest schema has already validated this closed
+        # object. Forward the immutable per-version snapshot instead of
+        # silently falling back to indexing-runtime's global default.
+        job_body["profile"] = indexing_profile
 
     try:
         result = await caller(job_body)
