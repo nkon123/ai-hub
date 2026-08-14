@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IncludedAssetSummary } from "../../electron/types";
-import { knowledgeActivationTargets } from "./knowledgeActivation";
+import { knowledgeActivationTargets, mcpToolConnectionTargets } from "./knowledgeActivation";
 
 function item(overrides: Partial<IncludedAssetSummary> = {}): IncludedAssetSummary {
   return {
@@ -50,5 +50,15 @@ describe("knowledgeActivationTargets", () => {
 
   it("returns an empty array for an empty install plan", () => {
     expect(knowledgeActivationTargets([])).toEqual([]);
+  });
+});
+
+describe("mcpToolConnectionTargets", () => {
+  it("picks only identified MCP Tool items", () => {
+    expect(mcpToolConnectionTargets([
+      item({ asset_type: "mcp_tool", asset_id: "tool-1", name: "Oracle Tables" }),
+      item(),
+      item({ asset_type: "mcp_tool", asset_id: null }),
+    ])).toEqual([{ assetId: "tool-1", version: "1.0.0", name: "Oracle Tables" }]);
   });
 });

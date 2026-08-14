@@ -304,6 +304,17 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       return { checked: false, downgradedCount: 0, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
 
+    // --- D-080 MCP Tool 연결 --------------------------------------------------
+    async connectInstalledMcpTool() {
+      return { ok: false, activation: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async disconnectInstalledMcpTool() {
+      return { ok: false, remoteWarning: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async reconcileMcpToolConnections() {
+      return { checked: false, downgradedCount: 0, registrationEnabled: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+
     // --- D12 업데이트/복구 -------------------------------------------------------
     async diffAssetVersions() {
       return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, diff: null };

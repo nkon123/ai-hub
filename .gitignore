@@ -21,6 +21,7 @@ out/
 # (docs/implementation-spec/13-windows-local-setup.md §6 참고).
 data/indexes/
 data/bundles/
+data/agent-runtime/
 apps/portal-api/storage/
 # 저장소 루트에도 같은 것이 생긴다: `portal_api.config.Settings.storage_root`
 # 기본값이 `./storage`(CWD 기준)이라, 저장소 루트에서 테스트를 돌리면 여기에

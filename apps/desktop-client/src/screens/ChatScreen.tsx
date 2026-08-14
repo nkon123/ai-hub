@@ -13,13 +13,12 @@
 //   아직 Service Definition을 조회할 방법이 전혀 없다(Registry 부재,
 //   D-034). 근거 없이 항상 노출되는 가짜 파일 첨부 UI를 만들지 않는다.
 //
-// Tool 호출 확인 Panel(WAITING_FOR_USER, D-052 후속): 이 화면은 정식 MCP
-// Tool 선택 UI를 만들지 않는다 — 위와 같은 이유(Service Registry 부재)로
-// "이 Service가 어떤 Tool을 허용하는지" 자체를 조회할 방법이 없다. 대신
-// devKnowledgeId와 동일한 성격의 "개발 확인용" 입력으로
-// agent_profile=standard-db-agent + Tool 요청을 보낼 수 있게 해 확인 Panel
-// 자체(승인/거부, 만료 시간)를 실제로 검증할 수 있게 한다 — 정식 제품
-// UI가 아님을 라벨과 경고문으로 항상 명시한다.
+// Tool 호출 확인 Panel(WAITING_FOR_USER, D-052 후속): 일반 Service별 Tool
+// 선택 UI는 아직 만들지 않는다(Service Registry 부재). 브라우저 Preview는
+// 기존 개발용 입력만 제공한다. Electron에서는 예외적으로 Hub에서 설치되고
+// agent-runtime 연결까지 확인된 `calculator.add` 샘플에만 닫힌 숫자 입력을
+// 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
+// JSON 입력을 받지 않는다.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
 import type {
@@ -90,6 +89,7 @@ const TERMINAL_CONVERSATION_STATUSES: ReadonlySet<ConversationTurnStatus> = new 
 // 한다(감사 로그에서 동일 논리 서비스로 상관관계를 가질 수 있도록, D-052와
 // 동일한 절충).
 const SERVICE_ID_PREFIX = "desktop-knowledge-chat";
+const CALCULATOR_SAMPLE_ASSET_ID = "8c1d2b2f-4be6-4dc4-948e-308df4903a32";
 
 // Local input styling — not promoted to ui.tsx (no shared text input/select
 // primitive exists there yet, and this task's scope is D06/D07 screens, not
@@ -372,6 +372,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // --- Knowledge 자동 검색 대상(지식 검색 자동화 + D-079 이어 붙이기: 활성화
   // 인지) ---
   const [installedKnowledge, setInstalledKnowledge] = useState<InstalledAssetWithStatus[] | null>(null);
+  const [installedMcpTools, setInstalledMcpTools] = useState<InstalledAssetWithStatus[]>([]);
   const [installedError, setInstalledError] = useState<string | null>(null);
   const [devKnowledgeId, setDevKnowledgeId] = useState("");
   const [useKnowledge, setUseKnowledge] = useState(false);
@@ -412,9 +413,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // away from. REVOKED/INVALID are left visible (out of this change's
       // scope — D08 is the screen that surfaces those).
       setInstalledKnowledge(all.filter((a) => a.assetType === "knowledge" && a.status !== "INACTIVE"));
+      setInstalledMcpTools(all.filter((a) => a.assetType === "mcp_tool" && a.status !== "INACTIVE"));
     } catch (err) {
       setInstalledError(err instanceof Error ? err.message : "설치된 Knowledge 목록을 불러오지 못했습니다.");
       setInstalledKnowledge([]);
+      setInstalledMcpTools([]);
     }
   }, [bridge]);
 
@@ -544,17 +547,23 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     knowledgeCandidates.map((c) => [c.knowledge_id, c.name ?? c.knowledge_id]),
   );
 
-  // --- MCP Tool 호출(개발 확인용) — Service Registry가 없어(D-034/D-058)
-  // 정식 Tool 선택 UI를 만들 근거가 없다. 확인 Panel(WAITING_FOR_USER) 자체를
-  // 검증하기 위한 개발용 트리거만 제공하며, Electron 브릿지가 있을 때(정식
-  // 빌드로 보이는 상태)는 숨긴다 — devKnowledgeId와 동일한 노출 조건.
+  // --- MCP Tool 호출 확인. 브라우저 Preview에서는 기존 개발용 DB Tool을,
+  // Electron에서는 Hub에서 설치되고 agent-runtime에 연결된 고정 계산기
+  // 샘플만 노출한다. 임의 Tool 이름이나 자유형 JSON 입력을 받지 않는다.
   const [mcpDevEnabled, setMcpDevEnabled] = useState(false);
-  const [mcpDevTool, setMcpDevTool] = useState<"table_count.query" | "db_metadata.get_columns">(
+  const [mcpDevTool, setMcpDevTool] = useState<"calculator.add" | "table_count.query" | "db_metadata.get_columns">(
     "table_count.query",
   );
   const [mcpDevSchema, setMcpDevSchema] = useState("APP");
   const [mcpDevTable, setMcpDevTable] = useState("INTERFACE_LOG");
-  const mcpDevActive = !bridge && mcpDevEnabled;
+  const [calculatorA, setCalculatorA] = useState("1");
+  const [calculatorB, setCalculatorB] = useState("2");
+  const calculatorSampleConnected = installedMcpTools.some(
+    (asset) =>
+      asset.assetId === CALCULATOR_SAMPLE_ASSET_ID &&
+      (asset.activation?.state === "ACTIVE" || asset.activation?.state === "ALREADY_ACTIVE"),
+  );
+  const mcpDevActive = mcpDevEnabled && (!bridge || calculatorSampleConnected);
 
   // --- 연결 상태 ---
   const [connections, setConnections] = useState<ConnectionStatus[] | null>(null);
@@ -939,6 +948,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     const q = (text ?? question).trim();
     if (!q || isRunning) return;
 
+    if (
+      bridge &&
+      mcpDevActive &&
+      (!calculatorA.trim() ||
+        !calculatorB.trim() ||
+        !Number.isFinite(Number(calculatorA)) ||
+        !Number.isFinite(Number(calculatorB)))
+    ) {
+      setSendError("더할 두 숫자를 모두 올바르게 입력하세요.");
+      return;
+    }
+
     setSendError(null);
     setQuestion("");
     const id = crypto.randomUUID();
@@ -1035,8 +1056,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         ...(mcpDevActive
           ? {
               agentProfile: "standard-db-agent" as const,
-              mcpTool: mcpDevTool,
-              mcpToolInput: { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
+              mcpTool: bridge ? "calculator.add" : mcpDevTool,
+              mcpToolInput: bridge
+                ? { a: Number(calculatorA), b: Number(calculatorB) }
+                : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
               mcpConfirmed: false,
             }
           : {}),
@@ -1388,6 +1411,59 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             const isShortened = caption === RECONCILE_SAME_CAUSE_NOTICE;
             return <Notice tone="info" title={isShortened ? caption : `활성화 상태 확인 불가: ${caption}`} />;
           })()}
+
+          {bridge && calculatorSampleConnected && (
+            <div className="mb-4 shrink-0 rounded-card border border-brand-200 bg-brand-50/40 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-caption font-semibold text-brand-700">숫자 더하기 · 연결됨</p>
+                  <p className="mt-0.5 text-caption text-text-muted">이번 메시지에서 사용할 때만 켜세요.</p>
+                </div>
+                <label className="flex items-center gap-2 text-caption font-medium text-text-primary">
+                  <input
+                    type="checkbox"
+                    checked={mcpDevEnabled}
+                    onChange={(e) => setMcpDevEnabled(e.target.checked)}
+                    disabled={isRunning}
+                  />
+                  이 Tool 사용
+                </label>
+              </div>
+                {mcpDevEnabled && (
+                  <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                    <div>
+                      <label className="mb-1 block text-caption text-text-muted" htmlFor="calculator-a">
+                        첫 번째 숫자
+                      </label>
+                      <input
+                        id="calculator-a"
+                        type="number"
+                        value={calculatorA}
+                        onChange={(e) => setCalculatorA(e.target.value)}
+                        className={fieldClass}
+                        disabled={isRunning}
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1 block text-caption text-text-muted" htmlFor="calculator-b">
+                        두 번째 숫자
+                      </label>
+                      <input
+                        id="calculator-b"
+                        type="number"
+                        value={calculatorB}
+                        onChange={(e) => setCalculatorB(e.target.value)}
+                        className={fieldClass}
+                        disabled={isRunning}
+                      />
+                    </div>
+                  </div>
+                )}
+                <p className="mt-2 text-caption text-text-muted">
+                  Tool은 연결된 로컬 Runtime에서 실행되며 결과와 감사 Trace가 이번 대화에 기록됩니다.
+                </p>
+            </div>
+          )}
 
           {/* 개발 확인용 입력 — Service Registry가 아직 없어(D-034/D-058) 정식
               Knowledge/Tool 선택 UI를 만들 근거가 없다. 메인 흐름에서 빼고

@@ -152,7 +152,11 @@ resolve_service() {
       SVC_SUPPORTS_BUILD="yes"
       SVC_WORKDIR="services/agent-runtime"
       SVC_CMD=(uv run uvicorn agent_runtime.main:app --port 8100)
-      SVC_ENVS=("AGENT_RUNTIME_BUILD_VERSION=$BUILD_VERSION_VALUE" "AGENT_RUNTIME_COMMIT_SHA=$GIT_SHA")
+      SVC_ENVS=(
+        "AGENT_RUNTIME_BUILD_VERSION=$BUILD_VERSION_VALUE"
+        "AGENT_RUNTIME_COMMIT_SHA=$GIT_SHA"
+        'AGENT_RUNTIME_MCP_TOOL_REGISTRATION_ALLOWED_ALIASES=["oracle-connector"]'
+      )
       ;;
     indexing-runtime)
       SVC_PORT=8200

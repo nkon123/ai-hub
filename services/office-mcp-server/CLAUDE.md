@@ -23,7 +23,7 @@ Limit/Result Limit), 사용자 확인 정책, Output Filter, Audit 로그를
 - `main.py` — FastAPI 엔트리포인트: `/health`, `/health/live`,
   `/health/ready`, `/version`, `/mcp/v1/tools`,
   `/mcp/v1/tools/{tool_name}/call`, `/admin/tools*`, `/admin/audit/events`.
-- `tools_setup.py` — `register_poc_tools`: 3개 PoC Tool을 §4 메타데이터
+- `tools_setup.py` — `register_poc_tools`: 검토된 PoC Tool을 §4 메타데이터
   전체와 함께 등록(아래 "실제 Tool 목록" 참고).
 - `tool_registry.py` — `RegisteredTool`, `UserConfirmationPolicy`(NEVER/
   ALWAYS/ON_PARAMETER), `ToolStatus`(ACTIVE/DISABLED), `ToolRegistry`(Kill
@@ -60,6 +60,7 @@ Limit/Result Limit), 사용자 확인 정책, Output Filter, Audit 로그를
 
 | Tool | 확인 정책 | 비고 |
 |---|---|---|
+| `calculator.add` | NEVER | Desktop 설치·연결 검증용 순수 덧셈 샘플 |
 | `db_metadata.get_tables` | NEVER | 허용 Schema의 Table 목록 |
 | `db_metadata.get_columns` | NEVER | Default Value 미반환, 금지 Column 제거 |
 | `table_count.query` | ON_PARAMETER | 건수만 반환, 임의 SQL 미입력, 필터 없는 전체 카운트는 확인 필요 |

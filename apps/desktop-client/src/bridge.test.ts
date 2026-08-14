@@ -132,6 +132,15 @@ function createCompleteBridge(): DesktopBridge {
     async reconcileKnowledgeActivations() {
       return { checked: true, downgradedCount: 0, error: null };
     },
+    async connectInstalledMcpTool() {
+      return { ok: false, activation: null, error: null };
+    },
+    async disconnectInstalledMcpTool() {
+      return { ok: true, remoteWarning: null, error: null };
+    },
+    async reconcileMcpToolConnections() {
+      return { checked: true, downgradedCount: 0, registrationEnabled: true, error: null };
+    },
     async diffAssetVersions() {
       return { available: false, reason: null, diff: null };
     },

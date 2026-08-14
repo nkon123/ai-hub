@@ -81,6 +81,15 @@ describe("buildKnowledgeCandidate", () => {
     );
     expect(result).toEqual({ knowledge_id: "av-7", name: "태그 혼합 Knowledge", tags: ["hr", "policy"] });
   });
+
+  it("copies a validated retrieval profile without accepting arbitrary fields", () => {
+    const result = buildKnowledgeCandidate(
+      { assetVersionId: "av-8", name: "검색 전략 Knowledge" },
+      AVAILABLE({ retrieval_profile: { strategy: "semantic_priority", top_k: 7, hybrid_alpha: 0.8, min_relevance_score: 0.45, enable_parent_expansion: true, access_context: { clearance: "RESTRICTED" } } }),
+    );
+    expect(result?.retrieval_profile).toEqual({ strategy: "semantic_priority", top_k: 7, hybrid_alpha: 0.8, min_relevance_score: 0.45, enable_parent_expansion: true });
+    expect(result?.retrieval_profile).not.toHaveProperty("access_context");
+  });
 });
 
 describe("buildKnowledgeCandidates", () => {

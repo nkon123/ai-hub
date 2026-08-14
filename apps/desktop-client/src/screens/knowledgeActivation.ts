@@ -13,6 +13,12 @@ export interface KnowledgeActivationTarget {
   name: string | null;
 }
 
+export interface McpToolConnectionTarget {
+  assetId: string;
+  version: string;
+  name: string | null;
+}
+
 /** `IncludedAssetSummary.asset_id`/`.version` are nullable on the wire (D-060:
  * a STANDARD_LOCAL_COPY item, or a Bundle built before the field existed) —
  * an item missing either can never be looked up as an installed record, so
@@ -21,6 +27,16 @@ export function knowledgeActivationTargets(installPlan: IncludedAssetSummary[]):
   return installPlan
     .filter((item): item is IncludedAssetSummary & { asset_id: string; version: string } =>
       item.asset_type === "knowledge" && typeof item.asset_id === "string" && typeof item.version === "string",
+    )
+    .map((item) => ({ assetId: item.asset_id, version: item.version, name: item.name }));
+}
+
+/** 설치 직후 MCP Tool도 같은 한 번의 흐름에서 agent-runtime에 연결한다.
+ * 누락된 식별자는 Knowledge와 마찬가지로 추측하지 않고 제외한다. */
+export function mcpToolConnectionTargets(installPlan: IncludedAssetSummary[]): McpToolConnectionTarget[] {
+  return installPlan
+    .filter((item): item is IncludedAssetSummary & { asset_id: string; version: string } =>
+      item.asset_type === "mcp_tool" && typeof item.asset_id === "string" && typeof item.version === "string",
     )
     .map((item) => ({ assetId: item.asset_id, version: item.version, name: item.name }));
 }

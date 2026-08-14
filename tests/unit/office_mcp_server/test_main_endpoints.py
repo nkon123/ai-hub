@@ -35,15 +35,25 @@ def test_version() -> None:
     body = resp.json()
     assert body["schema_version"] == "1.0"
     tool_names = {t["name"] for t in body["tools"]}
-    assert tool_names == {"db_metadata.get_tables", "db_metadata.get_columns", "table_count.query"}
+    assert tool_names == {
+        "calculator.add",
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+        "table_count.query",
+    }
 
 
 def test_list_tools_returns_registered_tools() -> None:
     resp = client.get("/mcp/v1/tools")
     body = resp.json()
-    assert body["count"] == 3
+    assert body["count"] == 4
     names = {t["name"] for t in body["tools"]}
-    assert names == {"db_metadata.get_tables", "db_metadata.get_columns", "table_count.query"}
+    assert names == {
+        "calculator.add",
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+        "table_count.query",
+    }
     for t in body["tools"]:
         assert t["status"] == "ACTIVE"
         assert t["risk_level"] == "READ_ONLY"
@@ -58,6 +68,26 @@ def test_get_tables_end_to_end() -> None:
     assert payload["success"] is True
     expected_item = {"table": "INTERFACE_LOG", "schema": "APP", "comment": "인터페이스 처리 이력"}
     assert expected_item in payload["output"]["items"]
+
+
+def test_calculator_add_end_to_end() -> None:
+    ctx = make_context(requested_tool="calculator.add")
+    body = make_call_body(
+        tool_name="calculator.add", input_={"a": 12.5, "b": 7.5}, context=ctx
+    )
+    resp = client.post("/mcp/v1/tools/calculator.add/call", json=body)
+    assert resp.status_code == 200
+    assert resp.json()["output"] == {"result": 20.0, "classification": "PUBLIC_INTERNAL"}
+
+
+def test_calculator_add_rejects_non_numeric_input() -> None:
+    ctx = make_context(requested_tool="calculator.add")
+    body = make_call_body(
+        tool_name="calculator.add", input_={"a": "12", "b": 7.5}, context=ctx
+    )
+    resp = client.post("/mcp/v1/tools/calculator.add/call", json=body)
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "MCP_INPUT_INVALID"
 
 
 def test_table_count_query_end_to_end() -> None:

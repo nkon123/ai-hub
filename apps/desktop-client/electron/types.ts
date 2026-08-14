@@ -135,21 +135,30 @@ export interface InstalledAsset {
    * has never been run. Never implies PASS by omission — the D08 UI must
    * read this field, not assume it. */
   checksumVerification?: ChecksumVerification | null;
-  /** Result of the most recent D-079 활성화(activation) attempt against
-   * search-runtime's Local Knowledge Index Registration contract, or `null`
-   * after an explicit 비활성화. Only ever set for `assetType === "knowledge"`.
-   * **Absence (the field itself being `undefined`) means "활성화를 시도한
-   * 적이 없다" and must never be rendered as ACTIVE** — same "생략으로 결과를
-   * 지어내지 않는다" rule `checksumVerification` above already follows. The
-   * UI must read this field explicitly and distinguish 네 가지: 필드 없음
-   * (미시도), `state: "FAILED"` (시도했으나 실패), `state: "ACTIVE"` (이
-   * Desktop이 search-runtime에 직접 등록해 검색 가능), `state:
-   * "ALREADY_ACTIVE"` (등록은 거부됐지만 `reason === "central_index_exists"`
+  /** Result of the most recent D-079 활성화(activation, `assetType ===
+   * "knowledge"`) attempt against search-runtime's Local Knowledge Index
+   * Registration contract, OR the most recent D-080 연결(connection,
+   * `assetType === "mcp_tool"`) attempt against agent-runtime's MCP Tool
+   * Activation contract, or `null` after an explicit 비활성화/연결 해제.
+   * One shared field, not two parallel ones — the same three states already
+   * mean the right thing for both (`electron/mcp-tool-connection.ts`'s
+   * module header explains why this was reused rather than a new field).
+   * **Absence (the field itself being `undefined`) means "시도한 적이 없다"
+   * and must never be rendered as ACTIVE** — same "생략으로 결과를 지어내지
+   * 않는다" rule `checksumVerification` above already follows. The UI must
+   * read this field explicitly and distinguish 네 가지: 필드 없음(미시도),
+   * `state: "FAILED"` (시도했으나 실패 — MCP Tool의 `reason ===
+   * "mcp_tool_registration_disabled"`는 이 중에서도 "재시도해도 소용없는
+   * 배포 정책 상태"로 별도 안내가 필요하다, Task Brief §3), `state:
+   * "ACTIVE"` (Knowledge: 이 Desktop이 search-runtime에 직접 등록해 검색
+   * 가능 / MCP Tool: agent-runtime이 이 Tool의 계약을 앎 — 호출 "가능"이
+   * 아니라 계약을 "안다"는 뜻뿐이다, Task Brief §5), `state:
+   * "ALREADY_ACTIVE"` (Knowledge 전용, `reason === "central_index_exists"`
    * — 즉 이 Knowledge는 search-runtime의 중앙 INDEX_BASE에 이미 있어 별도
-   * 등록 없이도 검색 가능. 아래 `KnowledgeActivation` 문서 참고).
-   * "설치됨"(이 레코드가 존재한다는 사실)과 "활성화됨"(이 필드가
-   * `state: "ACTIVE"` 또는 `"ALREADY_ACTIVE"`라는 사실)은 서로 다른
-   * 사실이다(open-decisions.md D-079). */
+   * 등록 없이도 검색 가능. 아래 `KnowledgeActivation` 문서 참고. MCP Tool은
+   * 이 state를 만들지 않는다). "설치됨"(이 레코드가 존재한다는 사실)과
+   * "활성화/연결됨"(이 필드가 `state: "ACTIVE"` 또는 `"ALREADY_ACTIVE"`라는
+   * 사실)은 서로 다른 사실이다(open-decisions.md D-079/D-080). */
   activation?: KnowledgeActivation | null;
 }
 
@@ -294,6 +303,13 @@ export interface KnowledgeCandidate {
   description?: string;
   tags?: string[];
   classification?: string;
+  retrieval_profile?: {
+    strategy?: "balanced_hybrid" | "keyword_priority" | "semantic_priority";
+    top_k?: number;
+    hybrid_alpha?: number;
+    min_relevance_score?: number;
+    enable_parent_expansion?: boolean;
+  };
 }
 
 /** D10 설정 — 설치된 Knowledge 하나의 "실제로 검색에 쓰일 임베딩 모델"을
@@ -401,6 +417,55 @@ export interface DeactivateKnowledgeResult {
   remoteWarning: string | null;
   /** Non-null only when `ok === false` (대상을 찾을 수 없음, 또는 이 자산
    * 유형은 활성화 대상이 아님). */
+  error: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// D-080 MCP Tool 연결("설치됨" ≠ "연결됨", agent-runtime이 계약을 앎)
+// ---------------------------------------------------------------------------
+// `InstalledAsset.activation`(위 `KnowledgeActivation`)을 그대로 재사용한다
+// — MCP Tool에도 같은 세 state(`ACTIVE`/`ALREADY_ACTIVE`/`FAILED`, 필드
+// 자체 없음=미시도)가 그대로 맞는 뜻이다. `indexPath`만 MCP Tool에는 의미가
+// 없어 항상 `null`(전용 필드를 새로 만들지 않는다 — `electron/mcp-tool-connection.ts`
+// 참고). 연결은 이 Tool의 계약(입력 Schema/확인 정책)을 agent-runtime에
+// 알리는 것일 뿐, 호출 권한을 부여하지 않는다 — 실제 실행 권한은 Office
+// Profile이 이미 정한 대로다(D-080 계약 최상위 설명, 구현 원칙 7).
+
+export interface ConnectMcpToolResult {
+  /** `state: "FAILED"`만 `ok: false` — Knowledge의 `ActivateKnowledgeResult`와
+   * 동일한 규약. `reason === "mcp_tool_registration_disabled"`도 `ok: false`
+   * 이지만(실제로 연결되지 않았다는 사실은 참이다), 배포 정책 상태이지 고장난
+   * 자산이 아니므로 화면은 "다시 연결"이 아니라 운영자에게 요청하라는
+   * 안내로 분기해야 한다(Task Brief §3). */
+  ok: boolean;
+  /** Persisted onto the `InstalledAsset` record whenever an actual attempt
+   * was made (manifest 읽기, agent-runtime 호출 모두). `null` only for the
+   * two refusals that never touch the record because there was nothing to
+   * attempt: 대상을 찾을 수 없음, 이 자산 유형은 연결 대상이 아님 — 그
+   * 사유는 `error`에 담긴다. */
+  activation: KnowledgeActivation | null;
+  /** Non-null only when `activation` is `null` — see above. */
+  error: string | null;
+}
+
+export interface DisconnectMcpToolResult {
+  ok: boolean;
+  /** Non-null when the local connection state was cleared successfully but
+   * either the manifest could not be re-read (so `tool_name` was unknown and
+   * the DELETE call was never attempted) or the DELETE call to agent-runtime
+   * failed/was unreachable — informational only. Disconnection must still
+   * succeed locally in this case (CLAUDE.md: Desktop은 Runtime 장애 시
+   * 종료되지 않고 복구 안내를 제공한다). */
+  remoteWarning: string | null;
+  /** Non-null only when `ok === false` (대상을 찾을 수 없음, 또는 이 자산
+   * 유형은 연결 대상이 아님). */
+  error: string | null;
+}
+
+export interface ReconcileMcpToolConnectionsResult {
+  checked: boolean;
+  downgradedCount: number;
+  registrationEnabled: boolean | null;
   error: string | null;
 }
 
@@ -931,6 +996,23 @@ export interface DesktopBridge {
    * 않는다(`checked: false`). `listInstalledAssets()` 호출 전에 불러 최신
    * 상태를 보여주는 용도로 쓴다. */
   reconcileKnowledgeActivations(): Promise<ReconcileKnowledgeActivationsResult>;
+
+  // --- D-080 MCP Tool 연결 ------------------------------------------------------
+  /** "설치됨"과 "연결됨"은 서로 다른 사실이다 — 이 호출은 설치된 MCP Tool의
+   * manifest.json(server_alias/tool_name/risk_level/input_schema/확인 정책)을
+   * 읽어 agent-runtime에 그 계약을 등록한다. **연결은 호출 권한을 부여하지
+   * 않는다** — 실제로 호출 가능한지는 Office Profile의 `allowed_tools`가
+   * 이미 정한 대로다(Task Brief §5). MCP Tool이 아닌 자산 유형이거나
+   * 레코드를 찾을 수 없으면 `activation: null` + `error`만 채워 반환한다. */
+  connectInstalledMcpTool(assetType: string, assetId: string, version: string): Promise<ConnectMcpToolResult>;
+  /** agent-runtime 등록을 해제한다. agent-runtime이 응답하지 않거나
+   * manifest를 다시 읽을 수 없어도 로컬 연결 상태는 항상 정리된다(정직하게
+   * `remoteWarning`으로 알린다) — Runtime 장애 때문에 제거/재설치가 막히지
+   * 않도록(D-079 `deactivateInstalledKnowledge`와 동일한 원칙). */
+  disconnectInstalledMcpTool(assetType: string, assetId: string, version: string): Promise<DisconnectMcpToolResult>;
+  /** 로컬 ACTIVE와 agent-runtime의 현재 등록 목록을 비교한다. Runtime에
+   * 도달하지 못하면 상태를 추측해 낮추지 않고 `checked: false`를 반환한다. */
+  reconcileMcpToolConnections(): Promise<ReconcileMcpToolConnectionsResult>;
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   /** 두 설치된 버전의 Manifest를 비교한다(Manifest/Dependency/Permission 3축). */

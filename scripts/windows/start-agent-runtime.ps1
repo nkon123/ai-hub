@@ -20,4 +20,9 @@ Warn-IfOllamaMissing
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 Set-Location (Join-Path $RepoRoot "services\agent-runtime")
 
+# 로컬 데모에서만, Office Profile이 이미 허용한 서버 Alias에 한해 Desktop의
+# MCP Tool 계약 등록을 연다. Tool 실행 권한은 office-profile.json의
+# allowed_tools와 Office MCP Server가 별도로 다시 검사한다.
+$env:AGENT_RUNTIME_MCP_TOOL_REGISTRATION_ALLOWED_ALIASES = '["oracle-connector"]'
+
 & $Python -m uvicorn agent_runtime.main:app --reload --port 8100

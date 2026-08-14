@@ -461,6 +461,31 @@ components:
             type: string
         classification:
           type: string
+        retrieval_profile:
+          type: object
+          additionalProperties: false
+          description: |
+            Resolved per-Knowledge search settings copied from that installed
+            Knowledge manifest. It may tune ranking/top_k/relevance only and
+            never carries access_context or identity fields.
+          properties:
+            strategy:
+              type: string
+              enum: [balanced_hybrid, keyword_priority, semantic_priority]
+            top_k:
+              type: integer
+              minimum: 1
+              maximum: 50
+            hybrid_alpha:
+              type: number
+              minimum: 0
+              maximum: 1
+            min_relevance_score:
+              type: number
+              minimum: 0
+              maximum: 1
+            enable_parent_expansion:
+              type: boolean
 
     MCPConfirmationPolicy:
       type: string

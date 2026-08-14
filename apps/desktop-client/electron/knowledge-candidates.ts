@@ -51,6 +51,29 @@ export function buildKnowledgeCandidate(
   if (typeof manifest.classification === "string" && manifest.classification.trim().length > 0) {
     candidate.classification = manifest.classification;
   }
+  if (manifest.retrieval_profile && typeof manifest.retrieval_profile === "object" && !Array.isArray(manifest.retrieval_profile)) {
+    const raw = manifest.retrieval_profile as Record<string, unknown>;
+    const strategy = raw.strategy;
+    const topK = raw.top_k;
+    const alpha = raw.hybrid_alpha;
+    const minScore = raw.min_relevance_score;
+    if (
+      (strategy === "balanced_hybrid" || strategy === "keyword_priority" || strategy === "semantic_priority") &&
+      typeof topK === "number" && topK >= 1 && topK <= 50 &&
+      typeof alpha === "number" && alpha >= 0 && alpha <= 1 &&
+      typeof minScore === "number" && minScore >= 0 && minScore <= 1
+    ) {
+      candidate.retrieval_profile = {
+        strategy,
+        top_k: topK,
+        hybrid_alpha: alpha,
+        min_relevance_score: minScore,
+        ...(typeof raw.enable_parent_expansion === "boolean"
+          ? { enable_parent_expansion: raw.enable_parent_expansion }
+          : {}),
+      };
+    }
+  }
   return candidate;
 }
 

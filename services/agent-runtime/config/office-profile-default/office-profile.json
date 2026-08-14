@@ -21,7 +21,7 @@
     {
       "alias": "oracle-connector",
       "endpoint": "http://127.0.0.1:8500",
-      "allowed_tools": ["db_metadata.get_tables", "db_metadata.get_columns", "table_count.query"]
+      "allowed_tools": ["db_metadata.get_tables", "db_metadata.get_columns", "table_count.query", "calculator.add"]
     }
   ],
   "security": {

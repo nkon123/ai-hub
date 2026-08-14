@@ -6,7 +6,7 @@ import { freeBytesAt, importBundle, resolveInstallRoot, type InstallRootLayout }
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
-import { checkAllConnections, listOllamaModels } from "./connections";
+import { checkAllConnections, listOllamaModels, DEFAULT_RUNTIME_BASE_URL } from "./connections";
 import { DesktopSettingsStore } from "./desktop-settings";
 import { chatWithOllama } from "./ollama-chat";
 import {
@@ -28,6 +28,7 @@ import {
   deactivateInstalledKnowledge,
   reconcileInstalledKnowledgeActivations,
 } from "./knowledge-activation";
+import { connectInstalledMcpTool, disconnectInstalledMcpTool, reconcileInstalledMcpToolConnections } from "./mcp-tool-connection";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
@@ -44,6 +45,7 @@ import type {
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
+  ConnectMcpToolResult,
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
@@ -53,6 +55,8 @@ import type {
   DesktopSettingsUpdateResult,
   DiagnosticBundle,
   DiskSpaceInfo,
+  DisconnectMcpToolResult,
+  ReconcileMcpToolConnectionsResult,
   ImportProgressEvent,
   InstalledAsset,
   InstalledAssetWithStatus,
@@ -278,6 +282,25 @@ function registerIpcHandlers(): void {
           getLogger().warn("knowledge-activation", `자산 제거 중 활성화 해제 경고: ${assetType}/${assetId}@${version} — ${deactivationWarning}`);
         }
       }
+      // D-080 이어 붙이기: MCP Tool도 같은 원칙 — 제거하면서 agent-runtime
+      // 등록을 남겨두지 않는다. `disconnectInstalledMcpTool`은 manifest를
+      // 다시 읽어 tool_name을 구해야 하므로 파일 삭제(`fs.rmSync`) 전에
+      // 호출해야 한다(그 이후에는 manifest.json 자체가 사라진다).
+      if (existing.assetType === "mcp_tool") {
+        const disconnection = await disconnectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+          assetType,
+          assetId,
+          version,
+        });
+        if (!disconnection.ok) {
+          deactivationWarning = `agent-runtime 연결 해제에 실패했습니다: ${disconnection.error ?? "알 수 없는 오류"} (제거는 계속 진행합니다)`;
+        } else if (disconnection.remoteWarning) {
+          deactivationWarning = disconnection.remoteWarning;
+        }
+        if (deactivationWarning) {
+          getLogger().warn("mcp-tool-connection", `자산 제거 중 연결 해제 경고: ${assetType}/${assetId}@${version} — ${deactivationWarning}`);
+        }
+      }
       const dir = assetInstallDir(layout, assetType, assetId, version);
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -442,6 +465,78 @@ function registerIpcHandlers(): void {
       return result;
     },
   );
+
+  // --- D-080 MCP Tool 연결 ("설치됨" ≠ "연결됨") ---------------------------------
+  ipcMain.handle(
+    "mcpTool:connect",
+    async (_event, assetType: string, assetId: string, version: string): Promise<ConnectMcpToolResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      // agent-runtime에는 아직 D01/D10 설정 저장소에 편집 가능한 Base URL
+      // 필드가 없다(desktop-settings.ts는 search-runtime/Ollama/MCP Server만
+      // 다룬다) — `connections.ts`의 `DEFAULT_RUNTIME_BASE_URL`(다른 곳에서도
+      // agent-runtime 기본값의 단일 출처로 쓰인다)을 그대로 쓴다. 사용자가
+      // 다른 포트로 agent-runtime을 띄운 경우 이 호출도 잘못된 주소를 보게
+      // 되는 기존 한계(CLAUDE.md "연결 판정 오탐(미해결)")를 그대로 이어받는다
+      // — 이 작업의 범위 밖이라 여기서 새로 고치지 않는다.
+      const result = await connectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+        assetType,
+        assetId,
+        version,
+      });
+      if (result.activation) {
+        const logFn =
+          result.activation.reason === "mcp_tool_registration_disabled"
+            ? "warn"
+            : result.activation.state === "FAILED"
+              ? "error"
+              : "info";
+        getLogger()[logFn](
+          "mcp-tool-connection",
+          `MCP Tool 연결 ${result.activation.state}: ${assetType}/${assetId}@${version}` +
+            (result.activation.reason ? ` (사유: ${result.activation.reason})` : ""),
+          result.activation.state === "FAILED" ? { errorCode: result.activation.reason ?? undefined } : {},
+        );
+      } else {
+        getLogger().warn(
+          "mcp-tool-connection",
+          `MCP Tool 연결 요청을 시도할 수 없음: ${assetType}/${assetId}@${version} (${result.error})`,
+        );
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "mcpTool:disconnect",
+    async (_event, assetType: string, assetId: string, version: string): Promise<DisconnectMcpToolResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const result = await disconnectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+        assetType,
+        assetId,
+        version,
+      });
+      getLogger().info(
+        "mcp-tool-connection",
+        `MCP Tool 연결 해제: ${assetType}/${assetId}@${version}` +
+          (result.remoteWarning ? ` (원격 경고: ${result.remoteWarning})` : ""),
+      );
+      return result;
+    },
+  );
+
+  ipcMain.handle("mcpTool:reconcileConnections", async (): Promise<ReconcileMcpToolConnectionsResult> => {
+    const layout = getLayout();
+    const store = new InstalledAssetsStore(layout.stateDir);
+    const result = await reconcileInstalledMcpToolConnections(layout, store, DEFAULT_RUNTIME_BASE_URL);
+    if (!result.checked) {
+      getLogger().warn("mcp-tool-connection", `연결 상태 재확인 불가: ${result.error}`);
+    } else if (result.downgradedCount > 0) {
+      getLogger().warn("mcp-tool-connection", `agent-runtime 현재 상태와 다른 MCP Tool ${result.downgradedCount}건을 연결 필요 상태로 낮췄습니다.`);
+    }
+    return result;
+  });
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   ipcMain.handle(

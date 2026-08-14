@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import type {
   ActivateKnowledgeResult,
+  ConnectMcpToolResult,
   InstalledAssetWithStatus,
   PortalCatalogResult,
   PortalSettingsPublic,
@@ -36,7 +37,7 @@ import {
 } from "../ui";
 import { assetTypeLabel, formatDateTime } from "../format";
 import { computeCatalogView, filterCatalogView, type CatalogInstallState, type CatalogItemView } from "./storeTypes";
-import { knowledgeActivationTargets } from "./knowledgeActivation";
+import { knowledgeActivationTargets, mcpToolConnectionTargets } from "./knowledgeActivation";
 
 function activationKey(assetId: string, version: string): string {
   return `${assetId}::${version}`;
@@ -92,6 +93,7 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
   // 완료되었지만 검색에 활성화되지 않았습니다"를 설치 성공/실패와 절대
   // 섞지 않는다(설치 성공은 그대로 유지된다).
   const [activationResults, setActivationResults] = useState<Record<string, ActivateKnowledgeResult>>({});
+  const [mcpConnectionResults, setMcpConnectionResults] = useState<Record<string, ConnectMcpToolResult>>({});
 
   const loadSettings = useCallback(async () => {
     if (!bridge) return;
@@ -145,6 +147,24 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
         const outcome = await bridge.activateInstalledKnowledge("knowledge", target.assetId, target.version);
         if (!cancelled) {
           setActivationResults((prev) => ({ ...prev, [activationKey(target.assetId, target.version)]: outcome }));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge, installResult]);
+
+  useEffect(() => {
+    if (!bridge || !installResult || installResult.outcome !== "SUCCESS" || !installResult.importResult) return;
+    const targets = mcpToolConnectionTargets(installResult.importResult.installPlan);
+    if (targets.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const target of targets) {
+        const outcome = await bridge.connectInstalledMcpTool("mcp_tool", target.assetId, target.version);
+        if (!cancelled) {
+          setMcpConnectionResults((prev) => ({ ...prev, [activationKey(target.assetId, target.version)]: outcome }));
         }
       }
     })();
@@ -216,6 +236,7 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
     setInstallEvents([]);
     setInstallResult(null);
     setActivationResults({});
+    setMcpConnectionResults({});
     try {
       const result = await bridge.installFromStore(
         target.asset.type,
@@ -535,6 +556,43 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
                               <span className="text-warning">
                                 <AlertTriangle size={13} className="mr-1 inline-block align-text-bottom" />
                                 설치는 완료되었지만 활성화를 시도하지 못했습니다: {outcome.error ?? "알 수 없는 오류"}
+                              </span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+
+                {installResult.outcome === "SUCCESS" &&
+                  installResult.importResult &&
+                  mcpToolConnectionTargets(installResult.importResult.installPlan).length > 0 && (
+                    <div className="mt-3 space-y-2 border-t border-success/20 pt-3">
+                      <p className="text-caption font-semibold text-text-muted">MCP Tool 연결</p>
+                      {mcpToolConnectionTargets(installResult.importResult.installPlan).map((target) => {
+                        const key = activationKey(target.assetId, target.version);
+                        const outcome = mcpConnectionResults[key];
+                        const policyDisabled = outcome?.activation?.reason === "mcp_tool_registration_disabled";
+                        return (
+                          <div key={key} className="text-caption">
+                            {!outcome && <span className="text-text-secondary">{target.name ?? target.assetId} 연결 확인 중...</span>}
+                            {outcome?.activation?.state === "ACTIVE" && (
+                              <span className="text-success">
+                                <CheckCircle2 size={13} className="mr-1 inline-block align-text-bottom" />
+                                {target.name ?? target.assetId}: agent-runtime에 연결되었습니다. 실제 호출 권한은 Office Profile이 결정합니다.
+                              </span>
+                            )}
+                            {outcome?.activation?.state === "FAILED" && (
+                              <span className="text-warning">
+                                <AlertTriangle size={13} className="mr-1 inline-block align-text-bottom" />
+                                설치는 완료되었습니다. {policyDisabled ? "운영자 설정이 필요합니다" : "연결하지 못했습니다"}: {outcome.activation.message ?? "알 수 없는 오류"}
+                                {!policyDisabled && " — 설치된 자산 화면에서 다시 시도할 수 있습니다."}
+                              </span>
+                            )}
+                            {outcome && !outcome.activation && (
+                              <span className="text-warning">
+                                <AlertTriangle size={13} className="mr-1 inline-block align-text-bottom" />
+                                설치는 완료되었지만 연결을 시도하지 못했습니다: {outcome.error ?? "알 수 없는 오류"}
                               </span>
                             )}
                           </div>

@@ -86,13 +86,32 @@ function activationDisplayState(asset: InstalledAssetWithStatus): ActivationDisp
  * 절반이며 아직 구현되지 않았다 — "설치됨"을 "곧바로 쓸 수 있음"으로
  * 오해하지 않도록 이유를 함께 보여준다(CLAUDE.md: 호환되지 않는 선택지는
  * 이유와 함께 비활성화한다). `null`이면 활성화 대상(Knowledge)이다. */
-function activationUnsupportedReason(asset: InstalledAssetWithStatus): string | null {
-  if (asset.assetType === "knowledge") return null;
-  if (asset.assetType === "mcp_tool") {
-    return "MCP Tool은 아직 실행 레지스트리에 자동 연결되지 않습니다 — 설치되었지만 대화/실행에서 바로 쓸 수 없습니다 (D-079의 나머지 절반, 별도 작업 예정).";
+const MCP_REGISTRATION_DISABLED = "mcp_tool_registration_disabled";
+
+type McpConnectionDisplayState = "CONNECTED" | "POLICY_DISABLED" | "FAILED" | "NONE";
+
+function mcpConnectionDisplayState(asset: InstalledAssetWithStatus): McpConnectionDisplayState {
+  if (asset.activation?.state === "ACTIVE") return "CONNECTED";
+  if (asset.activation?.state === "FAILED" && asset.activation.reason === MCP_REGISTRATION_DISABLED) {
+    return "POLICY_DISABLED";
   }
-  return "이 자산 유형은 활성화 대상이 아닙니다.";
+  if (asset.activation?.state === "FAILED") return "FAILED";
+  return "NONE";
 }
+
+const MCP_CONNECTION_LABEL: Record<McpConnectionDisplayState, string> = {
+  CONNECTED: "연결됨",
+  POLICY_DISABLED: "운영자 설정 필요",
+  FAILED: "연결 실패",
+  NONE: "연결 안 됨",
+};
+
+const MCP_CONNECTION_TONE: Record<McpConnectionDisplayState, string> = {
+  CONNECTED: "bg-success/10 text-success",
+  POLICY_DISABLED: "bg-warning/10 text-warning",
+  FAILED: "bg-danger/10 text-danger",
+  NONE: "bg-slate-100 text-text-muted",
+};
 
 const SORT_OPTIONS: Array<{ key: AssetSortKey; label: string }> = [
   { key: "installedAt", label: "설치일" },
@@ -161,6 +180,7 @@ export function AssetsScreen({
   // 등록 해제 실패 경고)만 담는다.
   const [activationBusy, setActivationBusy] = useState<Set<string>>(new Set());
   const [activationNote, setActivationNote] = useState<Record<string, string>>({});
+  const [mcpReconcileNotice, setMcpReconcileNotice] = useState<string | null>(null);
 
   const [removalTarget, setRemovalTarget] = useState<InstalledAssetWithStatus | null>(null);
   const [removalCheck, setRemovalCheck] = useState<AssetRemovalCheck | null>(null);
@@ -189,6 +209,16 @@ export function AssetsScreen({
     if (!bridge) return;
     setError(null);
     try {
+      try {
+        const reconciled = await bridge.reconcileMcpToolConnections();
+        setMcpReconcileNotice(reconciled.checked ? null : reconciled.error);
+      } catch (reconcileError) {
+        // 목록 자체는 로컬 기능이므로 agent-runtime/구버전 preload 문제로
+        // 막지 않는다. 다만 연결 상태를 확인하지 못했다는 사실은 알린다.
+        setMcpReconcileNotice(
+          reconcileError instanceof Error ? reconcileError.message : "MCP Tool 연결 상태를 재확인하지 못했습니다.",
+        );
+      }
       setAssets(await bridge.listInstalledAssets());
     } catch (err) {
       setError(err instanceof Error ? err.message : "설치된 자산 목록을 불러오지 못했습니다.");
@@ -310,6 +340,66 @@ export function AssetsScreen({
       setActivationNote((prev) => ({
         ...prev,
         [key]: err instanceof Error ? err.message : "비활성화 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setActivationBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  async function runConnectMcpTool(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setActivationBusy((prev) => new Set(prev).add(key));
+    setActivationNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.connectInstalledMcpTool(asset.assetType, asset.assetId, asset.version);
+      if (!result.activation && result.error) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.error! }));
+      }
+      await load();
+    } catch (err) {
+      setActivationNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "MCP Tool 연결 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setActivationBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
+  async function runDisconnectMcpTool(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setActivationBusy((prev) => new Set(prev).add(key));
+    setActivationNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.disconnectInstalledMcpTool(asset.assetType, asset.assetId, asset.version);
+      if (!result.ok && result.error) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.error! }));
+      } else if (result.remoteWarning) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.remoteWarning! }));
+      }
+      await load();
+    } catch (err) {
+      setActivationNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "MCP Tool 연결 해제 중 알 수 없는 오류가 발생했습니다.",
       }));
     } finally {
       setActivationBusy((prev) => {
@@ -473,6 +563,12 @@ export function AssetsScreen({
         <EmptyState title="조건에 맞는 자산이 없습니다" description="필터를 초기화하거나 다른 조건을 선택해 보세요." />
       )}
 
+      {mcpReconcileNotice && assets?.some((asset) => asset.assetType === "mcp_tool") && (
+        <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-caption text-warning">
+          agent-runtime에서 MCP Tool 연결 상태를 확인하지 못했습니다. 마지막 로컬 상태를 표시합니다: {mcpReconcileNotice}
+        </div>
+      )}
+
       {visibleAssets.length > 0 && (
         <div className="space-y-3">
           {visibleAssets.map((asset) => {
@@ -502,6 +598,13 @@ export function AssetsScreen({
                           {ACTIVATION_LABEL[activationDisplayState(asset)]}
                         </span>
                       )}
+                      {asset.assetType === "mcp_tool" && (
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${MCP_CONNECTION_TONE[mcpConnectionDisplayState(asset)]}`}
+                        >
+                          {MCP_CONNECTION_LABEL[mcpConnectionDisplayState(asset)]}
+                        </span>
+                      )}
                     </div>
                     <p className="mt-1 text-caption text-text-secondary">
                       설치일 {formatDateTime(asset.installedAt)} · {formatBytes(asset.sizeBytes)}
@@ -518,10 +621,28 @@ export function AssetsScreen({
                         {asset.activation.message ?? "이미 검색 가능한 상태입니다."}
                       </p>
                     )}
-                    {asset.assetType === "mcp_tool" && (
+                    {asset.assetType === "mcp_tool" && mcpConnectionDisplayState(asset) === "CONNECTED" && (
                       <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
                         <Info size={13} className="mt-0.5 shrink-0" />
-                        {activationUnsupportedReason(asset)}
+                        agent-runtime이 이 Tool의 계약을 알고 있습니다. 실제 호출 권한은 Office Profile의 allowed_tools가 결정합니다.
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_tool" && mcpConnectionDisplayState(asset) === "POLICY_DISABLED" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-warning">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        자산 고장이 아닙니다. 운영자가 이 서버 alias를 동적 등록 허용 목록에 추가해야 합니다: {asset.activation?.message}
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_tool" && mcpConnectionDisplayState(asset) === "FAILED" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-danger">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        연결하지 못했습니다: {asset.activation?.message ?? "알 수 없는 오류"}
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_tool" && mcpConnectionDisplayState(asset) === "NONE" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        설치는 완료되었지만 agent-runtime에는 아직 연결하지 않았습니다.
                       </p>
                     )}
                     {activationNote[key] && (
@@ -600,8 +721,30 @@ export function AssetsScreen({
                     </Button>
                   )}
                   {asset.assetType === "mcp_tool" && (
-                    <Button variant="secondary" size="sm" disabled title={activationUnsupportedReason(asset) ?? undefined}>
-                      활성화
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={activationBusy.has(key) || mcpConnectionDisplayState(asset) === "POLICY_DISABLED"}
+                      title={
+                        mcpConnectionDisplayState(asset) === "POLICY_DISABLED"
+                          ? "운영자가 agent-runtime의 MCP Tool 동적 등록 허용 목록을 변경해야 합니다."
+                          : undefined
+                      }
+                      onClick={() =>
+                        void (mcpConnectionDisplayState(asset) === "CONNECTED"
+                          ? runDisconnectMcpTool(asset)
+                          : runConnectMcpTool(asset))
+                      }
+                    >
+                      {activationBusy.has(key)
+                        ? "처리 중..."
+                        : mcpConnectionDisplayState(asset) === "CONNECTED"
+                          ? "연결 해제"
+                          : mcpConnectionDisplayState(asset) === "POLICY_DISABLED"
+                            ? "운영자 설정 필요"
+                            : mcpConnectionDisplayState(asset) === "FAILED"
+                              ? "다시 연결"
+                              : "연결"}
                     </Button>
                   )}
                   <Button

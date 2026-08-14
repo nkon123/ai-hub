@@ -7,11 +7,13 @@ import type {
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
+  ConnectMcpToolResult,
   ConnectionStatus,
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
   DeactivateKnowledgeResult,
+  DisconnectMcpToolResult,
   DesktopBridge,
   DesktopSettingsInput,
   DesktopSettingsPublic,
@@ -33,6 +35,7 @@ import type {
   PortalCatalogResult,
   PortalSettingsPublic,
   ReconcileKnowledgeActivationsResult,
+  ReconcileMcpToolConnectionsResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -95,6 +98,16 @@ const bridge: DesktopBridge = {
 
   reconcileKnowledgeActivations: (): Promise<ReconcileKnowledgeActivationsResult> =>
     ipcRenderer.invoke("knowledge:reconcileActivations"),
+
+  // --- D-080 MCP Tool 연결 ----------------------------------------------------
+  connectInstalledMcpTool: (assetType: string, assetId: string, version: string): Promise<ConnectMcpToolResult> =>
+    ipcRenderer.invoke("mcpTool:connect", assetType, assetId, version),
+
+  disconnectInstalledMcpTool: (assetType: string, assetId: string, version: string): Promise<DisconnectMcpToolResult> =>
+    ipcRenderer.invoke("mcpTool:disconnect", assetType, assetId, version),
+
+  reconcileMcpToolConnections: (): Promise<ReconcileMcpToolConnectionsResult> =>
+    ipcRenderer.invoke("mcpTool:reconcileConnections"),
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   diffAssetVersions: (
