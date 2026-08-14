@@ -15,7 +15,7 @@ import { AlertTriangle, Ban, CheckCircle2, Circle, Clock3, Loader2, MinusCircle,
 import type { ReactNode } from "react";
 import { Button, Card, ErrorBanner } from "../ui";
 import { formatDateTime } from "../format";
-import { STAGE_LABELS, STAGE_ORDER, type StageId, type StageState } from "../runStages";
+import { describeStage, STAGE_ORDER, type StageId, type StageState } from "../runStages";
 import type { RunEventLogItem } from "../agentRuntime";
 import type { ChatMessage } from "./chatTypes";
 
@@ -86,6 +86,11 @@ function stageTiming(eventLog: RunEventLogItem[], stage: StageId): { start: stri
           firstEventTime(eventLog, "answer.delta") ??
           terminal,
       };
+    case "routing":
+      // No dedicated start event of its own — KNOWLEDGE_ROUTE runs
+      // immediately after preflight, resolved entirely by
+      // knowledge.route.selected (runStages.ts's module docstring).
+      return { start: firstEventTime(eventLog, "preflight.completed"), end: firstEventTime(eventLog, "knowledge.route.selected") ?? terminal };
     case "knowledge_search":
       return { start: firstEventTime(eventLog, "knowledge.search.started"), end: firstEventTime(eventLog, "knowledge.search.completed") };
     case "tool_call":
@@ -195,16 +200,19 @@ export function RunDetailPanel({ message, onClose }: { message: ChatMessage; onC
           <Card className="p-4">
             <h3 className="mb-3 text-body font-semibold text-text-primary">Workflow 단계</h3>
             <div className="space-y-2">
-              {STAGE_ORDER.map((stage) => {
-                const state = message.stages[stage];
+              {STAGE_ORDER.filter((stage) => message.stages[stage] !== undefined).map((stage) => {
+                // Guaranteed present by the filter above — "routing" is the
+                // only stage that can be absent (this turn never sent
+                // knowledge_candidates), and it was just filtered out.
+                const entry = message.stages[stage] as (typeof message.stages)["ready"];
                 const timing = stageTiming(message.eventLog, stage);
                 return (
                   <div key={stage} className="flex items-center justify-between rounded-lg border border-border px-3 py-2">
                     <div className="flex items-center gap-2">
-                      <StageStateIcon state={state} />
-                      <span className="text-body text-text-primary">{STAGE_LABELS[stage]}</span>
-                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${STAGE_STATE_TONE[state]}`}>
-                        {STAGE_STATE_LABEL[state]}
+                      <StageStateIcon state={entry.state} />
+                      <span className="text-body text-text-primary">{describeStage(stage, entry)}</span>
+                      <span className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${STAGE_STATE_TONE[entry.state]}`}>
+                        {STAGE_STATE_LABEL[entry.state]}
                       </span>
                     </div>
                     <span className="text-caption text-text-muted">{durationLabel(timing.start, timing.end)}</span>

@@ -484,11 +484,11 @@ export function buildHubQueryPreview(question: string, messages: ChatMessage[]):
  * plain count instead. `knowledgeIdUsed`/`agentProfile` are filled from the
  * conversation's own record, since a restored turn is never re-sent as-is. */
 const RESTORED_STAGES: StageMap = {
-  ready: "done",
-  analyze: "done",
-  knowledge_search: "done",
-  tool_call: "skipped",
-  answer_generate: "done",
+  ready: { state: "done" },
+  analyze: { state: "done" },
+  knowledge_search: { state: "done" },
+  tool_call: { state: "skipped" },
+  answer_generate: { state: "done" },
 };
 
 export function chatMessageFromStoredTurn(

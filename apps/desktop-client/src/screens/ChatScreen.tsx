@@ -46,7 +46,7 @@ import {
   openRunEventStream,
   startRun,
 } from "../agentRuntime";
-import { applyRuntimeEvent, initialStages, ollamaChatStages } from "../runStages";
+import { applyRuntimeEvent, describeStage, initialStages, ollamaChatStages, STAGE_ORDER } from "../runStages";
 import {
   type ChatMessage,
   type ExcludedKnowledge,
@@ -964,7 +964,13 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       status: "running",
       answer: "",
       citations: [],
-      stages: ollamaOnly ? ollamaChatStages("running") : initialStages(),
+      // KNOWLEDGE_ROUTE(agentic Knowledge 선택) 단계는 이번 턴이 실제로
+      // `knowledge_candidates`를 보낼 때만 존재한다 — 무엇을 보낼지는
+      // 여기서 이미 결정되어 있다(startRun 호출 시 그대로 재사용하는 같은
+      // `knowledgeCandidates` 값, agentRuntime.ts).
+      stages: ollamaOnly
+        ? ollamaChatStages("running")
+        : initialStages({ routingExpected: knowledgeCandidates.length > 0 }),
       eventLog: [],
       pendingConfirmation: null,
       runId: null,
@@ -1846,35 +1852,29 @@ function ChatTurn({
   );
 }
 
-const STAGE_ORDER_LOCAL = ["ready", "analyze", "knowledge_search", "tool_call", "answer_generate"] as const;
-const STAGE_LABELS_LOCAL: Record<(typeof STAGE_ORDER_LOCAL)[number], string> = {
-  ready: "준비",
-  analyze: "분석",
-  knowledge_search: "지식 검색",
-  tool_call: "Tool 실행",
-  answer_generate: "답변 생성",
-};
-
+// 라벨/순서는 runStages.ts가 유일한 출처다(예전에는 여기 로컬 복제본이
+// 있었고, 그 두 벌이 갈라지는 게 문제였다 — 2026-08-14 정리).
 function StageIndicator({ stages }: { stages: ChatMessage["stages"] }) {
   return (
     <div className="flex flex-wrap items-center gap-1.5">
-      {STAGE_ORDER_LOCAL.map((stage) => {
-        const state = stages[stage];
+      {STAGE_ORDER.filter((stage) => stages[stage] !== undefined).map((stage) => {
+        // `routing`(유일하게 없을 수 있는 단계)은 위 filter가 이미 걸러냈다.
+        const entry = stages[stage] as NonNullable<(typeof stages)[typeof stage]>;
         const tone =
-          state === "done"
+          entry.state === "done"
             ? "bg-success/10 text-success"
-            : state === "active"
+            : entry.state === "active"
               ? "bg-brand-50 text-brand-700"
-              : state === "waiting"
+              : entry.state === "waiting"
                 ? "bg-warning/10 text-warning"
-                : state === "error"
+                : entry.state === "error"
                   ? "bg-danger/10 text-danger"
-                  : state === "cancelled"
+                  : entry.state === "cancelled"
                     ? "bg-warning/10 text-warning"
                     : "bg-slate-100 text-text-muted";
         return (
           <span key={stage} className={`rounded-full px-2.5 py-0.5 text-[11px] font-semibold ${tone}`}>
-            {STAGE_LABELS_LOCAL[stage]}
+            {describeStage(stage, entry)}
           </span>
         );
       })}
