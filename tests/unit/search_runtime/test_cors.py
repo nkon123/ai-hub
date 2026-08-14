@@ -75,10 +75,24 @@ def test_preflight_for_a_json_post_is_allowed_for_a_known_origin() -> None:
     assert res.headers.get("access-control-allow-origin") == ALLOWED_ORIGIN
 
 
-def test_default_origins_match_agent_runtimes() -> None:
-    """Both services are called by the same two front ends (portal-web 3000,
-    Desktop Vite 5174). If these lists drift, one service works in the browser
-    and the other mysteriously does not."""
+def test_default_origins_match_every_browser_facing_service() -> None:
+    """search-runtime, agent-runtime and office-mcp-server are all health-
+    checked by the same Desktop renderer and by portal-web. If their allowlists
+    drift, one service is silently blocked while the others work — which is
+    exactly what happened twice on 2026-08-14: the lists said `5174` while the
+    renderer actually runs on `5173`, so the browser threw away responses the
+    servers had already returned 200 for."""
     from agent_runtime.config import AgentRuntimeSettings
+    from office_mcp_server.main import CORS_ORIGINS as OFFICE_MCP_CORS_ORIGINS
 
-    assert set(settings.CORS_ORIGINS) == set(AgentRuntimeSettings().cors_origins)
+    search = set(settings.CORS_ORIGINS)
+    assert search == set(AgentRuntimeSettings().cors_origins)
+    assert search == set(OFFICE_MCP_CORS_ORIGINS)
+
+
+def test_allowlist_contains_the_real_desktop_renderer_origin() -> None:
+    """The renderer port is pinned to 5173 by `vite.config.ts`
+    (`port: 5173`, `strictPort: true`) and `electron/main.ts` loads 5173.
+    An allowlist that omits it makes every browser-side health check fail
+    while the service itself is perfectly healthy."""
+    assert "http://localhost:5173" in settings.CORS_ORIGINS

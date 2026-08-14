@@ -35,8 +35,16 @@ class AgentRuntimeSettings(BaseSettings):
     # the Electron IPC bridge (the bridge exists for filesystem work only).
     # Packaged Electron sends `Origin: null` from a file:// document and is NOT
     # covered here — that needs its own decision, tracked as D-059.
+    # Desktop 렌더러는 **5173** 이다 — `apps/desktop-client/vite.config.ts` 가
+    # `port: 5173` + `strictPort: true` 로 고정하고 `electron/main.ts` 도 5173 을
+    # 로드한다. 이 목록에 오래 남아 있던 5174 는 문서에만 있던 값이었고, 그 탓에
+    # 실제 렌더러(5173)에서 이 서비스를 부르면 서버는 200 을 기록하는데 브라우저가
+    # 응답을 버려 "Failed to fetch" 로 보였다(2026-08-14 실사용에서 발생).
+    # 5174 는 과거 세션들이 `--port 5174` 로 띄우던 관행이 남아 있어 함께 유지한다.
     cors_origins: list[str] = [
         "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
         "http://localhost:5174",
         "http://127.0.0.1:5174",
     ]

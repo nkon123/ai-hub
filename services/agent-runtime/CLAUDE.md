@@ -113,6 +113,15 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   `cors_origins` 리스트에 `localhost`/`127.0.0.1` 두 형태를 모두 추가한다.
   같은 이유로 timeout류 값도 `config.py`의 `AgentRuntimeSettings` 필드로
   두고 `workflow.py`/`conversation.py`에 리터럴로 박지 않는다.
+  **설정으로 옮긴 뒤에도 값 자체가 틀릴 수 있다(2026-08-14 실사용).** 이 목록의
+  기본값은 한동안 `5174`였는데, Desktop 렌더러의 실제 포트는 `apps/desktop-client/
+  vite.config.ts`의 `port: 5173`/`strictPort: true`와 `electron/main.ts`가 로드하는
+  5173이다 — 목록을 포트를 바인딩하는 코드가 아니라 문서를 보고 적었던 것이 원인이었고,
+  search-runtime이 이 목록을 그대로 복사해가면서 같은 오류가 두 서비스에 번졌다. 지금은
+  search-runtime/office-mcp-server와 목록을 동일하게 맞췄고(env `AGENT_RUNTIME_CORS_ORIGINS`로
+  개별 덮어쓰기 가능), `tests/unit/search_runtime/test_cors.py`의
+  `test_default_origins_match_every_browser_facing_service`가 세 서비스 목록이 갈라지면
+  즉시 깨지도록 고정한다 — 이 목록을 바꾸면 그 테스트를 반드시 같이 돌린다.
 
 ## 완료 전 확인
 

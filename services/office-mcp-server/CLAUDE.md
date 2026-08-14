@@ -92,6 +92,23 @@ uvicorn office_mcp_server.main:app --reload --port 8500`.
 실행: `uv run pytest tests/unit/office_mcp_server/ -q` — 확인 시점 110개
 통과.
 
+## 이 모듈에서 반복해서 틀렸던 것
+
+- **CORS 미들웨어 자체가 아예 없었다(2026-08-14까지).** Desktop 채팅 화면은 이 서버의 상태를
+  **렌더러에서** 직접 health-check한다(`electron/connections.ts`가 `ChatScreen.tsx`에서 호출,
+  `/health`가 아니라 `/health/live`를 두드린다 — 이 서버는 `/health/live`를 정식 API로 문서화한다).
+  CORS 헤더가 없으면 브라우저는 서버가 실제로 200을 돌려준 응답조차 읽지 못하고 던져버려서,
+  화면에는 "Failed to fetch — 서비스가 실행 중인지 확인하세요"로 뜬다 — 서버 로그는 정상인데
+  화면만 죽은 것으로 보이는, 이 저장소에서 이미 여러 번 반복된 증상이다. 지금은 `main.py`에
+  `CORSMiddleware`가 붙어 있고, 허용 Origin 목록은 agent-runtime
+  (`AgentRuntimeSettings.cors_origins`)·search-runtime(`settings.CORS_ORIGINS`)과 **동일한 값**을
+  쓴다(portal-web 3000, Desktop 렌더러 5173, 과거 세션들이 쓰던 5174). 각 서비스는 자기 env
+  (`OFFICE_MCP_CORS_ORIGINS`)로 덮어쓸 수 있지만 기본값은 세 서비스가 일치해야 하며,
+  `tests/unit/search_runtime/test_cors.py`의 `test_default_origins_match_every_browser_facing_service`가
+  이 일치를 강제한다 — 이 목록을 고칠 때는 그 테스트도 함께 돌린다. CORS는 이 서버의 Tool 실행
+  API를 지켜주는 보안 장치가 **아니다**: cross-origin 단순 요청은 이 목록과 무관하게 서버에
+  도달한다. 실제 보호는 §8 권한 검사·READ_ONLY 강제와 loopback 배포 형태다.
+
 ## 완료 전 확인
 
 - 새/변경 Tool이 `risk_level="READ_ONLY"`인가 —

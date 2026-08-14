@@ -128,6 +128,16 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
      구분이 없으면 정상 작동 중인 Knowledge가 빨간 "활성화 실패"로 보인다. 새로운 "거절이지만 사실은
      정상" 케이스를 다룰 때는 `FAILED`에 합치지 말고 별도 state를 검토한다.
 
+- **렌더러 쪽에 새 서비스의 health check를 추가하기 전에 그 서비스의 CORS 허용 목록부터
+  확인한다(2026-08-14 실사용, 같은 날 두 번).** `connections.ts`가 부르는 모든 검사는 브라우저
+  컨텍스트에서 실행되므로, 대상 서비스에 CORS가 없거나 허용 목록에 렌더러의 실제 포트(5173)가
+  빠져 있으면 서버는 200을 내는데도 브라우저가 응답을 버려 화면에는 "Failed to fetch"로 뜬다 —
+  그 서비스는 멀쩡하다. 이 실패를 `blocked`(대화 자체를 막음)로 분류해 두면 정상 서비스 때문에
+  채팅이 막힌다. search-runtime/agent-runtime/office-mcp-server 세 서비스는 지금 같은 허용
+  목록을 쓰고 `tests/unit/search_runtime/test_cors.py`가 drift를 막지만, 이 화면에서 네 번째
+  서비스를 새로 검사 대상에 추가한다면 그 서비스의 CORS 설정을 먼저 코드로 확인하고, 문서가
+  아니라 그 서비스가 실제로 바인딩하는 렌더러 포트(`vite.config.ts`의 `port`)를 기준으로 삼는다.
+
 ## 검증 (변경 후 반드시 실행)
 
 ```

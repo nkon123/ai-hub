@@ -68,9 +68,20 @@ search_runtime.main:app --reload --port 8300`)
   박지 않는다. agent-runtime이 정확히 그 실수를 한 적이 있고 증상이 지독하다(서버 로그는 200인데
   브라우저가 응답을 통째로 버린다). 이 서비스에 CORS가 필요한 이유는 Desktop 채팅 화면이
   **렌더러에서** search-runtime을 health-check하기 때문이다(D-079) — 없으면 정상인데도 영구
-  "연결 끊김"으로 표시된다. 두 서비스의 기본 Origin 목록이 갈라지면
-  `tests/unit/search_runtime/test_cors.py`가 깨진다. CORS가 관리용 엔드포인트를 보호하는 장치가
+  "연결 끊김"으로 표시된다. CORS가 관리용 엔드포인트를 보호하는 장치가
   **아니라는** 점은 그 설정의 docstring에 기록되어 있다(이 서비스에는 인증 계층이 없다).
+  **"리터럴을 박지 않는다"만으로는 부족했다(2026-08-14 실사용).** 이 설정을 도입한
+  2026-08-13 당시 목록을 `agent_runtime.config.AgentRuntimeSettings.cors_origins`에서
+  그대로 복사했는데, 그 값이 **문서**를 보고 적은 `5174`였다 — 렌더러의 실제 포트는
+  `apps/desktop-client/vite.config.ts`의 `port: 5173`/`strictPort: true`와
+  `electron/main.ts`가 로드하는 5173이다. 코드가 아니라 문서를 기준으로 Origin을 적으면
+  서버는 200을 내는데 브라우저가 응답을 버리는 것과 똑같은 증상이 재발한다 — Origin은
+  반드시 그 포트를 **바인딩하는 코드**(`vite.config.ts`/`electron/main.ts`)에서 확인한다.
+  지금은 search-runtime/agent-runtime/office-mcp-server 세 서비스가 같은 허용 목록을
+  공유하고(각자 자기 env로 덮어쓸 수 있다), `tests/unit/search_runtime/test_cors.py`의
+  `test_default_origins_match_every_browser_facing_service`(세 목록 동일성)와
+  `test_allowlist_contains_the_real_desktop_renderer_origin`(`http://localhost:5173` 포함
+  여부)이 둘 다 drift를 막는다 — 셋 중 하나만 고치고 나머지를 잊으면 이 테스트가 깨진다.
 - **색인 경로를 새로 만들지 않는다.** `Path(INDEX_BASE) / knowledge_id`를 직접 조립하는 코드를
   추가하면 D-079로 등록된 외부 색인이 그 경로에서만 조용히 누락된다 — 반드시
   `hybrid.resolve_index_dir(index_base, knowledge_id)`를 거친다(`resolve_embed_model`도 이미
