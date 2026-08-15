@@ -13,7 +13,7 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
   `hosted-chat-api.yaml`(`/chat-api/v1/*`), `api/mcp-audit-context.schema.json`
   (Request Context, office-mcp-server와 공유).
 - `open-decisions.md` D-034(Registry 해석 순서), D-062(clearance 기본값),
-  D-078(Hub 질의 경계).
+  D-078(Hub 질의 경계), D-083(TOOL_ROUTE — ANALYZE 반전, fail-closed).
 
 ## 코드 배치
 
@@ -35,10 +35,17 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
   `bound_history`/`rewrite_query_for_search`), `knowledge_router.py`
   (KNOWLEDGE_ROUTE 단계 — 후보 지식 자산 metadata + 이번 턴 질문만으로
   검색 대상 Knowledge를 고르는 선택적 LLM 호출 하나, 실패 시 후보 전체
-  검색으로 fail-open).
+  검색으로 fail-open), `tool_router.py`(D-083 TOOL_ROUTE 단계 — 후보 Tool
+  metadata(`tool_name`/`input_schema`) + 이번 턴 질문만으로 Tool 이름+인자를
+  "제안"하는 선택적 LLM 호출 하나, 실패/거절/스키마 불일치 시 **아무 Tool도
+  호출하지 않는 fail-closed** — knowledge_router.py와 정반대 방향, 이유는
+  그 모듈 자신의 docstring 참고).
 - `mcp_tools.py` — office-mcp-server Tool 계약의 **손으로 복사한 정적 사본**
   (`MCP_TOOL_SPECS`) — M10이 Tool을 바꾸면 이 파일도 수동 갱신해야 한다
-  (drift risk, open-decisions.md 기록).
+  (drift risk, open-decisions.md 기록). `list_candidate_tools`(D-083)가
+  TOOL_ROUTE 후보 집합을 계산하는 유일한 경로 — Office Profile의
+  `allowed_mcp_servers[].allowed_tools`와 이 파일이 스키마를 아는 Tool의
+  교집합이며, 호출자가 보낸 무엇으로도 넓어지지 않는다.
 - `run_store.py`/`chat_sessions.py` — in-memory `RunStore`/
   `ChatSessionStore`(PoC, 영속성 없음).
 - `config/` — 기동 시 로드·검증하는 표준 정의 사본: `standard-agent`,
@@ -48,8 +55,10 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
 ### 워크플로 단계와 SSE 이벤트 (workflow.py 기준, 추측 아님)
 
 INPUT_VALIDATE → PREPARE → (ANALYZE: 명시적 `mcp_tool` 필드로 결정, LLM이
-아님) → KNOWLEDGE_SEARCH(0..n) → [Stage 2 Hub 조회, opt-in] → TOOL_CONFIRM
-(선택) → MCP_TOOL_CALL(0..n) → ANSWER_GENERATE → OUTPUT_VALIDATE → COMPLETE.
+아님 — 단, D-083: 명시적 필드가 없고 `input.tool_route=true`이면
+TOOL_ROUTE가 대신 하나 제안한다) → KNOWLEDGE_SEARCH(0..n) → [Stage 2 Hub
+조회, opt-in] → [TOOL_ROUTE, opt-in, D-083] → TOOL_CONFIRM (선택) →
+MCP_TOOL_CALL(0..n) → ANSWER_GENERATE → OUTPUT_VALIDATE → COMPLETE.
 
 Run 상태(`run_store.py`): `CREATED`, `PREFLIGHT`, `RUNNING`,
 `WAITING_FOR_USER`(비종결, `RUNNING`/`CANCELLED`/`FAILED`로 귀결),
@@ -59,13 +68,14 @@ Run 상태(`run_store.py`): `CREATED`, `PREFLIGHT`, `RUNNING`,
 `knowledge.route.selected`, `knowledge.search.started`,
 `knowledge.query_rewritten`, `knowledge.search.completed`,
 `citation.added`, `hub.query_sent`, `hub.search.completed`,
+`mcp.tool_route.selected`, `mcp.tool_route.rejected`(둘 다 D-083),
 `mcp.confirmation_required`, `mcp.confirmation_resolved`,
 `mcp.confirmation_expired`, `mcp.call.started`, `mcp.call.completed`,
 `answer.delta`, `run.completed`, `run.failed`, `run.cancelled`.
 Hosted(`chat.py`)는 이 중 6개만(`_INTERNAL_TO_HOSTED_EVENT`) 번역해 노출하고
-나머지는 드롭한다 — `knowledge.route.selected`는 의도적으로 포함하지 않는다
-(Hosted 챗봇은 `knowledge_candidates`를 절대 보내지 않으므로 이 이벤트
-자체가 발생하지 않는다).
+나머지는 드롭한다 — `knowledge.route.selected`와 `mcp.tool_route.*`는
+의도적으로 포함하지 않는다(Hosted 챗봇은 `knowledge_candidates`도
+`tool_route`도 절대 보내지 않으므로 이 이벤트 자체가 발생하지 않는다).
 
 **근거 0건이면 LLM을 호출하지 않는다** (D-036 hallucination guard,
 `workflow.py`의 `if len(citations) == 0 and len(tool_results) == 0:` →

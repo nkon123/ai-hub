@@ -48,7 +48,14 @@ router = APIRouter()
 MAX_MESSAGE_LENGTH = 4096
 
 # Internal event name -> hosted event name. Internal-only events (not in this
-# map) are dropped from the hosted stream.
+# map) are dropped from the hosted stream. `knowledge.route.selected` and
+# `mcp.tool_route.selected`/`mcp.tool_route.rejected` (D-083) are
+# deliberately excluded, same reasoning for both: `send_message` below calls
+# `run_knowledge_chat` without `knowledge_candidates` or
+# `tool_route_enabled`, so neither KNOWLEDGE_ROUTE nor TOOL_ROUTE ever runs
+# for a Hosted chatbot and these events simply never fire here — there is
+# nothing to translate, and this map staying unchanged is itself part of how
+# "chat.py never enables routing" is verified (see the regression test).
 _INTERNAL_TO_HOSTED_EVENT = {
     "run.started": "run.started",
     "knowledge.search.completed": "search.completed",

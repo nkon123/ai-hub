@@ -267,6 +267,12 @@ async def start_run(
         raw_knowledge_candidates if isinstance(raw_knowledge_candidates, list) else None
     )
 
+    # D-083 agentic MCP Tool selection (TOOL_ROUTE stage) — additive/
+    # optional, default off. workflow.py only ever acts on this when
+    # `mcp_tool_request` above is None (an explicit caller-declared tool
+    # always wins) and the resolved agent allows MCP at all.
+    tool_route_enabled = bool(body.input.get("tool_route", False))
+
     asyncio.create_task(
         run_knowledge_chat(
             run_id=record.id,
@@ -293,6 +299,7 @@ async def start_run(
             knowledge_candidates=knowledge_candidates,
             allow_hub_lookup=allow_hub_lookup,
             hub_search_adapter=hub_search_adapter,
+            tool_route_enabled=tool_route_enabled,
         )
     )
 

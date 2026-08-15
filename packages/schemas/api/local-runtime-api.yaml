@@ -398,6 +398,28 @@ components:
             Omitting `knowledge_candidates` (every caller today, including
             the 4 published Hosted chatbots) reproduces the exact prior
             `knowledge_ids`/`knowledge_id` behavior byte-for-byte.
+            `tool_route` (D-083, open-decisions.md, additive/optional,
+            default `false`) enables agentic MCP Tool selection — the
+            TOOL_ROUTE stage (`agent_runtime.tool_router`) — ONLY when
+            `mcp_tool`/`mcp_tool_input` above were NOT already supplied (an
+            explicit caller-declared tool always wins) and the resolved
+            agent allows MCP (`capabilities.mcp_allowed`). Candidates are
+            computed server-side from the Office Profile alone — never from
+            anything on this request — so routing can only ever narrow what
+            the deployment already permits, never widen it. One optional LLM
+            call reads ONLY `question` and each candidate tool's name/input
+            schema — never Knowledge citations, tool results, or `history` —
+            and proposes at most one tool name + arguments. The proposal
+            still goes through the exact same allowlist/schema/confirmation
+            checks an explicit `mcp_tool` request goes through, unchanged;
+            unlike `knowledge_candidates` above, a routing failure (timeout,
+            unparseable output, an unknown tool name, or the model declining)
+            fails CLOSED — no tool is called at all, never a guessed one —
+            because a Tool Call is an action, not a read. The decision is
+            emitted as an `mcp.tool_route.selected` event (never the raw
+            prompt or model output). Omitting `tool_route` (every caller
+            today, including the 4 published Hosted chatbots) reproduces the
+            exact prior `mcp_tool`-only behavior byte-for-byte.
           properties:
             history:
               type: array
@@ -412,6 +434,9 @@ components:
               items:
                 $ref: "#/components/schemas/KnowledgeCandidateInput"
             allow_hub_lookup:
+              type: boolean
+              default: false
+            tool_route:
               type: boolean
               default: false
         trace_id:

@@ -162,3 +162,34 @@ def validate_tool_input(tool_name: str, raw_input: dict[str, Any]) -> list[str]:
 def confirmation_policy_for(tool_name: str) -> str | None:
     spec = _spec_for(tool_name)
     return spec["confirmation_policy"] if spec else None
+
+
+def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]:
+    """D-083 TOOL_ROUTE candidate set: exactly the Office Profile's
+    `allowed_mcp_servers[].allowed_tools`, intersected with every
+    `tool_name` this Runtime actually has a schema for (`_spec_for` — the
+    same built-in-first-then-registry resolution `validate_tool_input`/
+    `confirmation_policy_for` use). Routing can only ever narrow what the
+    deployment already permits, never widen it: a `tool_name` present in
+    `allowed_tools` but absent from both `MCP_TOOL_SPECS` and the D-080
+    registry (e.g. `office-profile.json`'s `calculator.add`, which has no
+    registered schema in this PoC) is silently excluded here rather than
+    offered to the router with a guessed-at schema — the router must never
+    see a tool it could not actually validate/dispatch through the unchanged
+    `resolve_allowed_alias` -> `validate_tool_input` chokepoint.
+
+    Returns `[{"tool_name": ..., "input_schema": ...}, ...]` — metadata only
+    (structural JSON Schema, not data), the exact shape
+    `tool_router.route_tool_call` expects as `candidates`."""
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for server in office_profile.get("allowed_mcp_servers", []):
+        for tool_name in server.get("allowed_tools", []):
+            if not isinstance(tool_name, str) or tool_name in seen:
+                continue
+            spec = _spec_for(tool_name)
+            if spec is None:
+                continue
+            seen.add(tool_name)
+            candidates.append({"tool_name": tool_name, "input_schema": spec["input_schema"]})
+    return candidates

@@ -136,6 +136,30 @@ class AgentRuntimeSettings(BaseSettings):
     # under a lock" design as search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
     mcp_tool_registry_path: Path = _REPO_ROOT / "data" / "agent-runtime" / "mcp-tool-registry.json"
 
+    # D-083: agentic MCP Tool selection (TOOL_ROUTE stage,
+    # agent_runtime.tool_router) — additive/optional: only exercised when a
+    # caller sets `input.tool_route=true` AND the resolved agent allows MCP
+    # (`capabilities.mcp_allowed`) AND no explicit `mcp_tool` was already
+    # declared on `input` (an explicit caller-declared tool always wins —
+    # see workflow.py). Every existing caller, including the 4 published
+    # Hosted chatbots (chat.py never sets `tool_route`), never pays this LLM
+    # call and is byte-for-byte unaffected.
+    #
+    # Deliberately 0, unlike `knowledge_route_skip_threshold` (2): Knowledge
+    # routing below its threshold is a safe no-op (search every candidate
+    # anyway), but a *single* candidate Tool still needs its arguments
+    # extracted from the question by the model — there is no safe
+    # "propose the only one" shortcut, so this is never used as a latency
+    # optimization, only as the true "nothing to route over" case (zero
+    # candidate tools — see tool_router.py's module docstring).
+    tool_route_skip_threshold: int = 0
+    # Mirrors `knowledge_route_timeout_seconds`'s role for TOOL_ROUTE: a
+    # stuck/slow routing call fails CLOSED (propose no tool at all), never
+    # hanging the Run and never guessing a tool as a fallback — a Tool Call
+    # is an action, unlike a Knowledge search, so "guess and call anyway" is
+    # not an acceptable fallback here (see tool_router.py).
+    tool_route_timeout_seconds: float = 8.0
+
     # `routers/knowledge_metadata_suggest.py` (POST
     # /local/v1/knowledge-metadata-suggest) — the character bound applied to
     # the caller-supplied `excerpt` before it goes into the LLM prompt. A
