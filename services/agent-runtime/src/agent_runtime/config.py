@@ -159,6 +159,19 @@ class AgentRuntimeSettings(BaseSettings):
     # is an action, unlike a Knowledge search, so "guess and call anyway" is
     # not an acceptable fallback here (see tool_router.py).
     tool_route_timeout_seconds: float = 8.0
+    # D-083 follow-up: bounds each candidate's human-readable `description`
+    # (built-in `MCP_TOOL_SPECS` text or a D-080 registration's `label`)
+    # before `tool_router._normalize_candidates` renders it into the routing
+    # prompt. A `label` on a registered tool originates from an installed
+    # asset's manifest — more trusted than document content, but still text
+    # that reaches a prompt that decides actions, so it gets the same
+    # "setting, not a literal" treatment as every other bound in this file
+    # (this file's own CORS-hardcoding lesson). `_normalize_candidates` also
+    # collapses all whitespace (so a hostile multi-line description can
+    # never inject a fake candidate line into the prompt) independent of
+    # this length; this setting only caps how long the single resulting
+    # line may be.
+    tool_route_description_max_chars: int = 160
 
     # `routers/knowledge_metadata_suggest.py` (POST
     # /local/v1/knowledge-metadata-suggest) — the character bound applied to

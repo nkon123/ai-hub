@@ -15,6 +15,17 @@ the live office-mcp-server independently re-validates every input against
 its own (authoritative) schema, so a stale/loose copy here can reject too
 much but can never let an actually-invalid call reach the Connector.
 
+D-083 follow-up (agentic TOOL_ROUTE candidate descriptions): each entry
+below also carries a `description` string, hand-copied verbatim from that
+same `tools_setup.py`'s `RegisteredTool.description` for the matching
+`name` — same drift-risk convention as `input_schema`/confirmation policy
+above, now widened to cover this one extra field. **When updating
+`input_schema` for a tool here, also re-copy its `description` from
+`tools_setup.py` in the same edit** — do not compose new prose, copy what
+is actually there. `list_candidate_tools` below surfaces this text (bounded
+and sanitized by `tool_router.py` before it ever reaches a prompt) so the
+TOOL_ROUTE model sees more than a bare `tool_name`.
+
 The ANALYZE stage in `workflow.py` uses `MCP_TOOL_SPECS` to validate a
 caller-declared `mcp_tool`/`mcp_tool_input` *before* any network call — this
 is the "명시적 Workflow와 Schema 기반 호출" the LLM Adapter section of
@@ -55,6 +66,7 @@ ON_PARAMETER = "ON_PARAMETER"
 
 MCP_TOOL_SPECS: dict[str, dict[str, Any]] = {
     "db_metadata.get_tables": {
+        "description": "허용된 Schema의 Table 목록을 조회합니다 (읽기 전용).",
         "input_schema": {
             "type": "object",
             "required": ["schema"],
@@ -68,6 +80,7 @@ MCP_TOOL_SPECS: dict[str, dict[str, Any]] = {
         "confirmation_policy": NEVER,
     },
     "db_metadata.get_columns": {
+        "description": "허용된 Table의 Column 메타데이터 조회 (읽기 전용, Default Value 미반환).",
         "input_schema": {
             "type": "object",
             "required": ["schema", "table"],
@@ -80,6 +93,7 @@ MCP_TOOL_SPECS: dict[str, dict[str, Any]] = {
         "confirmation_policy": NEVER,
     },
     "table_count.query": {
+        "description": "허용된 Table/Field/Operator로 건수만 조회 (읽기 전용, 임의 SQL 미입력).",
         "input_schema": {
             "type": "object",
             "required": ["schema", "table"],
@@ -139,7 +153,13 @@ def _spec_for(tool_name: str) -> dict[str, Any] | None:
     entry = get_registry().resolve(tool_name)
     if entry is None:
         return None
-    return {"input_schema": entry.input_schema, "confirmation_policy": entry.confirmation_policy}
+    return {
+        "input_schema": entry.input_schema,
+        "confirmation_policy": entry.confirmation_policy,
+        # D-080's `label` is the description-shaped field a registered
+        # (non-built-in) tool actually carries — see `list_candidate_tools`.
+        "label": entry.label,
+    }
 
 
 def validate_tool_input(tool_name: str, raw_input: dict[str, Any]) -> list[str]:
@@ -178,9 +198,20 @@ def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]
     see a tool it could not actually validate/dispatch through the unchanged
     `resolve_allowed_alias` -> `validate_tool_input` chokepoint.
 
-    Returns `[{"tool_name": ..., "input_schema": ...}, ...]` — metadata only
-    (structural JSON Schema, not data), the exact shape
-    `tool_router.route_tool_call` expects as `candidates`."""
+    Returns `[{"tool_name": ..., "input_schema": ..., "description": ...}, ...]`
+    — metadata only (structural JSON Schema, not data; `description` is
+    human-readable prose, present only when the tool has one). For a
+    built-in this is the hand-copied `description` in `MCP_TOOL_SPECS`
+    above; for a D-080 registered tool it is that registration's `label`. A
+    tool with neither omits the `description` key entirely rather than
+    being dropped as a candidate — losing a callable tool for lacking prose
+    would be worse than offering it bare. This raw text is NOT length-bounded
+    or line-sanitized here — `tool_router._normalize_candidates` is the
+    chokepoint that does that immediately before this text ever reaches a
+    routing prompt, the same "sanitize at the boundary that touches the
+    prompt" discipline this module's docstring describes for `input_schema`.
+    This is the exact shape `tool_router.route_tool_call` expects as
+    `candidates`."""
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for server in office_profile.get("allowed_mcp_servers", []):
@@ -191,5 +222,14 @@ def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]
             if spec is None:
                 continue
             seen.add(tool_name)
-            candidates.append({"tool_name": tool_name, "input_schema": spec["input_schema"]})
+            candidate: dict[str, Any] = {
+                "tool_name": tool_name,
+                "input_schema": spec["input_schema"],
+            }
+            description = spec.get("description")
+            if not isinstance(description, str) or not description.strip():
+                description = spec.get("label")
+            if isinstance(description, str) and description.strip():
+                candidate["description"] = description
+            candidates.append(candidate)
     return candidates

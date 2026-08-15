@@ -985,6 +985,7 @@ async def run_knowledge_chat(
                 model_alias="default-chat",
                 timeout_seconds=settings.tool_route_timeout_seconds,
                 skip_threshold=settings.tool_route_skip_threshold,
+                description_max_chars=settings.tool_route_description_max_chars,
             )
             run_store.append_event(
                 run_id,
