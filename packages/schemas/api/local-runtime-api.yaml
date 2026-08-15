@@ -215,6 +215,45 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeregisterMcpToolResponse"
 
+  /local/v1/knowledge-metadata-suggest:
+    post:
+      summary: >
+        Suggest a Knowledge 등록 name/description from a bounded text
+        excerpt of the document the caller is about to register. A
+        narrow, single-purpose endpoint — NOT a general-purpose
+        text-generation route (구현 원칙 7: 승인되지 않은 임의 Python 실행,
+        외부 URL, Package 설치 기능을 만들지 않는다 — the same "no open
+        surface" reasoning extends to a free-form prompt passthrough).
+        Never touches `/local/v1/runs*`, `RunStore`, or the D-036
+        hallucination guard — this is a single non-streaming completion, not
+        a Run.
+
+        The excerpt is client-extracted text (portal-web reads .md/.txt
+        client-side); this endpoint does not receive or parse the original
+        file. The suggestion is always a suggestion — the caller (portal-web)
+        must land it in editable fields, never auto-submit it.
+      operationId: suggest_knowledge_metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuggestKnowledgeMetadataRequest"
+      responses:
+        "200":
+          description: OK — a suggestion, not a fact; caller must present it as editable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestKnowledgeMetadataResponse"
+        "400":
+          description: VALIDATION_ERROR — empty excerpt after trimming.
+        "503":
+          description: >
+            MODEL_UNAVAILABLE — the underlying LLM (Ollama) could not be
+            reached or failed. Registration itself never depends on this
+            endpoint succeeding.
+
 components:
   parameters:
     ServiceId:
@@ -607,4 +646,40 @@ components:
         data:
           type: object
         id:
+          type: string
+
+    SuggestKnowledgeMetadataRequest:
+      type: object
+      required: [excerpt, filename]
+      properties:
+        excerpt:
+          type: string
+          minLength: 1
+          description: >
+            Client-extracted plain text from the beginning of the document
+            (never the full document). The server bounds this further to
+            `AgentRuntimeSettings.knowledge_metadata_suggest_excerpt_max_chars`
+            (truncated silently if longer, never rejected for being too
+            long) — never logged (root CLAUDE.md 코드 규칙: 로그에 Prompt
+            원문/문서 전체 저장 금지).
+        filename:
+          type: string
+          description: Original filename, shown to the model as weak context only.
+        trace_id:
+          type: string
+
+    SuggestKnowledgeMetadataResponse:
+      type: object
+      required: [suggested_name, suggested_description, trace_id]
+      properties:
+        suggested_name:
+          type: string
+          description: >
+            Model-generated suggestion for 지식 명. Untrusted model output —
+            the caller must render it as editable text only, never execute
+            it, never use it to build a file path, never resubmit it as an
+            instruction.
+        suggested_description:
+          type: string
+        trace_id:
           type: string

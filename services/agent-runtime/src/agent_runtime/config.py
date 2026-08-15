@@ -136,6 +136,21 @@ class AgentRuntimeSettings(BaseSettings):
     # under a lock" design as search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
     mcp_tool_registry_path: Path = _REPO_ROOT / "data" / "agent-runtime" / "mcp-tool-registry.json"
 
+    # `routers/knowledge_metadata_suggest.py` (POST
+    # /local/v1/knowledge-metadata-suggest) — the character bound applied to
+    # the caller-supplied `excerpt` before it goes into the LLM prompt. A
+    # setting, not a literal in the router, per this file's own
+    # CORS-hardcoding lesson (a hardcoded bound would silently ignore any
+    # future need to tune it per deployment). Longer excerpts are truncated
+    # silently (never rejected as an error) — this endpoint is best-effort
+    # accelerator, not a contract the caller must satisfy exactly.
+    knowledge_metadata_suggest_excerpt_max_chars: int = 4000
+    # Timeout budget for the single non-streaming Ollama call this endpoint
+    # makes — mirrors `query_rewrite_timeout_seconds`'s role: a stuck model
+    # call must fail this accelerator quickly, never hang the caller's
+    # registration screen.
+    knowledge_metadata_suggest_timeout_seconds: float = 20.0
+
     class Config:
         env_prefix = "AGENT_RUNTIME_"
 

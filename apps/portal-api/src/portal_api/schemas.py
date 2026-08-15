@@ -1041,6 +1041,25 @@ class KnowledgeSearchResponseOut(BaseModel):
     citations: list[KnowledgeSearchCitationOut]
 
 
+class SuggestKnowledgeMetadataRequest(BaseModel):
+    """Field names mirror agent-runtime's `local-runtime-api.yaml`
+    `SuggestKnowledgeMetadataRequest` exactly — this router relays the body
+    unchanged (`routers/knowledge_metadata_suggest.py`)."""
+
+    excerpt: str = Field(min_length=1)
+    filename: str
+    trace_id: str | None = None
+
+
+class SuggestKnowledgeMetadataResponseOut(BaseModel):
+    """A suggestion, not a fact — untrusted model output relayed verbatim.
+    The caller (portal-web) must render both fields as editable text only."""
+
+    suggested_name: str
+    suggested_description: str
+    trace_id: str
+
+
 # ---------------------------------------------------------------------------
 # D-079 Knowledge diagnostics — see routers/knowledge_diagnostics.py.
 #

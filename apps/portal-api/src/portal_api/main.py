@@ -20,6 +20,9 @@ from portal_api.routers.deployments import router as deployments_router
 from portal_api.routers.distributions import router as distributions_router
 from portal_api.routers.evaluations import router as evaluations_router
 from portal_api.routers.knowledge_diagnostics import router as knowledge_diagnostics_router
+from portal_api.routers.knowledge_metadata_suggest import (
+    router as knowledge_metadata_suggest_router,
+)
 from portal_api.routers.knowledge_search import router as knowledge_search_router
 from portal_api.routers.reviews import router as reviews_router
 from portal_api.routers.services import router as services_router
@@ -93,6 +96,9 @@ app.include_router(knowledge_diagnostics_router)
 # above (D-034), registration order here cannot shadow or be shadowed by
 # any existing route.
 app.include_router(knowledge_search_router)
+# `/api/v1/knowledge/suggest-metadata` is likewise a brand-new literal path
+# segment — same D-034 non-collision reasoning as knowledge_search_router.
+app.include_router(knowledge_metadata_suggest_router)
 
 
 @app.get("/health")

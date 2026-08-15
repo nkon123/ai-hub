@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     search_runtime_url: str = "http://localhost:8300"
     evaluation_timeout_seconds: float = 300.0
 
+    # `routers/knowledge_metadata_suggest.py` (POST
+    # /api/v1/knowledge/suggest-metadata) — the ONLY model-adjacent call this
+    # service makes, and it makes no model call itself: it relays to
+    # agent-runtime's `POST /local/v1/knowledge-metadata-suggest` exactly as
+    # `knowledge_search.py` relays to search-runtime (root CLAUDE.md UI 구현
+    # 규칙 "Portal API는 모델을 직접 호출하지 않는다").
+    agent_runtime_url: str = "http://localhost:8100"
+    knowledge_metadata_suggest_timeout_seconds: float = 25.0
+
     # `routers/knowledge_search.py` (POST /api/v1/knowledge-search) — the
     # `access_context.clearance` portal-api asserts to search-runtime on
     # every fan-out call, mirroring `AgentRuntimeSettings
