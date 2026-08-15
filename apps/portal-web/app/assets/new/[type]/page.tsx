@@ -43,6 +43,7 @@ import {
   ChevronRight,
   Download,
   FileEdit,
+  FileUp,
   Loader2,
   Lock,
   RotateCcw,
@@ -66,6 +67,15 @@ import { ASSET_TYPE_LABEL } from "../../../_components/review-meta";
 // required for both POST /api/v1/manifests/validate and POST /api/v1/assets.
 const ASSET_CREATE_ROLES = new Set(["CREATOR", "ADMIN"]);
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+// Python 시그니처 파일 선택 — 클라이언트에서 텍스트로 읽어 기존 textarea를
+// 채울 뿐, 파일 자체는 업로드/저장/실행하지 않는다. 두 한계 모두 사용자에게
+// 이유를 보여주고 거부한다(자르지 않음 — 잘린 코드는 다른 시그니처로
+// 변환되어 더 위험하다).
+// MAX_SOURCE_CHARS는 apps/portal-api/src/portal_api/python_signature.py의
+// 서버 측 상한과 반드시 같은 값을 유지한다.
+const MAX_PYTHON_SOURCE_CHARS = 20_000;
+const MAX_PYTHON_FILE_BYTES = 200_000; // 텍스트로 읽기 전 1차 크기 방어(대략치)
 
 type WizardType = "agent" | "prompt" | "mcp_tool";
 
@@ -969,6 +979,48 @@ function McpManifestFields({
   const [conversion, setConversion] = useState<PythonSignatureConversion | null>(null);
   const [conversionState, setConversionState] = useState<"idle" | "loading" | "error">("idle");
   const [conversionError, setConversionError] = useState<ServerErrorInfo | null>(null);
+  const [pythonFileName, setPythonFileName] = useState<string | null>(null);
+  const [pythonFileError, setPythonFileError] = useState<string | null>(null);
+
+  // 파일을 고르면 client-side에서 텍스트로 읽어 textarea만 채운다 — 파일
+  // 자체는 어디에도 업로드/저장/실행되지 않는다. 사용자는 변환을 누르기 전
+  // textarea에서 실제로 전송될 내용을 그대로 보고 수정할 수 있다.
+  async function handlePythonFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = ""; // 같은 파일을 다시 선택해도 onChange가 발생하도록.
+    if (!file) return;
+
+    setConversion(null);
+    setConversionError(null);
+    setConversionState("idle");
+    setPythonFileError(null);
+    setPythonFileName(null);
+
+    const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (extension !== ".py") {
+      setPythonFileError(
+        `.py 파일만 선택할 수 있습니다. 선택한 파일(${file.name})은 지원하지 않는 형식입니다.`
+      );
+      return;
+    }
+    if (file.size > MAX_PYTHON_FILE_BYTES) {
+      setPythonFileError(
+        `파일이 너무 큽니다. ${(MAX_PYTHON_FILE_BYTES / 1000).toFixed(0)}KB 이하의 .py 파일만 선택할 수 있습니다.`
+      );
+      return;
+    }
+
+    const text = await file.text();
+    if (text.length > MAX_PYTHON_SOURCE_CHARS) {
+      setPythonFileError(
+        `파일 내용이 ${MAX_PYTHON_SOURCE_CHARS.toLocaleString()}자를 초과합니다. 변환할 함수 시그니처만 남겨 다시 선택해 주세요.`
+      );
+      return;
+    }
+
+    setPythonSource(text);
+    setPythonFileName(file.name);
+  }
 
   async function convertPythonSignature() {
     if (!pythonSource.trim() || conversionState === "loading") return;
@@ -1035,16 +1087,39 @@ function McpManifestFields({
               함수 시그니처만 정적으로 읽습니다. 코드는 실행·저장하지 않으며 본문과 반환 타입은 Manifest에 포함하지 않습니다.
             </p>
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!pythonSource.trim() || conversionState === "loading"}
-            onClick={() => void convertPythonSignature()}
-          >
-            {conversionState === "loading" ? <Loader2 size={13} className="animate-spin" /> : <Braces size={13} />}
-            {conversionState === "loading" ? "분석 중..." : "입력 형식 추출"}
-          </Button>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => document.getElementById("python-signature-file-input")?.click()}>
+              <FileUp size={13} />
+              .py 파일 선택
+            </Button>
+            <input
+              id="python-signature-file-input"
+              type="file"
+              accept=".py"
+              onChange={(event) => void handlePythonFileChange(event)}
+              className="hidden"
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!pythonSource.trim() || conversionState === "loading"}
+              onClick={() => void convertPythonSignature()}
+            >
+              {conversionState === "loading" ? <Loader2 size={13} className="animate-spin" /> : <Braces size={13} />}
+              {conversionState === "loading" ? "분석 중..." : "입력 형식 추출"}
+            </Button>
+          </div>
         </div>
+        {pythonFileName && (
+          <p className="mt-2 text-caption text-text-muted">
+            <code>{pythonFileName}</code>에서 불러왔습니다. 아래 내용을 확인·수정한 뒤 변환하세요.
+          </p>
+        )}
+        {pythonFileError && (
+          <div className="mt-2">
+            <ErrorBanner message={pythonFileError} />
+          </div>
+        )}
         <textarea
           value={pythonSource}
           onChange={(event) => {
@@ -1052,6 +1127,8 @@ function McpManifestFields({
             setConversion(null);
             setConversionError(null);
             setConversionState("idle");
+            setPythonFileName(null);
+            setPythonFileError(null);
           }}
           rows={7}
           spellCheck={false}
