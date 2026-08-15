@@ -1,0 +1,68 @@
+{
+  "schema_version": "1.0",
+  "id": "c46f0676-aaa4-469e-8132-a9d8fa0ebc77",
+  "type": "mcp_tool",
+  "name": "DB 컬럼 메타데이터 조회",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "admin@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "허용된 Schema/Table의 Column 이름·타입·Nullable·PK 여부·주석을 조회합니다 (읽기 전용, Default Value는 반환하지 않습니다).",
+  "tags": ["oracle", "readonly", "metadata"],
+  "changelog": "D-049: 05-mcp-security-governance.md §5.2 db_metadata.get_columns 의 Portal 등록용 Manifest. tool_name/input_schema/output_schema/execution_guards 는 services/office-mcp-server 의 tools_setup.py 등록값을 그대로 옮긴 것이며, tests/contract/test_mcp_tool_fixtures.py 가 둘의 드리프트를 막는다.",
+  "created_at": "2026-08-15T09:00:00Z",
+  "server_alias": "oracle-connector",
+  "tool_name": "db_metadata.get_columns",
+  "risk_level": "READ_ONLY",
+  "input_schema": {
+    "type": "object",
+    "required": ["schema", "table"],
+    "additionalProperties": false,
+    "properties": {
+      "schema": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 64,
+        "description": "Schema Allowlist에 포함된 Schema만 허용"
+      },
+      "table": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "description": "Table Allowlist에 포함된 Table만 허용"
+      }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["columns"],
+    "properties": {
+      "columns": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": { "type": "string" },
+            "data_type": { "type": "string" },
+            "nullable": { "type": "boolean" },
+            "is_primary_key": { "type": "boolean" },
+            "comment": { "type": "string" }
+          }
+        }
+      }
+    }
+  },
+  "execution_guards": {
+    "timeout_seconds": 10,
+    "max_rows": 100,
+    "max_bytes": 65536,
+    "requires_user_confirmation": false
+  },
+  "permissions": {
+    "allowed_roles": ["USER", "CREATOR", "TECH_REVIEWER", "ADMIN"],
+    "allowed_orgs": ["miracom"]
+  }
+}
