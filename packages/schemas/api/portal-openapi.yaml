@@ -628,6 +628,73 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/knowledge/extract-text:
+    post:
+      tags: [knowledge-search]
+      summary: AI 추천 — extract a bounded plain-text excerpt from a .pdf/.docx upload (P12 등록 화면)
+      description: |
+        Thin, stateless passthrough to `indexing-runtime`'s
+        `POST /indexing/v1/extract-text` — root CLAUDE.md UI 구현 규칙
+        "Portal API는 모델을 직접 호출하지 않는다"의 연장으로, portal-api는
+        문서 파싱도 직접 하지 않는다(그 책임은 indexing-runtime의 `loaders/`가
+        소유, D-073). `.md`/`.txt`는 portal-web이 client-side에서 직접 읽어
+        `POST /api/v1/knowledge/suggest-metadata`로 바로 보낸다 — 이 엔드포인트는
+        브라우저가 파싱할 수 없는 `.pdf`/`.docx`에만 쓰인다. 반환된 `excerpt`는
+        그대로 `suggest-metadata`에 넘기는 입력으로만 쓰인다(그 자체가 최종
+        결과가 아니다). Stores nothing: 업로드된 파일 bytes와 excerpt 어느
+        것도 DB에 쓰거나 감사 메타데이터에 남기지 않는다. Gated by
+        `ASSET_CREATE`(Knowledge 자산 등록과 동일 권한).
+      operationId: extract_knowledge_text
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: OK — a bounded plain-text excerpt, not the whole document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractKnowledgeTextResponse"
+        "400":
+          description: >
+            KNOWLEDGE_TEXT_EXTRACT_REJECTED — indexing-runtime rejected the
+            upload: an unsupported format ("이 형식은 추천을 지원하지
+            않습니다") or an empty extraction result, or a payload exceeding
+            the upload size cap. Registration itself is unaffected; the
+            caller should fall back to manual entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: >
+            Two distinguishable causes, both reported as 503 but with
+            DIFFERENT `error.code`/`error.message` — a caller must not
+            collapse them, since only one is fixable by an operator:
+            `KNOWLEDGE_TEXT_EXTRACT_UNAVAILABLE` (indexing-runtime
+            unreachable, or a genuine downstream 5xx) vs.
+            `KNOWLEDGE_TEXT_EXTRACT_DEPENDENCY_MISSING` (the format IS
+            supported, but this deployment hasn't installed the optional
+            `pypdf`/`python-docx` dependency — 서버에 PDF/Word 추출
+            의존성이 설치되어 있지 않습니다, D-073). Registration itself
+            never depends on this endpoint succeeding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/manifests/validate:
     post:
       tags: [assets]
@@ -2170,6 +2237,20 @@ components:
         suggested_name:
           type: string
         suggested_description:
+          type: string
+        trace_id:
+          type: string
+
+    ExtractKnowledgeTextResponse:
+      type: object
+      required: [excerpt, trace_id]
+      description: |
+        A BOUNDED plain-text excerpt extracted server-side from a .pdf/.docx
+        upload (indexing-runtime enforces the bound) — meant to be fed into
+        SuggestKnowledgeMetadataRequest.excerpt unchanged, the same way
+        portal-web already handles .md/.txt client-side excerpts.
+      properties:
+        excerpt:
           type: string
         trace_id:
           type: string

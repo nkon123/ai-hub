@@ -63,6 +63,31 @@ Default `qwen3-embedding:0.6b` matches
 `SEARCH_QUERY_INSTRUCT_PREFIX`'s Qwen3-tuned default (see that module) — all
 three must be considered together when switching model families."""
 
+EXTRACT_TEXT_EXCERPT_MAX_CHARS: int = int(
+    os.environ.get("INDEXING_EXTRACT_TEXT_EXCERPT_MAX_CHARS", "4000")
+)
+"""Upper bound on the plain-text excerpt `POST /indexing/v1/extract-text`
+returns (main.py) — the server-side text-extraction leg of the AI 추천
+button's .pdf/.docx path (P12 Knowledge 등록). This endpoint returns a
+BOUNDED excerpt, never the whole document (root CLAUDE.md: 정책 수치는
+설정으로, 코드에 리터럴로 박지 않는다). Kept at the same default as
+agent-runtime's `AgentRuntimeSettings.knowledge_metadata_suggest_excerpt_max_chars`
+purely for consistency with the .md/.txt client-side excerpt size portal-web
+already sends that endpoint — the two bounds are independent settings on
+independent services and may diverge without breaking anything; agent-runtime
+re-bounds whatever excerpt it receives regardless of this value."""
+
+EXTRACT_TEXT_MAX_UPLOAD_BYTES: int = int(
+    os.environ.get("INDEXING_EXTRACT_TEXT_MAX_UPLOAD_BYTES", str(20 * 1024 * 1024))
+)
+"""Hard cap on the upload `POST /indexing/v1/extract-text` accepts, enforced
+BEFORE extraction (`main.py::_read_bounded_upload` aborts the read once this
+many bytes have arrived, regardless of what the caller's `Content-Length`
+claims) — an unbounded PDF/DOCX parse is a denial-of-service path (this
+task's brief, explicitly). 20MB is a PoC-scale default for a single
+document excerpt request, independent of any registration-time upload size
+policy elsewhere in the repo."""
+
 CHROMA_CLIENT_CACHE_MAX_SIZE: int = int(
     os.environ.get("INDEXING_CHROMA_CLIENT_CACHE_MAX_SIZE", "32")
 )

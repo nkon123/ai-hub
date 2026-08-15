@@ -17,10 +17,20 @@ from enum import StrEnum
 
 class ErrorCode(StrEnum):
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
+    # POST /indexing/v1/extract-text (P12 AI 추천 .pdf/.docx 경로). Both are
+    # from the 07-data-api-contracts.md §8 common list — reused rather than
+    # invented, per this module's docstring.
+    VALIDATION_ERROR = "VALIDATION_ERROR"
+    # A supported format (in LOADED_SUFFIXES) whose optional dependency
+    # (pypdf/python-docx, D-073) isn't installed on this deployment — NOT
+    # the same fact as VALIDATION_ERROR's "nobody supports this format".
+    DEPENDENCY_UNAVAILABLE = "DEPENDENCY_UNAVAILABLE"
 
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.MODEL_UNAVAILABLE: 503,
+    ErrorCode.VALIDATION_ERROR: 400,
+    ErrorCode.DEPENDENCY_UNAVAILABLE: 503,
 }
 
 

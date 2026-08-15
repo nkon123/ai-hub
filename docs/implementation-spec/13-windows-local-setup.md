@@ -298,7 +298,7 @@ pnpm install
 ```
 
 
-- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있지만, **개발 macOS 머신에서는 정책상 실제로 설치된 적이 없다** — Windows PC 에서 `install-pip.ps1` 을 실행하는 시점이 **최초로 설치되는 시점**이다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
+- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있다. **2026-08-15 실측 정정**: 개발 macOS 머신에도 이미 설치되어 있다(pypdf 6.15.0, python-docx 1.2.0). 이 문서에 오래 남아 있던 "개발 머신에는 설치된 적이 없다"는 서술은 사실이 아니었고, 그 서술을 근거로 작성된 작업 지시가 실제와 어긋난 적이 있다 — Windows PC 가 **최초 설치 시점**이라는 전제도 함께 무효다. Windows PC 에서의 설치 절차 자체(아래 미러 확인)는 그대로 유효하다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
   - `pypdf`: 순수 Python, BSD-3-Clause, OS/아키텍처 무관 단일 wheel.
   - `python-docx`: 순수 Python, MIT. 유일한 런타임 의존성 `lxml`은 win_amd64용 사전 빌드 wheel을 제공하므로 별도 C 빌드 도구 없이 설치 가능하다(미러에 lxml wheel도 함께 반입되어 있어야 함).
   - 두 패키지가 없어도 indexing-runtime 자체는 정상 기동하고 Markdown/Text Knowledge는 그대로 색인된다 — PDF/DOCX 파일을 실제로 색인하려 할 때만 "PDF 로더에 필요한 pypdf가 설치되어 있지 않습니다" 같은 명확한 한국어 오류로 실패한다(크래시가 아님). 상세: `services/indexing-runtime/src/indexing_runtime/loaders/`.

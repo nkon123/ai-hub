@@ -12,12 +12,15 @@ import {
 } from "lucide-react";
 import { Button, Card, ErrorBanner, FormField, PageHeader, inputClass } from "../../_components/ui";
 
-// AI 추천이 지원하는 확장자 — 브라우저에서 client-side로 텍스트를 바로 읽을 수
-// 있는 형식만이다. .pdf/.docx는 services/indexing-runtime/loaders/가 서버에서
-// 파싱하지만 그 서비스는 이 화면에서 호출되지 않고, 파일은 아직 업로드 전이라
-// 브라우저가 텍스트를 뽑아낼 방법이 없다 — 그래서 이 두 형식은 버튼을
-// 비활성화하고 이유를 보여준다(등록 자체는 그대로 지원한다).
-const AI_SUGGEST_SUPPORTED_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
+// AI 추천이 지원하는 확장자 — 두 갈래로 나뉜다.
+// 1) 브라우저가 client-side로 텍스트를 바로 읽을 수 있는 형식(.md/.txt류).
+// 2) .pdf/.docx는 브라우저가 직접 파싱할 수 없어 서버(services/indexing-runtime의
+//    loaders/)에 업로드 전 파일 bytes를 보내 텍스트를 추출한다
+//    (POST /api/v1/knowledge/extract-text, portal-api가 indexing-runtime으로
+//    relay). 두 형식 모두 registration 자체는 이미 항상 지원했다 — 여기서
+//    바뀌는 것은 AI 추천 기능의 지원 범위뿐이다.
+const AI_SUGGEST_CLIENT_EXTRACT_EXTENSIONS = new Set([".md", ".markdown", ".txt"]);
+const AI_SUGGEST_SERVER_EXTRACT_EXTENSIONS = new Set([".pdf", ".docx"]);
 
 // Client-side pre-trim only, a heuristic — the authoritative bound is
 // `AgentRuntimeSettings.knowledge_metadata_suggest_excerpt_max_chars`
@@ -96,7 +99,13 @@ export default function NewKnowledgePage() {
   const primaryFile = files[0] ?? null;
   const primaryFileExtension = primaryFile ? fileExtension(primaryFile.name) : "";
   const suggestSupported =
-    primaryFile !== null && AI_SUGGEST_SUPPORTED_EXTENSIONS.has(primaryFileExtension);
+    primaryFile !== null &&
+    (AI_SUGGEST_CLIENT_EXTRACT_EXTENSIONS.has(primaryFileExtension) ||
+      AI_SUGGEST_SERVER_EXTRACT_EXTENSIONS.has(primaryFileExtension));
+  // "이 형식은 추천을 지원하지 않습니다" — 클라이언트/서버 어느 쪽도 텍스트를
+  // 추출할 방법이 없는 형식(예: .xlsx, .pptx). .pdf/.docx는 여기 해당하지
+  // 않는다 — 지원되지만 서버 의존성이 없을 수는 있고, 그 경우의 문구는 서버
+  // 응답에서 온다(아래 handleSuggestMetadata의 두 번째 fetch 오류 처리 참고).
   const suggestDisabledReason = !primaryFile
     ? "문서를 먼저 선택하면 AI 추천을 사용할 수 있습니다."
     : !suggestSupported
@@ -109,8 +118,40 @@ export default function NewKnowledgePage() {
     setSuggestError(null);
     setPendingSuggestion(null);
     try {
-      const rawText = await primaryFile.text();
-      const excerpt = rawText.slice(0, AI_SUGGEST_CLIENT_EXCERPT_CHAR_LIMIT).trim();
+      let excerpt: string;
+
+      if (AI_SUGGEST_CLIENT_EXTRACT_EXTENSIONS.has(primaryFileExtension)) {
+        const rawText = await primaryFile.text();
+        excerpt = rawText.slice(0, AI_SUGGEST_CLIENT_EXCERPT_CHAR_LIMIT).trim();
+      } else {
+        // .pdf/.docx — 브라우저가 파싱할 수 없으므로 서버(indexing-runtime,
+        // portal-api relay 경유)에 파일을 보내 텍스트를 추출한다. 여기서 나는
+        // 오류는 "이 형식은 추천을 지원하지 않습니다"(형식 자체 미지원)와
+        // "서버에 PDF/Word 추출 의존성이 설치되어 있지 않습니다"(형식은
+        // 지원되지만 이 배포에 pypdf/python-docx가 없음, D-073)를 서버가 서로
+        // 다른 문구로 이미 구분해 보내므로 그대로 보여준다 — 여기서 뭉개지
+        // 않는다.
+        const extractFormData = new FormData();
+        extractFormData.append("file", primaryFile, primaryFile.name);
+        const extractRes = await fetch("/api/v1/knowledge/extract-text", {
+          method: "POST",
+          headers: { Authorization: "Bearer dev-user-token" },
+          body: extractFormData,
+        });
+
+        if (!extractRes.ok) {
+          const err = await extractRes.json().catch(() => null);
+          const traceId: string | undefined = err?.error?.trace_id;
+          const message: string = err?.error?.message ?? `HTTP ${extractRes.status}`;
+          setSuggestError(`${message}${traceId ? ` (Trace ID: ${traceId})` : ""}`);
+          return;
+        }
+
+        const extractData = await extractRes.json();
+        excerpt =
+          typeof extractData.excerpt === "string" ? extractData.excerpt.trim() : "";
+      }
+
       if (!excerpt) {
         setSuggestError(
           "문서에서 추출한 내용이 비어 있어 추천할 수 없습니다. 이름과 설명을 직접 입력해 주세요."
@@ -306,7 +347,9 @@ export default function NewKnowledgePage() {
                 onClick={() => document.getElementById("file-input")?.click()}
               >
                 <Upload size={28} className="mx-auto mb-2 text-text-muted" strokeWidth={1.5} />
-                <div className="text-body text-text-secondary">Markdown(.md) 파일을 선택하세요</div>
+                <div className="text-body text-text-secondary">
+                  Markdown(.md), 텍스트(.txt), PDF, Word(.docx) 파일을 선택하세요
+                </div>
                 {files.length > 0 && (
                   <div className="mt-3 space-y-1">
                     {files.map((f) => (
@@ -321,7 +364,7 @@ export default function NewKnowledgePage() {
                 id="file-input"
                 type="file"
                 multiple
-                accept=".md,.markdown,.txt"
+                accept=".md,.markdown,.txt,.pdf,.docx"
                 onChange={handleFileChange}
                 className="hidden"
               />

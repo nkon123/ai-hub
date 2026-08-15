@@ -1060,6 +1060,17 @@ class SuggestKnowledgeMetadataResponseOut(BaseModel):
     trace_id: str
 
 
+class ExtractKnowledgeTextResponseOut(BaseModel):
+    """`routers/knowledge_text_extract.py` — the .pdf/.docx leg of P12's AI
+    추천 button. `excerpt` is a BOUNDED plain-text excerpt (indexing-runtime
+    enforces the bound, see `INDEXING_EXTRACT_TEXT_EXCERPT_MAX_CHARS`), meant
+    to be fed into `POST /api/v1/knowledge/suggest-metadata` unchanged — the
+    same client-side flow portal-web already uses for .md/.txt excerpts."""
+
+    excerpt: str
+    trace_id: str
+
+
 # ---------------------------------------------------------------------------
 # D-079 Knowledge diagnostics — see routers/knowledge_diagnostics.py.
 #

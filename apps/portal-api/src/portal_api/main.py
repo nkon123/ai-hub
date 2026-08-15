@@ -24,6 +24,7 @@ from portal_api.routers.knowledge_metadata_suggest import (
     router as knowledge_metadata_suggest_router,
 )
 from portal_api.routers.knowledge_search import router as knowledge_search_router
+from portal_api.routers.knowledge_text_extract import router as knowledge_text_extract_router
 from portal_api.routers.reviews import router as reviews_router
 from portal_api.routers.services import router as services_router
 
@@ -99,6 +100,9 @@ app.include_router(knowledge_search_router)
 # `/api/v1/knowledge/suggest-metadata` is likewise a brand-new literal path
 # segment — same D-034 non-collision reasoning as knowledge_search_router.
 app.include_router(knowledge_metadata_suggest_router)
+# `/api/v1/knowledge/extract-text` — brand-new literal path segment, same
+# D-034 non-collision reasoning.
+app.include_router(knowledge_text_extract_router)
 
 
 @app.get("/health")

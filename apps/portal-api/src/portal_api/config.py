@@ -62,6 +62,17 @@ class Settings(BaseSettings):
     agent_runtime_url: str = "http://localhost:8100"
     knowledge_metadata_suggest_timeout_seconds: float = 25.0
 
+    # `routers/knowledge_text_extract.py` (POST /api/v1/knowledge/extract-text)
+    # — the .pdf/.docx leg of the P12 AI 추천 button. A thin, stateless relay
+    # to indexing-runtime's `POST /indexing/v1/extract-text` (`indexing_runtime_url`,
+    # already declared above for the indexing pipeline trigger) — portal-api
+    # parses no document formats itself, mirroring how
+    # `knowledge_metadata_suggest_timeout_seconds` mirrors agent-runtime's
+    # call budget. Shorter than `indexing_runtime_timeout_seconds` (a full
+    # indexing job) since this is a single bounded-excerpt extraction the
+    # user is actively waiting on in the registration screen.
+    knowledge_text_extract_timeout_seconds: float = 30.0
+
     # `routers/knowledge_search.py` (POST /api/v1/knowledge-search) — the
     # `access_context.clearance` portal-api asserts to search-runtime on
     # every fan-out call, mirroring `AgentRuntimeSettings

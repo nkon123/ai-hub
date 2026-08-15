@@ -29,10 +29,12 @@ dependencies = [
   # need): pure-Python, BSD-3-Clause, no native/build toolchain dependency,
   # widely used. 폐쇄망 설치: 사내 PyPI 미러/인덱스에 pypdf 휠(순수 Python,
   # OS/아키텍처 무관 단일 wheel)을 반입하거나 `pip download`로 미리 받아
-  # 내부망에 올린 뒤 `uv sync`가 그 인덱스를 사용하도록 설정한다. 개발 머신
-  # (본 저장소가 위치한 이 macOS 환경)은 폐쇄망 정책상 이 저장소 세션에서
-  # 네트워크 설치가 금지되어 있어 아직 lock/install되지 않았다 — Windows
-  # 대상 PC에서 `uv sync` 실행 시 최초로 해석된다.
+  # 내부망에 올린 뒤 `uv sync`가 그 인덱스를 사용하도록 설정한다.
+  # 2026-08-15 실측 정정: 이 개발 macOS 환경에는 pypdf 6.15.0 / python-docx
+  # 1.2.0 이 **이미 설치되어 있다**. 여기 오래 남아 있던 "아직 설치되지
+  # 않았다"는 서술은 사실이 아니었고, 그 서술을 근거로 작성된 작업 지시가
+  # 실제와 어긋난 적이 있다. 폐쇄망 절차(위)는 Windows 대상 PC 기준으로
+  # 여전히 유효하다.
   "pypdf>=4.0.0",
   # Word(.docx) 확장 Loader (04-knowledge-platform.md §2.3, open-decisions.md
   # D-073). python-docx: pure-Python, MIT, 표준적으로 널리 쓰임. 유일한
