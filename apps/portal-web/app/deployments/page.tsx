@@ -42,6 +42,7 @@ interface DeploymentItem {
   created_by: string;
   created_at: string;
   suspend_reason: string | null;
+  retire_reason: string | null;
 }
 
 type LoadState = "loading" | "ok" | "error";
@@ -152,6 +153,16 @@ export default function DeploymentsListPage() {
                 <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2 text-caption text-danger">
                   <AlertTriangle size={13} className="mt-0.5 shrink-0" />
                   <span>중단 사유: {item.suspend_reason}</span>
+                </div>
+              )}
+
+              {item.status === "RETIRED" && (
+                <div className="mt-3 flex items-start gap-1.5 rounded-lg border border-border bg-slate-50 px-3 py-2 text-caption text-text-secondary">
+                  <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                  <span>
+                    폐기됨 — 되돌릴 수 없습니다
+                    {item.retire_reason ? `. 사유: ${item.retire_reason}` : ""}
+                  </span>
                 </div>
               )}
             </Card>
