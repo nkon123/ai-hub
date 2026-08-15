@@ -129,6 +129,21 @@ export interface StartRunParams {
   mcpTool?: string;
   mcpToolInput?: Record<string, unknown>;
   mcpConfirmed?: boolean;
+  /** D-083 TOOL_ROUTE opt-in (`input.tool_route`, `local-runtime-api.yaml`
+   * `StartRunRequest.input`) — default-off, per-run consent for agent-runtime
+   * to make ONE optional LLM call that proposes an MCP Tool name + arguments
+   * from the question text, instead of never calling MCP Tools at all (the
+   * prior behavior of every caller in this repo). Only takes effect
+   * server-side when no explicit `mcpTool` is also supplied (that path always
+   * wins — see `agent_runtime.workflow`'s `run_knowledge_chat` docstring) and
+   * the resolved agent's `capabilities.mcp_allowed` is true (`standard-agent`
+   * has it false; `standard-db-agent` has it true — so a caller wanting this
+   * to actually route anything must also pass
+   * `agentProfile: "standard-db-agent"`). Every proposal still goes through
+   * the unchanged confirmation/validation chokepoint — this flag never
+   * bypasses approval. Omitting it reproduces the exact prior
+   * no-tool-routing behavior. */
+  toolRoute?: boolean;
   /** Desktop 대화 고도화 (additive/optional) — prior turns of this same
    * conversation, oldest first. Omitting it (every call site that predates
    * this feature) reproduces the exact prior single-turn request body. */
@@ -172,6 +187,15 @@ export async function startRun(params: StartRunParams): Promise<RunResponse> {
     input.mcp_tool = params.mcpTool;
     input.mcp_tool_input = params.mcpToolInput ?? {};
     input.mcp_confirmed = params.mcpConfirmed ?? false;
+  }
+  // D-083 — only ever sent when the caller explicitly opted in this run.
+  // Never sent alongside `mcpTool` in practice (the caller decides which of
+  // the two consent shapes applies to a given turn), but this function does
+  // not itself enforce mutual exclusivity — that judgment belongs to the
+  // caller (ChatScreen.tsx's `toolRouteActive`), same division of
+  // responsibility as `knowledgeCandidates` vs `knowledgeIds` above.
+  if (params.toolRoute) {
+    input.tool_route = true;
   }
   if (params.history && params.history.length > 0) {
     input.history = params.history;
@@ -262,6 +286,17 @@ const KNOWN_EVENT_NAMES = [
   "mcp.confirmation_required",
   "mcp.confirmation_resolved",
   "mcp.confirmation_expired",
+  // D-083 TOOL_ROUTE — only actually emitted when this turn sent
+  // `tool_route: true` (see `StartRunParams.toolRoute`'s docstring) AND the
+  // resolved agent allows MCP. "selected" carries the routing decision
+  // (ran/skipped/no_tool + which tool, if any); "rejected" is the rarer
+  // preflight-refusal case where a "ran" proposal failed schema validation
+  // and was dropped rather than dispatched (chatTypes.ts's
+  // `describeToolRouteSelected`/`describeToolRouteRejected` render the two
+  // distinctly — see that module for why "nothing happened" and "something
+  // was proposed and blocked" must never look the same).
+  "mcp.tool_route.selected",
+  "mcp.tool_route.rejected",
   "answer.delta",
   "run.completed",
   "run.failed",

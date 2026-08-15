@@ -86,6 +86,14 @@ export interface ChatMessage {
    * exists for it) and for a restored turn (not persisted). See
    * `describeKnowledgeRoute`. */
   knowledgeRoute: KnowledgeRouteDisplay | null;
+  /** Non-null only once (if ever) a `"mcp.tool_route.selected"` SSE event has
+   * arrived for this turn — i.e. this turn sent `tool_route: true` AND
+   * TOOL_ROUTE actually ran (D-083, `agent_runtime.tool_router`). `null` for
+   * every turn that didn't opt in, and for a restored turn (not persisted).
+   * A later `"mcp.tool_route.rejected"` event (preflight refusal of a "ran"
+   * proposal) overwrites this to the `"rejected"` display — see
+   * `describeToolRouteSelected`/`describeToolRouteRejected`. */
+  toolRoute: ToolRouteDisplay | null;
 }
 
 // D-060: an installed Knowledge from a Bundle built before the fix has no
@@ -436,6 +444,114 @@ export function describeKnowledgeRoute(
   };
 }
 
+// --- D06 대화: TOOL_ROUTE 표시(D-083, agentic MCP Tool 선택) -----------------
+// 배경: agent-runtime의 TOOL_ROUTE 단계는 사용자가 이번 턴에서
+// `tool_route: true`를 명시적으로 보내고(opt-in, 기본 꺼짐), 명시적
+// `mcp_tool_request`가 없을 때만 실행된다 — 이번 턴 질문과 후보 Tool의
+// 이름/입력 Schema만으로 어떤 Tool을 호출할지(또는 호출하지 않을지)
+// LLM 한 번으로 "제안"한다. Fail-closed: 실패/거절/스키마 불일치는 전부
+// "아무 Tool도 호출하지 않음"으로 귀결된다(services/agent-runtime/src/
+// agent_runtime/tool_router.py). 이 파일은 그 판단을 화면에 정직하게
+// 옮기는 순수 함수만 둔다 — "아무 일도 없었다"(라우팅이 아무것도 고르지
+// 않음, `status: "no_tool"`)와 "무언가 제안됐지만 실행 전에 막혔다"
+// (`mcp.tool_route.rejected`)가 화면에서 절대 같아 보이면 안 된다(요구
+// 사항).
+
+/** SSE `"mcp.tool_route.selected"`의 실제 payload — 서버 필드 이름 그대로
+ * (`workflow.py`가 `tool_route_result`를 이 모양으로 직렬화한다). `reason`은
+ * 서버 내부 코드(`"declined_by_model"`/`"unparseable"`/`"unknown_tool_name"`/
+ * `"error_or_timeout"`/`"no_candidate_tools"`/
+ * `"candidate_count_at_or_below_threshold"`)이지 한국어 문장이 아니다 —
+ * `knowledge.route.selected`의 `fallback_reason`과 같은 성격(영문 코드).
+ * 이 파일은 이 코드를 화면에 그대로 찍지 않고, `status`만으로 뜻을 옮긴
+ * 한국어 문장을 만든다(아래 `describeToolRouteSelected`). */
+export interface ToolRouteSelectedEventData {
+  status: "ran" | "skipped" | "no_tool";
+  reason: string | null;
+  tool_name: string | null;
+}
+
+/** SSE `"mcp.tool_route.rejected"`의 실제 payload — TOOL_ROUTE가 제안한
+ * (`status: "ran"`) Tool 호출이 그 다음 단계의 스키마 검증 체크포인트에서
+ * 거절된 경우에만 발생한다(`tool_router.py`의 one-shot 규칙: 재시도하지
+ * 않고 Tool 없이 진행). `code`는 `"MCP_TOOL_NOT_FOUND"` 또는
+ * `"MCP_INPUT_INVALID"` 둘뿐이다(workflow.py의
+ * `_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES`). 이 이벤트에는 서버가 만든
+ * 한국어 message가 없다(`_fail()`의 message는 이 경로에서 절대 전송되지
+ * 않는다) — 아래 `TOOL_ROUTE_REJECTED_MESSAGE`가 code별로 이 화면이 보여줄
+ * 문장을 정의한다. */
+export interface ToolRouteRejectedEventData {
+  tool_name: string | null;
+  code: string;
+}
+
+export type ToolRouteStatus = "ran" | "skipped" | "no_tool" | "rejected";
+
+export interface ToolRouteDisplay {
+  status: ToolRouteStatus;
+  /** 사실 그대로의 한 줄 요약. `"no_tool"`은 실패가 아니라 설계된 정상
+   * 동작이라는 점을 분명히 한다(요구사항: 재시도를 유도하지 않는다). */
+  headline: string;
+  toolName: string | null;
+}
+
+/** `mcp.tool_route.rejected`의 `code`별 화면 문구 — 서버의 `_fail()` 경로가
+ * 같은 code에 쓰는 문구(workflow.py 381/385/389행)와 뜻을 맞췄다(그 경로는
+ * 명시적 `mcp_tool_request`가 잘못됐을 때이고, 이 경로는 AI가 제안한 값이
+ * 잘못됐을 때라는 차이만 있다 — 그래서 "AI가 제안한"을 앞에 붙인다). 알 수
+ * 없는 code가 오면(서버가 새 code를 추가한 경우) 추측해 문구를 만들지 않고
+ * code를 그대로 보여준다(fail closed: 모르는 것을 아는 것처럼 말하지
+ * 않는다). */
+const TOOL_ROUTE_REJECTED_MESSAGE: Record<string, string> = {
+  MCP_TOOL_NOT_FOUND: "AI가 제안한 Tool을 찾을 수 없어 실행하지 않았습니다.",
+  MCP_INPUT_INVALID: "AI가 제안한 입력값이 Tool의 입력 형식과 맞지 않아 실행하지 않았습니다.",
+};
+
+/** `TOOL_ROUTE`가 실제로 무엇을 결정했는지를 화면 문구로 바꾼다. 세 상태를
+ * 절대 섞어 말하지 않는다:
+ * - `"ran"`: Tool 하나가 실제로 제안됐다 — 이어서 확인 Panel(승인 필요)이
+ *   뜨거나, 정책상 확인 없이 곧바로 실행된다(그 다음 이벤트들이 결정).
+ * - `"skipped"`: 후보 Tool이 없어 LLM을 부르지도 않았다 — 선택이 아니라
+ *   "고를 것이 없었다"이다.
+ * - `"no_tool"`: LLM이 실제로 판단해 이번 질문에는 Tool이 필요 없다고
+ *   답했다 — 이것이 가장 흔하고 정상적인 결과이며 오류가 아니다(요구사항:
+ *   fail-closed가 고장으로 읽히면 안 된다). */
+export function describeToolRouteSelected(event: ToolRouteSelectedEventData): ToolRouteDisplay {
+  if (event.status === "ran" && event.tool_name) {
+    return {
+      status: "ran",
+      headline: `AI가 이번 질문에 맞는 Tool로 '${event.tool_name}'을(를) 제안했습니다.`,
+      toolName: event.tool_name,
+    };
+  }
+  if (event.status === "skipped") {
+    return {
+      status: "skipped",
+      headline: "호출할 수 있는 Tool 후보가 없어 자동 선택을 건너뛰었습니다.",
+      toolName: null,
+    };
+  }
+  return {
+    status: "no_tool",
+    headline: "이번 질문에는 Tool 호출이 필요하지 않다고 판단해 아무 Tool도 선택하지 않았습니다.",
+    toolName: null,
+  };
+}
+
+/** `"ran"`으로 제안된 Tool 호출이 스키마 검증을 통과하지 못해 실제로는
+ * 실행되지 않은 경우 — 위 `describeToolRouteSelected("ran")` 결과를
+ * 대체한다. 실패가 아니라 안전장치가 정상 동작한 것이므로("아무 Tool도
+ * 호출하지 않는다"는 결과 자체는 `"no_tool"`과 동일), 재시도를 유도하는
+ * 문구를 넣지 않는다 — 서버가 이 제안을 다시 시도하지 않기 때문이다
+ * (tool_router.py one-shot 규칙). */
+export function describeToolRouteRejected(event: ToolRouteRejectedEventData): ToolRouteDisplay {
+  return {
+    status: "rejected",
+    headline: TOOL_ROUTE_REJECTED_MESSAGE[event.code] ?? `AI가 제안한 Tool 호출이 거부되어(${event.code}) 실행하지 않았습니다.`,
+    toolName: event.tool_name,
+  };
+}
+
 // --- D06 대화 보존 (Desktop 대화 고도화/멀티턴) ------------------------------
 
 /** Builds the `history` sent to agent-runtime (`input.history`, additive/
@@ -518,6 +634,7 @@ export function chatMessageFromStoredTurn(
     hubQueriesSent: [],
     knowledgeCandidateNameById: {},
     knowledgeRoute: null,
+    toolRoute: null,
   };
 }
 

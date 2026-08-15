@@ -11,6 +11,8 @@ import {
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
+  describeToolRouteRejected,
+  describeToolRouteSelected,
   groupExcludedKnowledgeByReason,
   groupKnowledgeRouteChoicesByReason,
   partitionInstalledKnowledgeByActivation,
@@ -43,6 +45,7 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     hubQueriesSent: [],
     knowledgeCandidateNameById: {},
     knowledgeRoute: null,
+    toolRoute: null,
     ...overrides,
   };
 }
@@ -615,5 +618,74 @@ describe("describeKnowledgeRoute (KNOWLEDGE_ROUTE 세 상태 표시 — ran/skip
     );
     expect(result.headline).toContain("자동 선택에 실패");
     expect(result.sharedSelectedReason).toBe("라우터가 아무 것도 선택하지 않아 전체를 검색합니다.");
+  });
+});
+
+describe("describeToolRouteSelected (D-083 TOOL_ROUTE)", () => {
+  it("status='ran' names the proposed tool and never claims it has already executed", () => {
+    const result = describeToolRouteSelected({ status: "ran", reason: null, tool_name: "table_count.query" });
+    expect(result.status).toBe("ran");
+    expect(result.toolName).toBe("table_count.query");
+    expect(result.headline).toContain("table_count.query");
+    expect(result.headline).not.toContain("실행했습니다");
+  });
+
+  it("status='skipped' reads as 'nothing to choose from', not a failed choice", () => {
+    const result = describeToolRouteSelected({
+      status: "skipped",
+      reason: "no_candidate_tools",
+      tool_name: null,
+    });
+    expect(result.status).toBe("skipped");
+    expect(result.toolName).toBeNull();
+    expect(result.headline).toContain("후보");
+  });
+
+  it("status='no_tool' reads as the designed, normal outcome of a question needing no tool — not an error to retry", () => {
+    const result = describeToolRouteSelected({
+      status: "no_tool",
+      reason: "declined_by_model",
+      tool_name: null,
+    });
+    expect(result.status).toBe("no_tool");
+    expect(result.toolName).toBeNull();
+    expect(result.headline).not.toMatch(/오류|실패|다시 시도/);
+  });
+
+  it("never echoes the server's internal English reason code verbatim into the Korean headline", () => {
+    const result = describeToolRouteSelected({
+      status: "no_tool",
+      reason: "unparseable",
+      tool_name: null,
+    });
+    expect(result.headline).not.toContain("unparseable");
+  });
+});
+
+describe("describeToolRouteRejected (D-083 TOOL_ROUTE preflight refusal)", () => {
+  it("MCP_TOOL_NOT_FOUND gets its own explanatory message, not a generic one", () => {
+    const result = describeToolRouteRejected({ tool_name: "table_count.query", code: "MCP_TOOL_NOT_FOUND" });
+    expect(result.status).toBe("rejected");
+    expect(result.toolName).toBe("table_count.query");
+    expect(result.headline).toContain("찾을 수 없어");
+  });
+
+  it("MCP_INPUT_INVALID gets its own explanatory message, distinct from MCP_TOOL_NOT_FOUND's", () => {
+    const result = describeToolRouteRejected({ tool_name: "table_count.query", code: "MCP_INPUT_INVALID" });
+    expect(result.status).toBe("rejected");
+    expect(result.headline).toContain("입력값");
+    expect(result.headline).not.toBe(describeToolRouteRejected({ tool_name: "x", code: "MCP_TOOL_NOT_FOUND" }).headline);
+  });
+
+  it("an unknown code fails closed — shows the code rather than fabricating an explanation", () => {
+    const result = describeToolRouteRejected({ tool_name: "x", code: "SOME_NEW_CODE" });
+    expect(result.headline).toContain("SOME_NEW_CODE");
+  });
+
+  it("rejected reads distinctly from 'no_tool' — 'nothing happened' and 'something was proposed and blocked' must never look the same", () => {
+    const noTool = describeToolRouteSelected({ status: "no_tool", reason: "declined_by_model", tool_name: null });
+    const rejected = describeToolRouteRejected({ tool_name: "table_count.query", code: "MCP_INPUT_INVALID" });
+    expect(rejected.status).not.toBe(noTool.status);
+    expect(rejected.headline).not.toBe(noTool.headline);
   });
 });

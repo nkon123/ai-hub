@@ -20,7 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2 } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -52,12 +52,17 @@ import {
   type ExcludedKnowledge,
   type KnowledgeRouteDisplay,
   type KnowledgeRouteEventData,
+  type ToolRouteDisplay,
+  type ToolRouteRejectedEventData,
+  type ToolRouteSelectedEventData,
   RECONCILE_SAME_CAUSE_NOTICE,
   buildHistoryFromMessages,
   buildHubQueryPreview,
   buildMarkdown,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
+  describeToolRouteRejected,
+  describeToolRouteSelected,
   downloadMarkdown,
   groupExcludedKnowledgeByReason,
   hasLowConfidenceCitation,
@@ -308,6 +313,28 @@ function KnowledgeRoutePanel({ route }: { route: KnowledgeRouteDisplay }) {
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+// D06 TOOL_ROUTE(D-083, agentic MCP Tool 선택) 결과 — `describeToolRouteSelected`/
+// `describeToolRouteRejected`(chatTypes.ts)가 이미 정직하게 구분해 둔
+// status를 그대로 그린다. `"no_tool"`은 오류처럼 보이지 않도록 중립 색으로,
+// `"rejected"`만 경고 색으로 표시한다(제안이 있었지만 실행 전에 막혔다는
+// 사실은 눈에 띄어야 한다 — "아무 일도 없었다"와 같아 보이면 안 된다).
+function ToolRoutePanel({ route }: { route: ToolRouteDisplay }) {
+  return (
+    <div
+      className={`max-w-full rounded-lg border px-3 py-2 text-[11px] ${
+        route.status === "rejected"
+          ? "border-warning/40 bg-warning/5 text-warning"
+          : "border-border bg-slate-50 text-text-secondary"
+      }`}
+    >
+      <p className="flex items-start gap-1.5 font-medium">
+        <Wrench size={12} className="mt-0.5 shrink-0" />
+        {route.headline}
+      </p>
     </div>
   );
 }
@@ -565,6 +592,25 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   );
   const mcpDevActive = mcpDevEnabled && (!bridge || calculatorSampleConnected);
 
+  // --- D-083 TOOL_ROUTE 동의 — 허브 조회 토글(allowHubLookup)과 같은 모양의
+  // 동의: 기본 꺼짐, 세션 간 영속하지 않음, 매 Run마다 명시적으로 다시
+  // 보낸다. 켜지면 이번 턴은 (1) `input.tool_route = true`를 보내고 (2)
+  // agent-runtime의 `standard-agent`는 `capabilities.mcp_allowed = false`라
+  // 라우팅이 아예 실행되지 않으므로(config/standard-agent/agent-manifest.json)
+  // `agentProfile: "standard-db-agent"`도 함께 보낸다 — 개발 확인용 명시적
+  // Tool 호출(mcpDevActive)과 동일하게 이 Profile을 쓰지만, 이쪽은 어떤
+  // Tool을 부를지 사용자가 아니라 AI가 이번 질문에서 고른다는 차이가 있다.
+  // 개발 확인용 입력이 이미 명시적 `mcp_tool_request`를 보내는 중이면(D-083
+  // 서버 규칙: 명시적 요청이 항상 우선) 이 토글은 아무 효과가 없으므로
+  // "적용 불가"로 끄고 비활성화한다(허브 토글의 `hubLookupApplicable`과
+  // 동일한 패턴).
+  const [toolRouteEnabled, setToolRouteEnabled] = useState(false);
+  const toolRouteApplicable = !mcpDevActive;
+  const toolRouteActive = toolRouteEnabled && toolRouteApplicable;
+  useEffect(() => {
+    if (!toolRouteApplicable && toolRouteEnabled) setToolRouteEnabled(false);
+  }, [toolRouteApplicable, toolRouteEnabled]);
+
   // --- 연결 상태 ---
   const [connections, setConnections] = useState<ConnectionStatus[] | null>(null);
   const [connectionsChecking, setConnectionsChecking] = useState(false);
@@ -728,6 +774,28 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             const data = item.data as KnowledgeRouteEventData | null;
             if (data) {
               next = { ...next, knowledgeRoute: describeKnowledgeRoute(data, next.knowledgeCandidateNameById) };
+            }
+            break;
+          }
+          case "mcp.tool_route.selected": {
+            // D-083 TOOL_ROUTE 결과 — 이 턴이 실제로 `tool_route: true`를
+            // 보냈을 때만 발생한다. ran/skipped/no_tool을 절대 섞어 말하지
+            // 않는다(describeToolRouteSelected 참고) — "no_tool"은 오류가
+            // 아니라 설계된 정상 결과다.
+            const data = item.data as ToolRouteSelectedEventData | null;
+            if (data) {
+              next = { ...next, toolRoute: describeToolRouteSelected(data) };
+            }
+            break;
+          }
+          case "mcp.tool_route.rejected": {
+            // "ran"으로 제안된 Tool 호출이 스키마 검증에서 거절된 드문 경우
+            // — 위에서 채워진 toolRoute("ran")를 이 결과로 대체한다. "아무
+            // 일도 없었다"(no_tool)와 "제안됐지만 막혔다"(rejected)가 절대
+            // 같아 보이면 안 된다(요구사항).
+            const data = item.data as ToolRouteRejectedEventData | null;
+            if (data) {
+              next = { ...next, toolRoute: describeToolRouteRejected(data) };
             }
             break;
           }
@@ -963,11 +1031,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setSendError(null);
     setQuestion("");
     const id = crypto.randomUUID();
-    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive;
+    // D-083: toolRouteActive는 명시적 Tool 요청 없이도(agentRuntime.ts에
+    // `mcpTool`을 전혀 넘기지 않는다) agent-runtime을 거쳐야 한다 — Ollama
+    // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다.
+    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteActive;
     const serviceId = ollamaOnly
       ? `${SERVICE_ID_PREFIX}:ollama-default`
       : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
-    const agentProfile: ChatMessage["agentProfile"] = mcpDevActive ? "standard-db-agent" : "standard-agent";
+    // standard-agent는 capabilities.mcp_allowed=false라 TOOL_ROUTE가 아예
+    // 실행되지 않는다(config/standard-agent/agent-manifest.json) — toolRouteActive도
+    // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다.
+    const agentProfile: ChatMessage["agentProfile"] =
+      mcpDevActive || toolRouteActive ? "standard-db-agent" : "standard-agent";
     // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
     // `input.history`로 함께 보낸다(additive/optional, local-runtime-api.yaml
     // ConversationTurnInput). Electron 브릿지 유무와 무관하게 항상 동작한다
@@ -1006,6 +1081,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // 엉뚱한 스냅샷을 참조하지 않도록, `knowledgeIdUsed`와 같은 이유).
       knowledgeCandidateNameById,
       knowledgeRoute: null,
+      toolRoute: null,
     };
     setMessages((prev) => [...prev, newMessage]);
     setIsRunning(true);
@@ -1062,7 +1138,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
               mcpConfirmed: false,
             }
-          : {}),
+          : toolRouteActive
+            ? // D-083: 명시적 mcpTool은 절대 함께 보내지 않는다 — 무엇을 부를지
+              // 사용자가 아니라 TOOL_ROUTE가 이번 질문에서 고르게 한다.
+              { agentProfile: "standard-db-agent" as const, toolRoute: true }
+            : {}),
       });
       runIdRef.current = created.id;
       patchMessage(id, { runId: created.id, traceId: created.trace_id });
@@ -1662,6 +1742,26 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     activeLabel="허브"
                   />
 
+                  {/* D-083 TOOL_ROUTE 동의 — 허브 토글과 동일한 모양의 동의(기본
+                      꺼짐, 세션 간 영속하지 않음). 켜면 이번 질문에 맞는 MCP
+                      Tool을 AI가 하나 제안하고, 실행 전에는 항상 기존 확인
+                      Panel(승인/거부)을 거친다 — 이 토글 자체는 실행을
+                      허락하지 않고 "제안을 받아보겠다"만 허락한다. */}
+                  <ComposerToggle
+                    id="tool-route-toggle"
+                    label="필요하면 Tool 자동 제안"
+                    description={
+                      toolRouteApplicable
+                        ? "이 질문에 사내 시스템 조회가 필요해 보이면 AI가 호출할 Tool과 입력값을 제안합니다. 실행 전에는 항상 승인/거부를 다시 확인합니다."
+                        : "개발 확인용 MCP Tool 호출이 켜져 있는 동안에는 사용할 수 없습니다 — 그 입력이 항상 우선합니다."
+                    }
+                    icon={<Wrench size={15} aria-hidden="true" />}
+                    pressed={toolRouteEnabled}
+                    disabled={isRunning || !toolRouteApplicable}
+                    onChange={setToolRouteEnabled}
+                    activeLabel="Tool 제안"
+                  />
+
                   {settingsBridge ? (
                     <div className="flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors hover:bg-slate-100">
                       <Bot size={14} className="shrink-0 text-text-muted" aria-hidden="true" />
@@ -1810,6 +1910,10 @@ function ChatTurn({
             보냈고 라우팅이 실제로 돌았을 때만(스킵/실패 포함) 나타난다. 요구
             사항: 셋(ran/skipped/fallback)을 절대 섞어 말하지 않는다. */}
         {message.knowledgeRoute && <KnowledgeRoutePanel route={message.knowledgeRoute} />}
+
+        {/* TOOL_ROUTE(D-083, agentic MCP Tool 선택) 결과 — 이 턴이 실제로
+            `tool_route: true`를 보냈고 라우팅이 돌았을 때만 나타난다. */}
+        {message.toolRoute && <ToolRoutePanel route={message.toolRoute} />}
 
         {/* 허브 조회 사후 가시성 — "hub.query_sent" 이벤트가 도착할 때마다
             실제로 허브에 전송된 질의를 그대로 보여준다(agent-runtime의 강제
