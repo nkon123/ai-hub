@@ -63,6 +63,7 @@ interface DesktopSettingsFile {
   mcpServerAlias: string;
   mcpServerUrl: string;
   searchRuntimeBaseUrl: string;
+  pythonInterpreterPath: string | null;
   setupCompletedAt: string | null;
   updatedAt: string | null;
 }
@@ -76,6 +77,9 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
   mcpServerUrl: DEFAULT_MCP_SERVER_URL,
   searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
+  // D-084: 절대 `python`/`python3` PATH 기본값으로 대체하지 않는다 — 값이
+  // 없으면 로컬 Tool 실행 자체가 막힌다(구현 원칙 7).
+  pythonInterpreterPath: null,
   setupCompletedAt: null,
   updatedAt: null,
 };
@@ -102,6 +106,7 @@ export class DesktopSettingsStore {
         mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : DEFAULT_MCP_SERVER_URL,
         searchRuntimeBaseUrl:
           typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : DEFAULT_SEARCH_RUNTIME_BASE_URL,
+        pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       };
@@ -127,6 +132,7 @@ export class DesktopSettingsStore {
       mcpServerAlias: current.mcpServerAlias,
       mcpServerUrl: current.mcpServerUrl,
       searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
+      pythonInterpreterPath: current.pythonInterpreterPath,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
       updatedAt: current.updatedAt,
@@ -180,6 +186,15 @@ export class DesktopSettingsStore {
       const check = validateSearchRuntimeBaseUrl(patch.searchRuntimeBaseUrl);
       if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
       next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
+    }
+    if (patch.pythonInterpreterPath !== undefined) {
+      // D-084: 파일시스템 경로이지 URL이 아니므로 URL 검증을 거치지 않는다.
+      // 저장 시점에 존재 여부(fs.existsSync)를 요구하지도 않는다 — 사용자가
+      // Python을 아직 설치하지 않았거나, 이 개발 환경에서 fs 확인을 신뢰할
+      // 수 없는 경우에도 값을 먼저 저장할 수 있어야 한다(Task Brief). 빈
+      // 문자열은 "미설정"(null)으로 되돌린다 — 다른 선택형 문자열 필드
+      // (clientDisplayName 등)와 동일한 trim -> empty-to-null 관례.
+      next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
     }
 
     next.updatedAt = new Date().toISOString();

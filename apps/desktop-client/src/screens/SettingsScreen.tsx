@@ -43,6 +43,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
   const [searchRuntimeBaseUrl, setSearchRuntimeBaseUrl] = useState("");
+  const [pythonInterpreterPath, setPythonInterpreterPath] = useState("");
 
   const [savingSection, setSavingSection] = useState<string | null>(null);
   const [sectionError, setSectionError] = useState<Record<string, string | null>>({});
@@ -63,6 +64,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
     setSearchRuntimeBaseUrl(s.searchRuntimeBaseUrl);
+    setPythonInterpreterPath(s.pythonInterpreterPath ?? "");
   }, []);
 
   // 편집값이 아니라 사실 조회라 설정 저장/복원 흐름과 분리한다 — bridge 가
@@ -422,6 +424,39 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
               status={searchStatus.ok ? "PASS" : "FAIL"}
               message={searchStatus.ok ? searchStatus.detail : `${searchStatus.detail} — ${searchStatus.recoveryHint ?? ""}`}
             />
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-6">
+        <SectionHeader title="Python 인터프리터 경로" />
+        <p className="mb-3 text-body text-text-secondary">
+          자산 허브 &gt; 로컬 Tool 실행에 사용할 Python 인터프리터의 절대 경로입니다. 비워 두면 로컬 Tool 실행이
+          비활성화됩니다 — <code>python</code>/<code>python3</code> 같은 PATH 이름으로 자동 대체하지 않습니다(어떤
+          인터프리터가 사용될지 항상 명시적으로 지정해야 합니다).
+        </p>
+        <LabeledInput
+          id="settings-python-interpreter-path"
+          label="Python 인터프리터 경로"
+          value={pythonInterpreterPath}
+          onChange={setPythonInterpreterPath}
+          placeholder="예: /usr/bin/python3"
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={() => void saveSection("pythonInterpreter", { pythonInterpreterPath })}
+            disabled={savingSection === "pythonInterpreter"}
+          >
+            <Save size={14} /> 저장
+          </Button>
+          {sectionSavedAt.pythonInterpreter && (
+            <span className="text-caption text-text-muted">{formatDateTime(sectionSavedAt.pythonInterpreter)} 저장됨</span>
+          )}
+        </div>
+        {sectionError.pythonInterpreter && (
+          <div className="mt-2">
+            <ErrorBanner message={sectionError.pythonInterpreter} />
           </div>
         )}
       </Card>

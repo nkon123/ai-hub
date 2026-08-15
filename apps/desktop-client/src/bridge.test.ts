@@ -17,6 +17,7 @@ const SETTINGS: DesktopSettingsPublic = {
   mcpServerAlias: "default-mcp",
   mcpServerUrl: "http://127.0.0.1:8500",
   searchRuntimeBaseUrl: "http://127.0.0.1:8300",
+  pythonInterpreterPath: null,
   maxConcurrentRuns: { value: 1, enforced: false, reason: "" },
   setupCompletedAt: null,
   updatedAt: null,
@@ -227,6 +228,24 @@ function createCompleteBridge(): DesktopBridge {
     },
     async deleteConversation() {
       return { ok: true, error: null };
+    },
+    async pickLocalToolFile() {
+      return null;
+    },
+    async inspectLocalToolFile() {
+      return { ok: false, reason: "file_unreadable", message: "" };
+    },
+    async addLocalTool() {
+      return { ok: false, tool: null, error: null };
+    },
+    async listLocalTools() {
+      return [];
+    },
+    async removeLocalTool() {
+      return { ok: false, error: null };
+    },
+    async invokeLocalTool() {
+      return { outcome: "interpreter_not_configured" };
     },
   };
 }

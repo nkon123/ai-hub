@@ -470,6 +470,104 @@ export interface ReconcileMcpToolConnectionsResult {
 }
 
 // ---------------------------------------------------------------------------
+// D-084 "Desktop 로컬 Tool" — 사용자가 직접 고른 .py 파일 하나의 함수를,
+// 실행하지 않고 정적으로 분석해 입력 Schema를 만들고, 이후 사용자가 명시적
+// 확인을 거쳐 매 호출마다 그 파일을 로컬에서 직접 실행한다. D-083
+// TOOL_ROUTE/D-080 MCP Tool 등록과 **구조적으로 분리**되어 있다 — 이 값들은
+// agent-runtime에도, 대화 화면의 Tool 후보 조립에도 절대 전달되지 않는다
+// (`electron/__tests__/local-tool-isolation.test.ts`가 소스 텍스트를 직접
+// 읽어 그 사실을 강제한다). 자세한 경계와 잔여 위험은
+// `docs/implementation-spec/open-decisions.md` D-084 참고.
+// ---------------------------------------------------------------------------
+
+export interface LocalToolParameterInfo {
+  name: string;
+  schemaType: string;
+  required: boolean;
+  defaultIncluded: boolean;
+}
+
+export interface LocalToolDiscardedInfo {
+  bodyStatementCount: number;
+  decoratorCount: number;
+  docstringPresent: boolean;
+  sourceExecuted: false;
+  sourcePersisted: false;
+}
+
+export type LocalToolSignatureRefusalReason =
+  | "source_empty"
+  | "source_too_large"
+  | "function_not_found"
+  | "multiple_functions_found"
+  | "function_name_invalid"
+  | "variadic_parameters_unsupported"
+  | "parameter_annotation_missing"
+  | "unsupported_annotation"
+  | "identity_parameter_forbidden"
+  | "too_many_parameters"
+  /** fs 읽기 자체가 실패한 경우(파일이 이동/삭제/권한 문제) — 순수 파서
+   * (`local-tool-signature.ts`)에는 없는, main process 전용 실패 사유. */
+  | "file_unreadable";
+
+export interface LocalToolSignatureFailure {
+  ok: false;
+  reason: LocalToolSignatureRefusalReason;
+  message: string;
+  candidates?: string[];
+}
+
+export interface LocalToolSignatureSuccess {
+  ok: true;
+  functionName: string;
+  toolName: string;
+  inputSchema: Record<string, unknown>;
+  parameters: LocalToolParameterInfo[];
+  discarded: LocalToolDiscardedInfo;
+  warnings: string[];
+}
+
+export type LocalToolSignatureResult = LocalToolSignatureSuccess | LocalToolSignatureFailure;
+
+/** 렌더러에 노출되는 저장된 로컬 Tool 레코드. `id`는 항상
+ * `crypto.randomUUID()`이며 파일명/함수명에서 파생되지 않는다(사용자가 준
+ * 이름으로 경로/식별자를 만들지 않는다는 CLAUDE.md 규칙).
+ * `riskAcknowledgedAt`은 절대 `null`이 아니다 — `LocalToolStore.add()`가
+ * `acknowledgedRisk: true` 없이는 애초에 레코드를 만들지 않는다(구조적
+ * 강제, UI 체크박스는 그 강제의 표현일 뿐이다). */
+export interface LocalTool {
+  id: string;
+  filePath: string;
+  functionName: string;
+  toolName: string;
+  inputSchema: Record<string, unknown>;
+  parameters: LocalToolParameterInfo[];
+  discarded: LocalToolDiscardedInfo;
+  warnings: string[];
+  addedAt: string;
+  riskAcknowledgedAt: string;
+}
+
+/** 매 호출의 결과 — 여섯 가지 outcome은 서로 다른 사실이며 화면에서 절대
+ * 하나의 "실패"로 뭉개지 않는다(Task Brief). `interpreter_not_configured`는
+ * 프로세스를 아예 띄우기 전에 판정되는 유일한 outcome이다. */
+export type LocalToolInvocationResult =
+  | { outcome: "success"; result: unknown }
+  | { outcome: "function_error"; errorType: string; errorMessage: string }
+  | { outcome: "nonzero_exit"; exitCode: number; stderrSnippet: string }
+  | { outcome: "timeout"; timeoutMs: number }
+  | { outcome: "oversized_output"; limitBytes: number }
+  | { outcome: "spawn_error"; message: string }
+  | { outcome: "interpreter_not_configured" }
+  /** 사용자가 Main Process의 네이티브 실행 승인 대화상자에서 거부했다. 렌더러의
+   * 확인 UI와 별개로, 실행 직전 Main Process가 매번 다시 묻는다 — 렌더러만
+   * 확인을 담당하면 브릿지에 도달하는 다른 경로가 승인 없이 Python을 실행할 수
+   * 있고, 그것이 구현 원칙 7이 금지하는 "승인되지 않은 임의 Python 실행"이다
+   * (D-084). 추가 시점의 위험 고지(`riskAcknowledgedAt`)는 이 승인을 대신하지
+   * 않는다 — 그것은 기억된 승인이라 이후 호출이 무인으로 실행될 수 있다. */
+  | { outcome: "user_denied" };
+
+// ---------------------------------------------------------------------------
 // D11 로그/진단
 // ---------------------------------------------------------------------------
 
@@ -603,6 +701,14 @@ export interface DesktopSettingsPublic {
    * `network-policy.ts`의 `validateSearchRuntimeBaseUrl` 참고: 활성화
    * 요청이 이 기기의 절대 경로를 담기 때문). */
   searchRuntimeBaseUrl: string;
+  /** D-084 "Desktop 로컬 Tool" 실행에 쓰는 Python 인터프리터 절대 경로.
+   * 기본값 `null` — 어떤 코드도 `python`/`python3` 같은 PATH 검색으로
+   * 대체하지 않는다(구현 원칙 7: 승인되지 않은 임의 실행을 만들지 않는다 —
+   * 사용자가 명시적으로 설정하지 않은 인터프리터로 조용히 실행을 시도하는
+   * 것도 그 원칙 위반이다). 값이 `null`/빈 문자열이면
+   * `invokeLocalTool`은 프로세스를 아예 띄우지 않고
+   * `interpreter_not_configured`를 반환한다. */
+  pythonInterpreterPath: string | null;
   maxConcurrentRuns: MaxConcurrentRunsInfo;
   setupCompletedAt: string | null;
   updatedAt: string | null;
@@ -619,6 +725,7 @@ export interface DesktopSettingsInput {
   mcpServerAlias?: string;
   mcpServerUrl?: string;
   searchRuntimeBaseUrl?: string;
+  pythonInterpreterPath?: string;
 }
 
 export interface DesktopSettingsUpdateResult {
@@ -1094,4 +1201,28 @@ export interface DesktopBridge {
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
    * 이중 검사). */
   deleteConversation(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
+
+  // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
+  // D-083 TOOL_ROUTE/D-080 등록과 구조적으로 분리되어 있다 — 이 여섯 메서드는
+  // agent-runtime을 절대 호출하지 않는다(`electron/__tests__/local-tool-isolation.test.ts`).
+  /** `.py` 파일만 허용하는 네이티브 파일 대화상자. 사용자가 취소하면 `null`
+   * (오류가 아니다 — CLAUDE.md 취소 상태). */
+  pickLocalToolFile(): Promise<string | null>;
+  /** 이미 고른 파일을 main process가 직접 읽어(fs) 정적 분석한다 — 실행하지
+   * 않는다. 파일을 옮기거나 지운 경우 등 읽기 자체가 실패하면
+   * `reason: "file_unreadable"`을 돌려준다. */
+  inspectLocalToolFile(filePath: string): Promise<LocalToolSignatureResult>;
+  /** 렌더러가 왕복시킨 Schema를 신뢰하지 않고 파일을 서버 측에서 다시
+   * 분석한 뒤 저장한다. `acknowledgedRisk: true`가 아니면 저장 자체를
+   * 거부한다(Task Brief 요구사항 3 — "격리되지 않음" 고지에 대한 구조적
+   * 강제, 체크박스만으로 우회할 수 없다). */
+  addLocalTool(filePath: string, acknowledgedRisk: boolean): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
+  listLocalTools(): Promise<LocalTool[]>;
+  removeLocalTool(id: string): Promise<{ ok: boolean; error: string | null }>;
+  /** 매 호출은 렌더러의 명시적 확인 단계(파일 경로+인자 표시) 뒤에만
+   * 호출된다 — 이 메서드 자체는 그 확인을 강제하지 않으므로(IPC 경계에서는
+   * 강제할 수 없다) 호출부(LocalToolsScreen.tsx)가 그 규약을 지킨다.
+   * `pythonInterpreterPath`가 비어 있으면 프로세스를 띄우지 않고
+   * `interpreter_not_configured`를 반환한다. */
+  invokeLocalTool(id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult>;
 }

@@ -26,6 +26,9 @@ import type {
   InstalledAssetWithStatus,
   KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
+  LocalTool,
+  LocalToolInvocationResult,
+  LocalToolSignatureResult,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -194,6 +197,23 @@ const bridge: DesktopBridge = {
 
   deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("conversations:delete", id, reason),
+
+  // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
+  pickLocalToolFile: (): Promise<string | null> => ipcRenderer.invoke("localTool:pickFile"),
+
+  inspectLocalToolFile: (filePath: string): Promise<LocalToolSignatureResult> =>
+    ipcRenderer.invoke("localTool:inspectFile", filePath),
+
+  addLocalTool: (filePath: string, acknowledgedRisk: boolean): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
+    ipcRenderer.invoke("localTool:add", filePath, acknowledgedRisk),
+
+  listLocalTools: (): Promise<LocalTool[]> => ipcRenderer.invoke("localTool:list"),
+
+  removeLocalTool: (id: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("localTool:remove", id),
+
+  invokeLocalTool: (id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult> =>
+    ipcRenderer.invoke("localTool:invoke", id, args),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

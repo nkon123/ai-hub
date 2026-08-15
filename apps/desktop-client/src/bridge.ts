@@ -77,6 +77,12 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   createConversation: true,
   appendConversationTurn: true,
   deleteConversation: true,
+  pickLocalToolFile: true,
+  inspectLocalToolFile: true,
+  addLocalTool: true,
+  listLocalTools: true,
+  removeLocalTool: true,
+  invokeLocalTool: true,
 };
 
 const ALL_BRIDGE_METHOD_NAMES = Object.keys(BRIDGE_METHOD_PRESENCE) as Array<keyof DesktopBridge>;

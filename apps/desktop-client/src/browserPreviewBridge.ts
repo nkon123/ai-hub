@@ -56,6 +56,10 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
     mcpServerUrl: DEFAULT_MCP_SERVER_URL,
     searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
+    // D-084: 브라우저 개발 모드에는 파일시스템/subprocess가 없어 로컬 Tool을
+    // 실행할 방법 자체가 없다 — 값이 있어도 의미가 없으므로 항상 미설정으로
+    // 시작한다.
+    pythonInterpreterPath: null,
     maxConcurrentRuns: { value: 1, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
     setupCompletedAt: null,
     updatedAt: null,
@@ -104,6 +108,10 @@ export function applyBrowserPreviewSettingsPatch(
     next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
   }
 
+  if (patch.pythonInterpreterPath !== undefined) {
+    next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
+  }
+
   next.updatedAt = new Date().toISOString();
   return { ok: true, error: null, settings: next };
 }
@@ -124,6 +132,7 @@ function readSettings(): DesktopSettingsPublic {
       mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : defaults.mcpServerUrl,
       searchRuntimeBaseUrl:
         typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : defaults.searchRuntimeBaseUrl,
+      pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
       setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
     };
@@ -486,6 +495,32 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       }
       persistConversations(conversations.filter((conversation) => conversation.id !== id));
       return { ok: true, error: null };
+    },
+
+    // --- D-084 "Desktop 로컬 Tool" ------------------------------------------
+    // 브라우저 개발 모드에는 파일시스템도 subprocess도 없다 — 파일을 고를
+    // 수도, Python을 실행할 수도 없으므로 모든 메서드가 정직하게 "불가"를
+    // 돌려준다(성공을 지어내지 않는다).
+    async pickLocalToolFile() {
+      return null;
+    },
+    async inspectLocalToolFile() {
+      return { ok: false, reason: "file_unreadable", message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async addLocalTool() {
+      return { ok: false, tool: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async listLocalTools() {
+      return [];
+    },
+    async removeLocalTool() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async invokeLocalTool() {
+      // "interpreter_not_configured"를 재사용하지 않는다 — 이 브라우저
+      // 모드에서는 인터프리터 설정 여부와 무관하게 애초에 실행 경로 자체가
+      // 없다(별도 이유가 필요하다는 Task Brief 지침).
+      return { outcome: "spawn_error", message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
   };
   return previewBridge;

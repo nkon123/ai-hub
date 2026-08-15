@@ -5,6 +5,7 @@ import { StoreScreen } from "./screens/StoreScreen";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ChatScreen } from "./screens/ChatScreen";
 import { AssetsScreen } from "./screens/AssetsScreen";
+import { LocalToolsScreen } from "./screens/LocalToolsScreen";
 import { UpdateScreen } from "./screens/UpdateScreen";
 import { LogsScreen } from "./screens/LogsScreen";
 import { SetupWizardScreen } from "./screens/SetupWizardScreen";
@@ -18,7 +19,7 @@ import { getDesktopBridge, getMissingBridgeMethods } from "./bridge";
 // "setup"(D01)은 사이드바에 없는 Drill-down 화면이다 — 진입 시 어디서
 // 왔는지를 함께 기억해 "뒤로"가 항상 올바른 화면으로 되돌아간다.
 type MainTab = "chat" | "hub" | "settings" | "detail" | "setup";
-type HubSubTab = "store" | "import" | "assets" | "update";
+type HubSubTab = "store" | "import" | "assets" | "localTools" | "update";
 type SettingsSubTab = "general" | "connections" | "logs" | "info";
 
 const MAIN_TABS: Array<{ id: MainTab; label: string; icon: typeof MessageSquare }> = [
@@ -31,6 +32,7 @@ const HUB_TABS: Array<{ id: HubSubTab; label: string }> = [
   { id: "store", label: "찾아 설치" },
   { id: "import", label: "ZIP 가져오기" },
   { id: "assets", label: "설치된 자산" },
+  { id: "localTools", label: "로컬 Tool" },
   { id: "update", label: "복구" },
 ];
 
@@ -182,6 +184,7 @@ export default function App() {
                   onGoToImport={goToImport}
                 />
               )}
+              {hubTab === "localTools" && <LocalToolsScreen />}
               {hubTab === "update" && <UpdateScreen onGoToImport={goToImport} />}
             </div>
           )}

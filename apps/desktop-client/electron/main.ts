@@ -29,6 +29,9 @@ import {
   reconcileInstalledKnowledgeActivations,
 } from "./knowledge-activation";
 import { connectInstalledMcpTool, disconnectInstalledMcpTool, reconcileInstalledMcpToolConnections } from "./mcp-tool-connection";
+import { parseLocalToolSignature } from "./local-tool-signature";
+import { LocalToolStore } from "./local-tool-store";
+import { invokeLocalTool as runInvokeLocalTool } from "./local-tool-runner";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
@@ -62,6 +65,9 @@ import type {
   InstalledAssetWithStatus,
   KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
+  LocalTool,
+  LocalToolInvocationResult,
+  LocalToolSignatureResult,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -92,6 +98,7 @@ let appLogger: AppLogger | null = null;
 let portalSettingsStore: PortalSettingsStore | null = null;
 let desktopSettingsStore: DesktopSettingsStore | null = null;
 let conversationStore: ConversationStore | null = null;
+let localToolStore: LocalToolStore | null = null;
 let ollamaChatAbortController: AbortController | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
@@ -124,6 +131,16 @@ function getConversationStore(): ConversationStore {
     conversationStore = new ConversationStore(getLayout().stateDir);
   }
   return conversationStore;
+}
+
+/** D-084 — 완전히 별도의 저장소(`local-tools.json`)다. `InstalledAssetsStore`와
+ * 절대 공유하지 않는다(electron/__tests__/local-tool-isolation.test.ts가
+ * 이 분리를 소스 텍스트 검사로 강제한다). */
+function getLocalToolStore(): LocalToolStore {
+  if (!localToolStore) {
+    localToolStore = new LocalToolStore(getLayout().stateDir);
+  }
+  return localToolStore;
 }
 
 /** D11's only log source — see `app-logger.ts`'s module docstring for why
@@ -875,6 +892,146 @@ function registerIpcHandlers(): void {
       if (result.ok) {
         getLogger().info("conversation-store", `대화 삭제됨: ${id} (사유: ${reason.trim()})`);
       }
+      return result;
+    },
+  );
+
+  // --- D-084 "Desktop 로컬 Tool" -----------------------------------------------
+  // 구조적으로 D-083 TOOL_ROUTE/D-080 등록과 분리되어 있다 — 이 핸들러들은
+  // agent-runtime을 절대 호출하지 않는다. 파일 경로는 항상
+  // `dialog.showOpenDialog`에서만 나오고(사용자가 입력한 파일명으로 경로를
+  // 만들지 않는다), 저장 식별자는 항상 `LocalToolStore.add()`가 만드는
+  // `crypto.randomUUID()`다.
+  ipcMain.handle("localTool:pickFile", async (): Promise<string | null> => {
+    const win = mainWindow;
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: "로컬 Tool로 사용할 Python 파일 선택",
+      filters: [{ name: "Python", extensions: ["py"] }],
+      properties: ["openFile"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle(
+    "localTool:inspectFile",
+    async (_event, filePath: string): Promise<LocalToolSignatureResult> => {
+      let source: string;
+      try {
+        source = fs.readFileSync(filePath, "utf-8");
+      } catch (err) {
+        return {
+          ok: false,
+          reason: "file_unreadable",
+          message: `파일을 읽을 수 없습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+        };
+      }
+      return parseLocalToolSignature(source);
+    },
+  );
+
+  ipcMain.handle(
+    "localTool:add",
+    async (
+      _event,
+      filePath: string,
+      acknowledgedRisk: boolean,
+    ): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> => {
+      // 렌더러가 왕복시킨 Schema를 신뢰하지 않고 서버 측에서 파일을 다시
+      // 읽어 다시 분석한다(Task Brief) — 그 사이 파일이 바뀌었거나 렌더러가
+      // 조작된 값을 보냈더라도 실제로 저장되는 Schema는 항상 지금 이 순간의
+      // 파일 내용을 반영한다.
+      let source: string;
+      try {
+        source = fs.readFileSync(filePath, "utf-8");
+      } catch (err) {
+        return {
+          ok: false,
+          tool: null,
+          error: `파일을 읽을 수 없습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+        };
+      }
+      const parsed = parseLocalToolSignature(source);
+      if (!parsed.ok) {
+        return { ok: false, tool: null, error: parsed.message };
+      }
+      const result = getLocalToolStore().add(
+        {
+          filePath,
+          functionName: parsed.functionName,
+          toolName: parsed.toolName,
+          inputSchema: parsed.inputSchema,
+          parameters: parsed.parameters,
+          discarded: parsed.discarded,
+          warnings: parsed.warnings,
+        },
+        acknowledgedRisk,
+      );
+      if (!result.ok) {
+        return { ok: false, tool: null, error: result.error };
+      }
+      getLogger().info("local-tool", `로컬 Tool 추가됨: ${result.tool.toolName} (${result.tool.id})`);
+      return { ok: true, tool: result.tool, error: null };
+    },
+  );
+
+  ipcMain.handle("localTool:list", async (): Promise<LocalTool[]> => {
+    return getLocalToolStore().list();
+  });
+
+  ipcMain.handle("localTool:remove", async (_event, id: string): Promise<{ ok: boolean; error: string | null }> => {
+    const result = getLocalToolStore().remove(id);
+    if (result.ok) {
+      getLogger().info("local-tool", `로컬 Tool 제거됨: ${id}`);
+    }
+    return result;
+  });
+
+  ipcMain.handle(
+    "localTool:invoke",
+    async (_event, id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult> => {
+      const tool = getLocalToolStore().find(id);
+      if (!tool) {
+        return { outcome: "spawn_error", message: "로컬 Tool을 찾을 수 없습니다." };
+      }
+      // 실행 직전, Main Process가 직접 묻는다. 렌더러(LocalToolsScreen)의 확인
+      // 단계와 중복처럼 보이지만 중복이 아니다 — Electron에서 신뢰 경계는 Main
+      // Process이고, 렌더러만 확인을 담당하면 이 브릿지에 도달하는 다른 코드
+      // 경로가 승인 없이 사용자 권한으로 Python을 실행할 수 있다. 그것이 구현
+      // 원칙 7이 금지하는 "승인되지 않은 임의 Python 실행"이다. 추가 시점의
+      // 위험 고지는 기억된 승인이라 이 자리를 대신하지 못한다(D-084).
+      const win = mainWindow;
+      if (!win) {
+        return { outcome: "spawn_error", message: "창이 없어 실행 승인을 받을 수 없습니다." };
+      }
+      const approval = await dialog.showMessageBox(win, {
+        type: "warning",
+        buttons: ["실행", "취소"],
+        defaultId: 1,
+        cancelId: 1,
+        title: "로컬 Tool 실행 승인",
+        message: `'${tool.toolName}'을(를) 실행할까요?`,
+        detail:
+          `파일: ${tool.filePath}\n함수: ${tool.functionName}\n인자: ${JSON.stringify(args ?? {})}\n\n` +
+          "이 코드는 격리되지 않은 상태로, 사용자의 권한으로 실행됩니다 — 직접 실행한 것과 동일합니다.",
+      });
+      if (approval.response !== 0) {
+        getLogger().info("local-tool", `로컬 Tool 실행 거부됨: ${tool.toolName} (${id})`);
+        return { outcome: "user_denied" };
+      }
+      const interpreterPath = getDesktopSettingsStore().getPublic().pythonInterpreterPath;
+      const result = await runInvokeLocalTool({
+        interpreterPath,
+        modulePath: tool.filePath,
+        functionName: tool.functionName,
+        args: args ?? {},
+      });
+      // 실행 결과에는 인자 값(사용자 입력)도, 반환값 원문도 기록하지 않는다
+      // — outcome만 남긴다(CLAUDE.md: Log에 Prompt 원문/문서 전체를 기본
+      // 저장하지 않는다는 원칙과 같은 정신).
+      const logFn = result.outcome === "success" ? "info" : result.outcome === "interpreter_not_configured" ? "warn" : "error";
+      getLogger()[logFn]("local-tool", `로컬 Tool 실행 ${result.outcome}: ${tool.toolName} (${id})`);
       return result;
     },
   );
