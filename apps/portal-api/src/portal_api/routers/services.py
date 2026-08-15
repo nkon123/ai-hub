@@ -136,18 +136,49 @@ async def create_service(
             details={"errors": exc.errors[:10]},
         )
 
-    owner = body.service_definition.get("owner", {})
-    service = Service(
-        name=body.name,
-        owner_org=owner.get("org", user.org),
-        owner_creator_id=owner.get("creator_id", user.user_id),
-    )
-    db.add(service)
-    await db.flush()
+    new_version_string = body.service_definition.get("version", "1.0.0")
+
+    if body.service_id:
+        # 새 Service가 아니라 기존 Service의 새 버전. `POST
+        # /deployments/{id}/revisions`(Update)가 요구하는 "같은 Service의 다른
+        # Version"을 만드는 유일한 경로다.
+        service = (
+            await db.execute(select(Service).where(Service.id == body.service_id))
+        ).scalar_one_or_none()
+        if service is None:
+            return _not_found("Service를 찾을 수 없습니다.", trace_id)
+
+        duplicate = (
+            await db.execute(
+                select(ServiceVersion).where(
+                    ServiceVersion.service_id == service.id,
+                    ServiceVersion.version == new_version_string,
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            # 승인 Version을 수정하는 Update 코드를 만들지 않는다(CLAUDE.md
+            # 코드 규칙) — 같은 버전 번호를 다시 제출하면 기존 행을 고치는
+            # 대신 거부한다.
+            return _error(
+                status.HTTP_409_CONFLICT,
+                "SERVICE_VERSION_EXISTS",
+                f"이 Service에 {new_version_string} 버전이 이미 있습니다.",
+                trace_id,
+            )
+    else:
+        owner = body.service_definition.get("owner", {})
+        service = Service(
+            name=body.name,
+            owner_org=owner.get("org", user.org),
+            owner_creator_id=owner.get("creator_id", user.user_id),
+        )
+        db.add(service)
+        await db.flush()
 
     version = ServiceVersion(
         service_id=service.id,
-        version=body.service_definition.get("version", "1.0.0"),
+        version=new_version_string,
         status="DRAFT",
         service_definition=body.service_definition,
     )
@@ -662,6 +693,17 @@ async def publish_deployment(
     if deployment is None:
         return _not_found("Deployment를 찾을 수 없습니다.", trace_id)
 
+    # §8: RETIRED is terminal. Without this guard a re-publish would revive a
+    # retired chatbot at its old URL — the one thing retiring is supposed to
+    # make impossible.
+    if deployment.status == "RETIRED":
+        return _error(
+            status.HTTP_409_CONFLICT,
+            "DEPLOYMENT_RETIRED",
+            "폐기된 Deployment는 다시 게시할 수 없습니다. 새 Deployment를 만드세요.",
+            trace_id,
+        )
+
     version = (
         await db.execute(
             select(ServiceVersion).where(ServiceVersion.id == deployment.service_version_id)
@@ -680,7 +722,42 @@ async def publish_deployment(
             details={"checks": [c.model_dump() for c in validation.checks]},
         )
 
-    # Build the immutable dependency snapshot.
+    revision = await _activate_new_revision(deployment, version, user.user_id, db)
+    deployment.status = "ACTIVE"
+    await db.commit()
+
+    logger.info(
+        "deployment.publish trace_id=%s deployment_id=%s revision_id=%s slug=%s",
+        trace_id,
+        deployment.id,
+        revision.id,
+        deployment.slug,
+    )
+    await record_audit(
+        db,
+        event_type="DEPLOYMENT_PUBLISHED",
+        actor=user,
+        resource_type="DEPLOYMENT",
+        resource_id=deployment.id,
+        result="SUCCESS",
+        trace_id=trace_id,
+        metadata={"revision_id": revision.id, "slug": deployment.slug},
+    )
+    return PublishJobResponseOut(
+        job_id=revision.id, deployment_url=_deployment_url(deployment.slug)
+    )
+
+
+async def _build_dependency_snapshot(version: ServiceVersion, db: AsyncSession) -> dict:
+    """§11.2 `resolved_dependency_snapshot` — the immutable record of exactly
+    which asset versions a revision serves. Resolved once, at activation
+    time, so a later change to the Knowledge asset cannot retroactively
+    alter what a published revision claims to have shipped.
+
+    Shared by `/publish` and `/deployments/{id}/revisions` (update): both
+    activate a revision, and a snapshot assembled two different ways would
+    make the two paths silently divergent.
+    """
     knowledge_snapshot: list[dict] = []
     for binding in version.service_definition.get("knowledge_bindings") or []:
         knowledge_id = binding.get("knowledge_id")
@@ -714,14 +791,32 @@ async def publish_deployment(
             }
         )
 
-    published_at = datetime.now(UTC)
-    snapshot = {
+    return {
         "service_version_id": version.id,
         "service_definition": version.service_definition,
         "knowledge": knowledge_snapshot,
         "model_alias": (version.service_definition.get("model_policy") or {}).get("model_alias"),
-        "published_at": published_at.isoformat(),
+        "published_at": datetime.now(UTC).isoformat(),
     }
+
+
+async def _activate_new_revision(
+    deployment: ServiceDeployment,
+    version: ServiceVersion,
+    actor_id: str,
+    db: AsyncSession,
+) -> DeploymentRevision:
+    """Create revision N+1 for `version`, make it ACTIVE, and demote the
+    previously active one to SUPERSEDED. Does not commit — the caller owns
+    the transaction, which is what makes an update atomic: the deployment is
+    never observably half-switched (see §8's UPDATING state, deliberately
+    absent from `deployment.schema.json`).
+
+    Does NOT set `deployment.status` — publish and update reach this point
+    from different states and each decides its own resulting status.
+    """
+    activated_at = datetime.now(UTC)
+    snapshot = await _build_dependency_snapshot(version, db)
 
     max_revision = (
         await db.execute(
@@ -743,8 +838,8 @@ async def publish_deployment(
         service_version_id=version.id,
         resolved_dependency_snapshot=snapshot,
         status="ACTIVE",
-        created_by=user.user_id,
-        activated_at=published_at,
+        created_by=actor_id,
+        activated_at=activated_at,
     )
     db.add(revision)
     await db.flush()
@@ -762,29 +857,8 @@ async def publish_deployment(
 
     revision.publish_job_id = revision.id  # PoC: publish is synchronous, job_id == revision id
     deployment.active_revision_id = revision.id
-    deployment.status = "ACTIVE"
-    await db.commit()
-
-    logger.info(
-        "deployment.publish trace_id=%s deployment_id=%s revision_id=%s slug=%s",
-        trace_id,
-        deployment.id,
-        revision.id,
-        deployment.slug,
-    )
-    await record_audit(
-        db,
-        event_type="DEPLOYMENT_PUBLISHED",
-        actor=user,
-        resource_type="DEPLOYMENT",
-        resource_id=deployment.id,
-        result="SUCCESS",
-        trace_id=trace_id,
-        metadata={"revision_id": revision.id, "slug": deployment.slug},
-    )
-    return PublishJobResponseOut(
-        job_id=revision.id, deployment_url=_deployment_url(deployment.slug)
-    )
+    deployment.service_version_id = version.id
+    return revision
 
 
 async def _deployment_out(deployment: ServiceDeployment, db: AsyncSession) -> DeploymentOut:
@@ -819,6 +893,9 @@ async def _deployment_out(deployment: ServiceDeployment, db: AsyncSession) -> De
         suspended_by=deployment.suspended_by,
         suspended_at=deployment.suspended_at,
         suspend_reason=deployment.suspend_reason,
+        retired_by=deployment.retired_by,
+        retired_at=deployment.retired_at,
+        retire_reason=deployment.retire_reason,
     )
 
 

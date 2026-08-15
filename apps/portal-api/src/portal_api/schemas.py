@@ -164,6 +164,12 @@ class ErrorResponse(BaseModel):
 class CreateServiceRequest(BaseModel):
     name: str
     service_definition: dict
+    # When present, add a new ServiceVersion to this existing Service instead
+    # of creating a new Service. This is what makes `POST
+    # /deployments/{id}/revisions` (update) reachable at all: an update needs
+    # a *different* version of the *same* Service, and without this field the
+    # only way to get one was to write it straight into the database.
+    service_id: str | None = None
 
 
 class ServiceVersionOut(BaseModel):
@@ -303,6 +309,9 @@ class DeploymentOut(BaseModel):
     suspended_by: str | None = None
     suspended_at: datetime | None = None
     suspend_reason: str | None = None
+    retired_by: str | None = None
+    retired_at: datetime | None = None
+    retire_reason: str | None = None
 
 
 class DeploymentListResponse(BaseModel):
@@ -320,6 +329,21 @@ class PublishJobResponseOut(BaseModel):
 class RollbackDeploymentRequest(BaseModel):
     reason: str
     target_revision_id: str | None = None
+
+
+class UpdateDeploymentRequest(BaseModel):
+    """POST /deployments/{id}/revisions — §8 "Service Version 변경은 새
+    Deployment Revision으로 수행한다". `reason` is optional: Update is not
+    one of the CLAUDE.md 승인·반려·중단·폐기 actions that mandate one."""
+
+    service_version_id: str
+    reason: str | None = None
+
+
+class RetireDeploymentRequest(BaseModel):
+    """POST /deployments/{id}/retire — terminal, so 사유는 필수."""
+
+    reason: str
 
 
 class DeploymentRevisionKnowledgeSummary(BaseModel):

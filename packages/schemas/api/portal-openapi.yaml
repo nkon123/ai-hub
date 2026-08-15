@@ -1492,7 +1492,90 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/deployments/{deployment_id}/retire:
+    post:
+      tags: [deployments]
+      summary: Retire a deployment permanently — terminal, no path back (RELEASE_MANAGER)
+      description: >
+        §8 게시 수명주기: ACTIVE/SUSPENDED -> RETIRED. Terminal by design —
+        resume, rollback, update and re-publish all refuse a RETIRED
+        deployment, and the slug stays reserved so the URL can never be
+        silently reused by a different chatbot. Revision history is kept for
+        audit; only its status changes.
+      operationId: retire_deployment
+      parameters:
+        - $ref: "#/components/parameters/DeploymentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetireDeploymentRequest"
+      responses:
+        "200":
+          description: Retired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Deployment is already RETIRED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/deployments/{deployment_id}/revisions:
+    post:
+      tags: [deployments]
+      summary: Update a live deployment to a new Service Version as a new revision (RELEASE_MANAGER)
+      description: >
+        §8 "Service Version 변경은 새 Deployment Revision으로 수행한다" and
+        HOST-022 "Update 실패 시 기존 Version을 유지한다". The target version
+        goes through the same publish Gate as `/publish`; when it fails,
+        nothing changes — the previously active revision stays ACTIVE and
+        serving. The update itself is a single synchronous transaction, so
+        the deployment is never observably in an intermediate state.
+      operationId: update_deployment_revision
+      parameters:
+        - $ref: "#/components/parameters/DeploymentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDeploymentRequest"
+      responses:
+        "201":
+          description: Updated — a new revision is ACTIVE and the previous one is SUPERSEDED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          description: Gate 검증 실패 (기존 Revision 유지) 또는 요청 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            Deployment is not ACTIVE/SUSPENDED, the target version belongs to
+            another Service, or it is already the active version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
     get:
       tags: [deployments]
       summary: List this deployment's revisions (revision_number desc) as rollback candidates
@@ -3154,6 +3237,16 @@ components:
           type: string
         service_definition:
           type: object
+        service_id:
+          type: string
+          format: uuid
+          description: >
+            Optional. When present, a new ServiceVersion is added to this
+            existing Service instead of a new Service being created — the
+            path that produces the "same Service, different Version" that
+            POST /deployments/{deployment_id}/revisions requires. Refused
+            with 409 SERVICE_VERSION_EXISTS if the Service already has this
+            service_definition.version.
 
     ValidationResult:
       type: object
@@ -3287,6 +3380,13 @@ components:
           format: date-time
         suspend_reason:
           type: string
+        retired_by:
+          type: string
+        retired_at:
+          type: string
+          format: date-time
+        retire_reason:
+          type: string
 
     DeploymentListResponse:
       type: object
@@ -3346,6 +3446,35 @@ components:
         deployment_url:
           type: string
           description: "https://ai.company.local/chat/{slug}"
+
+    UpdateDeploymentRequest:
+      type: object
+      required: [service_version_id]
+      properties:
+        service_version_id:
+          type: string
+          format: uuid
+          description: >
+            The ServiceVersion to publish as a new revision. Must belong to
+            the same Service as this deployment and must not be the version
+            already active — 10-hosted-chatbot-publication.md §8 "Service
+            Version 변경은 새 Deployment Revision으로 수행한다".
+        reason:
+          type: string
+          description: >
+            Optional. Update is not one of the CLAUDE.md 승인·반려·중단·폐기
+            actions that mandate a reason, but it is recorded in the audit
+            event when supplied.
+
+    RetireDeploymentRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          description: >
+            Mandatory. RETIRED is terminal (§8) — 폐기는 확인과 사유를 요구한다.
 
     RollbackRequest:
       type: object

@@ -60,6 +60,12 @@ class Permission(StrEnum):
     DEPLOYMENT_PUBLISH = "DEPLOYMENT_PUBLISH"
     DEPLOYMENT_SUSPEND = "DEPLOYMENT_SUSPEND"
     DEPLOYMENT_ROLLBACK = "DEPLOYMENT_ROLLBACK"
+    # 10-hosted-chatbot-publication.md §8: RETIRED is terminal — nothing
+    # brings a retired deployment back. Kept separate from
+    # DEPLOYMENT_SUSPEND (reversible) on purpose: the two actions are not
+    # interchangeable, so the permission that authorizes them should not be
+    # either. Compare ASSET_SUSPEND vs ASSET_RETIRE above, same split.
+    DEPLOYMENT_RETIRE = "DEPLOYMENT_RETIRE"
     DISTRIBUTION_CREATE = "DISTRIBUTION_CREATE"
     DOWNLOAD_READ = "DOWNLOAD_READ"
     AUDIT_READ = "AUDIT_READ"
@@ -168,6 +174,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.DEPLOYMENT_PUBLISH,
             Permission.DEPLOYMENT_SUSPEND,
             Permission.DEPLOYMENT_ROLLBACK,
+            Permission.DEPLOYMENT_RETIRE,
             # Publish 의사결정을 위해 마스킹 없이 평가 결과를 볼 수 있어야
             # 하지만, 평가 실행/사유 기록 자체는 검토자 역할이 아니므로 부여
             # 하지 않는다 (D-056).

@@ -90,6 +90,12 @@ class ServiceDeployment(Base):
     suspended_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     suspended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     suspend_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    # §8 게시 수명주기 — RETIRED는 종료 상태다. `retired_at`이 채워진 Deployment는
+    # 재개·롤백·Update·재게시 어느 경로로도 되살아나지 않으며, Slug도 계속 점유해
+    # 같은 URL이 다른 챗봇으로 조용히 재사용되지 않는다.
+    retired_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retire_reason: Mapped[str | None] = mapped_column(String(1000), nullable=True)
 
     revisions: Mapped[list[DeploymentRevision]] = relationship(
         "DeploymentRevision", back_populates="deployment", cascade="all, delete-orphan"

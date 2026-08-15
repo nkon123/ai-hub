@@ -33,8 +33,15 @@
         "updated_at": { "type": "string", "format": "date-time" },
         "suspended_by": { "type": "string" },
         "suspended_at": { "type": "string", "format": "date-time" },
-        "suspend_reason": { "type": "string" }
-      }
+        "suspend_reason": { "type": "string" },
+        "retired_by": { "type": "string" },
+        "retired_at": { "type": "string", "format": "date-time" },
+        "retire_reason": {
+          "type": "string",
+          "description": "10-hosted-chatbot-publication.md §8: RETIRED is terminal — no resume, rollback, update or re-publish path leads out of it, so the reason a deployment entered it is the last thing recorded about it and is mandatory (CLAUDE.md 승인·반려·중단·폐기는 확인과 사유를 요구한다)."
+        }
+      },
+      "description": "§8 lists UPDATING as a state between ACTIVE and ACTIVE. It is deliberately absent from `status` above: in this PoC an update is a single synchronous transaction (see `POST /deployments/{id}/revisions`), so no caller can ever observe it. Adding an enum value nothing writes would describe a state machine the implementation does not have. When publishing becomes an asynchronous job, UPDATING is added here first."
     },
     "DeploymentRevision": {
       "type": "object",
