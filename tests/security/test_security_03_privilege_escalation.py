@@ -60,6 +60,62 @@ async def test_portal_api_spoofed_owner_identity_does_not_affect_audit_actor(
     record who *authenticated* the request, not who the request body claims
     to be."""
     asset_id = str(uuid.uuid4())
+
+    def _manifest(owner: dict) -> dict:
+        return {
+            "schema_version": "1.0",
+            "id": asset_id,
+            "type": "knowledge",
+            "name": e2e_name("priv-esc-owner-spoof"),
+            "version": "1.0.0",
+            "owner": owner,
+            "classification": "INTERNAL",
+            "description": "privilege escalation probe (tests/security, safe to delete)",
+            "source": {
+                "type": "portal_upload",
+                "documents": [
+                    {"path": "documents/x.md", "mime_type": "text/markdown", "sha256": "0" * 64}
+                ],
+            },
+            "indexing_profile_ref": {"name": "default-korean-parent-child", "version": "1.0.0"},
+        }
+
+    # Probe 1: an undeclared field on `owner` is REJECTED, not silently
+    # dropped. `knowledge-manifest.schema.json`'s owner block has carried
+    # `additionalProperties: false` since the initial commit, so a
+    # `role`-shaped side channel never reaches the server's domain model at
+    # all. Asserted explicitly rather than assumed — this mirrors
+    # `test_mcp_audit_context_user_rejects_undeclared_fields` below, which
+    # asserts the same property for the MCP RequestContext.
+    #
+    # (This suite is deselected by default — `pyproject.toml` addopts
+    # `-m 'not e2e and not security'` — and when it was first actually run
+    # on 2026-08-15 this test asserted 201 for exactly this payload. The
+    # assertion was wrong, not the schema: it had simply never executed.)
+    rejected = await portal.post(
+        "/api/v1/assets",
+        data={
+            "manifest": json.dumps(
+                _manifest(
+                    {
+                        "org": "miracom",
+                        "creator_id": "admin@miracom.com",
+                        "role": "ADMIN",  # undeclared — must be refused
+                    }
+                ),
+                ensure_ascii=False,
+            )
+        },
+        files={"files": ("x.md", b"# x\n\ncontent\n", "text/markdown")},
+        headers=auth("CREATOR"),
+    )
+    assert rejected.status_code == 400, rejected.text
+    assert "role" in rejected.text, rejected.text
+
+    # Probe 2: with a schema-valid manifest, `owner.creator_id` is still
+    # descriptive business metadata the server stores as given — but the
+    # audit trail must record who *authenticated*, not who the body claims
+    # to be. This is the property accountability actually rests on.
     manifest = {
         "schema_version": "1.0",
         "id": asset_id,
@@ -69,7 +125,6 @@ async def test_portal_api_spoofed_owner_identity_does_not_affect_audit_actor(
         "owner": {
             "org": "miracom",
             "creator_id": "admin@miracom.com",  # spoofed -- real caller is dev-user@miracom.com
-            "role": "ADMIN",  # not even a schema field -- probing for a side channel
         },
         "classification": "INTERNAL",
         "description": "privilege escalation probe (tests/security, safe to delete)",
