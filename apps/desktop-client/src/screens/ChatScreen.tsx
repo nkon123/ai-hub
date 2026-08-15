@@ -75,6 +75,12 @@ import {
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
 import { getInstalledChatModels } from "./settingsTypes";
+// D-084 후속(로컬 Tool을 대화에서 실행) — 이 화면은 여기서만 로컬 Tool을
+// 다룬다. `../agentRuntime`/`./chatTypes`(Run을 시작하고 agent-runtime에
+// 보낼 Payload를 만드는 코드)는 로컬 Tool을 절대 참조하지 않는다 —
+// `LocalToolInvokePanel.tsx`의 모듈 docstring과
+// `electron/__tests__/local-tool-isolation.test.ts`가 이 경계를 강제한다.
+import { LocalToolChatEntryCard, LocalToolInvokePanel, type LocalToolChatEntry } from "./LocalToolInvokePanel";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -684,6 +690,21 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 간섭하지 않는다.
   const [confirmingMessageId, setConfirmingMessageId] = useState<string | null>(null);
   const [confirmError, setConfirmError] = useState<Record<string, string>>({});
+
+  // D-084 후속 — 대화창에 표시되는 로컬 Tool 실행 기록. agent-runtime으로
+  // 보내지 않고(위 import 주석 참고) 이 화면의 로컬 상태로만 존재하며,
+  // `messages`와 시간순으로 섞어 그린다(아래 `transcriptItems`).
+  const [localToolEntries, setLocalToolEntries] = useState<LocalToolChatEntry[]>([]);
+  function handleLocalToolEntryStart(entry: LocalToolChatEntry): void {
+    setLocalToolEntries((prev) => [...prev, entry]);
+  }
+  function handleLocalToolEntryFinish(
+    id: string,
+    completedAt: string,
+    outcome: LocalToolChatEntry["outcome"],
+  ): void {
+    setLocalToolEntries((prev) => prev.map((e) => (e.id === id ? { ...e, completedAt, outcome } : e)));
+  }
 
   // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron에서는 Main
   // Process 저장소, browser-preview에서는 해당 브라우저의 localStorage를
@@ -1647,7 +1668,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             )}
 
             <div className="flex-1 space-y-5 overflow-y-auto pr-1">
-              {messages.length === 0 && (
+              {messages.length === 0 && localToolEntries.length === 0 && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                   <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">
                     <Bot size={22} aria-hidden="true" />
@@ -1661,29 +1682,51 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 </div>
               )}
 
-              {messages.map((m, idx) => (
-                <ChatTurn
-                  key={m.id}
-                  message={m}
-                  // 어떤 모델/지식으로 답했는지는 매 턴 반복하지 않고 앞 턴과
-                  // 달라졌을 때만 한 줄로 보여준다 — 한 대화 안에서 Ollama
-                  // 일반 대화와 지식 검색을 오갔다는 사실은 남기되, 같은 문구가
-                  // 턴마다 다시 찍히지는 않는다.
-                  showContextLabel={turnContextLabel(m) !== turnContextLabel(messages[idx - 1])}
-                  onCancel={() => void handleCancel(m)}
-                  onRerun={() => void handleSend(m.question)}
-                  onCopy={() => handleCopy(m)}
-                  onDownload={() => handleDownload(m)}
-                  onApprove={() => void handleConfirmDecision(m, "approve")}
-                  onDeny={() => void handleConfirmDecision(m, "deny")}
-                  confirmBusy={confirmingMessageId === m.id}
-                  confirmError={confirmError[m.id] || null}
-                  copied={copiedId === m.id}
-                  rerunDisabled={isRunning}
-                  onCitationClick={setCitationDetail}
-                  onOpenDetail={() => setDetailMessageId(m.id)}
-                />
-              ))}
+              {/* D-084 후속 — 대화 턴과 로컬 Tool 실행 기록을 실제 발생 시각
+                  순서로 섞어 그린다(둘 다 "대화창에서 일어난 일"이지만, 카드
+                  자체는 아래에서 절대 같은 모양으로 그리지 않는다).
+                  `showContextLabel` 계산은 로컬 Tool 항목과 무관하게 기존과
+                  동일한 `messages` 배열 순서를 그대로 쓴다. */}
+              {(
+                [
+                  ...messages.map((m) => ({ kind: "chat" as const, ts: m.startedAt, message: m })),
+                  ...localToolEntries.map((e) => ({ kind: "localTool" as const, ts: e.startedAt, entry: e })),
+                ] as Array<
+                  | { kind: "chat"; ts: string; message: ChatMessage }
+                  | { kind: "localTool"; ts: string; entry: LocalToolChatEntry }
+                >
+              )
+                .sort((a, b) => a.ts.localeCompare(b.ts))
+                .map((item) => {
+                  if (item.kind === "localTool") {
+                    return <LocalToolChatEntryCard key={item.entry.id} entry={item.entry} />;
+                  }
+                  const m = item.message;
+                  const idx = messages.indexOf(m);
+                  return (
+                    <ChatTurn
+                      key={m.id}
+                      message={m}
+                      // 어떤 모델/지식으로 답했는지는 매 턴 반복하지 않고 앞
+                      // 턴과 달라졌을 때만 한 줄로 보여준다 — 한 대화 안에서
+                      // Ollama 일반 대화와 지식 검색을 오갔다는 사실은
+                      // 남기되, 같은 문구가 턴마다 다시 찍히지는 않는다.
+                      showContextLabel={turnContextLabel(m) !== turnContextLabel(messages[idx - 1])}
+                      onCancel={() => void handleCancel(m)}
+                      onRerun={() => void handleSend(m.question)}
+                      onCopy={() => handleCopy(m)}
+                      onDownload={() => handleDownload(m)}
+                      onApprove={() => void handleConfirmDecision(m, "approve")}
+                      onDeny={() => void handleConfirmDecision(m, "deny")}
+                      confirmBusy={confirmingMessageId === m.id}
+                      confirmError={confirmError[m.id] || null}
+                      copied={copiedId === m.id}
+                      rerunDisabled={isRunning}
+                      onCitationClick={setCitationDetail}
+                      onOpenDetail={() => setDetailMessageId(m.id)}
+                    />
+                  );
+                })}
             </div>
 
             {/* 입력창 — 토글/모델/전송을 하나의 카드 안에 넣어 화면 아래쪽
@@ -1760,6 +1803,16 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     disabled={isRunning || !toolRouteApplicable}
                     onChange={setToolRouteEnabled}
                     activeLabel="Tool 제안"
+                  />
+
+                  {/* D-084 후속 — 로컬 Tool은 AI가 고르지 않는다(위 Tool
+                      제안 토글과 근본적으로 다른 종류). 사용자가 직접 골라
+                      인자를 채우고 매번 새로 승인해야만 실행된다. */}
+                  <LocalToolInvokePanel
+                    bridge={bridge}
+                    disabled={isRunning}
+                    onEntryStart={handleLocalToolEntryStart}
+                    onEntryFinish={handleLocalToolEntryFinish}
                   />
 
                   {settingsBridge ? (
