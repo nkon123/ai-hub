@@ -57,7 +57,33 @@
         "latency_p50_ms": { "type": "number", "minimum": 0.0 },
         "latency_p95_ms": { "type": "number", "minimum": 0.0 },
         "avg_context_tokens": { "type": "number", "minimum": 0.0 },
-        "forbidden_hit_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 }
+        "forbidden_hit_rate": { "type": "number", "minimum": 0.0, "maximum": 1.0 },
+        "acl_case_count": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Number of ACL cases run (D-045 / §4.7). 0 means the dataset declared none — the two rates below are then 0.0 by arithmetic and MUST NOT be read as 'ACL passed'; the Quality Gate omits its ACL checks entirely in that case rather than emitting passing ones."
+        },
+        "acl_leak_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "description": "Fraction of ACL cases where a forbidden document was retrievable at the case's clearance. Zero tolerance by policy."
+        },
+        "acl_visibility_rate": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0,
+          "default": 0.0,
+          "description": "Among ACL cases that declared expected_visible_document_ids, the fraction where every such document was actually retrieved. Guards against a vacuous pass: a backend returning nothing leaks nothing."
+        },
+        "acl_cases_with_visibility_expectation": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 0,
+          "description": "Denominator for acl_visibility_rate."
+        }
       }
     },
     "gate": {
@@ -110,6 +136,43 @@
           "returned_count": { "type": "integer", "minimum": 0 },
           "context_tokens": { "type": "integer", "minimum": 0 },
           "forbidden_hit": { "type": "boolean" },
+          "tags": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "per_acl_case": {
+      "type": "array",
+      "default": [],
+      "description": "One entry per ACL case run (D-045). Kept separate from `per_case` so a reader never has to work out which rows counted toward Recall@K.",
+      "items": {
+        "type": "object",
+        "required": [
+          "case_id", "question", "clearance", "forbidden_document_ids",
+          "retrieved_document_ids", "leaked_document_ids", "leaked",
+          "expected_visible_document_ids", "missing_visible_document_ids",
+          "visibility_satisfied"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": { "type": "string" },
+          "question": { "type": "string" },
+          "clearance": { "type": "string" },
+          "forbidden_document_ids": { "type": "array", "items": { "type": "string" } },
+          "retrieved_document_ids": { "type": "array", "items": { "type": "string" } },
+          "leaked_document_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "The forbidden documents that were actually returned — named, not just counted, because 'a leak happened' is not actionable on its own."
+          },
+          "leaked": { "type": "boolean" },
+          "expected_visible_document_ids": { "type": "array", "items": { "type": "string" } },
+          "missing_visible_document_ids": { "type": "array", "items": { "type": "string" } },
+          "visibility_satisfied": {
+            "type": ["boolean", "null"],
+            "description": "null when the case declared no expected_visible_document_ids — 'not asserted', which is neither a pass nor a failure."
+          },
+          "returned_count": { "type": "integer", "minimum": 0 },
+          "latency_ms": { "type": "integer", "minimum": 0 },
           "tags": { "type": "array", "items": { "type": "string" } }
         }
       }

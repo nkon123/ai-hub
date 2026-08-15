@@ -79,6 +79,42 @@
           }
         }
       }
+    },
+    "acl_cases": {
+      "type": "array",
+      "default": [],
+      "description": "04-knowledge-platform.md §4.7 \"모든 ACL Test 통과\" (D-045). Separate from `cases` because the question is different: `cases` ask 'does search find the right document', ACL cases ask 'does a user at THIS clearance see documents they must not'. They are never mixed into Recall@K/MRR — a leak is a security failure, not a relevance miss. Absent or empty means this dataset does not test ACL at all, and the Quality Gate reports that as 미측정 rather than as a pass (an unrun check must never look like a passed one).",
+      "items": {
+        "type": "object",
+        "required": ["case_id", "question", "clearance", "forbidden_document_ids"],
+        "additionalProperties": false,
+        "properties": {
+          "case_id": { "type": "string", "minLength": 1 },
+          "question": { "type": "string", "minLength": 1 },
+          "clearance": {
+            "type": "string",
+            "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+            "description": "The clearance the simulated user holds for this case, sent as `access_context.clearance` to search-runtime. Mirrors security_policy.Classification (M11), the central definition. Note that the evaluator's own default is RESTRICTED (highest) so ordinary quality cases measure the whole corpus — an ACL case is exactly the place that default is deliberately overridden."
+          },
+          "forbidden_document_ids": {
+            "type": "array",
+            "minItems": 1,
+            "items": { "type": "string" },
+            "description": "Documents that must NOT be retrievable at this clearance. Same id rule as `cases` (filename stem, lower-cased — D-045). Required and non-empty: an ACL case that forbids nothing asserts nothing."
+          },
+          "expected_visible_document_ids": {
+            "type": "array",
+            "default": [],
+            "items": { "type": "string" },
+            "description": "Documents that must STILL be retrievable at this clearance. Optional but strongly recommended, and the reason is not symmetry: a search backend that returns nothing at all — because the index is missing, the query is broken, or filtering is over-aggressive — leaks nothing and would pass an ACL test that only counts leaks. Declaring what should remain visible is what makes the test non-vacuous."
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "default": []
+          }
+        }
+      }
     }
   }
 }

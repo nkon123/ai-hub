@@ -47,6 +47,33 @@ class EvaluationCase:
 
 
 @dataclass(frozen=True)
+class AclCase:
+    """§4.7 "모든 ACL Test 통과" (D-045). Deliberately not an EvaluationCase
+    with extra fields: an ACL case is not scored for relevance and never
+    enters Recall@K/MRR. Retrieving a forbidden document is a security
+    failure, and averaging it into a quality number would let good relevance
+    hide it."""
+
+    case_id: str
+    question: str
+    clearance: str
+    forbidden_document_ids: list[str]
+    expected_visible_document_ids: list[str] = field(default_factory=list)
+    tags: list[str] = field(default_factory=list)
+
+    @staticmethod
+    def from_dict(data: dict[str, Any]) -> AclCase:
+        return AclCase(
+            case_id=data["case_id"],
+            question=data["question"],
+            clearance=data["clearance"],
+            forbidden_document_ids=list(data["forbidden_document_ids"]),
+            expected_visible_document_ids=list(data.get("expected_visible_document_ids", [])),
+            tags=list(data.get("tags", [])),
+        )
+
+
+@dataclass(frozen=True)
 class EvaluationDataset:
     dataset_id: str
     name: str
@@ -58,6 +85,7 @@ class EvaluationDataset:
     reviewed_by: str | None = None
     reviewed_at: str | None = None
     notes: str = ""
+    acl_cases: list[AclCase] = field(default_factory=list)
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> EvaluationDataset:
@@ -72,8 +100,16 @@ class EvaluationDataset:
             reviewed_by=data.get("reviewed_by"),
             reviewed_at=data.get("reviewed_at"),
             notes=data.get("notes", ""),
+            acl_cases=[AclCase.from_dict(c) for c in data.get("acl_cases", [])],
         )
 
     @property
     def is_expert_reviewed(self) -> bool:
         return self.review_status is DatasetReviewStatus.EXPERT_REVIEWED
+
+    @property
+    def has_acl_cases(self) -> bool:
+        """Whether this dataset tests ACL at all. The Quality Gate branches on
+        this to decide between running its ACL checks and omitting them —
+        never between running them and emitting passing ones."""
+        return len(self.acl_cases) > 0

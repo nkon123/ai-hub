@@ -4,6 +4,7 @@ search-runtime, Ollama, or the network (task requirement: fake SearchClient only
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
 from evaluation_runner.search_client import Citation, SearchClient, SearchResponse
 
@@ -40,6 +41,10 @@ class RecordedCall:
     metadata_filters: dict[str, str] | None
     trace_id: str | None
     run_id: str | None
+    # D-045 ACL Test: the clearance an ACL case asserts is only visible here,
+    # so a test can prove the runner actually sent it rather than silently
+    # falling back to the evaluator's RESTRICTED default.
+    access_context: dict[str, Any] | None = None
 
 
 @dataclass
@@ -62,6 +67,7 @@ class FakeSearchClient(SearchClient):
         metadata_filters: dict[str, str] | None = None,
         trace_id: str | None = None,
         run_id: str | None = None,
+        access_context: dict[str, Any] | None = None,
     ) -> SearchResponse:
         self.calls.append(
             RecordedCall(
@@ -73,6 +79,7 @@ class FakeSearchClient(SearchClient):
                 metadata_filters=metadata_filters,
                 trace_id=trace_id,
                 run_id=run_id,
+                access_context=access_context,
             )
         )
         return self.responses_by_query.get(query, self.default_response)

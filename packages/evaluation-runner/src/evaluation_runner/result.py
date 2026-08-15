@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
-from evaluation_runner.metrics import CaseResult, EvaluationMetrics
+from evaluation_runner.metrics import AclCaseResult, CaseResult, EvaluationMetrics
 from evaluation_runner.quality_gate import GateResult
 
 
@@ -35,6 +35,7 @@ class EvaluationResult:
     metrics: EvaluationMetrics
     gate: GateResult
     per_case: list[CaseResult]
+    per_acl_case: list[AclCaseResult] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,6 +51,7 @@ class EvaluationResult:
             "metrics": self.metrics.to_dict(),
             "gate": self.gate.to_dict(),
             "per_case": [c.to_dict() for c in self.per_case],
+            "per_acl_case": [c.to_dict() for c in self.per_acl_case],
         }
 
     @staticmethod
@@ -83,6 +85,16 @@ class EvaluationResult:
                 latency_p95_ms=m["latency_p95_ms"],
                 avg_context_tokens=m["avg_context_tokens"],
                 forbidden_hit_rate=m["forbidden_hit_rate"],
+                # `.get` with defaults: results persisted before ACL testing
+                # existed have no such keys, and an old result must keep
+                # loading — its acl_case_count of 0 correctly says "not
+                # measured" rather than "passed".
+                acl_case_count=m.get("acl_case_count", 0),
+                acl_cases_with_visibility_expectation=m.get(
+                    "acl_cases_with_visibility_expectation", 0
+                ),
+                acl_leak_rate=m.get("acl_leak_rate", 0.0),
+                acl_visibility_rate=m.get("acl_visibility_rate", 0.0),
             ),
             gate=GateResult(
                 passed=g["passed"],
@@ -114,5 +126,21 @@ class EvaluationResult:
                     tags=c.get("tags", []),
                 )
                 for c in data["per_case"]
+            ],
+            per_acl_case=[
+                AclCaseResult(
+                    case_id=c["case_id"],
+                    question=c["question"],
+                    clearance=c["clearance"],
+                    forbidden_document_ids=c["forbidden_document_ids"],
+                    retrieved_document_ids=c["retrieved_document_ids"],
+                    leaked_document_ids=c["leaked_document_ids"],
+                    expected_visible_document_ids=c["expected_visible_document_ids"],
+                    missing_visible_document_ids=c["missing_visible_document_ids"],
+                    returned_count=c.get("returned_count", 0),
+                    latency_ms=c.get("latency_ms", 0),
+                    tags=c.get("tags", []),
+                )
+                for c in data.get("per_acl_case", [])
             ],
         )

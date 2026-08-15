@@ -11,8 +11,8 @@ Data Card 생성도 이 모듈의 범위다. `evaluate-knowledge` CLI를 제공�
 - `packages/schemas/evaluation/evaluation-dataset.schema.json`,
   `packages/schemas/evaluation/evaluation-result.schema.json`.
 - `docs/implementation-spec/open-decisions.md` D-045 — 문서 id 매칭 규칙(`document_path`
-  파일명 stem으로 조작적 정의)과 Quality Gate 범위(6개 기준 중 수치화 가능한 4개만 다룸,
-  ACL Test/Package Smoke Test는 범위 밖).
+  파일명 stem으로 조작적 정의)과 Quality Gate 범위. 2026-08-16부터 ACL Test도 이 Gate
+  안에 있다(아래 참고). Package Smoke Test는 여전히 범위 밖.
 
 ## 코드 배치
 
@@ -55,6 +55,19 @@ async def run_evaluation(
   스킵(실패 아님).
 - `p95_latency_ms_max: 2000`
 - `forbidden_hit_rate_max: 0.0`
+- `acl_leak_rate_max: 0.0` — 데이터셋의 `acl_cases`에서 권한 없는 등급에 문서가 노출된 비율.
+- `acl_visibility_min: 1.0` — 허용 등급에서 보여야 할 문서가 실제로 검색된 비율.
+
+### ACL Test에서 반드시 지킬 두 가지
+
+1. **측정하지 않은 것을 통과처럼 보이게 하지 않는다.** 데이터셋에 `acl_cases`가 없으면
+   `evaluate_gate`는 ACL 검사를 **통과 상태로 추가하지 않고 아예 만들지 않는다**. 측정
+   여부는 `metrics.acl_case_count`로 판별한다(Data Card·CLI도 "측정하지 않음"이라고 쓴다).
+   `acl_leak_rate`는 케이스가 없으면 산술적으로 0.0이 되므로 그 값만 보고 판단하면 안 된다.
+2. **유출 0건만으로는 아무것도 증명되지 않는다.** 검색이 아무것도 반환하지 못하는 상태도
+   유출 0%다. 그래서 `expected_visible_document_ids`(허용 등급에서 보여야 하는 문서)를
+   함께 선언하게 하고 `acl_visibility_min`으로 검사한다 — 과차단과 무의미한 통과를 동시에
+   잡는 유일한 장치다.
 
 ## 이 모듈의 경계
 
