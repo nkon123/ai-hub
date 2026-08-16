@@ -32,10 +32,16 @@ export function StepKnowledge({
   serviceClassification,
   bindings,
   onChange,
+  roleId,
 }: {
   serviceClassification: Classification;
   bindings: KnowledgeBindingDraft[];
   onChange: (next: KnowledgeBindingDraft[]) => void;
+  /** 선택된 Agent의 `workflow.entry_role` — 표준 Agent는 항상 "answerer"지만
+   * Registry Agent(2026-08-16, D-034 path 2)는 다를 수 있어 더 이상
+   * 하드코딩하지 않는다. buildServiceDefinition.ts의 `knowledge_bindings[].role_id`
+   * 가 실제로 쓰는 값과 이 화면의 표시가 어긋나면 안 된다. */
+  roleId: string;
 }) {
   const { role } = useRole();
   const [assets, setAssets] = useState<KnowledgeAsset[]>([]);
@@ -129,7 +135,7 @@ export function StepKnowledge({
       <div>
         <h2 className="mb-1 text-card-title font-semibold text-text-primary">Knowledge 연결</h2>
         <p className="text-body text-text-secondary">
-          Agent의 답변 Role(answerer)에 연결할 Knowledge를 1개 이상 선택하세요. 승인(APPROVED)되고 인덱싱이
+          Agent의 답변 Role({roleId})에 연결할 Knowledge를 1개 이상 선택하세요. 승인(APPROVED)되고 인덱싱이
           완료된 버전만 연결할 수 있습니다 — 게시 구성 검증(단계 8)이 이 조건을 그대로 다시 확인합니다.
         </p>
       </div>
@@ -147,7 +153,7 @@ export function StepKnowledge({
                 <div className="text-body font-medium text-text-primary">
                   {b.knowledgeAssetName} <span className="text-text-muted">v{b.knowledgeVersionLabel}</span>
                 </div>
-                <div className="text-caption text-text-secondary">Role: answerer · Retrieval: default-korean</div>
+                <div className="text-caption text-text-secondary">Role: {roleId} · Retrieval: default-korean</div>
               </div>
               <FormField label="최대 Context Token">
                 <input

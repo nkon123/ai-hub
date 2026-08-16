@@ -14,8 +14,8 @@ import { StepLimits } from "./_components/StepLimits";
 import { StepValidate, type Draft } from "./_components/StepValidate";
 import { StepPreview } from "./_components/StepPreview";
 import { StepSummary } from "./_components/StepSummary";
-import { buildServiceDefinition, agentProfileFromId } from "./_components/buildServiceDefinition";
-import { DEFAULT_CLASSIFICATION, MODEL_ALIAS, OFFICE_PROFILE_ORG } from "./_components/constants";
+import { buildServiceDefinition } from "./_components/buildServiceDefinition";
+import { DEFAULT_CLASSIFICATION, MODEL_ALIAS, OFFICE_PROFILE_ORG, resolveAgentOption } from "./_components/constants";
 import type { ComposerState, ValidationResult } from "./_components/types";
 
 // Active, navigable steps (mirror docs/implementation-spec/08-service-composer.md §4,
@@ -48,7 +48,8 @@ const PLACEHOLDER_STEPS = [
 const DEFAULT_STATE: ComposerState = {
   basicInfo: { name: "", description: "", tags: [], classification: DEFAULT_CLASSIFICATION, ownerTeam: "" },
   modelPolicy: { modelAlias: MODEL_ALIAS.alias, fallbackAllowed: false, maxContextTokens: 8192 },
-  agentId: null,
+  agent: null,
+  registryPrompt: null,
   knowledgeBindings: [],
   limits: { timeoutSeconds: 60, maxMcpCalls: 0, maxContextTokens: 8192, maxInputBytes: 1_048_576, auditLevel: "standard" },
   targetUsers: { orgs: [], sites: [], roles: [] },
@@ -63,16 +64,40 @@ export default function NewServicePage() {
   const [validation, setValidation] = useState<ValidationResult | null>(null);
   const [previewRunCount, setPreviewRunCount] = useState(0);
 
-  const agent = state.agentId ? agentProfileFromId(state.agentId) : null;
+  // `state.agent` is only the Step 3 selection (which standard profile, or
+  // which Registry Agent asset version) — `resolveAgentOption` turns that
+  // (plus Step 6's `state.registryPrompt`, only meaningful for a Registry
+  // Agent) into the single `AgentOption` shape every later step consumes.
+  // See constants.ts's `resolveAgentOption` docstring for why this
+  // indirection exists (D-034 path 2).
+  //
+  // MUST be memoized (not recomputed inline every render): for a `source:
+  // "standard"` selection `resolveAgentOption` returns the same AGENT_OPTIONS
+  // array element every call (stable reference), but for `source: "registry"`
+  // it builds a fresh object literal each call. An unmemoized `agent` then
+  // changes reference on every render, which — since `agent` sits in
+  // `currentDefinition`'s useMemo deps below — made `currentDefinition`
+  // (and its `created_at: new Date().toISOString()`) regenerate on every
+  // render, so `draft.definitionSnapshot` could never equal `currentJson`
+  // again after the first save: Step 8 reported "이전 단계 입력이 변경되어
+  // 이 초안은 최신 상태가 아닙니다" forever, even with zero actual input
+  // changes. Caught live in browser verification (2026-08-16) with a
+  // Registry Agent selected — re-running "초안 저장 및 검증 실행" a second
+  // time still showed the same staleness warning instead of validating.
+  const agent = useMemo(
+    () => resolveAgentOption(state.agent, state.registryPrompt),
+    [state.agent, state.registryPrompt]
+  );
+  const isRegistryAgent = state.agent?.source === "registry";
 
   // Recomputed on every render from current wizard state — this is the
   // Service Definition that WOULD be saved right now. StepValidate compares
   // its JSON against the last-saved draft's snapshot to detect staleness
   // (spec §4: "필수 선행정보가 바뀌면 이후 단계의 영향을 표시하고 재검증한다").
   const currentDefinition = useMemo(() => {
-    if (!agent) return null;
+    if (!agent || !agent.prompt) return null;
     try {
-      return buildServiceDefinition(state, OFFICE_PROFILE_ORG, role.userId);
+      return buildServiceDefinition(state, agent, OFFICE_PROFILE_ORG, role.userId);
     } catch {
       return null;
     }
@@ -108,9 +133,16 @@ export default function NewServicePage() {
       case 2:
         return state.modelPolicy.maxContextTokens >= 1 && state.modelPolicy.maxContextTokens <= MODEL_ALIAS.maxContextTokens;
       case 3:
-        return state.agentId !== null;
+        return state.agent !== null;
       case 4:
         return state.knowledgeBindings.length >= 1;
+      case 6:
+        // 표준 Agent는 Prompt가 이미 고정 연결돼 있다 — 이 단계에서 더 고를 게
+        // 없다. Registry Agent는 Step 6에서 실제로 Prompt를 선택해야만 다음
+        // 단계(Preview 실행)가 가능하다 — buildServiceDefinition이 이를 다시
+        // 강제하지만, 여기서 막아야 8단계가 아무 것도 못 그리는 "조용한 빈
+        // 화면" 대신 이유가 붙은 비활성 버튼으로 보인다.
+        return !isRegistryAgent || state.registryPrompt !== null;
       case 7:
         return state.limits.timeoutSeconds >= 1;
       case 8:
@@ -131,6 +163,8 @@ export default function NewServicePage() {
         return "Agent를 선택하세요.";
       case 4:
         return "Knowledge를 1개 이상 연결하세요.";
+      case 6:
+        return "이 Registry Agent에 연결할 Prompt를 선택하세요.";
       case 7:
         return "Timeout은 1초 이상이어야 합니다.";
       case 8:
@@ -201,19 +235,38 @@ export default function NewServicePage() {
 
         {step === 2 && <StepModelPolicy value={state.modelPolicy} onChange={(v) => updateState("modelPolicy", v)} />}
 
-        {step === 3 && <StepAgent value={state.agentId} onChange={(v) => updateState("agentId", v)} />}
+        {step === 3 && (
+          <StepAgent
+            value={state.agent}
+            onChange={(v) =>
+              // Agent를 바꾸면(특히 다른 Registry Agent로) 이전에 골랐던
+              // registryPrompt는 더 이상 유효한 짝이 아닐 수 있으므로 함께
+              // 초기화한다 — 이전 Agent의 Prompt가 새 Agent의 Role에 잘못
+              // 연결된 채로 남아있게 두지 않는다.
+              setState((prev) => ({ ...prev, agent: v, registryPrompt: null }))
+            }
+          />
+        )}
 
         {step === 4 && agent && (
           <StepKnowledge
             serviceClassification={state.basicInfo.classification}
             bindings={state.knowledgeBindings}
             onChange={(v) => updateState("knowledgeBindings", v)}
+            roleId={agent.roleId}
           />
         )}
 
         {step === 5 && agent && <StepMcp agent={agent} />}
 
-        {step === 6 && agent && <StepPrompt agent={agent} />}
+        {step === 6 && agent && (
+          <StepPrompt
+            agent={agent}
+            isRegistryAgent={isRegistryAgent}
+            value={state.registryPrompt}
+            onChange={(v) => updateState("registryPrompt", v)}
+          />
+        )}
 
         {step === 7 && agent && (
           <StepLimits
@@ -236,16 +289,16 @@ export default function NewServicePage() {
           />
         )}
 
-        {step === 9 && draft && agent && (
+        {step === 9 && draft && agent && agent.prompt && (
           <StepPreview
             serviceVersionId={draft.serviceVersionId}
-            agentId={agent.id}
+            agent={agent}
             knowledgeBindings={state.knowledgeBindings}
             onRunCompleted={() => setPreviewRunCount((c) => c + 1)}
           />
         )}
 
-        {step === 10 && draft && agent && (
+        {step === 10 && draft && agent && agent.prompt && (
           <StepSummary state={state} agent={agent} draft={draft} validation={validation} previewRunCount={previewRunCount} />
         )}
 
