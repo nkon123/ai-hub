@@ -17,6 +17,7 @@ const SETTINGS: DesktopSettingsPublic = {
   mcpServerAlias: "default-mcp",
   mcpServerUrl: "http://127.0.0.1:8500",
   searchRuntimeBaseUrl: "http://127.0.0.1:8300",
+  agentRuntimeBaseUrl: "http://127.0.0.1:8100",
   pythonInterpreterPath: null,
   maxConcurrentRuns: { value: 1, enforced: false, reason: "" },
   setupCompletedAt: null,

@@ -43,6 +43,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
   const [searchRuntimeBaseUrl, setSearchRuntimeBaseUrl] = useState("");
+  const [agentRuntimeBaseUrl, setAgentRuntimeBaseUrlValue] = useState("");
   const [pythonInterpreterPath, setPythonInterpreterPath] = useState("");
 
   const [savingSection, setSavingSection] = useState<string | null>(null);
@@ -64,6 +65,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
     setSearchRuntimeBaseUrl(s.searchRuntimeBaseUrl);
+    setAgentRuntimeBaseUrlValue(s.agentRuntimeBaseUrl);
     setPythonInterpreterPath(s.pythonInterpreterPath ?? "");
   }, []);
 
@@ -187,6 +189,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const ollamaStatus = connections?.find((c) => c.id === "ollama") ?? null;
   const mcpStatus = connections?.find((c) => c.id === "mcp") ?? null;
   const searchStatus = connections?.find((c) => c.id === "search") ?? null;
+  const runtimeStatus = connections?.find((c) => c.id === "runtime") ?? null;
   const installedChatModels = getInstalledChatModels(modelsResult);
   const currentChatModelIsInstalled = installedChatModels.includes(chatModelAlias);
   const cannotSaveModelsReason = getChatModelSelectionIssue(loadingModels, modelsResult, chatModelAlias);
@@ -384,6 +387,47 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
         {mcpStatus && (
           <div className="mt-3">
             <CheckRow label={mcpStatus.label} status={mcpStatus.ok ? "PASS" : "FAIL"} message={mcpStatus.ok ? mcpStatus.detail : `${mcpStatus.detail} — ${mcpStatus.recoveryHint ?? ""}`} />
+          </div>
+        )}
+      </Card>
+
+      <Card className="p-6">
+        <SectionHeader title="대화 실행(Local Agent Runtime) 연결" />
+        <p className="mb-3 text-body text-text-secondary">
+          대화 실행, 연결 상태 표시, 설치된 MCP Tool 연결이 모두 이 주소를 사용합니다. 이 PC에서 실행 중인 Runtime만
+          가리킬 수 있습니다(loopback: 127.0.0.1/localhost) — 대화 질문과 설치된 자산 정보가 이 기기 밖으로 나가지
+          않도록 하기 위한 제한이며, 저장 시 원격 주소는 항상 거부됩니다.
+        </p>
+        <LabeledInput
+          id="settings-agent-runtime-url"
+          label="Local Agent Runtime Base URL"
+          value={agentRuntimeBaseUrl}
+          onChange={setAgentRuntimeBaseUrlValue}
+          placeholder="http://127.0.0.1:8100"
+        />
+        <div className="mt-3 flex items-center gap-3">
+          <Button
+            variant="secondary"
+            onClick={() => void saveSection("agentRuntime", { agentRuntimeBaseUrl })}
+            disabled={savingSection === "agentRuntime"}
+          >
+            <Save size={14} /> 저장
+          </Button>
+          <Button variant="secondary" onClick={() => void runConnectionsCheck()} disabled={checkingConnections}>
+            <RefreshCw size={14} className={checkingConnections ? "animate-spin" : ""} /> 연결 테스트
+          </Button>
+          {sectionSavedAt.agentRuntime && (
+            <span className="text-caption text-text-muted">{formatDateTime(sectionSavedAt.agentRuntime)} 저장됨</span>
+          )}
+        </div>
+        {sectionError.agentRuntime && <div className="mt-2"><ErrorBanner message={sectionError.agentRuntime} /></div>}
+        {runtimeStatus && (
+          <div className="mt-3">
+            <CheckRow
+              label={runtimeStatus.label}
+              status={runtimeStatus.ok ? "PASS" : "FAIL"}
+              message={runtimeStatus.ok ? runtimeStatus.detail : `${runtimeStatus.detail} — ${runtimeStatus.recoveryHint ?? ""}`}
+            />
           </div>
         )}
       </Card>

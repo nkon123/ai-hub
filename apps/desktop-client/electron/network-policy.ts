@@ -72,6 +72,25 @@ export function validateNonEmpty(raw: string, fieldLabel: string): UrlValidation
   return { ok: true, error: null };
 }
 
+/** Local Agent Runtime Base URL 검증(D-080 후속) — search-runtime과 같은
+ * 이유로 loopback만 허용한다. 이 Endpoint로 나가는 것은 대화 질문뿐이 아니다:
+ * 설치된 Knowledge의 로컬 색인 식별자와 MCP Tool 등록 계약이 함께 나가고,
+ * 스펙상 이것은 "Local" Agent Runtime이다(02-desktop-and-agent-runtime.md).
+ * 원격 주소를 허용하면 사내 문서 질문과 로컬 자산 목록이 이 기기 밖으로
+ * 나가는 경로가 설정 필드 하나로 열린다 — 그 선택지는 만들지 않는다. */
+export function validateAgentRuntimeBaseUrl(raw: string): UrlValidationResult {
+  const parsedResult = parseHttpUrl(raw);
+  if (!parsedResult.ok) return { ok: false, error: parsedResult.error };
+  if (!isLoopbackHostname(parsedResult.url.hostname)) {
+    return {
+      ok: false,
+      error:
+        "Local Agent Runtime 주소는 loopback(127.0.0.1/localhost)만 허용됩니다. 대화 질문과 설치된 자산 정보가 이 기기 밖으로 나가지 않도록 하기 위한 제한입니다.",
+    };
+  }
+  return { ok: true, error: null };
+}
+
 /** search-runtime Base URL 검증(D-079) — Ollama처럼 명시적으로 켤 수 있는
  * "원격 허용" 예외를 두지 않고 항상 loopback만 허용한다. Knowledge 활성화
  * 요청은 이 기기의 절대 파일 경로(`index_path`)를 그대로 담아 보낸다 — 원격

@@ -701,6 +701,13 @@ export interface DesktopSettingsPublic {
    * `network-policy.ts`의 `validateSearchRuntimeBaseUrl` 참고: 활성화
    * 요청이 이 기기의 절대 경로를 담기 때문). */
   searchRuntimeBaseUrl: string;
+  /** D-080 후속 — Local Agent Runtime Base URL. 대화 실행(D06/D07), 연결
+   * 판정(D09), MCP Tool 등록/해제가 **모두 이 하나의 값**을 쓴다. 이전에는
+   * 렌더러가 빌드 타임 `VITE_AGENT_RUNTIME_BASE_URL`을, Main Process가
+   * `connections.ts`의 하드코딩 기본값을 각각 봤고, 그래서 대화는 되는데
+   * 연결 배너는 "끊김"이라고 말하는 상태가 실제로 있었다. loopback만
+   * 허용된다(`network-policy.ts::validateAgentRuntimeBaseUrl`). */
+  agentRuntimeBaseUrl: string;
   /** D-084 "Desktop 로컬 Tool" 실행에 쓰는 Python 인터프리터 절대 경로.
    * 기본값 `null` — 어떤 코드도 `python`/`python3` 같은 PATH 검색으로
    * 대체하지 않는다(구현 원칙 7: 승인되지 않은 임의 실행을 만들지 않는다 —
@@ -725,6 +732,7 @@ export interface DesktopSettingsInput {
   mcpServerAlias?: string;
   mcpServerUrl?: string;
   searchRuntimeBaseUrl?: string;
+  agentRuntimeBaseUrl?: string;
   pythonInterpreterPath?: string;
 }
 

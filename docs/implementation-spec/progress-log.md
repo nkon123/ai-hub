@@ -4,6 +4,13 @@
 
 ## 2026-08-16 추가 진행
 
+- **Desktop의 agent-runtime 주소를 설정 하나로 통일 (M04, D-080 후속)**: 이건 기능 추가라기보다 **"두 개의 진실"을 하나로 줄인 것**이다. 렌더러는 빌드 타임 `VITE_AGENT_RUNTIME_BASE_URL`을, Main Process는 `connections.ts`의 하드코딩 기본값을 각각 보고 있었고, 그 결과 셋이 동시에 어긋났다 — (1) 대화는 멀쩡히 되는데 채팅 화면에 빨간 "연결 끊김" 배너가 떴고(`apps/desktop-client/CLAUDE.md`에 "연결 판정 오탐(미해결)"으로 기록돼 있던 항목), (2) 포트를 바꾼 사용자의 MCP Tool 등록·해제·재조정만 조용히 옛 주소로 나갔으며, (3) 진단 Bundle이 이 앱이 쓰지도 않는 주소를 `agentRuntimeBaseUrl`로 보고했다 — 진단 파일이 사실과 다르면 진단이 아니라 오도다.
+  - D10 설정에 `agentRuntimeBaseUrl`을 추가했다. **loopback만 허용**한다(`network-policy.ts::validateAgentRuntimeBaseUrl`, Ollama 같은 "외부 허용" 예외 없음) — 이 Endpoint로 나가는 것은 대화 질문뿐 아니라 설치된 Knowledge의 로컬 색인 식별자와 MCP Tool 등록 계약이며, 스펙상 이것은 "Local" Agent Runtime이다. 원격을 허용하면 사내 문서 질문이 기기 밖으로 나가는 경로가 설정 필드 하나로 열린다.
+  - 렌더러의 `AGENT_RUNTIME_BASE_URL` 상수를 `getAgentRuntimeBaseUrl()`/`setAgentRuntimeBaseUrl()`로 바꿨다. **ChatScreen은 연결 검사 대상으로 별도 변수가 아니라 `setAgentRuntimeBaseUrl(settings.agentRuntimeBaseUrl)`의 반환값을 넘긴다** — 적용한 주소와 검사한 주소가 구조적으로 갈라질 수 없게 하기 위해서다. 빈 값/공백은 기본값으로 떨어진다(그대로 통과시키면 요청이 host 없는 상대 경로로 나가 조용히 렌더러 자신에게 간다).
+  - Main Process는 `agentRuntimeBaseUrl()` 헬퍼 하나를 통해 MCP Tool connect/disconnect/reconcile과 자산 제거 시 등록 해제에 같은 값을 쓴다. `connections:check` IPC는 애초에 `runtimeBaseUrl`을 넘기지 않아 항상 기본값으로 검사하고 있었다 — 이것도 함께 고쳤다. 진단 Bundle의 `readRuntimeVersion()`도 하드코딩 URL 대신 설정값을 받는다.
+  - **검증**: Desktop `pnpm test` **620 passed**(작업 전 606, 신규 14 — `electron/__tests__/agent-runtime-endpoint.test.ts` 9개 + `src/agentRuntimeEndpoint.test.ts` 5개), `pnpm typecheck` 클린. 신규 테스트가 고정하는 것은 "필드가 저장된다"가 아니라 **주소를 읽는 경로들이 같은 값을 본다**는 것이다 — 값을 한 곳에서 바꾸고 진단 Bundle에서 그 값이 나오는지 확인하며, 옛 하드코딩 문자열이 남아 있지 않은지도 함께 본다.
+  - **미검증**: Electron 셸을 이 세션에서 띄우지 않았으므로 설정 화면의 새 섹션과 연결 배너의 실제 렌더링은 코드·단위 테스트로만 확인했다.
+
 - **Knowledge Quality Gate에 ACL Test 편입 (M06/M09/M12, D-045 (4))**: §4.7의 6개 기준 중 "모든 ACL Test 통과"는 지금까지 `quality-gate.yaml` 주석에 "범위 밖"이라고 적혀 있었다 — ACL 케이스 데이터셋이 없다는 이유였는데, 그 사이 D-062로 Classification 스탬핑과 clearance 필터링이 M07/M08/M11에 생겨 실제로 측정 가능한 속성이 되었다.
   - **왜 `cases`와 섞지 않았나**: 두 케이스는 묻는 질문이 다르다 — `cases`는 "맞는 문서를 찾는가", ACL 케이스는 "권한 없는 등급이 보면 안 되는 문서를 보는가"이다. 유출은 관련도 미스가 아니라 보안 실패이므로 Recall 평균에 섞으면 관련도가 좋을 때 유출이 가려진다. 그래서 `acl_cases`/`per_acl_case`/`metrics.acl_*`를 끝까지 분리했다.
   - **핵심 설계 결정 (a) 측정하지 않은 것을 통과처럼 보이게 하지 않는다**: 데이터셋에 `acl_cases`가 없으면 `evaluate_gate`는 ACL 검사를 **통과 상태로 추가하지 않고 아예 생성하지 않는다**. Data Card와 CLI도 "측정하지 않음 — 이 항목의 공란은 통과를 의미하지 않습니다"라고 쓴다. Data Card는 사람이 읽고 승인 판단에 쓰는 문서라, 검사하지 않은 항목이 통과처럼 보이면 그 판단이 틀린 근거 위에 선다. ACL 이전에 저장된 결과도 `acl_case_count=0`(미측정)으로 로드된다.

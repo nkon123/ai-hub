@@ -23,14 +23,26 @@ import {
   DEFAULT_MCP_SERVER_ALIAS,
   DEFAULT_MCP_SERVER_URL,
   DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_RUNTIME_BASE_URL,
   DEFAULT_SEARCH_RUNTIME_BASE_URL,
 } from "./connections";
-import { validateGenericUrl, validateOllamaBaseUrl, validateSearchRuntimeBaseUrl } from "./network-policy";
+import {
+  validateAgentRuntimeBaseUrl,
+  validateGenericUrl,
+  validateOllamaBaseUrl,
+  validateSearchRuntimeBaseUrl,
+} from "./network-policy";
 import { DEFAULT_CHAT_MODEL_ALIAS } from "./ollama-chat";
 import type { DesktopSettingsInput, DesktopSettingsPublic, DesktopSettingsUpdateResult } from "./types";
 
 export { DEFAULT_CHAT_MODEL_ALIAS };
-export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL, DEFAULT_SEARCH_RUNTIME_BASE_URL };
+export {
+  DEFAULT_MCP_SERVER_ALIAS,
+  DEFAULT_MCP_SERVER_URL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_RUNTIME_BASE_URL,
+  DEFAULT_SEARCH_RUNTIME_BASE_URL,
+};
 
 // `embeddingModelAlias`(자유 입력 텍스트 필드)는 2026-08-14 제거되었다 —
 // 전체 참조 검색 결과 이 값을 저장 이후 실제로 읽는 코드가 어디에도 없었다
@@ -63,6 +75,7 @@ interface DesktopSettingsFile {
   mcpServerAlias: string;
   mcpServerUrl: string;
   searchRuntimeBaseUrl: string;
+  agentRuntimeBaseUrl: string;
   pythonInterpreterPath: string | null;
   setupCompletedAt: string | null;
   updatedAt: string | null;
@@ -77,6 +90,7 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
   mcpServerUrl: DEFAULT_MCP_SERVER_URL,
   searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
+  agentRuntimeBaseUrl: DEFAULT_RUNTIME_BASE_URL,
   // D-084: 절대 `python`/`python3` PATH 기본값으로 대체하지 않는다 — 값이
   // 없으면 로컬 Tool 실행 자체가 막힌다(구현 원칙 7).
   pythonInterpreterPath: null,
@@ -106,6 +120,8 @@ export class DesktopSettingsStore {
         mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : DEFAULT_MCP_SERVER_URL,
         searchRuntimeBaseUrl:
           typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : DEFAULT_SEARCH_RUNTIME_BASE_URL,
+        agentRuntimeBaseUrl:
+          typeof parsed.agentRuntimeBaseUrl === "string" ? parsed.agentRuntimeBaseUrl : DEFAULT_RUNTIME_BASE_URL,
         pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
@@ -132,6 +148,7 @@ export class DesktopSettingsStore {
       mcpServerAlias: current.mcpServerAlias,
       mcpServerUrl: current.mcpServerUrl,
       searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
+      agentRuntimeBaseUrl: current.agentRuntimeBaseUrl,
       pythonInterpreterPath: current.pythonInterpreterPath,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
@@ -186,6 +203,11 @@ export class DesktopSettingsStore {
       const check = validateSearchRuntimeBaseUrl(patch.searchRuntimeBaseUrl);
       if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
       next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
+    }
+    if (patch.agentRuntimeBaseUrl !== undefined) {
+      const check = validateAgentRuntimeBaseUrl(patch.agentRuntimeBaseUrl);
+      if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
+      next.agentRuntimeBaseUrl = patch.agentRuntimeBaseUrl.trim();
     }
     if (patch.pythonInterpreterPath !== undefined) {
       // D-084: 파일시스템 경로이지 URL이 아니므로 URL 검증을 거치지 않는다.

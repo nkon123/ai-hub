@@ -20,11 +20,42 @@
 // the exact wire shape both places send/consume byte-for-byte.
 import type { KnowledgeCandidate } from "../electron/types";
 
-// Base URL is configurable (never hardcoded in components) via Vite's
-// `VITE_AGENT_RUNTIME_BASE_URL` define, defaulting to the documented local
-// port.
-export const AGENT_RUNTIME_BASE_URL: string =
+// Base URL resolution, in priority order:
+//   1. the value the user saved in Settings (D10 `agentRuntimeBaseUrl`),
+//      applied at runtime through `setAgentRuntimeBaseUrl` below;
+//   2. Vite's `VITE_AGENT_RUNTIME_BASE_URL` define (browser-only dev mode,
+//      where there is no settings store to read);
+//   3. the documented local port.
+//
+// Why this is not a plain `const` any more (D-080 후속): it used to be one,
+// and the result was a screen that talked to one address while its own
+// connection banner checked another — `apps/desktop-client/CLAUDE.md`
+// recorded it as "연결 판정 오탐(미해결)": 대화는 멀쩡히 되는데 채팅 화면에
+// 빨간 "연결 끊김"이 떴다. Anything reading the address must therefore read
+// the *same* resolved value, which means one place owns it.
+export const DEFAULT_AGENT_RUNTIME_BASE_URL: string =
   (import.meta.env.VITE_AGENT_RUNTIME_BASE_URL as string | undefined) ?? "http://127.0.0.1:8100";
+
+let resolvedAgentRuntimeBaseUrl: string = DEFAULT_AGENT_RUNTIME_BASE_URL;
+
+/** The address every call in this module actually uses. Read it (never the
+ * default constant) anywhere the current endpoint matters — connection
+ * checks, diagnostics, error messages. */
+export function getAgentRuntimeBaseUrl(): string {
+  return resolvedAgentRuntimeBaseUrl;
+}
+
+/** Applies the saved setting. A blank/absent value falls back to the default
+ * rather than producing requests to `undefined/...` — Desktop은 Runtime 장애
+ * 시 종료되지 않고 복구 안내를 제공한다, and a settings store that cannot be
+ * read (browser-only mode) must not break the chat screen. Validation is not
+ * repeated here: `network-policy.ts::validateAgentRuntimeBaseUrl` in the main
+ * process is what refuses a non-loopback address, and duplicating the rule in
+ * the renderer would create a second place for it to drift. */
+export function setAgentRuntimeBaseUrl(url: string | null | undefined): string {
+  resolvedAgentRuntimeBaseUrl = url?.trim() || DEFAULT_AGENT_RUNTIME_BASE_URL;
+  return resolvedAgentRuntimeBaseUrl;
+}
 
 /** Wire shape returned by search-runtime / echoed by agent-runtime's
  * `citation.added` event and `run.completed.output.citations`
@@ -200,7 +231,7 @@ export async function startRun(params: StartRunParams): Promise<RunResponse> {
   if (params.history && params.history.length > 0) {
     input.history = params.history;
   }
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs`, {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -226,7 +257,7 @@ export async function confirmRun(
   runId: string,
   decision: "approve" | "deny",
 ): Promise<RunResponse> {
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/confirm`, {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/confirm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ decision }),
@@ -238,7 +269,7 @@ export async function confirmRun(
 }
 
 export async function getRun(runId: string): Promise<RunResponse> {
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}`);
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}`);
   if (!res.ok) {
     throw new Error(await parseErrorBody(res));
   }
@@ -249,7 +280,7 @@ export async function cancelRun(runId: string): Promise<void> {
   // Best-effort by design (matches StepPreview.tsx): the UI reflects the
   // actual outcome once the run.cancelled SSE event arrives, not from this
   // response.
-  await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/cancel`, { method: "POST" }).catch(() => {});
+  await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/cancel`, { method: "POST" }).catch(() => {});
 }
 
 /** One SSE frame, timestamped at the moment this client received it.
@@ -314,7 +345,7 @@ export function openRunEventStream(
   onEvent: (item: RunEventLogItem) => void,
   onConnectionError: () => void,
 ): () => void {
-  const es = new EventSource(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/events`);
+  const es = new EventSource(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/events`);
 
   for (const name of KNOWN_EVENT_NAMES) {
     es.addEventListener(name, (evt) => {

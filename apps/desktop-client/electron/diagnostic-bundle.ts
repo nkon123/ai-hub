@@ -10,12 +10,10 @@ import os from "node:os";
 import path from "node:path";
 import type { InstallRootLayout } from "./bundle-install";
 import type { InstalledAssetsStore } from "./installed-assets-store";
-import { checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "./connections";
+import { checkAllConnections, DEFAULT_OLLAMA_BASE_URL, DEFAULT_RUNTIME_BASE_URL } from "./connections";
 import { filterLogEntries } from "./log-filter";
 import { sanitizeText } from "./log-sanitizer";
 import type { DesktopSettingsPublic, DiagnosticBundle, LogEntry, LogFilters, PortalSettingsPublic } from "./types";
-
-const AGENT_RUNTIME_HEALTH_URL = "http://127.0.0.1:8100/health";
 
 /** Finds this app's own `package.json` (for `clientVersion`) by walking up
  * from `__dirname` — a fixed relative depth breaks between a Vitest run
@@ -49,11 +47,17 @@ export function readClientVersion(startDir: string): string {
 
 // Exported for D13's "Runtime 버전" reuse — same reasoning as
 // `readClientVersion` above.
-export async function readRuntimeVersion(): Promise<{ version: string | null; note: string | null }> {
+// `baseUrl`은 호출자가 저장된 설정(`agentRuntimeBaseUrl`)에서 넘긴다 —
+// 여기서 주소를 다시 하드코딩하면, 사용자가 다른 포트로 띄운 Runtime이
+// 멀쩡히 도는데도 진단 Bundle에는 "연결할 수 없어 버전을 확인하지 못했습니다"
+// 라고 적히게 된다. 기본값은 계속 `connections.ts` 하나에서만 온다.
+export async function readRuntimeVersion(
+  baseUrl: string = DEFAULT_RUNTIME_BASE_URL,
+): Promise<{ version: string | null; note: string | null }> {
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 2500);
-    const res = await fetch(AGENT_RUNTIME_HEALTH_URL, { signal: controller.signal });
+    const res = await fetch(`${baseUrl.replace(/\/$/, "")}/health`, { signal: controller.signal });
     clearTimeout(timer);
     if (!res.ok) return { version: null, note: `Local Agent Runtime 응답 오류(HTTP ${res.status})로 버전을 확인하지 못했습니다.` };
     const body = (await res.json()) as { version?: string };
@@ -84,7 +88,10 @@ function collectSanitizedSettings(
 ): Record<string, string> {
   const settings: Record<string, string> = {
     installRoot: layout.root,
-    agentRuntimeBaseUrl: "http://127.0.0.1:8100",
+    // 실제로 이 앱이 쓰는 주소를 적는다. 예전에는 여기에 기본값 문자열이
+    // 하드코딩돼 있어, 설정을 바꾼 사용자의 진단 Bundle이 쓰지도 않는 주소를
+    // 보고했다 — 진단 파일이 사실과 다르면 진단이 아니라 오도다.
+    agentRuntimeBaseUrl: desktopSettings?.agentRuntimeBaseUrl ?? DEFAULT_RUNTIME_BASE_URL,
     ollamaBaseUrl: desktopSettings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
     portalBaseUrl: portalSettings?.baseUrl ?? "미설정",
     portalTokenConfigured: String(portalSettings?.tokenConfigured ?? false),
@@ -104,11 +111,15 @@ export async function buildDiagnosticBundle(
   portalSettings: PortalSettingsPublic | null = null,
   desktopSettings: DesktopSettingsPublic | null = null,
 ): Promise<DiagnosticBundle> {
-  const { version: runtimeVersion, note: runtimeVersionNote } = await readRuntimeVersion();
+  const { version: runtimeVersion, note: runtimeVersionNote } = await readRuntimeVersion(
+    desktopSettings?.agentRuntimeBaseUrl ?? DEFAULT_RUNTIME_BASE_URL,
+  );
   const health = await checkAllConnections({
+    runtimeBaseUrl: desktopSettings?.agentRuntimeBaseUrl,
     ollamaBaseUrl: desktopSettings?.ollamaBaseUrl,
     mcpServerUrl: desktopSettings?.mcpServerUrl,
     mcpServerAlias: desktopSettings?.mcpServerAlias,
+    searchRuntimeBaseUrl: desktopSettings?.searchRuntimeBaseUrl,
   });
 
   const filteredLogs = filterLogEntries(allLogs, filters);

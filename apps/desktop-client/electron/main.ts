@@ -126,6 +126,17 @@ function getDesktopSettingsStore(): DesktopSettingsStore {
   return desktopSettingsStore;
 }
 
+/** D-080 후속 — agent-runtime 주소는 이제 저장된 설정에서 온다. 이전에는
+ * 이 Main Process가 `DEFAULT_RUNTIME_BASE_URL`을, 렌더러가 빌드 타임
+ * `VITE_AGENT_RUNTIME_BASE_URL`을 각각 봤다: 사용자가 다른 포트로 띄우면
+ * MCP Tool 등록만 조용히 옛 주소로 나갔고, 연결 배너는 대화가 멀쩡히 되는
+ * 상태에서도 "끊김"을 표시했다(`apps/desktop-client/CLAUDE.md`의
+ * "연결 판정 오탐"). 저장소가 비어 있으면 값 자체가 기본값이므로 여기서
+ * 추가 fallback을 두지 않는다 — 기본값의 단일 출처는 계속 `connections.ts`다. */
+function agentRuntimeBaseUrl(): string {
+  return getDesktopSettingsStore().getPublic().agentRuntimeBaseUrl;
+}
+
 function getConversationStore(): ConversationStore {
   if (!conversationStore) {
     conversationStore = new ConversationStore(getLayout().stateDir);
@@ -304,7 +315,7 @@ function registerIpcHandlers(): void {
       // 다시 읽어 tool_name을 구해야 하므로 파일 삭제(`fs.rmSync`) 전에
       // 호출해야 한다(그 이후에는 manifest.json 자체가 사라진다).
       if (existing.assetType === "mcp_tool") {
-        const disconnection = await disconnectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+        const disconnection = await disconnectInstalledMcpTool(layout, store, agentRuntimeBaseUrl(), {
           assetType,
           assetId,
           version,
@@ -489,14 +500,7 @@ function registerIpcHandlers(): void {
     async (_event, assetType: string, assetId: string, version: string): Promise<ConnectMcpToolResult> => {
       const layout = getLayout();
       const store = new InstalledAssetsStore(layout.stateDir);
-      // agent-runtime에는 아직 D01/D10 설정 저장소에 편집 가능한 Base URL
-      // 필드가 없다(desktop-settings.ts는 search-runtime/Ollama/MCP Server만
-      // 다룬다) — `connections.ts`의 `DEFAULT_RUNTIME_BASE_URL`(다른 곳에서도
-      // agent-runtime 기본값의 단일 출처로 쓰인다)을 그대로 쓴다. 사용자가
-      // 다른 포트로 agent-runtime을 띄운 경우 이 호출도 잘못된 주소를 보게
-      // 되는 기존 한계(CLAUDE.md "연결 판정 오탐(미해결)")를 그대로 이어받는다
-      // — 이 작업의 범위 밖이라 여기서 새로 고치지 않는다.
-      const result = await connectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+      const result = await connectInstalledMcpTool(layout, store, agentRuntimeBaseUrl(), {
         assetType,
         assetId,
         version,
@@ -529,7 +533,7 @@ function registerIpcHandlers(): void {
     async (_event, assetType: string, assetId: string, version: string): Promise<DisconnectMcpToolResult> => {
       const layout = getLayout();
       const store = new InstalledAssetsStore(layout.stateDir);
-      const result = await disconnectInstalledMcpTool(layout, store, DEFAULT_RUNTIME_BASE_URL, {
+      const result = await disconnectInstalledMcpTool(layout, store, agentRuntimeBaseUrl(), {
         assetType,
         assetId,
         version,
@@ -546,7 +550,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("mcpTool:reconcileConnections", async (): Promise<ReconcileMcpToolConnectionsResult> => {
     const layout = getLayout();
     const store = new InstalledAssetsStore(layout.stateDir);
-    const result = await reconcileInstalledMcpToolConnections(layout, store, DEFAULT_RUNTIME_BASE_URL);
+    const result = await reconcileInstalledMcpToolConnections(layout, store, agentRuntimeBaseUrl());
     if (!result.checked) {
       getLogger().warn("mcp-tool-connection", `연결 상태 재확인 불가: ${result.error}`);
     } else if (result.downgradedCount > 0) {
@@ -615,6 +619,7 @@ function registerIpcHandlers(): void {
   ipcMain.handle("connections:check", async () => {
     const desktopSettings = getDesktopSettingsStore().getPublic();
     const results = await checkAllConnections({
+      runtimeBaseUrl: desktopSettings.agentRuntimeBaseUrl,
       ollamaBaseUrl: desktopSettings.ollamaBaseUrl,
       mcpServerUrl: desktopSettings.mcpServerUrl,
       mcpServerAlias: desktopSettings.mcpServerAlias,

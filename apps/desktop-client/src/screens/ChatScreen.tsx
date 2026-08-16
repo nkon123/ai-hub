@@ -39,7 +39,8 @@ import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
   type Citation,
   type RunEventLogItem,
-  AGENT_RUNTIME_BASE_URL,
+  getAgentRuntimeBaseUrl,
+  setAgentRuntimeBaseUrl,
   cancelRun,
   confirmRun,
   getRun,
@@ -631,13 +632,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // 이어진다. 설정을 못 읽으면(브라우저 전용 모드 등) 기존처럼 기본값을
       // 쓴다 — 검사를 건너뛰지는 않는다.
       let endpoints: Parameters<typeof checkAllConnections>[0] = {
-        runtimeBaseUrl: AGENT_RUNTIME_BASE_URL,
+        runtimeBaseUrl: getAgentRuntimeBaseUrl(),
       };
       if (settingsBridge) {
         try {
           const settings = await settingsBridge.getDesktopSettings();
+          // 저장된 agent-runtime 주소를 실제 대화 호출에도 적용한 뒤 그 값
+          // 그대로 검사한다(D-080 후속). 적용과 검사가 갈라지면 예전처럼
+          // "대화는 되는데 연결 끊김" 오탐이 다시 생긴다 — 그래서 검사 대상은
+          // 별도 변수가 아니라 `setAgentRuntimeBaseUrl`의 반환값이다.
           endpoints = {
             ...endpoints,
+            runtimeBaseUrl: setAgentRuntimeBaseUrl(settings.agentRuntimeBaseUrl),
             ollamaBaseUrl: settings.ollamaBaseUrl,
             mcpServerUrl: settings.mcpServerUrl,
             mcpServerAlias: settings.mcpServerAlias,

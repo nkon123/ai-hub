@@ -3,10 +3,17 @@ import {
   DEFAULT_MCP_SERVER_ALIAS,
   DEFAULT_MCP_SERVER_URL,
   DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_RUNTIME_BASE_URL as DEFAULT_AGENT_RUNTIME_BASE_URL,
   DEFAULT_SEARCH_RUNTIME_BASE_URL,
   listOllamaModels,
 } from "../electron/connections";
-import { validateGenericUrl, validateNonEmpty, validateOllamaBaseUrl, validateSearchRuntimeBaseUrl } from "../electron/network-policy";
+import {
+  validateAgentRuntimeBaseUrl,
+  validateGenericUrl,
+  validateNonEmpty,
+  validateOllamaBaseUrl,
+  validateSearchRuntimeBaseUrl,
+} from "../electron/network-policy";
 import { DEFAULT_CHAT_MODEL_ALIAS } from "../electron/ollama-chat";
 import type {
   ConversationRecord,
@@ -56,6 +63,7 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
     mcpServerUrl: DEFAULT_MCP_SERVER_URL,
     searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
+    agentRuntimeBaseUrl: DEFAULT_AGENT_RUNTIME_BASE_URL,
     // D-084: 브라우저 개발 모드에는 파일시스템/subprocess가 없어 로컬 Tool을
     // 실행할 방법 자체가 없다 — 값이 있어도 의미가 없으므로 항상 미설정으로
     // 시작한다.
@@ -108,6 +116,12 @@ export function applyBrowserPreviewSettingsPatch(
     next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
   }
 
+  if (patch.agentRuntimeBaseUrl !== undefined) {
+    const validation = validateAgentRuntimeBaseUrl(patch.agentRuntimeBaseUrl);
+    if (!validation.ok) return { ok: false, error: validation.error, settings: current };
+    next.agentRuntimeBaseUrl = patch.agentRuntimeBaseUrl.trim();
+  }
+
   if (patch.pythonInterpreterPath !== undefined) {
     next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
   }
@@ -132,6 +146,8 @@ function readSettings(): DesktopSettingsPublic {
       mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : defaults.mcpServerUrl,
       searchRuntimeBaseUrl:
         typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : defaults.searchRuntimeBaseUrl,
+      agentRuntimeBaseUrl:
+        typeof parsed.agentRuntimeBaseUrl === "string" ? parsed.agentRuntimeBaseUrl : defaults.agentRuntimeBaseUrl,
       pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
       setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,

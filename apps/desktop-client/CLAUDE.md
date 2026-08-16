@@ -64,7 +64,7 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
 
 - `pnpm dev` — 내부적으로 `tsc -p tsconfig.electron.json`(Main 컴파일) 후 `concurrently`로 `vite`(렌더러)와 `electron .`을 함께 띄운다.
 - 렌더러만 필요하면(Electron 바이너리가 사내 환경에서 격리되는 경우) `pnpm exec vite`로 브라우저에서 화면 대부분을 볼 수 있다 — `window.desktop`이 없으므로 `bridge.ts`가 `null`을 반환하고, 파일시스템 의존 화면은 "Desktop 런타임 필요" 상태를 보여준다.
-- `.env.local`에 `VITE_AGENT_RUNTIME_BASE_URL`(기본 미설정 시 코드 내 기본값 사용)을 둘 수 있다 — 로컬 테스트 세션 파일이므로 임의로 덮어쓰지 않는다.
+- `.env.local`에 `VITE_AGENT_RUNTIME_BASE_URL`을 둘 수 있다 — 로컬 테스트 세션 파일이므로 임의로 덮어쓰지 않는다. 다만 이것은 **브라우저 전용 모드의 기본값**일 뿐이다(설정 저장소를 읽을 수 없는 경로). Electron으로 띄우면 D10 설정의 `agentRuntimeBaseUrl`이 항상 이 값을 덮어쓴다.
 
 ## 테스트
 
@@ -76,7 +76,7 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
 - **Electron 실행 여부는 머신마다 다르다.** 이 개발 머신에서는 실측(2026-08-14) `node_modules`의 Electron **v43.3.0이 quarantine 속성 없이 정상 실행**되며 실제 창도 뜬다 — 그동안 "이 세션에서는 Electron을 띄울 수 없다"고 적혀 있던 제약은 최소한 이 머신에서는 더 이상 사실이 아니다. 다만 사내망에서는 GitHub Releases 다운로드가 막히고, macOS에서는 XProtect가 새로 받은 바이너리를 격리·삭제할 수 있다. **Gatekeeper/XProtect를 우회하지 마라**(`xattr -d com.apple.quarantine`, `spctl` 변경 금지). 우회 없이 확인하는 방법은 아래 "렌더러만 띄우기"다.
 - **렌더러만 띄우기**: `pnpm exec vite` → 브라우저에서 `http://localhost:5173`. **반드시 `localhost`로 연다** — 이유가 둘이다: (1) `127.0.0.1`은 agent-runtime CORS에서 걸리고, (2) 실측(2026-08-14) Vite dev 서버는 **IPv6 `[::1]`에만 바인딩**해서 `127.0.0.1`로는 아예 응답하지 않는다(`localhost`는 `::1`로 풀린다). 이 두 번째 이유 때문에 dev-stack 스크립트의 준비 검사가 한동안 멀쩡한 서버를 "기동 실패"로 오판했다. 이 경로에서는 `window.desktop`이 없어 `bridge.ts`가 `null`을 반환하므로, 파일시스템에 의존하는 화면(스토어/가져오기/설치된 자산/업데이트·복구/로그·진단/설정)은 "Desktop 런타임 필요"로 표시되고 **대화 화면만 실제로 동작한다**. 대화 화면의 "개발자 옵션 > Knowledge ID 직접 입력"이 이때 쓰는 경로다.
 - **스택 기동은 `scripts/macos/dev-stack.sh`를 쓴다**: `start|stop|restart|status [서비스...]`. `desktop-client`를 포함한 8개를 다루며, `status`는 각 서비스가 **실제로 응답하는 커밋**과 저장소 HEAD를 나란히 보여주고 Desktop은 `dist/electron` 빌드 신선도까지 표시한다(오래된 preload가 런타임 크래시를 만든 적이 있다). `stop`은 Electron 창까지 정리하되 **저장소 경로로 범위를 좁혀** 이 머신의 다른 Electron 앱(VS Code 등)은 건드리지 않는다.
-- **연결 판정 오탐(미해결)**: `electron/connections.ts:17`의 `DEFAULT_RUNTIME_BASE_URL`이 `http://127.0.0.1:8100`으로 하드코딩되어 있어, 대화가 실제로 쓰는 `VITE_AGENT_RUNTIME_BASE_URL`을 무시한다. 그 결과 대화가 멀쩡히 되는데도 채팅 화면에 빨간 "연결 끊김" 배너가 뜬다.
+- **연결 판정 오탐(2026-08-16 해소)**: 예전에는 `electron/connections.ts`의 `DEFAULT_RUNTIME_BASE_URL`이 하드코딩값을 쓰고 대화는 빌드 타임 `VITE_AGENT_RUNTIME_BASE_URL`을 써서, 대화가 멀쩡히 되는데도 빨간 "연결 끊김" 배너가 떴다. 지금은 D10 설정의 `agentRuntimeBaseUrl` 하나가 대화 실행·연결 판정·MCP Tool 등록·진단 Bundle 전부의 출처다(`src/agentRuntime.ts`의 `getAgentRuntimeBaseUrl`/`setAgentRuntimeBaseUrl`, `electron/main.ts`의 `agentRuntimeBaseUrl()`). **주소를 읽는 새 코드는 기본 상수가 아니라 이 둘 중 하나를 쓴다** — 새 하드코딩을 넣으면 같은 오탐이 그대로 돌아온다. `electron/__tests__/agent-runtime-endpoint.test.ts`와 `src/agentRuntimeEndpoint.test.ts`가 이를 고정한다. 저장은 loopback만 허용된다(`network-policy.ts::validateAgentRuntimeBaseUrl`).
 - **`.env.local`은 개인 로컬 설정이다.** 커밋 대상이 아니고, 남의 세션 값을 임의로 덮어쓰지 않는다.
 - 함께 떠 있어야 하는 것: agent-runtime(기본 8100), search-runtime(8300), Ollama(11434). MCP Tool을 쓸 때만 office-mcp-server(8500).
 
@@ -112,9 +112,10 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
   2. `ChatScreen.tsx`의 `refreshConnections`는 `settingsBridge.getDesktopSettings()`로 읽은
      `settings.searchRuntimeBaseUrl`을 넘긴다 — `connections.ts`의
      `DEFAULT_SEARCH_RUNTIME_BASE_URL` 하드코딩 기본값으로만 검사하면, 사용자가 설정 화면에서 포트를
-     바꾸는 순간 멀쩡한 서비스가 다시 "연결 끊김"으로 보인다. `DEFAULT_RUNTIME_BASE_URL`(agent-runtime
-     쪽)은 아직 이 패턴을 따르지 않는다 — 위 "연결 판정 오탐(미해결)" 참고, 고칠 때 여기의 search
-     쪽 코드를 참조한다.
+     바꾸는 순간 멀쩡한 서비스가 다시 "연결 끊김"으로 보인다. agent-runtime 쪽도 2026-08-16에 같은
+     패턴을 따르게 됐다 — 다만 한 걸음 더 간다: 검사에 넘기는 값이 별도 변수가 아니라
+     `setAgentRuntimeBaseUrl(settings.agentRuntimeBaseUrl)`의 **반환값**이라, 적용한 주소와 검사한
+     주소가 구조적으로 갈라질 수 없다.
   3. `electron/knowledge-activation.ts`의 `computeActivationReconcile`은 search-runtime이 돌려준
      계약의 `local_indexes_enabled`(`listLocalKnowledgeIndexes`의 `localIndexesEnabled`)가 `false`면
      `reason: "local_indexes_disabled"`로 분기해 "관리자에게 요청하세요"를 안내하고,
