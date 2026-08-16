@@ -134,6 +134,33 @@ const TYPE_FIELD_NOTES: Record<WizardType, FieldNote[]> = {
   ],
 };
 
+/** agent-manifest.schema.json의 `workflow.roles[].type` enum 그대로 —
+ * 라벨만 업무 표현으로 덧붙인다(값은 스키마 값을 그대로 쓴다). */
+const AGENT_ROLE_TYPES = [
+  { value: "answerer", label: "answerer — 답변 생성" },
+  { value: "retriever", label: "retriever — 자료 검색" },
+  { value: "planner", label: "planner — 작업 계획" },
+  { value: "validator", label: "validator — 결과 검증" },
+] as const;
+
+const PROMPT_VARIABLE_TYPES = ["string", "integer", "boolean", "array"] as const;
+
+interface PromptVariable {
+  name?: string;
+  type?: string;
+  required?: boolean;
+  description?: string;
+}
+
+interface AgentRole {
+  id?: string;
+  type?: string;
+  description?: string;
+  requires_knowledge?: boolean;
+  requires_mcp?: boolean;
+  requires_prompt?: boolean;
+}
+
 const SCHEMA_DOC_BY_TYPE: Record<WizardType, string> = {
   agent: "packages/schemas/manifests/agent-manifest.schema.json",
   prompt: "packages/schemas/manifests/prompt-manifest.schema.json",
@@ -856,6 +883,96 @@ function StepManifest({
   parsed: ParseResult;
   example: ExampleState;
 }) {
+  // 고급 편집기에서 JSON이 깨진 채로 구조화 폼을 조작하면, 폼이 자기가
+  // 읽어낸 빈 객체 위에 patch를 얹어 저장해 사용자가 쓰던 내용을 조용히
+  // 지워 버린다. 그래서 그동안은 편집을 막고 이유를 말한다.
+  const structuredBlocked = !parsed.ok && manifestText.trim().length > 0;
+  const structuredBlockedBanner = (
+    <ErrorBanner
+      message={`고급 설정의 JSON이 올바르지 않아 아래 항목을 편집할 수 없습니다. 먼저 JSON을 고치거나 "기본값으로 재설정"을 누르세요.${parsed.ok ? "" : ` (${parsed.error})`}`}
+    />
+  );
+
+  if (type === "agent") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">Agent 구성</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            이 Agent가 무엇을 할 수 있는지만 고르면 됩니다. 나머지 Manifest 값은 자동으로 채워집니다.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <AgentManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              위 화면이 다루지 않는 필드가 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="Agent Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  if (type === "prompt") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">Prompt 구성</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            System Prompt 본문과 이 Prompt가 받는 변수만 정하면 됩니다.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <PromptManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              위 화면이 다루지 않는 필드가 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="Prompt Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   if (type === "mcp_tool") {
     return (
       <div className="space-y-5">
@@ -866,7 +983,11 @@ function StepManifest({
           </p>
         </div>
 
-        <McpManifestFields parsed={parsed} onChange={onChange} />
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <McpManifestFields parsed={parsed} onChange={onChange} />
+        )}
 
         <details className="rounded-lg border border-border bg-white">
           <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
@@ -942,6 +1063,493 @@ function StepManifest({
       />
 
       {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+    </div>
+  );
+}
+
+/** Agent Manifest 구조 입력 — P05의 "쉽게 등록" 절반.
+ *
+ * 이 화면이 다루는 것은 Agent Manifest 전체가 아니라 **실제로 두 표준 Agent를
+ * 구분 짓는 것들**이다. `services/agent-runtime/config/`의 standard-agent와
+ * standard-db-agent는 역할이 `answerer` 하나로 똑같고 `capabilities`와 한도만
+ * 다르다 — 그래서 기본 화면은 역할 하나를 전제로 하고, 역할 추가는 필요한
+ * 사람만 쓰도록 뒤에 둔다. 없는 개념(Preset 이름, 워크플로 그래프 편집기 등)을
+ * 새로 만들지 않는다: 이 폼이 쓰는 필드는 전부 agent-manifest.schema.json에
+ * 실재하는 것뿐이고, 스키마가 표현하지 못하는 규칙은 차단이 아니라 경고로만
+ * 알린다.
+ *
+ * `entry_role`은 사용자가 직접 입력하지 않는다 — 역할 id와 어긋나면 Manifest가
+ * 검증에서 떨어지는데, 그 어긋남은 폼이 구조적으로 막을 수 있는 종류다. */
+function AgentManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const workflow =
+    typeof manifest.workflow === "object" && manifest.workflow !== null
+      ? (manifest.workflow as Record<string, unknown>)
+      : {};
+  const roles: AgentRole[] = Array.isArray(workflow.roles)
+    ? (workflow.roles as AgentRole[]).filter((r) => typeof r === "object" && r !== null)
+    : [];
+  const capabilities =
+    typeof manifest.capabilities === "object" && manifest.capabilities !== null
+      ? (manifest.capabilities as Record<string, unknown>)
+      : {};
+  const limits =
+    typeof manifest.limits === "object" && manifest.limits !== null
+      ? (manifest.limits as Record<string, unknown>)
+      : {};
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function writeRoles(nextRoles: AgentRole[]) {
+    // entry_role은 항상 첫 역할을 따라간다 — 사용자가 역할 이름을 바꾸거나
+    // 첫 역할을 지워도 두 값이 어긋난 Manifest가 만들어지지 않는다.
+    updateManifest({
+      workflow: { entry_role: nextRoles[0]?.id ?? "", roles: nextRoles },
+    });
+  }
+
+  function updateRole(index: number, patch: Partial<AgentRole>) {
+    writeRoles(roles.map((role, i) => (i === index ? { ...role, ...patch } : role)));
+  }
+
+  function updateCapability(key: string, value: boolean) {
+    updateManifest({
+      capabilities: {
+        knowledge_required: false,
+        mcp_allowed: false,
+        ...capabilities,
+        [key]: value,
+      },
+    });
+  }
+
+  function updateLimit(key: string, raw: string) {
+    const next = { ...limits };
+    // 빈 칸은 0이 아니라 "미지정"이다 — timeout 0초짜리 Agent를 조용히
+    // 만들어 두지 않는다. 숫자가 아닌 입력("-", "1e" 등)도 마찬가지로
+    // 미지정으로 둔다: Number()가 NaN을 만들고 JSON.stringify가 그것을
+    // null로 직렬화해, 스키마가 integer를 요구하는 자리에 null이 박힌
+    // Manifest가 만들어지기 때문이다.
+    const parsedNumber = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsedNumber)) delete next[key];
+    else next[key] = parsedNumber;
+    updateManifest({ limits: next });
+  }
+
+  const knowledgeRequired = capabilities.knowledge_required === true;
+  const mcpAllowed = capabilities.mcp_allowed === true;
+  const roleNeedsKnowledge = roles.some((r) => r.requires_knowledge === true);
+  const roleNeedsMcp = roles.some((r) => r.requires_mcp === true);
+  const duplicateRoleId = roles.some((r, i) => roles.findIndex((o) => o.id === r.id) !== i);
+  const emptyRoleId = roles.some((r) => !String(r.id ?? "").trim());
+
+  return (
+    <div className="space-y-5">
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-body font-semibold text-text-primary">이 Agent가 할 수 있는 일</h3>
+          <p className="text-caption text-text-secondary">
+            Service Composer가 이 값으로 호환 여부를 판단합니다.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <ToggleRow
+            label="지식 검색 사용"
+            hint="등록된 Knowledge를 검색해 답변 근거로 씁니다."
+            checked={knowledgeRequired}
+            onChange={(v) => updateCapability("knowledge_required", v)}
+          />
+          <ToggleRow
+            label="MCP Tool 호출 허용"
+            hint="읽기 전용 Tool을 호출할 수 있습니다. 실제 허용 범위는 Office Profile이 정합니다."
+            checked={mcpAllowed}
+            onChange={(v) => updateCapability("mcp_allowed", v)}
+          />
+          <ToggleRow
+            label="답변 스트리밍"
+            hint="답변을 생성되는 대로 화면에 흘려보냅니다."
+            checked={capabilities.streaming !== false}
+            onChange={(v) => updateCapability("streaming", v)}
+          />
+          <ToggleRow
+            label="근거(Citation) 필수"
+            hint="근거 문서를 찾지 못하면 답변하지 않습니다."
+            checked={capabilities.citation_required === true}
+            onChange={(v) => updateCapability("citation_required", v)}
+          />
+        </div>
+        {knowledgeRequired && !roleNeedsKnowledge && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-caption text-amber-800">
+            지식 검색을 쓰도록 했지만 아래 역할 중 지식이 필요하다고 표시된 것이 없습니다. 의도한
+            구성이면 그대로 두어도 등록됩니다.
+          </p>
+        )}
+        {mcpAllowed && !roleNeedsMcp && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-caption text-amber-800">
+            MCP Tool 호출을 허용했지만 아래 역할 중 Tool이 필요하다고 표시된 것이 없습니다.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body font-semibold text-text-primary">역할</h3>
+            <p className="text-caption text-text-secondary">
+              대부분의 Agent는 답변 역할 하나면 충분합니다. 첫 번째 역할이 실행 시작점
+              (<code>entry_role</code>)이 됩니다.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              writeRoles([
+                ...roles,
+                {
+                  id: `role-${roles.length + 1}`,
+                  type: "answerer",
+                  description: "",
+                  requires_knowledge: false,
+                  requires_mcp: false,
+                  requires_prompt: true,
+                },
+              ])
+            }
+          >
+            역할 추가
+          </Button>
+        </div>
+
+        {roles.length === 0 && (
+          <ErrorBanner message="역할이 하나도 없습니다. 역할 추가를 눌러 최소 하나를 만드세요." />
+        )}
+
+        {roles.map((role, index) => (
+          <div key={index} className="space-y-3 rounded-lg border border-border p-4">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-caption font-semibold text-text-secondary">
+                역할 {index + 1}
+                {index === 0 && <span className="ml-1.5 text-brand-600">· 실행 시작점</span>}
+              </span>
+              {roles.length > 1 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => writeRoles(roles.filter((_, i) => i !== index))}
+                >
+                  삭제
+                </Button>
+              )}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label="역할 이름" required>
+                <input
+                  value={String(role.id ?? "")}
+                  onChange={(e) => updateRole(index, { id: e.target.value })}
+                  placeholder="예: answerer"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label="역할 유형" required>
+                <select
+                  value={String(role.type ?? "answerer")}
+                  onChange={(e) => updateRole(index, { type: e.target.value })}
+                  className={inputClass}
+                >
+                  {AGENT_ROLE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <FormField label="역할 설명 (선택)">
+              <input
+                value={String(role.description ?? "")}
+                onChange={(e) => updateRole(index, { description: e.target.value })}
+                placeholder="예: Knowledge를 검색하고 답변을 생성한다"
+                className={inputClass}
+              />
+            </FormField>
+            <div className="space-y-2">
+              <ToggleRow
+                label="지식 필요"
+                checked={role.requires_knowledge === true}
+                onChange={(v) => updateRole(index, { requires_knowledge: v })}
+              />
+              <ToggleRow
+                label="MCP Tool 필요"
+                checked={role.requires_mcp === true}
+                onChange={(v) => updateRole(index, { requires_mcp: v })}
+              />
+              <ToggleRow
+                label="Prompt 필요"
+                checked={role.requires_prompt !== false}
+                onChange={(v) => updateRole(index, { requires_prompt: v })}
+              />
+            </div>
+          </div>
+        ))}
+
+        {emptyRoleId && <ErrorBanner message="역할 이름은 비워 둘 수 없습니다." />}
+        {duplicateRoleId && <ErrorBanner message="역할 이름이 중복되었습니다. 서로 다른 이름을 쓰세요." />}
+      </section>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div>
+          <h3 className="text-body font-semibold text-text-primary">실행 한도 (선택)</h3>
+          <p className="text-caption text-text-secondary">
+            비워 두면 Runtime 기본값이 적용됩니다.
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <FormField label="최대 Context Token">
+            <input
+              type="number"
+              min={0}
+              value={limits.max_context_tokens === undefined ? "" : String(limits.max_context_tokens)}
+              onChange={(e) => updateLimit("max_context_tokens", e.target.value)}
+              placeholder="예: 8192"
+              className={inputClass}
+            />
+          </FormField>
+          <FormField label="Timeout (초)">
+            <input
+              type="number"
+              min={1}
+              value={limits.timeout_seconds === undefined ? "" : String(limits.timeout_seconds)}
+              onChange={(e) => updateLimit("timeout_seconds", e.target.value)}
+              placeholder="예: 60"
+              className={inputClass}
+            />
+          </FormField>
+          <FormField label="최대 MCP 호출 수">
+            <input
+              type="number"
+              min={0}
+              value={limits.max_mcp_calls === undefined ? "" : String(limits.max_mcp_calls)}
+              onChange={(e) => updateLimit("max_mcp_calls", e.target.value)}
+              placeholder={mcpAllowed ? "예: 3" : "0"}
+              className={inputClass}
+            />
+          </FormField>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2.5">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-brand-600"
+      />
+      <span className="min-w-0">
+        <span className="block text-body text-text-primary">{label}</span>
+        {hint && <span className="block text-caption text-text-muted">{hint}</span>}
+      </span>
+    </label>
+  );
+}
+
+/** Prompt Manifest 구조 입력. `template.file`은 3단계 파일 업로드가 이름을
+ * 정확히 대조하는 값이라(스펙: "template.file에 이름이 명시된 파일") 여기서
+ * 바꾸면 그 검증 대상도 함께 바뀐다 — 그래서 그 사실을 필드 옆에 적어 둔다. */
+function PromptManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const template =
+    typeof manifest.template === "object" && manifest.template !== null
+      ? (manifest.template as Record<string, unknown>)
+      : {};
+  const variables: PromptVariable[] = Array.isArray(manifest.variables)
+    ? (manifest.variables as PromptVariable[]).filter((v) => typeof v === "object" && v !== null)
+    : [];
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function updateTemplate(key: string, value: string) {
+    updateManifest({ template: { system: "", file: "template.md", ...template, [key]: value } });
+  }
+
+  function writeVariables(next: PromptVariable[]) {
+    updateManifest({ variables: next });
+  }
+
+  const duplicateName = variables.some(
+    (v, i) => variables.findIndex((o) => o.name === v.name) !== i,
+  );
+  const emptyName = variables.some((v) => !String(v.name ?? "").trim());
+
+  return (
+    <div className="space-y-5">
+      <FormField label="System Prompt 본문" required>
+        <textarea
+          value={String(template.system ?? "")}
+          onChange={(e) => updateTemplate("system", e.target.value)}
+          rows={6}
+          placeholder="예: 당신은 사내 정책을 안내하는 도우미입니다. 근거 문서에 없는 내용은 추측하지 않습니다."
+          className={`${inputClass} resize-y`}
+        />
+      </FormField>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <FormField label="Template 파일명" required>
+          <input
+            value={String(template.file ?? "")}
+            onChange={(e) => updateTemplate("file", e.target.value)}
+            placeholder="예: template.md"
+            className={inputClass}
+          />
+          <p className="mt-1 text-caption text-text-muted">
+            3단계에서 <strong>이 이름과 정확히 같은</strong> 파일을 업로드해야 합니다.
+          </p>
+        </FormField>
+        <FormField label="언어">
+          <input
+            value={String(template.language ?? "ko")}
+            onChange={(e) => updateTemplate("language", e.target.value)}
+            placeholder="ko"
+            className={inputClass}
+          />
+        </FormField>
+      </div>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body font-semibold text-text-primary">변수</h3>
+            <p className="text-caption text-text-secondary">
+              Template 안에서 채워 넣을 값들입니다.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              writeVariables([
+                ...variables,
+                { name: "", type: "string", required: true, description: "" },
+              ])
+            }
+          >
+            변수 추가
+          </Button>
+        </div>
+
+        {variables.length === 0 && (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-caption text-text-secondary">
+            변수가 없습니다. 고정된 문구만 쓰는 Prompt라면 비워 두어도 됩니다.
+          </p>
+        )}
+
+        {variables.map((variable, index) => (
+          <div key={index} className="grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-12">
+            <div className="sm:col-span-4">
+              <FormField label="이름" required>
+                <input
+                  value={String(variable.name ?? "")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) => (i === index ? { ...v, name: e.target.value } : v)),
+                    )
+                  }
+                  placeholder="예: question"
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <div className="sm:col-span-3">
+              <FormField label="유형" required>
+                <select
+                  value={String(variable.type ?? "string")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) => (i === index ? { ...v, type: e.target.value } : v)),
+                    )
+                  }
+                  className={inputClass}
+                >
+                  {PROMPT_VARIABLE_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <div className="sm:col-span-4">
+              <FormField label="설명 (선택)">
+                <input
+                  value={String(variable.description ?? "")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) =>
+                        i === index ? { ...v, description: e.target.value } : v,
+                      ),
+                    )
+                  }
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <div className="flex items-end justify-between gap-2 sm:col-span-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => writeVariables(variables.filter((_, i) => i !== index))}
+              >
+                삭제
+              </Button>
+            </div>
+            <div className="sm:col-span-12">
+              <ToggleRow
+                label="필수 변수"
+                checked={variable.required !== false}
+                onChange={(v) =>
+                  writeVariables(
+                    variables.map((item, i) => (i === index ? { ...item, required: v } : item)),
+                  )
+                }
+              />
+            </div>
+          </div>
+        ))}
+
+        {emptyName && <ErrorBanner message="변수 이름은 비워 둘 수 없습니다." />}
+        {duplicateName && <ErrorBanner message="변수 이름이 중복되었습니다." />}
+      </section>
     </div>
   );
 }

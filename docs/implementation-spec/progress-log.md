@@ -4,6 +4,15 @@
 
 ## 2026-08-16 추가 진행
 
+- **P05 자산 등록에서 JSON 손편집 제거 — Agent·Prompt 구조화 폼 (M01)**: 사용자 요구("포탈에서는 자산들을 쉽게 등록할 수 있어야 하고, 특히 에이전트 구축이 간단해야 한다"). MCP Tool은 2026-08-15에 이미 폼을 받았지만 Agent와 Prompt는 여전히 20줄짜리 JSON textarea가 **주 입력 수단**이었다 — 자산 하나 등록하려면 `workflow.entry_role`이 `workflow.roles[].id`와 정확히 일치해야 한다는 것을 사람이 알고 지켜야 했다.
+  - **Agent**: "이 Agent가 할 수 있는 일"(지식 검색/MCP 허용/스트리밍/근거 필수 토글) + "역할"(유형 4종 select, 지식·Tool·Prompt 필요 토글, 추가/삭제) + "실행 한도"(선택). **`entry_role`은 사용자가 입력하지 않는다** — 항상 첫 역할의 id를 따라가므로 역할 이름을 바꾸거나 첫 역할을 지워도 두 값이 어긋난 Manifest가 만들어질 수 없다(폼이 구조적으로 막을 수 있는 종류의 오류였다).
+  - **Prompt**: System Prompt 본문, Template 파일명(3단계 업로드가 대조하는 값이라는 사실을 필드 옆에 명시), 언어, 변수 목록(이름/유형/필수/설명, 추가·삭제, 중복·빈 이름 경고).
+  - **없는 개념을 만들지 않았다**: 폼이 쓰는 필드는 전부 `agent-manifest.schema.json`/`prompt-manifest.schema.json`에 실재하는 것뿐이고, Preset 이름이나 워크플로 그래프 편집기 같은 새 추상은 도입하지 않았다. 기본값 역시 지어내지 않고 `services/agent-runtime/config/`의 두 표준 Agent가 실제로 쓰는 모양(역할 하나 = `answerer`)을 따랐다. 스키마가 표현하지 못하는 정합성(예: `capabilities.knowledge_required`는 켰는데 역할에는 지식이 필요 없다고 되어 있음)은 **차단이 아니라 경고**로만 알린다 — 스키마가 허용하는 조합을 화면이 임의로 금지하지 않는다.
+  - **조용한 데이터 손실 하나를 함께 막았다**: 구조화 폼은 `parsed.ok ? parsed.value : {}` 위에 patch를 얹는다. 고급 편집기에서 JSON이 깨진 상태로 폼 토글을 건드리면 빈 객체 위에 patch만 남아 사용자가 쓰던 내용이 통째로 사라졌다(기존 MCP 폼에도 있던 동작). 이제 JSON이 깨져 있으면 구조화 항목을 편집하지 못하게 하고 그 이유와 파싱 오류를 함께 보여준다 — Agent/Prompt/MCP 세 폼 모두.
+  - 숫자 한도 입력은 `Number()`가 NaN을 만들면 미지정으로 되돌린다 — `JSON.stringify(NaN)`이 `null`이라 integer 자리에 `null`이 박힌 Manifest가 만들어지기 때문이다.
+  - **검증**: `pnpm exec tsc --noEmit` 0건. **실제 브라우저(Playwright, `next dev` 자체 기동)로 두 폼을 조작해 산출된 Manifest를 확인**하고, 그 JSON을 그대로 `uv run validate-manifest`에 넣어 **둘 다 PASS**를 받았다(Agent: 토글 3개+Timeout 90+역할 이름 변경 후 `entry_role` 자동 추종 확인 / Prompt: System 본문+변수 추가). 확인 후 dev 서버는 정지했다. 스크린샷은 세션 스크래치패드에 보관.
+  - **남은 것(같은 요구의 나머지 두 축)**: (1) Desktop 자산 스토어가 `knowledge`/`mcp_tool`만 취급해 등록한 Agent를 받을 수 없다(`StoreScreen`의 `assetTypeFilter`). (2) Service Composer의 Agent 선택은 하드코딩된 표준 2종뿐이라 등록한 Agent를 서비스에 쓸 수 없다(D-034). 즉 지금은 **등록은 쉬워졌지만 그 Agent를 받을 수도, 쓸 수도 없다** — 다음 작업.
+
 - **`MCP_TOOL_SPECS` 손 복사 드리프트를 테스트로 고정하고, 실제로 하나 발견해 고침 (M05/M10/M12)**: `services/agent-runtime/.../mcp_tools.py`는 스스로 "hand-copied ... known drift risk"라고 적어 두었고 M05 진행 현황에도 "손 복사 Schema Drift 위험 여전"이 남아 있었다 — M05가 M10 내부를 import할 수 없고(구현 원칙 2) 런타임에 계약을 가져올 Tool Registry도 없어서(D-034) 손 복사 자체는 정당하지만, "누군가 기억해야 한다"에 의존하고 있었다. 신규 `tests/contract/test_mcp_tool_spec_drift.py`(16 tests)가 이를 실패하는 테스트로 바꿨다.
   - **실제 드리프트가 하나 있었다**: `db_metadata.get_tables`의 `limit`에 office-mcp-server에는 `"default": 50`이 있는데 agent-runtime 복사본에는 없었다. jsonschema는 `default`로 검증하지 않으므로 오늘 동작은 달라지지 않지만, 권위 있는 정의가 이기도록 복사본을 맞췄다(테스트를 느슨하게 하지 않았다).
   - **드리프트가 실제로 무엇을 망가뜨리는가**를 테스트 docstring에 방향별로 적었다 — 복사본이 더 엄격하면 ANALYZE가 멀쩡한 호출을 거절하고(눈에 보이고 안전), 더 느슨하면 dispatch 후 서버가 거절해 사용자가 엉뚱한 계층의 실패를 본다(보안 구멍은 아니다 — 서버가 권위 있게 재검증한다). 특히 D-083 라우팅에서는 모델이 애초에 실행될 수 없는 Tool을 "선택"한 것이 된다.
