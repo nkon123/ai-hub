@@ -385,6 +385,13 @@ class DeploymentBySlugOut(BaseModel):
     active_revision_id: str | None = None
     knowledge_id: str | None = None
     model_alias: str | None = None
+    # D-034 — resolved once at publish time into the immutable revision
+    # snapshot. Both are null for a Deployment whose Service Definition
+    # points at one of the two standard Agents (their manifests are not
+    # Portal assets), which is the case for every chatbot published before
+    # 2026-08-16; the Hosted runtime then keeps using its standard config.
+    registry_agent_version_id: str | None = None
+    registry_prompt_version_id: str | None = None
 
 
 # --- Review workflow (M02 — §3.6 ReviewRequest/ReviewDecision) ---

@@ -29,6 +29,12 @@ class ChatSessionRecord:
     trace_id: str
     created_at: datetime
     expires_at: datetime
+    # D-034 — resolved by portal-api at publish time and frozen into the
+    # revision snapshot, so a session keeps talking to the exact Agent the
+    # deployment was published with even if the Registry changes underneath.
+    # Both None for a deployment published with a standard Agent.
+    registry_agent_version_id: str | None = None
+    registry_prompt_version_id: str | None = None
     message_count: int = 0
     in_flight: bool = False
     _message_timestamps: list[datetime] = field(default_factory=list, repr=False)
@@ -48,6 +54,8 @@ class ChatSessionStore:
         knowledge_id: str,
         model_alias: str,
         trace_id: str,
+        registry_agent_version_id: str | None = None,
+        registry_prompt_version_id: str | None = None,
     ) -> ChatSessionRecord:
         now = datetime.now(UTC)
         record = ChatSessionRecord(
@@ -60,6 +68,8 @@ class ChatSessionStore:
             trace_id=trace_id,
             created_at=now,
             expires_at=now + timedelta(seconds=self._ttl_seconds),
+            registry_agent_version_id=registry_agent_version_id,
+            registry_prompt_version_id=registry_prompt_version_id,
         )
         self._sessions[record.id] = record
         return record

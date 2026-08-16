@@ -32,12 +32,25 @@ from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from agent_runtime.adapters import DeploymentResolver, KnowledgeAdapter, LLMAdapter
+from agent_runtime.adapters import (
+    AssetRegistryResolver,
+    DeploymentResolver,
+    KnowledgeAdapter,
+    LLMAdapter,
+)
 from agent_runtime.adapters.deployment import HttpDeploymentResolver
 from agent_runtime.chat_sessions import chat_session_store
 from agent_runtime.config import settings
-from agent_runtime.manifests import get_standard_config
-from agent_runtime.routers.runs import get_knowledge_adapter, get_llm_adapter
+from agent_runtime.manifests import (
+    RegistryResolutionError,
+    get_standard_config,
+    resolve_registry_agent_config,
+)
+from agent_runtime.routers.runs import (
+    get_asset_registry_resolver,
+    get_knowledge_adapter,
+    get_llm_adapter,
+)
 from agent_runtime.run_store import run_store
 from agent_runtime.workflow import run_knowledge_chat
 
@@ -163,6 +176,12 @@ async def create_session(
         knowledge_id=deployment.get("knowledge_id") or "",
         model_alias=deployment.get("model_alias") or "default-chat",
         trace_id=trace_id,
+        # D-034: frozen at publish time by portal-api. Captured on the session
+        # rather than re-resolved per message so that every message in one
+        # conversation is answered by the same Agent — a Registry change
+        # mid-conversation must not silently swap the answering Agent.
+        registry_agent_version_id=deployment.get("registry_agent_version_id"),
+        registry_prompt_version_id=deployment.get("registry_prompt_version_id"),
     )
     logger.info(
         "chat.session.created session_id=%s slug=%s trace_id=%s",
@@ -184,6 +203,7 @@ async def send_message(
     body: SendMessageRequest,
     llm_adapter: LLMAdapter = Depends(get_llm_adapter),
     knowledge_adapter: KnowledgeAdapter = Depends(get_knowledge_adapter),
+    registry_resolver: AssetRegistryResolver = Depends(get_asset_registry_resolver),
 ) -> StreamingResponse | JSONResponse:
     session = chat_session_store.get_active(session_id)
     if session is None:
@@ -211,7 +231,42 @@ async def send_message(
         )
 
     trace_id = str(uuid4())
-    config = get_standard_config()
+
+    # D-034 resolution path 2 for Hosted Chat. Before this, Hosted was
+    # hardwired to the standard Agent, so a Service published with a
+    # Registry-registered Agent silently answered as a *different* Agent than
+    # the one it was published with. Now the two cases are explicit, and the
+    # standard path is untouched: a deployment without both ids (every
+    # chatbot published before 2026-08-16) still gets `get_standard_config()`
+    # and never reaches portal-api here.
+    if session.registry_agent_version_id and session.registry_prompt_version_id:
+        try:
+            config = await resolve_registry_agent_config(
+                session.registry_agent_version_id,
+                session.registry_prompt_version_id,
+                registry_resolver,
+            )
+        except RegistryResolutionError as exc:
+            # Deliberately NOT falling back to the standard Agent: answering
+            # with an Agent the publisher did not choose is worse than not
+            # answering, because nothing in the reply would reveal the swap.
+            logger.warning(
+                "chat.registry_agent.unresolved session_id=%s slug=%s code=%s trace_id=%s",
+                session.id,
+                session.slug,
+                exc.code,
+                trace_id,
+            )
+            return _error_envelope(
+                status.HTTP_503_SERVICE_UNAVAILABLE,
+                "CHAT_AGENT_UNAVAILABLE",
+                "이 챗봇이 사용하는 Agent 구성을 불러올 수 없어 답변할 수 없습니다. "
+                "잠시 후 다시 시도해 주세요.",
+                trace_id,
+            )
+    else:
+        config = get_standard_config()
+
     run_record = run_store.create(service_id=session.slug, trace_id=trace_id)
 
     session.in_flight = True

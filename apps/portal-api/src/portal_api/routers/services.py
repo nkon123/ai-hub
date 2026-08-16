@@ -796,8 +796,75 @@ async def _build_dependency_snapshot(version: ServiceVersion, db: AsyncSession) 
         "service_definition": version.service_definition,
         "knowledge": knowledge_snapshot,
         "model_alias": (version.service_definition.get("model_policy") or {}).get("model_alias"),
+        # D-034: `agent_ref`/`prompt_bindings` carry *manifest* ids, which the
+        # Hosted runtime cannot resolve — `resolve_registry_agent_config`
+        # needs Portal AssetVersion ids. Resolving that mapping here, once at
+        # activation time, is the same discipline the knowledge list above
+        # follows and is what makes the snapshot self-sufficient.
+        "registry_agent": await _resolve_registry_asset_version(
+            version.service_definition.get("agent_ref") or {}, "agent", db
+        ),
+        "registry_prompt": await _resolve_registry_asset_version(
+            _first_prompt_ref(version.service_definition), "prompt", db
+        ),
         "published_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _first_prompt_ref(service_definition: dict) -> dict:
+    """`prompt_bindings[0]` normalized to the `{id, version}` shape
+    `_resolve_registry_asset_version` expects. Only the first binding is
+    resolved: `resolve_registry_agent_config` takes exactly one Agent+Prompt
+    pair, so a second binding has nowhere to go — better to resolve nothing
+    for it than to invent a pairing the runtime cannot honour."""
+    bindings = service_definition.get("prompt_bindings") or []
+    if not bindings or not isinstance(bindings[0], dict):
+        return {}
+    return {"id": bindings[0].get("prompt_id"), "version": bindings[0].get("prompt_version")}
+
+
+async def _resolve_registry_asset_version(
+    ref: dict, asset_type: str, db: AsyncSession
+) -> dict | None:
+    """Find the APPROVED AssetVersion whose *manifest* declares `ref["id"]`
+    and `ref["version"]`, or None.
+
+    None is the normal, expected outcome for the two standard Agents: their
+    manifests live only in `services/agent-runtime/config/` and were never
+    registered as Portal assets, so no row can match. That is exactly why a
+    miss must not fail the publish — the four already-published chatbots run
+    on those standard Agents, and making this lookup mandatory would break
+    every one of them. A miss simply means "not a Registry asset", and the
+    Hosted runtime falls back to its standard config.
+
+    Unapproved matches are also treated as a miss rather than an error: the
+    publish Gate is what decides whether a Service Version may go live, and
+    silently shipping a DRAFT Agent would be worse than falling back.
+    """
+    ref_id = ref.get("id")
+    ref_version = ref.get("version")
+    if not isinstance(ref_id, str) or not isinstance(ref_version, str):
+        return None
+
+    candidates = (
+        await db.execute(
+            select(AssetVersion, Asset)
+            .join(Asset, Asset.id == AssetVersion.asset_id)
+            .where(Asset.type == asset_type, AssetVersion.status == "APPROVED")
+        )
+    ).all()
+
+    for asset_version, asset in candidates:
+        manifest = asset_version.manifest or {}
+        if manifest.get("id") == ref_id and manifest.get("version") == ref_version:
+            return {
+                "asset_version_id": asset_version.id,
+                "asset_id": asset.id,
+                "asset_name": asset.name,
+                "manifest_id": ref_id,
+                "version": ref_version,
+            }
+    return None
 
 
 async def _activate_new_revision(
@@ -948,6 +1015,8 @@ async def get_deployment_by_slug(
     chatbot_config = service_definition.get("chatbot_config") or {}
     knowledge_list = snapshot.get("knowledge") or []
     primary_knowledge_id = knowledge_list[0]["knowledge_id"] if knowledge_list else None
+    registry_agent = snapshot.get("registry_agent") or None
+    registry_prompt = snapshot.get("registry_prompt") or None
 
     return DeploymentBySlugOut(
         deployment_id=deployment.id,
@@ -962,6 +1031,21 @@ async def get_deployment_by_slug(
         active_revision_id=deployment.active_revision_id,
         knowledge_id=primary_knowledge_id,
         model_alias=snapshot.get("model_alias"),
+        # D-034: both ids or neither. agent-runtime's `resolve_registry_agent_config`
+        # takes an Agent+Prompt *pair*; handing it a half pair would make it
+        # fail per message at chat time instead of here, so a snapshot that
+        # resolved only one of the two is reported as neither — the Hosted
+        # runtime then uses its standard config, exactly as before D-034.
+        registry_agent_version_id=(
+            registry_agent.get("asset_version_id")
+            if registry_agent and registry_prompt
+            else None
+        ),
+        registry_prompt_version_id=(
+            registry_prompt.get("asset_version_id")
+            if registry_agent and registry_prompt
+            else None
+        ),
     )
 
 
