@@ -93,6 +93,7 @@ describe("filterCatalogView", () => {
       catalogAsset({ id: "knowledge-1", name: "재택근무 정책", type: "knowledge" }),
       catalogAsset({ id: "mcp-1", name: "DB 메타데이터", type: "mcp_tool" }),
       catalogAsset({ id: "agent-1", name: "규정 안내 Agent", type: "agent" }),
+      catalogAsset({ id: "prompt-1", name: "질의 재작성 Prompt", type: "prompt" }),
     ],
     [],
   );
@@ -104,7 +105,16 @@ describe("filterCatalogView", () => {
     expect(filterCatalogView(views, { query: "", assetType: "mcp_tool" }).map((v) => v.asset.id)).toEqual([
       "mcp-1",
     ]);
-    expect(filterCatalogView(views, { query: "", assetType: "all" })).toHaveLength(3);
+    expect(filterCatalogView(views, { query: "", assetType: "all" })).toHaveLength(4);
+  });
+
+  it("filters Agent and Prompt the same way as Knowledge/MCP Tool", () => {
+    expect(filterCatalogView(views, { query: "", assetType: "agent" }).map((v) => v.asset.id)).toEqual([
+      "agent-1",
+    ]);
+    expect(filterCatalogView(views, { query: "", assetType: "prompt" }).map((v) => v.asset.id)).toEqual([
+      "prompt-1",
+    ]);
   });
 
   it("matches names case-insensitively and trims the query", () => {

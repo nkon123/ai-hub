@@ -12,7 +12,7 @@ import { STAGE_LABELS } from "../../electron/types";
 import { getDesktopBridge, isBridgeMethodMissing } from "../bridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, PageHeader } from "../ui";
 import { assetTypeLabel, formatBytes } from "../format";
-import { knowledgeActivationTargets, mcpToolConnectionTargets } from "./knowledgeActivation";
+import { knowledgeActivationTargets, mcpToolConnectionTargets, noFurtherActionTargets } from "./knowledgeActivation";
 
 type Phase = "IDLE" | "RUNNING" | "DONE";
 
@@ -306,6 +306,18 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {noFurtherActionTargets(result.installPlan).length > 0 && (
+                <div className="mt-4 space-y-1.5 border-t border-success/20 pt-3">
+                  {noFurtherActionTargets(result.installPlan).map((target) => (
+                    <p key={`${target.assetType}-${target.assetId}`} className="text-caption text-text-secondary">
+                      <CheckCircle2 size={13} className="mr-1 inline-block align-text-bottom text-success" />
+                      {target.name ?? target.assetId} ({assetTypeLabel(target.assetType)}): 설치 외에 별도로 활성화하거나
+                      연결할 절차가 없습니다 — 자산 관리 화면에서 바로 확인할 수 있습니다.
+                    </p>
+                  ))}
                 </div>
               )}
             </Card>

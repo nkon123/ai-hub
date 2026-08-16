@@ -40,3 +40,26 @@ export function mcpToolConnectionTargets(installPlan: IncludedAssetSummary[]): M
     )
     .map((item) => ({ assetId: item.asset_id, version: item.version, name: item.name }));
 }
+
+export interface NoFurtherActionTarget {
+  assetId: string;
+  assetType: "agent" | "prompt";
+  name: string | null;
+}
+
+/** Agent/Prompt 자산은 이 저장소의 현재 아키텍처에서 설치 이후 별도
+ * 활성화·연결 단계가 없다 — Desktop 채팅은 Agent Package의 Workflow를
+ * 로딩해 실행하지 않고 Knowledge 검색과 (opt-in) MCP Tool 호출을 직접
+ * 조합한다(D-078/D-083/D-084). 설치된 Agent/Prompt는 자산 관리(D08)에서
+ * Manifest를 확인하거나 Service의 의존성으로 참조되는 용도로 쓰인다.
+ * "설치됨"과 "쓸 수 있음"을 혼동하지 않도록, 아무 것도 더 필요하지 않다는
+ * 사실 자체를 명시적으로 보여주기 위한 목록이다(Knowledge/MCP Tool처럼
+ * 진행 중 상태를 갖지 않는다 — 있는 것과 없는 것을 같은 자리에서 구분). */
+export function noFurtherActionTargets(installPlan: IncludedAssetSummary[]): NoFurtherActionTarget[] {
+  return installPlan
+    .filter(
+      (item): item is IncludedAssetSummary & { asset_id: string; asset_type: "agent" | "prompt" } =>
+        (item.asset_type === "agent" || item.asset_type === "prompt") && typeof item.asset_id === "string",
+    )
+    .map((item) => ({ assetId: item.asset_id, assetType: item.asset_type, name: item.name }));
+}

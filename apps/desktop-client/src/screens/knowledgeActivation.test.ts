@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { IncludedAssetSummary } from "../../electron/types";
-import { knowledgeActivationTargets, mcpToolConnectionTargets } from "./knowledgeActivation";
+import { knowledgeActivationTargets, mcpToolConnectionTargets, noFurtherActionTargets } from "./knowledgeActivation";
 
 function item(overrides: Partial<IncludedAssetSummary> = {}): IncludedAssetSummary {
   return {
@@ -60,5 +60,31 @@ describe("mcpToolConnectionTargets", () => {
       item(),
       item({ asset_type: "mcp_tool", asset_id: null }),
     ])).toEqual([{ assetId: "tool-1", version: "1.0.0", name: "Oracle Tables" }]);
+  });
+});
+
+describe("noFurtherActionTargets", () => {
+  it("picks identified Agent and Prompt items", () => {
+    expect(
+      noFurtherActionTargets([
+        item({ asset_type: "agent", asset_id: "agent-1", name: "HR 규정 Agent" }),
+        item({ asset_type: "prompt", asset_id: "prompt-1", name: "질의 재작성 Prompt" }),
+      ]),
+    ).toEqual([
+      { assetId: "agent-1", assetType: "agent", name: "HR 규정 Agent" },
+      { assetId: "prompt-1", assetType: "prompt", name: "질의 재작성 Prompt" },
+    ]);
+  });
+
+  it("ignores Knowledge and MCP Tool items — those have their own activation/connection flow", () => {
+    expect(noFurtherActionTargets([item(), item({ asset_type: "mcp_tool", asset_id: "tool-1" })])).toEqual([]);
+  });
+
+  it("excludes an Agent/Prompt item with a null asset_id (STANDARD_LOCAL_COPY) rather than guessing", () => {
+    expect(noFurtherActionTargets([item({ asset_type: "agent", asset_id: null })])).toEqual([]);
+  });
+
+  it("returns an empty array for an empty install plan", () => {
+    expect(noFurtherActionTargets([])).toEqual([]);
   });
 });

@@ -36,8 +36,14 @@ import {
   PageHeader,
 } from "../ui";
 import { assetTypeLabel, formatDateTime } from "../format";
-import { computeCatalogView, filterCatalogView, type CatalogInstallState, type CatalogItemView } from "./storeTypes";
-import { knowledgeActivationTargets, mcpToolConnectionTargets } from "./knowledgeActivation";
+import {
+  computeCatalogView,
+  filterCatalogView,
+  type CatalogInstallState,
+  type CatalogItemView,
+  type StoreAssetTypeFilter,
+} from "./storeTypes";
+import { knowledgeActivationTargets, mcpToolConnectionTargets, noFurtherActionTargets } from "./knowledgeActivation";
 
 function activationKey(assetId: string, version: string): string {
   return `${assetId}::${version}`;
@@ -83,7 +89,7 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
   const [catalogLoading, setCatalogLoading] = useState(false);
   const [installed, setInstalled] = useState<InstalledAssetWithStatus[] | null>(null);
   const [query, setQuery] = useState("");
-  const [assetTypeFilter, setAssetTypeFilter] = useState<"all" | "knowledge" | "mcp_tool">("all");
+  const [assetTypeFilter, setAssetTypeFilter] = useState<StoreAssetTypeFilter>("all");
 
   const [installTarget, setInstallTarget] = useState<CatalogItemView | null>(null);
   const [installEvents, setInstallEvents] = useState<StoreInstallProgressEvent[]>([]);
@@ -268,7 +274,7 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
       <div>
         <PageHeader
           title="자산 찾기"
-          description="승인된 Knowledge와 MCP Tool은 Desktop 앱에서 바로 설치할 수 있습니다."
+          description="승인된 Knowledge, Agent, Prompt, MCP Tool은 Desktop 앱에서 바로 설치할 수 있습니다."
         />
         <BridgeUnavailableState detail="자산 스토어는 Desktop(Electron) 앱에서 실행할 때만 사용할 수 있습니다." />
       </div>
@@ -281,7 +287,7 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
     <div>
       <PageHeader
         title="자산 찾기"
-        description="승인된 Knowledge와 MCP Tool을 찾아 한 번에 설치합니다."
+        description="승인된 Knowledge, Agent, Prompt, MCP Tool을 찾아 한 번에 설치합니다."
         actions={
           <>
             <Button variant="secondary" onClick={onGoToImport}>
@@ -410,6 +416,8 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
             {([
               ["all", "전체"],
               ["knowledge", "Knowledge"],
+              ["agent", "Agent"],
+              ["prompt", "Prompt"],
               ["mcp_tool", "MCP Tool"],
             ] as const).map(([value, label]) => (
               <Button
@@ -598,6 +606,20 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+
+                {installResult.outcome === "SUCCESS" &&
+                  installResult.importResult &&
+                  noFurtherActionTargets(installResult.importResult.installPlan).length > 0 && (
+                    <div className="mt-3 space-y-1.5 border-t border-success/20 pt-3">
+                      {noFurtherActionTargets(installResult.importResult.installPlan).map((target) => (
+                        <p key={`${target.assetType}-${target.assetId}`} className="text-caption text-text-secondary">
+                          <CheckCircle2 size={13} className="mr-1 inline-block align-text-bottom text-success" />
+                          {target.name ?? target.assetId} ({assetTypeLabel(target.assetType)}): 설치 외에 별도로
+                          활성화하거나 연결할 절차가 없습니다 — 자산 관리 화면에서 바로 확인할 수 있습니다.
+                        </p>
+                      ))}
                     </div>
                   )}
 

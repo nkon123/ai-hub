@@ -162,9 +162,18 @@ export function computeCatalogView(
   return assets.map((asset) => computeCatalogItemView(asset, installed));
 }
 
+/** 스토어 화면의 유형 필터 값. `PortalCatalogAsset.type`이 실제로 가질 수
+ * 있는 값(agent/knowledge/mcp_tool/prompt — Service는 별도 테이블이라
+ * `GET /api/v1/assets` 카탈로그에 나타나지 않는다) 중 "전체"를 제외한
+ * 모든 값을 열거한다. 필터 버튼이 늘어나는 대신, "전체" 탭은 이 값들을
+ * 넘어서는 자산도 항상 포함한다(새 asset_type이 서버에 추가돼도 "전체"에서
+ * 조용히 사라지지 않는다). */
+export const STORE_ASSET_TYPE_FILTERS = ["knowledge", "agent", "prompt", "mcp_tool"] as const;
+export type StoreAssetTypeFilter = "all" | (typeof STORE_ASSET_TYPE_FILTERS)[number];
+
 export function filterCatalogView(
   views: CatalogItemView[],
-  filters: { query: string; assetType: "all" | "knowledge" | "mcp_tool" },
+  filters: { query: string; assetType: StoreAssetTypeFilter },
 ): CatalogItemView[] {
   const query = filters.query.trim().toLocaleLowerCase("ko-KR");
   return views.filter((view) => {
