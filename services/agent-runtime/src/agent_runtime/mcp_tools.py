@@ -74,7 +74,7 @@ MCP_TOOL_SPECS: dict[str, dict[str, Any]] = {
             "properties": {
                 "schema": {"type": "string", "minLength": 1, "maxLength": 64},
                 "name_contains": {"type": "string", "maxLength": 64},
-                "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 50},
             },
         },
         "confirmation_policy": NEVER,
