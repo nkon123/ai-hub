@@ -2245,6 +2245,14 @@ components:
           type: string
         parent_chunk_id:
           type: string
+        document_id:
+          type: string
+          description: >
+            04-knowledge-platform.md §2.6/§3.12 stable document identity,
+            echoed from the chunk's indexed metadata. Absent/empty for
+            indexes built before search-runtime surfaced it — that means
+            "unknown", not "no document", and must not be reconstructed
+            from document_path (D-045).
         document_path:
           type: string
         document_title:
@@ -2376,6 +2384,14 @@ components:
           type: string
         parent_chunk_id:
           type: string
+        document_id:
+          type: string
+          description: >
+            04-knowledge-platform.md §2.6/§3.12 stable document identity,
+            echoed from the chunk's indexed metadata. Absent/empty for
+            indexes built before search-runtime surfaced it — that means
+            "unknown", not "no document", and must not be reconstructed
+            from document_path (D-045).
         document_path:
           type: string
         document_title:

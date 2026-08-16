@@ -31,6 +31,10 @@ class Citation:
 
     chunk_id: str
     parent_chunk_id: str | None
+    #: §2.6/§3.12 stable document identity. Empty string when the index
+    #: predates search-runtime surfacing it — `matching.py` falls back to the
+    #: path in that case rather than treating the citation as document-less.
+    document_id: str
     document_path: str
     document_title: str
     page: int | None
@@ -44,6 +48,7 @@ class Citation:
         return Citation(
             chunk_id=data["chunk_id"],
             parent_chunk_id=data.get("parent_chunk_id"),
+            document_id=data.get("document_id") or "",
             document_path=data.get("document_path") or "",
             document_title=data.get("document_title") or "",
             page=data.get("page"),

@@ -16,11 +16,18 @@ def make_citation(
     excerpt: str = "",
     parent_context: str = "",
     score: float = 1.0,
+    document_id: str | None = None,
 ) -> Citation:
-    """Build a Citation whose document_path resolves (via matching.py) to `doc`."""
+    """Build a Citation whose document identity resolves (via matching.py) to
+    `doc`. `document_id` defaults to the shape indexing-runtime actually
+    writes (`{knowledge_id}:{relative path}`); pass `document_id=""` to
+    simulate an index built before search-runtime surfaced that field."""
     return Citation(
         chunk_id=chunk_id or f"chunk-{doc}",
         parent_chunk_id=None,
+        document_id=(
+            f"kv-1:documents/{doc}.md" if document_id is None else document_id
+        ),
         document_path=f"/storage/knowledge/whatever/{doc}.md",
         document_title=f"{doc}.md",
         page=1,

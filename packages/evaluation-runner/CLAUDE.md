@@ -103,5 +103,7 @@ uv run evaluate-knowledge run --dataset <path> --knowledge-id <id> --policy conf
   루트 "다른 모듈의 변경이 필요하면 먼저 Contract 변경을 별도 PR로 제안한다").
 - 새 지표/체크를 추가했다면 `EvaluationResult`가 `evaluation-result.schema.json`과 계속
   맞는가(`validate(..., SchemaType.EVALUATION_RESULT)`).
-- D-045의 문서 id 매칭 규칙(파일명 stem)을 벗어나는 가정을 넣지 않았는가 — search-runtime이
-  아직 `document_id`를 반환하지 않는 한 이 조작적 정의가 유일한 매칭 기준이다.
+- D-045의 문서 id 매칭 규칙(파일명 stem)을 벗어나는 가정을 넣지 않았는가. 2026-08-16부터
+  search-runtime이 `document_id`를 반환하지만 **정규화 규칙은 그대로 파일명 stem이다** —
+  `document_id`에 AssetVersion id가 들어 있어 정확 비교로 바꾸면 데이터셋이 버전에 묶인다
+  (`matching.py` 모듈 docstring에 근거 전문). 우선순위만 `document_id` → path → title로 바뀌었다.

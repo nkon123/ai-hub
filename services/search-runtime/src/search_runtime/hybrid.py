@@ -367,6 +367,12 @@ async def hybrid_search(
         citations.append({
             "chunk_id": cid,
             "parent_chunk_id": parent_id,
+            # §2.6/§3.12 stable document identity, written at index time by
+            # indexing-runtime (`make_document_id`). Echoed as-is and never
+            # reconstructed from `source_path` here: an index built before
+            # this field was surfaced must report "" (unknown) rather than a
+            # locally invented id that looks authoritative but is not.
+            "document_id": meta.get("document_id", ""),
             "document_path": meta.get("source_path", ""),
             "document_title": meta.get("title", ""),
             "page": meta.get("page", 1),

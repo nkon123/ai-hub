@@ -71,6 +71,10 @@
       "properties": {
         "chunk_id": { "type": "string" },
         "parent_chunk_id": { "type": "string" },
+        "document_id": {
+          "type": "string",
+          "description": "04-knowledge-platform.md §2.6/§3.12 — the indexer's stable document identity (`{knowledge_id}:{normalized relative path}`, `indexing_runtime.chunkers.ids.make_document_id`), echoed straight from the chunk's stored metadata. Unlike `document_path`/`document_title` it is not a display field: it does not change when a title is edited. Optional rather than required because indexes built before this field was surfaced have no way to produce it — an empty string means \"this index predates it\", NOT \"this chunk has no document\", and a consumer must not fabricate one from the path when it is missing (D-045)."
+        },
         "document_path": { "type": "string" },
         "document_title": { "type": "string" },
         "page": { "type": "integer" },

@@ -1040,6 +1040,10 @@ class KnowledgeSearchCitationOut(BaseModel):
 
     chunk_id: str
     parent_chunk_id: str | None = None
+    # §2.6/§3.12 stable document identity. Optional because indexes built
+    # before search-runtime surfaced it return nothing here — None means
+    # "this index predates it", never "no document".
+    document_id: str | None = None
     document_path: str | None = None
     document_title: str | None = None
     page: int | None = None
@@ -1138,6 +1142,10 @@ class SearchPreviewCitationOut(BaseModel):
 
     chunk_id: str
     parent_chunk_id: str | None = None
+    # §2.6/§3.12 stable document identity. Optional because indexes built
+    # before search-runtime surfaced it return nothing here — None means
+    # "this index predates it", never "no document".
+    document_id: str | None = None
     document_path: str | None = None
     document_title: str | None = None
     page: int | None = None
