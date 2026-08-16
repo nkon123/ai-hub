@@ -181,6 +181,15 @@ CLAUDE.md가 요구한 `등록된 Knowledge로 챗봇 구성 → 실제 Preview 
 4. ~~M09 Knowledge 평가~~ — **완료 (2026-08-03)**. `packages/evaluation-runner`에 Recall@K/MRR/Quality Gate/버전 비교/Data Card 구현(아래 세션 이력 참고). ~~`packages/knowledge-packager`(§4.1/§4.2 Package Assembler)~~ — **완료 (2026-08-07)**, 아래 세션 이력 참고. 남은 것: ~~ACL Test~~ — **Gate 편입 완료 (2026-08-16)**, 단 실 데이터셋에 acl_cases를 아직 넣지 않아 기계장치만 준비된 상태(D-045 (4)). Package Smoke Test는 여전히 Gate 밖(D-045), Evaluation Dataset의 업무 전문가 검토(`EXPERT_REVIEWED` 전환), ~~`bm25.pkl` 비실행 직렬화 포맷 전환(D-054)~~ — **완료 (2026-08-10)**, 아래 세션 이력 참고.
 5. ~~DB 마이그레이션 도구 부재~~ — **완료 (2026-08-03)**. Alembic 도입(D-043). `init_db`는 더 이상 `create_all`을 호출하지 않고, 스키마 변경은 아래 "스키마 변경 절차"를 따른다.
 
+## 다음 우선순위 작업 — 자산 등록·배포·에이전트 구축 (2026-08-16 사용자 요구)
+
+사용자 요구: "포탈에서는 자산들을 쉽게 등록할 수 있어야 하고, 데스크톱 클라이언트에서는 쉽게 다운 가능해야 하며, **특히 에이전트 구축이 간단해야 한다**." 2026-08-16에 등록(P05 폼) → 고르기(Composer) → Preview → 게시 → Hosted Chat 사슬을 끝까지 이었고, 남은 것은 아래다.
+
+1. **Quick Create의 표준 Agent 고정** — `/chatbots/new`(`StepPublish.tsx`)가 표준 Agent id를 하드코딩해, Registry Agent로 챗봇을 만들려면 Composer(`/services/new`)를 거쳐야 한다. **먼저 판단할 것**: Quick Create는 "등록된 Knowledge로 빠르게"가 목적인 화면이라 Agent 선택 단계를 넣으면 그 목적과 상충한다. 단계를 늘리지 않고 해결할 방법(예: 기본은 표준, 고급에서만 교체)이 있는지부터 정한다. 자동으로 붙이지 않고 결정 대기(D-034 계속 3).
+2. **Service Registry 부재** — `service_id`를 실제 ServiceDefinition/ServiceVersion으로 조회하는 경로가 여전히 없다(D-034 (i)의 나머지 절반). M02/M05 양쪽에 영향.
+3. **D-044 Bundle Builder의 표준 Agent/Prompt 대체 로직** — Registry Agent 게시가 실제로 쓰이기 시작하면 재검토 필요.
+4. **Desktop에서 설치한 Agent Package의 실행 경로 없음** — Desktop 채팅(D06)은 Knowledge 검색과 opt-in MCP 호출을 직접 조합할 뿐 Agent Package의 Workflow를 로딩·실행하지 않는다. 그래서 Agent/Prompt는 설치 이후 활성화·연결 절차가 "아직 없음"이 아니라 **구조상 없음**이다(2026-08-16 Desktop 스토어 항목 참고). 로컬에서 Agent Workflow를 실제로 돌리려면 agent-runtime에 Workflow Loader가 새로 필요하다 — 별도 결정 사항.
+
 ## 스키마 변경 절차 (M02, D-043)
 
 SQLAlchemy 모델(`apps/portal-api/src/portal_api/models/*.py`)을 변경했다면:
