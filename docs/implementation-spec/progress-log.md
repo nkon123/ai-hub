@@ -4,6 +4,24 @@
 
 ## 2026-08-17 추가 진행
 
+- **Offline Bundle이 게시된 그 Agent를 담게 (M02, D-044 재검토 완료)**: D-044에는 "Agent/Prompt Registry 등록 구현 시 Bundle Builder를 실제 Registry 조회로 전환"이 조건부 후속으로 적혀 있었는데, **그 조건이 이번 세션에 충족됐다** — Composer와 Quick Create 양쪽에서 Registry Agent를 골라 게시할 수 있게 됐다. 그래서 지금부터는 실제로 잘못된 번들이 나간다.
+  - **무엇이 잘못 나갔나**: `routers/distributions.py`가 `agent_ref`/`prompt_bindings`를 **무조건** `asset_name="Standard Knowledge Chat Agent"` + `status=STANDARD_LOCAL_COPY` + `manifest`/`manifest_hash=None`으로 만들었다. Registry Agent로 게시한 챗봇을 반출하면 (1) 번들에는 **표준 Agent 파일**이 들어가고 (2) 카탈로그에는 **"Standard Knowledge Chat Agent"** 라고 표시되며 (3) 무결성 기록이 없다. 이번 세션에 반복해 잡은 것과 같은 부류의 조용한 대체인데, **이쪽 산출물은 폐쇄망으로 나가서 되돌리기가 더 어렵다.**
+  - **다시 해석하지 않는다 — 이것이 설계의 핵심이다**: 게시 시점 Revision Snapshot의 `registry_agent`/`registry_prompt`를 읽는다. Registry를 재조회해 "지금의 APPROVED"를 찾는 방법도 있었지만, 그러면 **돌고 있는 챗봇과 다른 Agent가 번들에 들어갈 수 있고** 그것은 D-044가 원래 세운 원칙("스냅샷이 번들의 유일한 진실 공급원이며 distribution-service는 재해석하지 않는다", §3.3 "최신 버전을 무조건 자동 선택하지 않는다")에 정면으로 어긋난다. 스냅샷은 이미 게시 시점에 정답을 얼려 두었다.
+  - **both-or-neither**: 짝이 반쪽만 해석되면 혼합 번들을 만들지 않고 표준 사본 폴백을 유지한다(`by-slug`와 Hosted 실행 경로가 이미 따르는 규율). 스냅샷에 registry id가 없는 배포 — **게시된 4개 데모 챗봇 전부** — 는 변경 전과 완전히 동일하게 동작한다.
+  - **fail-closed**: 스냅샷이 가리키는 AssetVersion 행이 사라졌으면 표준 사본으로 조용히 대체하지 않고 `NOT_FOUND`로 만들어 `DEPENDENCY_MISSING`으로 명시적으로 실패시킨다. `manifest_hash`는 새로 계산하지 않고 등록 시점에 채워진 `AssetVersion.manifest_hash`를 그대로 쓴다(Knowledge 항목과 동일).
+  - `services/distribution-service`는 **수정하지 않았다** — `bundler.collect()`가 이미 manifest 유무 기반으로 제네릭하다. 건드리지 않는 편이 나았다.
+  - **고리가 닫혔다**: 번들러가 쓰는 `assets/{agents|prompts}/{asset_id}/manifest.json`, Desktop 설치의 `{assetsDir}/{folder}/{asset_id}/{version}/`, D-086 해석 경로 4의 `{root}/assets/{agents|prompts}/{asset_id}/{version}/manifest.json`이 **셋 다 일치한다**(D-086 구현이 `bundle-install.ts`를 추측하지 않고 대조했기 때문). 즉 Registry Agent 게시 → 번들 반출 → Desktop 설치 → 로컬 Agent 등록 → 채팅 사용이 이어진다.
+  - **확인 중 발견한 기존 사항(이번 변경과 무관, 미수정)**: `STANDARD_LOCAL_COPY` 항목은 번들에 `assets/agents/standard-agent/`로 담기는데 Desktop은 `assets/agents/{asset_id}/`(매니페스트 UUID)를 찾으므로 `if (!fs.existsSync(srcDir)) continue`로 **조용히 건너뛴다** — 표준 Agent는 번들로 설치된 적이 없다. Desktop이 Agent Workflow를 실행하지 않으니 실해는 없었다.
+  - **검증**: `uv run pytest tests/ -q` **1241 passed / 4 skipped**(작업 전 1237, 신규 4와 일치), `ruff` 0건, `make contract-test` 90 passed. 실 `portal.db`의 게시된 4개 데모 챗봇에 대해 Bundle 계획이 **변경 전과 동일하게** `STANDARD_LOCAL_COPY`로 나오는 것을 실 API + 실 distribution-service(8400)로 확인(가장 중요한 회귀 가드). 테스트로 생긴 DistributionRequest·번들 오브젝트는 확인 후 삭제.
+  - **미검증**: 실제 Registry 자산이 번들에 담기는 케이스는 in-memory 통합 테스트로만 확인했다 — 실 `portal.db`에 Registry Agent로 게시된 배포가 없다.
+
+- **연결된 MCP Tool을 채팅에서 보이게 (M04, 실사용 제보)**: 사용자가 자산 스토어에서 `숫자 더하기`(`mcp_tool`, `calculator.add`)를 설치한 뒤 채팅의 **"로컬 Tool"** 버튼을 눌렀고, "등록된 로컬 Tool이 없습니다"를 보고 **"설치했는데 채팅에 툴이 없다"** 고 결론지었다. **코드는 정확히 동작했다** — 이 저장소에는 이름이 비슷한 두 기능이 있다: MCP Tool 자산(D-080, 설치 후 **연결**하면 렌치 토글 D-083 TOOL_ROUTE로 쓴다)과 로컬 Tool(D-084, 사용자가 고른 `.py` 파일을 로컬 실행). 결함은 로직이 아니라 UI였다.
+  - 고친 것 둘: (1) 연결된 MCP Tool이 `CALCULATOR_SAMPLE_ASSET_ID` **하나에만 하드코딩된 패널**로 보였다 — 다른 Tool을 연결하면 아무것도 안 보였다. 이제 렌치 토글에서 **어떤 MCP Tool이든** 업무 목적 이름으로 보이고, 설치만 되고 연결 안 된 것은 개수로 구분한다(`registeredLocalAgents`가 이미 쓰는 "설치됨과 등록됨은 다른 사실" 패턴). (2) 로컬 Tool 빈 상태가 "자산 허브에서 먼저 추가하세요"라고 안내해, **방금 자산 허브에서 Tool을 설치한 사용자에게 오도**가 됐다 — MCP Tool 보유 여부에 따라 다른 문구를 낸다.
+  - MCP Tool이 하나도 없으면 **아무것도 새로 그리지 않는다**(2026-08-14 D06 정리 원칙). **명칭 체계 자체는 바꾸지 않았다** — 사용자가 좁은 범위를 선택했다. 두 기능이 화면에서 여전히 둘 다 "Tool"이라는 근본 원인은 남는다.
+  - 구현 중 D-084 구조적 격리 테스트(`local-tool-isolation.test.ts`)에 걸려 함수 위치를 옮겼다 — `chatTypes.ts`는 로컬 Tool을 전혀 모르는 채로 두고 `localToolsTypes.ts`가 그 사실을 패널 문구로 번역한다. 그 격리가 의도대로 작동한 사례다.
+  - **검증**: Desktop `pnpm test` **658 passed**(작업 전 649, 신규 9와 일치), typecheck 클린, 브라우저 미리보기로 "Tool 없을 때 아무것도 안 그림" 확인. **미검증**: 연결된 상태의 실제 화면 — 브라우저 모드에는 `window.desktop`이 없어 `installedMcpTools`가 항상 비어 있다. Electron 셸 미실행.
+  - **조사 중 정정한 것**: 최초 진단에서 "연결된 MCP Tool이 채팅 어디에도 표시되지 않는다"고 판단했으나 **틀렸다** — `ChatScreen.tsx`에 `calculatorSampleConnected` 조건으로 뜨는 "숫자 더하기 · 연결됨" 패널이 있었다(토글 뒤에 숨어 있지도 않다). 따라서 이 사용자가 그 패널을 못 본 것이라면 실제 원인은 이름 혼동이 아니라 **설치했지만 연결(D-080)하지 않은 상태**일 가능성이 높다. 설치와 연결이 별개 단계라는 사실 자체가 별도의 UX 간극이다.
+
 - **Desktop이 설치한 Agent를 등록하고 채팅에서 실제로 쓰게 함 (M04, D-086 후속)**: 바로 위 해석 경로 4의 Desktop 절반. 설치는 되는데 쓸 방법이 없던 Agent/Prompt가 이제 D06 채팅에서 선택 가능하다.
   - **거짓이 된 안내를 정정했다**: 2026-08-16에 붙인 "설치 외에 별도로 활성화·연결할 절차가 없습니다"(`knowledgeActivation.ts`의 `noFurtherActionTargets()`)는 그때는 참이었지만 해석 경로 4가 생기면서 **거짓이 되었다**. 정정하고 Knowledge(D-079)·MCP Tool(D-080)과 같은 형태로 설치 직후 등록으로 이어지는 안내를 붙였다. 구조가 바뀌면 그것을 근거로 쓴 문구도 함께 바뀌어야 한다 — 이 문구는 사용자가 "설치했는데 왜 안 쓰이지"를 판단하는 유일한 근거였다.
   - **짝을 지어내지 않는다**: 등록에는 Agent와 Prompt가 모두 필요한데, 이름이 비슷하다는 이유로 자동 짝짓지 않고 사용자가 고르게 한다(Prompt 선택 모달). 설치된 Prompt가 없으면 그 Agent는 등록할 수 없고 **그 이유를 말한다**.
