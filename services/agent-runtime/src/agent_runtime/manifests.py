@@ -28,6 +28,17 @@ Resolution order (D-034, docs/implementation-spec/open-decisions.md):
    requires portal-api to be reachable.
 3. Neither supplied — `routers/runs.py` defaults `agent_profile` to
    `"standard-agent"`, i.e. falls into path 1 above.
+4. `local_agent_id` on `StartRunRequest.input`, wired in `routers/runs.py`
+   (`/local/v1/runs*` ONLY — never `routers/chat.py`) —
+   `resolve_local_agent_config` below resolves an Agent Package Desktop
+   (M04) installed locally from an Offline Bundle, via
+   `agent_runtime.local_agent_registry.LocalAgentRegistry` (that module's
+   docstring has the full design: no workflow engine, path assembled only
+   from a configured allow-root — never from caller input, local `status`
+   fields never trusted, checksum-verified Bundle install assumed rather
+   than re-verified). Structurally unreachable from Hosted Chat — see that
+   module's docstring and `test_local_agent_registry
+   .py::test_chat_router_never_references_local_agent_resolution`.
 
 Loading the standard configs still never reaches into the top-level
 fixtures/ contract-testing tree. Validation failures for the *standard*
@@ -45,6 +56,7 @@ from typing import Any
 
 from ai_asset_schemas.validator import SchemaType, ValidationError, validate
 
+from agent_runtime import local_agent_registry
 from agent_runtime.adapters import AssetRegistryResolver
 from agent_runtime.config import settings
 
@@ -290,3 +302,62 @@ def set_db_agent_config(config: StandardKnowledgeChatConfig | None) -> None:
     config — same purpose as `set_standard_config`."""
     global _cached_db_agent_config
     _cached_db_agent_config = config
+
+
+class LocalAgentResolutionError(Exception):
+    """Raised by `resolve_local_agent_config` — same `code`/`message` shape
+    as `RegistryResolutionError` above, but never caches a config across
+    calls (unlike path 2's `_registry_cache`): a locally installed Agent can
+    be uninstalled or re-registered between runs, and re-reading fresh from
+    the registry/filesystem every time is what makes that take effect
+    immediately, consistent with `LocalAgentRegistry.resolve`'s own
+    freshness guarantee."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def resolve_local_agent_config(
+    local_agent_id: str,
+    registry: local_agent_registry.LocalAgentRegistry,
+) -> StandardKnowledgeChatConfig:
+    """D-034 resolution path 4 (see module docstring). `local_agent_id` is
+    the registered Agent asset's id (`LocalAgentEntry.agent_asset_id`) — the
+    handle a Run references instead of any path. Deliberately never caches:
+    every call re-reads the registry entry and re-validates both manifests
+    fresh from disk (`local_agent_registry.load_and_validate`), so an
+    uninstall or a narrowed `local_agent_roots` takes effect on the very
+    next run, not just the next registration.
+
+    Raises `LocalAgentResolutionError` on any failure — not registered, or
+    a re-validation failure (asset removed after registration, manifest
+    edited to no longer match, etc.). Callers (`routers/runs.py`) turn this
+    into the same `run.failed` SSE shape `AGENT_PROFILE_UNKNOWN`/
+    `RegistryResolutionError` already use."""
+    entry = registry.resolve(local_agent_id)
+    if entry is None:
+        raise LocalAgentResolutionError(
+            "LOCAL_AGENT_NOT_REGISTERED",
+            f"등록된 로컬 Agent Package를 찾을 수 없습니다: {local_agent_id}",
+        )
+
+    try:
+        agent_manifest, prompt_manifest, prompt_template = local_agent_registry.load_and_validate(
+            Path(entry.agent_dir),
+            Path(entry.prompt_dir),
+            entry.agent_asset_id,
+            entry.agent_version,
+            entry.prompt_asset_id,
+            entry.prompt_version,
+        )
+    except local_agent_registry.LocalAgentRegistrationError as e:
+        raise LocalAgentResolutionError(e.code, e.message) from e
+
+    return StandardKnowledgeChatConfig(
+        agent_manifest=agent_manifest,
+        prompt_manifest=prompt_manifest,
+        prompt_template=prompt_template,
+        office_profile=_load_default_office_profile(settings.config_dir),
+    )

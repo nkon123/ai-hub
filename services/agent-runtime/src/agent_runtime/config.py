@@ -188,6 +188,26 @@ class AgentRuntimeSettings(BaseSettings):
     # registration screen.
     knowledge_metadata_suggest_timeout_seconds: float = 20.0
 
+    # D-034 해석 경로 4 (`local_agent_registry.py`): registration table that
+    # turns a Desktop-installed Agent Package into a runnable local
+    # resolution path — same fail-closed-by-default shape as D-079's
+    # `SEARCH_LOCAL_INDEX_ROOTS` and this file's own
+    # `mcp_tool_registration_allowed_aliases`. Empty by default: every
+    # registration is refused (`local_agents_disabled`) until an operator
+    # explicitly lists at least one Desktop install root (the directory
+    # containing `assets/agents/<id>/<version>/`, i.e.
+    # `company-ai-client/`, NOT the `assets/` subdirectory itself — this
+    # module joins `assets/agents|prompts/...` onto each configured root
+    # itself, see that module's docstring "Path safety"). No existing
+    # deployment's behavior changes merely because this setting now exists.
+    local_agent_roots: tuple[str, ...] = ()
+    # Persistent JSON file backing the registry (same "rewrite whole file
+    # under a lock" design as `mcp_tool_registry_path` above and
+    # search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
+    local_agent_registry_path: Path = (
+        _REPO_ROOT / "data" / "agent-runtime" / "local-agent-registry.json"
+    )
+
     class Config:
         env_prefix = "AGENT_RUNTIME_"
 

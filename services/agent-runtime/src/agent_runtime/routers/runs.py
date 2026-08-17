@@ -26,11 +26,15 @@ from agent_runtime.adapters.ollama import OllamaLLMAdapter
 from agent_runtime.adapters.registry import HttpAssetRegistryResolver
 from agent_runtime.adapters.search import HttpKnowledgeAdapter
 from agent_runtime.config import settings
+from agent_runtime.local_agent_registry import LocalAgentRegistry
+from agent_runtime.local_agent_registry import get_registry as get_local_agent_registry
 from agent_runtime.manifests import (
+    LocalAgentResolutionError,
     RegistryResolutionError,
     StandardKnowledgeChatConfig,
     get_db_agent_config,
     get_standard_config,
+    resolve_local_agent_config,
     resolve_registry_agent_config,
 )
 from agent_runtime.run_store import TERMINAL_STATUSES, RunRecord, run_store
@@ -121,6 +125,10 @@ def get_hub_search_adapter() -> HubSearchAdapter:
     )
 
 
+def get_local_agent_registry_dependency() -> LocalAgentRegistry:
+    return get_local_agent_registry()
+
+
 def _fail_run_synchronously(
     run_id: str,
     service_id: str,
@@ -161,6 +169,7 @@ async def start_run(
     mcp_adapter: MCPAdapter = Depends(get_mcp_adapter),
     registry_resolver: AssetRegistryResolver = Depends(get_asset_registry_resolver),
     hub_search_adapter: HubSearchAdapter = Depends(get_hub_search_adapter),
+    local_agent_registry: LocalAgentRegistry = Depends(get_local_agent_registry_dependency),
 ) -> RunResponse:
     trace_id = body.trace_id or str(uuid4())
     record = run_store.create(service_id=body.service_id, trace_id=trace_id)
@@ -196,6 +205,25 @@ async def start_run(
                 registry_agent_version_id, registry_prompt_version_id, registry_resolver
             )
         except RegistryResolutionError as e:
+            _fail_run_synchronously(
+                record.id, body.service_id, trace_id, knowledge_id, question,
+                code=e.code, message=e.message,
+            )
+            return RunResponse(
+                id=record.id, status=record.status, trace_id=record.trace_id,
+                created_at=record.created_at.isoformat(),
+            )
+    elif body.input.get("local_agent_id"):
+        # D-034 resolution path 4 — a Desktop-installed local Agent Package,
+        # referenced by its registered handle. `/local/v1/runs*` ONLY (this
+        # router) — `routers/chat.py` never reads `local_agent_id` and does
+        # not import `resolve_local_agent_config`/`local_agent_registry` at
+        # all (see that module's docstring, "Structural unreachability").
+        try:
+            config = resolve_local_agent_config(
+                body.input["local_agent_id"], local_agent_registry
+            )
+        except LocalAgentResolutionError as e:
             _fail_run_synchronously(
                 record.id, body.service_id, trace_id, knowledge_id, question,
                 code=e.code, message=e.message,
