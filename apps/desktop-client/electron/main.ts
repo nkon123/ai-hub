@@ -1173,7 +1173,12 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "localTool:invoke",
-    async (_event, id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult> => {
+    async (
+      _event,
+      id: string,
+      args: Record<string, unknown>,
+      options?: { aiSelected?: boolean },
+    ): Promise<LocalToolInvocationResult> => {
       const tool = getLocalToolStore().find(id);
       if (!tool) {
         return { outcome: "spawn_error", message: "로컬 Tool을 찾을 수 없습니다." };
@@ -1188,6 +1193,14 @@ function registerIpcHandlers(): void {
       if (!win) {
         return { outcome: "spawn_error", message: "창이 없어 실행 승인을 받을 수 없습니다." };
       }
+      // D-084 후속(채팅 자동 라우팅) — Tool 선택과 인자를 사람이 아니라
+      // AI가 정했을 때는 승인 대화상자 문구가 그 사실을 반드시 밝힌다(Task
+      // Brief 제약 C: D-083의 "인자가 AI 파생이면 확인 문구가 그 사실을
+      // 밝힌다" 규칙의 확장). 승인 절차 자체는 aiSelected 여부와 무관하게
+      // 항상 동일하게 거친다 — 문구만 달라진다.
+      const aiSelectedNotice = options?.aiSelected
+        ? "이 Tool 선택과 인자는 모두 AI가 스스로 결정했습니다 — 사람이 입력하지 않았습니다.\n\n"
+        : "";
       const approval = await dialog.showMessageBox(win, {
         type: "warning",
         buttons: ["실행", "취소"],
@@ -1196,6 +1209,7 @@ function registerIpcHandlers(): void {
         title: "로컬 Tool 실행 승인",
         message: `'${tool.toolName}'을(를) 실행할까요?`,
         detail:
+          aiSelectedNotice +
           `파일: ${tool.filePath}\n함수: ${tool.functionName}\n인자: ${JSON.stringify(args ?? {})}\n\n` +
           "이 코드는 격리되지 않은 상태로, 사용자의 권한으로 실행됩니다 — 직접 실행한 것과 동일합니다.",
       });

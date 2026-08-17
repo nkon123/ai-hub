@@ -246,8 +246,11 @@ const bridge: DesktopBridge = {
   removeLocalTool: (id: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("localTool:remove", id),
 
-  invokeLocalTool: (id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult> =>
-    ipcRenderer.invoke("localTool:invoke", id, args),
+  invokeLocalTool: (
+    id: string,
+    args: Record<string, unknown>,
+    options?: { aiSelected?: boolean },
+  ): Promise<LocalToolInvocationResult> => ipcRenderer.invoke("localTool:invoke", id, args, options),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

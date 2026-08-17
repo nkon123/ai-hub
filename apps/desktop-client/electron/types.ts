@@ -1394,6 +1394,14 @@ export interface DesktopBridge {
    * 호출된다 — 이 메서드 자체는 그 확인을 강제하지 않으므로(IPC 경계에서는
    * 강제할 수 없다) 호출부(LocalToolsScreen.tsx)가 그 규약을 지킨다.
    * `pythonInterpreterPath`가 비어 있으면 프로세스를 띄우지 않고
-   * `interpreter_not_configured`를 반환한다. */
-  invokeLocalTool(id: string, args: Record<string, unknown>): Promise<LocalToolInvocationResult>;
+   * `interpreter_not_configured`를 반환한다.
+   * `options.aiSelected`(D-084 후속, 채팅 자동 라우팅)가 `true`이면 Main
+   * Process가 매번 다시 묻는 네이티브 승인 대화상자 문구가 "Tool 선택과
+   * 인자 모두 AI가 정했다"는 사실을 반드시 밝힌다 — 승인 자체를 생략하지는
+   * 않는다(구현 원칙 7). 생략하면(수동 경로) 기존 문구 그대로다. */
+  invokeLocalTool(
+    id: string,
+    args: Record<string, unknown>,
+    options?: { aiSelected?: boolean },
+  ): Promise<LocalToolInvocationResult>;
 }

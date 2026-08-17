@@ -10,16 +10,37 @@
 //      IPC 호출 하나로 끝난다(Main Process가 매번 `dialog.showMessageBox`로
 //      다시 승인을 묻는다 — `electron/main.ts`의 `localTool:invoke` 핸들러,
 //      D-084 정정 이후 구조).
-//   2. Tool 선택과 인자 입력은 **항상 사용자의 명시적 조작**이다 — 질문
-//      텍스트를 읽어 자동으로 Tool이나 인자를 고르지 않는다.
+//   2. `LocalToolInvokePanel`(수동 경로)에서는 Tool 선택과 인자 입력이
+//      **항상 사용자의 명시적 조작**이다 — 질문 텍스트를 읽어 자동으로
+//      Tool이나 인자를 고르지 않는다.
 //   3. 실행 결과는 이 컴포넌트가 스스로 그리지 않고 `onEntryStart`/
 //      `onEntryFinish` 콜백으로만 부모(ChatScreen)에 알린다 — 대화창에
 //      실제로 어떻게 그려지는지는 `LocalToolChatEntryCard`(같은 파일)가
 //      맡고, ChatScreen은 그 카드를 Hub Tool/Knowledge 결과와 시각적으로
 //      다르게(항상 "로컬 Tool (검토되지 않음)" 배지) 배치한다.
+//
+// D-084 후속 2 — "채팅에 질문을 입력하면 로컬 Tool 인자가 자동으로
+// 채워지게" 요구(사용자 실사용 피드백, 두 번 재확인받은 의도적 예외). 이
+// 파일에 `runLocalToolAutoRoute`/`LocalToolAutoRouteEntryCard`를 함께 둔
+// 이유: 위 경계 (1)을 그대로 지키면서 자동화를 추가하려면 "Tool을
+// 고르고 인자를 만드는" 로직이 여전히 agent-runtime/chatTypes와 물리적으로
+// 분리된 자리에 있어야 하기 때문이다.
+//   - Tool 선택+인자 추출은 `electron/local-tool-router.ts`(순수 HTTP,
+//     agent-runtime을 전혀 모른다)가 로컬 Ollama에 **한 번만** 물어
+//     제안받는다 — D-083 `tool_router.py`와 동일한 fail-closed 규율(그
+//     모듈 docstring 참고).
+//   - 실행 승인은 여전히 `bridge.invokeLocalTool`이 맡고, Main Process가
+//     매번 네이티브 대화상자로 다시 묻는다 — 자동 라우팅이라고 승인을
+//     생략하지 않는다(구현 원칙 7). 다만 이번에는 `{ aiSelected: true }`를
+//     넘겨 그 대화상자 문구가 "Tool 선택과 인자 모두 AI가 정했다"는 사실을
+//     밝히게 한다.
+//   - 결과 카드(`LocalToolAutoRouteEntryCard`)는 "모델이 Tool이 필요
+//     없다고 판단"/"후보 중 못 고름"/"골랐으나 검증 실패"/"사용자가 승인
+//     거절"/"실행 성공"을 서로 다른 문구로 보여준다(Task Brief 요구사항 F).
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, FileCode2, Loader2, Terminal } from "lucide-react";
+import { AlertTriangle, FileCode2, Loader2, Sparkles, Terminal } from "lucide-react";
 import type { DesktopBridge, LocalTool } from "../../electron/types";
+import { routeLocalToolCall } from "../../electron/local-tool-router";
 import { Button, ErrorBanner, LoadingState, Modal } from "../ui";
 import { formatDateTime } from "../format";
 import {
@@ -86,6 +107,157 @@ export function LocalToolChatEntryCard({ entry }: { entry: LocalToolChatEntry })
       )}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// D-084 후속 2 — 자동 라우팅(질문 -> Tool+인자 자동 제안 -> 승인 -> 실행).
+// ---------------------------------------------------------------------------
+
+/** 채팅창 입력 하나로 트리거된 자동 라우팅 한 건. `display === null`이면
+ * 아직 진행 중이다(라우팅 호출 또는 승인/실행 대기). `toolName`/`args`는
+ * 실제로 Tool이 정해졌을 때만(라우팅 성공, 스키마 검증 실패, 실행) 채워
+ * 진다 — "Tool이 필요 없다고 판단"/"후보 중 못 고름" 케이스는 둘 다
+ * `null`로 남는다(둘 다 어떤 Tool도 정해지지 않았다는 같은 사실이다). */
+export interface LocalToolAutoRouteEntry {
+  id: string;
+  question: string;
+  toolName: string | null;
+  args: Record<string, unknown> | null;
+  startedAt: string;
+  completedAt: string | null;
+  display: InvocationOutcomeDisplay | null;
+}
+
+/** 자동 라우팅 카드 — 수동 실행 카드(`LocalToolChatEntryCard`)와 다른
+ * 아이콘(Sparkles, "AI가 자동 선택"임을 표시)과 배지 문구를 쓴다. Task
+ * Brief 요구사항 F: "Tool 불필요"/"후보 중 못 고름"/"검증 실패"/"승인
+ * 거절"/"실행 성공"을 절대 하나의 "실패"로 뭉개지 않는다 — 그 구분은
+ * `runLocalToolAutoRoute`가 만든 `display.title`에 이미 담겨 있고, 이
+ * 카드는 그것을 그대로 보여줄 뿐이다(같은 카드를 다른 오해로 재사용하지
+ * 않는다). */
+export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRouteEntry }) {
+  const { display } = entry;
+  return (
+    <div className="max-w-full rounded-lg border border-dashed border-brand-200 bg-brand-50/40 px-3 py-2.5 text-[11px] text-text-secondary">
+      <div className="flex flex-wrap items-center gap-1.5 font-medium text-text-primary">
+        <Sparkles size={12} className="shrink-0" />
+        <span className="truncate">{entry.toolName ?? "로컬 Tool 자동 라우팅"}</span>
+        <span className="rounded-full bg-brand-100 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-700">
+          로컬 Tool · AI 자동 선택 (검토되지 않음)
+        </span>
+      </div>
+      {entry.args && (
+        <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap rounded border border-border bg-white px-2 py-1.5 text-[10px] text-text-secondary">
+          {formatArgsForConfirm(entry.args)}
+        </pre>
+      )}
+      {display === null ? (
+        <p className="mt-1.5 flex items-center gap-1.5 text-text-muted">
+          <Loader2 size={11} className="animate-spin" /> 어떤 Tool을 쓸지 확인하고, 필요하면 승인을 기다리는 중...
+        </p>
+      ) : (
+        <div className={`mt-1.5 rounded border px-2 py-1.5 ${OUTCOME_TONE_CLASS[display.tone]}`}>
+          <p className="font-semibold">{display.title}</p>
+          <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap text-[10px]">{display.detail}</pre>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 이번 턴 질문 하나에 대해 로컬 Tool 자동 라우팅을 끝까지 진행한다:
+ * (1) 등록된 로컬 Tool 목록 조회 -> (2) `electron/local-tool-router.ts`로
+ * 로컬 Ollama에 한 번 물어 제안받음(실패/거절/모르는 이름/스키마 불일치는
+ * 전부 "실행 안 함") -> (3) 제안이 유효하면 `bridge.invokeLocalTool`로
+ * 넘겨 Main Process의 네이티브 승인 대화상자를 거쳐 실행. 이 함수는 절대
+ * throw하지 않는다 — 모든 실패 경로는 `onFinish`로 전달되는 `display`
+ * 값 하나로 귀결된다(다섯 outcome을 서로 다른 문구로 구분, Task Brief F). */
+export async function runLocalToolAutoRoute(params: {
+  bridge: DesktopBridge;
+  question: string;
+  ollamaBaseUrl: string;
+  preferredModel: string;
+  onStart: (entry: LocalToolAutoRouteEntry) => void;
+  onFinish: (
+    id: string,
+    completedAt: string,
+    toolName: string | null,
+    args: Record<string, unknown> | null,
+    display: InvocationOutcomeDisplay,
+  ) => void;
+}): Promise<void> {
+  const { bridge, question, ollamaBaseUrl, preferredModel, onStart, onFinish } = params;
+  const id = crypto.randomUUID();
+  const startedAt = new Date().toISOString();
+  onStart({ id, question, toolName: null, args: null, startedAt, completedAt: null, display: null });
+  const finish = (
+    toolName: string | null,
+    args: Record<string, unknown> | null,
+    display: InvocationOutcomeDisplay,
+  ) => onFinish(id, new Date().toISOString(), toolName, args, display);
+
+  try {
+    const tools = await bridge.listLocalTools();
+    const route = await routeLocalToolCall(
+      question,
+      tools.map((t) => ({ id: t.id, toolName: t.toolName, functionName: t.functionName, inputSchema: t.inputSchema })),
+      { baseUrl: ollamaBaseUrl, preferredModel },
+    );
+
+    if (route.status === "no_candidates") {
+      finish(null, null, {
+        tone: "muted",
+        title: "등록된 로컬 Tool 없음",
+        detail: "자산 허브 > 로컬 Tool에서 먼저 Python 파일을 추가해야 자동 라우팅을 쓸 수 있습니다.",
+      });
+      return;
+    }
+    if (route.status === "declined_by_model") {
+      finish(null, null, {
+        tone: "muted",
+        title: "AI가 Tool이 필요 없다고 판단했습니다",
+        detail: "이 질문에는 등록된 로컬 Tool 중 어느 것도 필요하지 않다고 판단해 아무것도 실행하지 않았습니다.",
+      });
+      return;
+    }
+    if (route.status === "unknown_tool_name" || route.status === "unparseable" || route.status === "error_or_timeout") {
+      const detail =
+        route.status === "unknown_tool_name"
+          ? "AI가 등록되지 않은 Tool 이름으로 응답해 어떤 Tool도 실행하지 않았습니다."
+          : route.status === "unparseable"
+            ? "AI 응답을 해석하지 못해 어떤 Tool도 실행하지 않았습니다."
+            : "AI에게 물어보는 중 시간이 초과되었거나 오류가 발생해 어떤 Tool도 실행하지 않았습니다.";
+      finish(null, null, { tone: "warning", title: "후보 중에서 Tool을 고르지 못했습니다", detail });
+      return;
+    }
+    if (route.status === "schema_invalid") {
+      const detail = route.schemaErrors
+        ? Object.entries(route.schemaErrors)
+            .map(([key, message]) => `${key}: ${message}`)
+            .join("\n")
+        : "AI가 만든 인자가 이 Tool의 입력 형식과 맞지 않습니다.";
+      finish(route.toolName, null, {
+        tone: "danger",
+        title: `'${route.toolName}' 인자 검증 실패 — 실행하지 않았습니다`,
+        detail,
+      });
+      return;
+    }
+
+    // route.status === "ran" — 실제 승인/실행은 여전히 Main Process가
+    // 맡는다(위 모듈 docstring). 사용자가 대화상자에서 거절하면
+    // `formatInvocationOutcome`이 "실행하지 않았습니다"로 정직하게 보여준다
+    // (실패가 아니다).
+    const args = route.args ?? {};
+    const invocation = await bridge.invokeLocalTool(route.toolId!, args, { aiSelected: true });
+    finish(route.toolName, args, formatInvocationOutcome(invocation));
+  } catch (err) {
+    finish(null, null, {
+      tone: "danger",
+      title: "자동 Tool 라우팅 실패",
+      detail: err instanceof Error ? err.message : "알 수 없는 오류입니다.",
+    });
+  }
 }
 
 type PanelStep = "closed" | "selecting" | "filling" | "confirming" | "invoking" | "done";

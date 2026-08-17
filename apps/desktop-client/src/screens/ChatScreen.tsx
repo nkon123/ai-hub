@@ -27,6 +27,7 @@ import type {
   ConversationTurnStatus,
   InstalledAssetWithStatus,
   KnowledgeCandidate,
+  LocalTool,
   OllamaModelsResult,
 } from "../../electron/types";
 import { assessChatConnections, checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "../../electron/connections";
@@ -84,7 +85,14 @@ import { getInstalledChatModels } from "./settingsTypes";
 // 보낼 Payload를 만드는 코드)는 로컬 Tool을 절대 참조하지 않는다 —
 // `LocalToolInvokePanel.tsx`의 모듈 docstring과
 // `electron/__tests__/local-tool-isolation.test.ts`가 이 경계를 강제한다.
-import { LocalToolChatEntryCard, LocalToolInvokePanel, type LocalToolChatEntry } from "./LocalToolInvokePanel";
+import {
+  LocalToolAutoRouteEntryCard,
+  LocalToolChatEntryCard,
+  LocalToolInvokePanel,
+  runLocalToolAutoRoute,
+  type LocalToolAutoRouteEntry,
+  type LocalToolChatEntry,
+} from "./LocalToolInvokePanel";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -790,6 +798,46 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setLocalToolEntries((prev) => prev.map((e) => (e.id === id ? { ...e, completedAt, outcome } : e)));
   }
 
+  // D-084 후속 2 — 채팅 질문으로 로컬 Tool을 자동 선택/실행하는 기능
+  // (사용자 실사용 피드백, 의도적 예외로 두 번 재확인받음). 기본 꺼짐,
+  // 세션 간 영속하지 않음(허브 조회 토글·TOOL_ROUTE 동의 토글과 같은 모양,
+  // `useState`로만 유지) — 등록된 로컬 Tool이 하나도 없으면 이 토글 자체를
+  // 그리지 않는다(렌더 부분, 아래 §입력창). 개발 확인용 명시적 Tool
+  // 호출/TOOL_ROUTE 동의/Local Agent 선택과는 서로 배타적으로 둔다 — 넷이
+  // 동시에 켜지면 이번 턴에 무엇이 실제로 적용됐는지 사용자가 알 수 없다
+  // (CLAUDE.md: 호환되지 않는 선택지는 이유와 함께 비활성화한다).
+  const [registeredLocalTools, setRegisteredLocalTools] = useState<LocalTool[]>([]);
+  useEffect(() => {
+    if (!bridge) return;
+    let cancelled = false;
+    void bridge
+      .listLocalTools()
+      .then((tools) => {
+        if (!cancelled) setRegisteredLocalTools(tools);
+      })
+      .catch(() => {
+        // 목록 조회 실패는 이 토글을 그냥 숨긴다(applicable=false) — 이미
+        // "로컬 Tool" 버튼을 통한 수동 경로가 자체 오류 상태를 보여준다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge]);
+  const [localToolRouteEnabled, setLocalToolRouteEnabled] = useState(false);
+  const localToolRouteApplicable =
+    !!bridge && registeredLocalTools.length > 0 && !mcpDevActive && !toolRouteActive && !localAgentActive;
+  const localToolRouteActive = localToolRouteEnabled && localToolRouteApplicable;
+  useEffect(() => {
+    if (!localToolRouteApplicable && localToolRouteEnabled) setLocalToolRouteEnabled(false);
+  }, [localToolRouteApplicable, localToolRouteEnabled]);
+
+  // D-084 후속 2 — 대화창에 표시되는 자동 라우팅 기록. `localToolEntries`
+  // (수동 실행)와 별개 배열이다 — 카드 모양이 다르고(Sparkles 아이콘, "AI
+  // 자동 선택" 배지), 어떤 Tool도 정해지지 않은 채 끝나는 경우가 있어
+  // `LocalToolChatEntry`의 필수 필드(functionName/filePath)를 채울 수 없기
+  // 때문이다.
+  const [localToolRouteEntries, setLocalToolRouteEntries] = useState<LocalToolAutoRouteEntry[]>([]);
+
   // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron에서는 Main
   // Process 저장소, browser-preview에서는 해당 브라우저의 localStorage를
   // 사용한다. 일반 브라우저 모드에서는 저장 브릿지가 없으므로 세션 내에서만
@@ -1117,9 +1165,49 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     }
   }
 
+  // D-084 후속 2 — 로컬 Tool 자동 라우팅 한 턴을 처리한다. 이 함수는
+  // `startRun`/agent-runtime을 절대 호출하지 않고 여기서 완결된다 —
+  // 실제로 무엇을 하는지(로컬 Ollama에 한 번 묻고, 승인 후 실행)는
+  // `runLocalToolAutoRoute`(LocalToolInvokePanel.tsx)에 있다. 이 함수는
+  // 상태 갱신(전송 중 표시, 목록에 항목 추가/갱신)만 담당한다.
+  async function handleLocalToolAutoRoute(q: string): Promise<void> {
+    if (!bridge) return;
+    setSendError(null);
+    setQuestion("");
+    setIsRunning(true);
+    try {
+      const settings = settingsBridge ? await settingsBridge.getDesktopSettings().catch(() => null) : null;
+      await runLocalToolAutoRoute({
+        bridge,
+        question: q,
+        ollamaBaseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+        preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+        onStart: (entry) => setLocalToolRouteEntries((prev) => [...prev, entry]),
+        onFinish: (entryId, completedAt, toolName, args, display) =>
+          setLocalToolRouteEntries((prev) =>
+            prev.map((e) => (e.id === entryId ? { ...e, completedAt, toolName, args, display } : e)),
+          ),
+      });
+    } finally {
+      setIsRunning(false);
+    }
+  }
+
   async function handleSend(text?: string) {
     const q = (text ?? question).trim();
     if (!q || isRunning) return;
+
+    // D-084 후속 2 — 이 토글이 켜져 있으면 이번 턴은 완전히 다른 경로다:
+    // agent-runtime을 전혀 거치지 않고 Desktop이 로컬 Ollama에 직접(한 번만)
+    // 물어 로컬 Tool을 자동으로 고르고 실행한다(위 브리프 제약 A). 아래
+    // agent-runtime Run 생성 Payload와는 물리적으로 분리된 함수에서 끝난다
+    // — `electron/__tests__/local-tool-isolation.test.ts`의 "the local-tool
+    // auto-route branch in handleSend returns before reaching startRun's
+    // payload" 검사가 이 return을 직접 고정한다.
+    if (localToolRouteActive) {
+      await handleLocalToolAutoRoute(q);
+      return;
+    }
 
     if (
       bridge &&
@@ -1853,7 +1941,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             )}
 
             <div className="flex-1 space-y-5 overflow-y-auto pr-1">
-              {messages.length === 0 && localToolEntries.length === 0 && (
+              {messages.length === 0 && localToolEntries.length === 0 && localToolRouteEntries.length === 0 && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                   <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">
                     <Bot size={22} aria-hidden="true" />
@@ -1876,15 +1964,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 [
                   ...messages.map((m) => ({ kind: "chat" as const, ts: m.startedAt, message: m })),
                   ...localToolEntries.map((e) => ({ kind: "localTool" as const, ts: e.startedAt, entry: e })),
+                  ...localToolRouteEntries.map((e) => ({ kind: "localToolRoute" as const, ts: e.startedAt, entry: e })),
                 ] as Array<
                   | { kind: "chat"; ts: string; message: ChatMessage }
                   | { kind: "localTool"; ts: string; entry: LocalToolChatEntry }
+                  | { kind: "localToolRoute"; ts: string; entry: LocalToolAutoRouteEntry }
                 >
               )
                 .sort((a, b) => a.ts.localeCompare(b.ts))
                 .map((item) => {
                   if (item.kind === "localTool") {
                     return <LocalToolChatEntryCard key={item.entry.id} entry={item.entry} />;
+                  }
+                  if (item.kind === "localToolRoute") {
+                    return <LocalToolAutoRouteEntryCard key={item.entry.id} entry={item.entry} />;
                   }
                   const m = item.message;
                   const idx = messages.indexOf(m);
@@ -1990,9 +2083,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     activeLabel="Tool 제안"
                   />
 
-                  {/* D-084 후속 — 로컬 Tool은 AI가 고르지 않는다(위 Tool
-                      제안 토글과 근본적으로 다른 종류). 사용자가 직접 골라
-                      인자를 채우고 매번 새로 승인해야만 실행된다. */}
+                  {/* D-084 — 로컬 Tool을 직접 골라 인자를 채우고 매번 새로
+                      승인해야만 실행되는 수동 경로. 아래 토글(D-084 후속 2)은
+                      같은 로컬 Tool을 대상으로 하지만 선택과 인자를 AI가
+                      대신하는 별도 경로다 — 이 버튼은 그대로 남긴다(대체가
+                      아니라 추가). */}
                   <LocalToolInvokePanel
                     bridge={bridge}
                     disabled={isRunning}
@@ -2003,6 +2098,35 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       installedNotConnectedCount: mcpToolConnectionSummary.installedNotConnectedCount,
                     }}
                   />
+
+                  {/* D-084 후속 2 — "채팅에 질문을 입력하면 로컬 Tool 인자가
+                      자동으로 채워지게" 요구(실사용 피드백, 의도적 예외로 두
+                      번 재확인받음). 등록된 로컬 Tool이 하나도 없으면 이
+                      토글 자체를 그리지 않는다 — 무엇을 켜는지 알 수 없는
+                      토글을 보여주지 않는다. 켜져 있을 때 후보로 쓰일 로컬
+                      Tool 이름을 그대로 보여준다(무엇이 자동 실행될 수
+                      있는지 모르는 상태를 만들지 않는다). 실행 전 네이티브
+                      승인은 이 토글과 무관하게 항상 다시 확인한다. */}
+                  {registeredLocalTools.length > 0 && (
+                    <ComposerToggle
+                      id="local-tool-route-toggle"
+                      label="로컬 Tool 인자 자동 채우기"
+                      description={
+                        localToolRouteApplicable
+                          ? `이 질문에 맞는 로컬 Tool과 입력값을 AI가 스스로 골라 채웁니다(후보: ${registeredLocalTools
+                              .map((t) => t.toolName)
+                              .join(", ")}). 검토되지 않은 내 PC 코드이므로, 실행 전 Desktop 창의 네이티브 승인 대화상자를 매번 다시 거칩니다.`
+                          : !bridge
+                            ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
+                            : "개발 확인용 Tool 호출/Tool 자동 제안/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
+                      }
+                      icon={<Sparkles size={15} aria-hidden="true" />}
+                      pressed={localToolRouteEnabled}
+                      disabled={isRunning || !localToolRouteApplicable}
+                      onChange={setLocalToolRouteEnabled}
+                      activeLabel="로컬 Tool 자동"
+                    />
+                  )}
 
                   {settingsBridge ? (
                     <div className="flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors hover:bg-slate-100">

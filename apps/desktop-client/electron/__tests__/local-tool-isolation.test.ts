@@ -7,6 +7,26 @@
 // change could quietly flip. If someone later wires a local tool into
 // `src/agentRuntime.ts` or `src/screens/chatTypes.ts`'s payload-building
 // code, this test must fail.
+//
+// D-084 후속 2 (채팅 질문으로 로컬 Tool 인자 자동 채우기, 사용자 실사용
+// 피드백 — 로컬 Tool을 D-083 TOOL_ROUTE에 태우지 말고 desktop-client 안에서
+// 로컬 Ollama로 직접 라우팅하라는 명시적·재확인된 예외 요구): 아래
+// "src/screens/ChatScreen.tsx: local-tool UI is wired in, but never into the
+// run-starting payload" describe 블록의 한 검사(원래 "handleSend 함수 전체가
+// LocalTool 식별자를 전혀 언급하지 않는다")는 이 변경으로 깨진다 —
+// ChatScreen.tsx의 handleSend는 이제 자동 라우팅 분기(로컬 Tool 식별자를
+// 다루는 `runLocalToolAutoRoute` 호출)를 포함해야 하기 때문이다. 그 검사는
+// 지우지 않고 아래에서 **좁혔다**: 실제 보안 속성 — "`startRun`에 실리는
+// Payload 객체 자체에는 로컬 Tool 식별자가 절대 들어가지 않는다" — 는
+// 여전히 그대로 고정된다. 이것으로 충분한 이유: agent-runtime으로 나가는
+// 유일한 경로는 `startRun(...)` 호출 하나이고(아래 두 번째 검사 "startRun is
+// called from exactly one place"가 이미 이를 저장소 전체에서 강제한다),
+// 로컬 Tool 자동 라우팅은 agent-runtime을 전혀 거치지 않는
+// `electron/local-tool-router.ts`(로컬 Ollama에 직접 HTTP) +
+// `bridge.invokeLocalTool`(Main Process IPC) 조합으로만 끝난다 — 그러므로
+// handleSend 함수 몸체 어딘가에 "localTool" 문자열이 등장하는 것 자체는
+// 안전성과 무관하고, `startRun`에 넘기는 Payload 객체 리터럴에 로컬 Tool
+// 값이 섞여 드는지만이 실제로 지켜야 할 속성이다.
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -37,6 +57,22 @@ describe("D-084 local tool structural isolation", () => {
     expect(source).not.toContain("mcp-tool-registration-client");
     expect(source).not.toContain("agentRuntime");
     expect(source).not.toContain("installed-assets-store");
+  });
+
+  // D-084 후속 2 — 채팅 질문으로 로컬 Tool을 자동 라우팅하는 새 모듈. 이
+  // 파일이 로컬 Ollama에 직접(HTTP) 묻는 것과 D-083 `tool_router.py`가
+  // agent-runtime 안에서 MCP Tool을 라우팅하는 것은 완전히 다른 경로라는
+  // 사실을 이 테스트가 고정한다 — agent-runtime/MCP 등록/설치된 자산 저장소
+  // 어디에도 이 파일이 닿지 않는다. fs/electron/node import가 없는 순수
+  // HTTP 모듈이라는 사실도 함께 고정한다(main-process 전용 코드가 여기 섞여
+  // 들면 렌더러 번들에 그대로 실린다 — 이 앱의 CLAUDE.md 코드 배치 규칙).
+  it("local-tool-router.ts never imports agent-runtime/MCP registration/installed-assets modules and stays fs/electron-free", () => {
+    const source = read("electron/local-tool-router.ts");
+    expect(source).not.toContain("mcp-tool-registration-client");
+    expect(source).not.toContain("agentRuntime");
+    expect(source).not.toContain("installed-assets-store");
+    expect(source).not.toMatch(/from ["']node:/);
+    expect(source).not.toMatch(/from ["']electron["']/);
   });
 
   it("src/agentRuntime.ts never references local-tool identifiers", () => {
@@ -77,21 +113,45 @@ describe("D-084 local tool structural isolation", () => {
       expect(chatTypesImportMatch?.[1] ?? "").not.toMatch(/localTool|LocalTool/);
     });
 
-    it("the run-starting function (handleSend, up to startRun's call and its payload) never references local-tool identifiers", () => {
-      // handleSend는 startRun(...)을 호출해 실제로 agent-runtime에 Run을
-      // 만드는 유일한 지점이다 — 이 함수의 시작부터 startRun 호출과 그
-      // Payload 객체가 끝나는 지점(runIdRef.current = created.id 대입 직전)
-      // 까지의 소스 텍스트에 로컬 Tool 관련 식별자가 전혀 없어야, "채팅
-      // 화면이 로컬 Tool UI를 갖게 됐다"는 사실이 "그 UI가 만든 값이
-      // agent-runtime으로 흘러간다"를 절대 의미하지 않는다고 말할 수 있다.
-      const start = chatScreen.indexOf("async function handleSend(");
+    // D-084 후속 2에서 좁힘(위 파일 상단 주석 참고) — 원래 이 검사는
+    // handleSend 함수 전체(시작부터 startRun 호출까지)에서 "localTool"
+    // 문자열을 금지했다. 지금 handleSend는 그 앞부분에 로컬 Tool 자동
+    // 라우팅 분기(`runLocalToolAutoRoute` 호출, agent-runtime을 전혀 거치지
+    // 않고 그 분기 자신의 `return`으로 끝난다)를 포함하므로 그 전제가 더는
+    // 성립하지 않는다. 실제로 지켜야 하는 속성은 여전히 참이다 — agent-
+    // runtime에 실제로 전달되는 것은 `startRun(...)` 호출의 Payload 객체
+    // 리터럴 하나뿐이므로, 검사 범위를 그 호출 자체로 좁힌다.
+    it("the startRun(...) call's payload literal never references local-tool identifiers", () => {
+      const start = chatScreen.indexOf("const created = await startRun({");
       const end = chatScreen.indexOf("runIdRef.current = created.id");
       expect(start).toBeGreaterThan(-1);
       expect(end).toBeGreaterThan(start);
-      const handleSendUpToStartRun = chatScreen.slice(start, end);
-      expect(handleSendUpToStartRun).not.toContain("localTool");
-      expect(handleSendUpToStartRun).not.toContain("LocalTool");
-      expect(handleSendUpToStartRun).not.toContain("local-tool");
+      const startRunPayload = chatScreen.slice(start, end);
+      expect(startRunPayload).not.toContain("localTool");
+      expect(startRunPayload).not.toContain("LocalTool");
+      expect(startRunPayload).not.toContain("local-tool");
+    });
+
+    // 위 검사가 "핸들러 전체가 아니라 Payload 부분만" 본다는 좁힘이
+    // 안전하려면, 로컬 Tool 자동 라우팅 분기가 실제로 그 Payload 호출에
+    // 도달하기 전에 return한다는 사실이 참이어야 한다 — 그렇지 않으면 같은
+    // 턴에서 로컬 Tool 식별자와 agent-runtime Payload가 뒤섞일 수 있다.
+    // handleSend 함수 전체를 대상으로, 로컬 Tool 자동 라우팅을 시작하는
+    // 지점(`runLocalToolAutoRoute` 호출)이 `startRun(...)` 호출보다 앞에
+    // 있고, 그 사이에 이 분기를 끝내는 `return`이 있는지를 소스 텍스트로
+    // 직접 고정한다.
+    it("the local-tool auto-route branch in handleSend returns before reaching startRun's payload", () => {
+      const handleSendStart = chatScreen.indexOf("async function handleSend(");
+      const nextFunctionStart = chatScreen.indexOf("\n  async function handleConfirmDecision(");
+      expect(handleSendStart).toBeGreaterThan(-1);
+      expect(nextFunctionStart).toBeGreaterThan(handleSendStart);
+      const handleSendBody = chatScreen.slice(handleSendStart, nextFunctionStart);
+      const autoRouteCallIndex = handleSendBody.indexOf("handleLocalToolAutoRoute(");
+      const startRunCallIndex = handleSendBody.indexOf("startRun({");
+      expect(autoRouteCallIndex).toBeGreaterThan(-1);
+      expect(startRunCallIndex).toBeGreaterThan(autoRouteCallIndex);
+      const betweenAutoRouteAndStartRun = handleSendBody.slice(autoRouteCallIndex, startRunCallIndex);
+      expect(betweenAutoRouteAndStartRun).toContain("return");
     });
 
     it("startRun is called from exactly one place, so the slice checked above is the whole payload path", () => {
