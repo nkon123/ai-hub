@@ -7,6 +7,47 @@ import { formatBytes } from "../format";
 export const NOT_A_SANDBOX_NOTICE =
   "이 Tool은 격리되지 않은 상태로 실행됩니다 — 사용자의 권한으로, 마치 직접 실행한 것과 동일하게 동작합니다. 시간제한과 출력 크기 제한은 멈추지 않는 프로세스를 막기 위한 것일 뿐, 악의적인 코드로부터 보호하지 않습니다.";
 
+// --- D-080/D-084 혼동 정정(2026-08-17) --------------------------------------
+// 실사용 관찰: 자산 스토어에서 MCP Tool(예: "숫자 더하기")을 설치·연결한
+// 사용자가 대화창의 "로컬 Tool" 버튼을 눌렀다가 "등록된 로컬 Tool이
+// 없습니다"를 보고 방금 설치한 Tool이 사라졌다고 오해했다 — 로컬 Tool(이
+// 파일이 다루는 .py 파일 실행)과 MCP Tool(자산 스토어에서 설치해 D-083
+// 렌치 토글로 쓰는 별개 기능)이 이름만 비슷할 뿐 완전히 다른 저장소·등록·
+// 실행 경로라는 사실이 화면 어디에도 없었기 때문이다. 아래 함수는 그
+// 빈 상태 문구에 정정 안내를 덧붙인다 — MCP Tool 쪽 사실(연결됨/설치만
+// 됨)은 `ChatScreen.tsx`가 `chatTypes.ts`의 `summarizeMcpToolConnections`로
+// 계산해 이 함수에 평범한 문자열 배열/숫자로 건네준다. 이 파일이 chatTypes.ts
+// 의 타입을 직접 import하지 않는 것은 우연이 아니다 —
+// `electron/__tests__/local-tool-isolation.test.ts`가
+// `LocalToolInvokePanel.tsx`(이 함수의 유일한 소비자)는 `./chatTypes`를
+// 전혀 import하지 않는다는 것을 구조적으로 고정한다.
+export interface McpToolsSummaryForLocalToolEmptyState {
+  /** 연결되어 실제로 쓸 수 있는 MCP Tool의 업무 목적 이름(`asset.name`,
+   * 예: "숫자 더하기") — `tool_name`(예: `calculator.add`)은 여기 담지
+   * 않는다(루트 CLAUDE.md UI 규칙: 기술 명칭보다 업무 목적을 먼저). */
+  connectedNames: string[];
+  /** 설치는 되어 있으나 아직 연결되지 않은 MCP Tool 개수. */
+  installedNotConnectedCount: number;
+}
+
+/** D-084 로컬 Tool 목록이 비어 있을 때 원래 문구("등록된 로컬 Tool이
+ * 없습니다...")에 덧붙일 정정 안내. 그 문구 자체는 D-084 기준으로는 틀리지
+ * 않지만, MCP Tool을 설치·연결한 사용자에게는 오도한다. MCP Tool이 하나도
+ * 없으면 `null` — 그때는 원래 문구가 그대로 정확하므로 아무것도 덧붙이지
+ * 않는다(정상 상태에 새 배너를 만들지 않는다). */
+export function describeMcpToolsNoticeForEmptyState(
+  summary: McpToolsSummaryForLocalToolEmptyState,
+): string | null {
+  if (summary.connectedNames.length > 0) {
+    const names = summary.connectedNames.map((name) => `"${name}"`).join(", ");
+    return `참고: 설치하신 ${names}은(는) 이 기능과는 다릅니다 — 내 PC의 Python 파일이 아니라 사내에 등록된 Tool이며, 입력창의 렌치(Tool 자동 제안) 토글에서 사용합니다.`;
+  }
+  if (summary.installedNotConnectedCount > 0) {
+    return `참고: 자산 스토어에서 설치한 Tool ${summary.installedNotConnectedCount}개가 있습니다. 이 기능과는 다릅니다 — 설치된 자산 화면에서 연결하면 입력창의 렌치(Tool 자동 제안) 토글에서 사용할 수 있습니다.`;
+  }
+  return null;
+}
+
 export type InvocationOutcomeTone = "success" | "danger" | "warning" | "muted";
 
 export interface InvocationOutcomeDisplay {

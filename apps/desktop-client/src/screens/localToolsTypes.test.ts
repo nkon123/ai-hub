@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { LocalTool, LocalToolInvocationResult } from "../../electron/types";
 import {
   buildLocalToolArgs,
+  describeMcpToolsNoticeForEmptyState,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
@@ -114,5 +115,44 @@ describe("formatInvocationOutcome", () => {
   it("interpreter_not_configured points at Settings", () => {
     const display = formatInvocationOutcome({ outcome: "interpreter_not_configured" });
     expect(display.detail).toContain("설정");
+  });
+});
+
+describe("describeMcpToolsNoticeForEmptyState (D-080/D-084 혼동 정정)", () => {
+  it("returns null when there are no MCP Tools at all — the original empty-state text stays accurate", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({ connectedNames: [], installedNotConnectedCount: 0 });
+    expect(notice).toBeNull();
+  });
+
+  it("names the connected MCP Tool(s) and points at the wrench (Tool 자동 제안) toggle", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기"],
+      installedNotConnectedCount: 0,
+    });
+    expect(notice).toContain("숫자 더하기");
+    expect(notice).toContain("렌치");
+  });
+
+  it("lists every connected name, not just the first", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기", "문서 검색"],
+      installedNotConnectedCount: 0,
+    });
+    expect(notice).toContain("숫자 더하기");
+    expect(notice).toContain("문서 검색");
+  });
+
+  it("reports only the installed-but-not-connected count (no fabricated names) when nothing is connected", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({ connectedNames: [], installedNotConnectedCount: 2 });
+    expect(notice).toContain("2개");
+    expect(notice).toContain("연결");
+  });
+
+  it("prioritizes the connected list over the not-connected count when both are present", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기"],
+      installedNotConnectedCount: 1,
+    });
+    expect(notice).toContain("숫자 더하기");
   });
 });

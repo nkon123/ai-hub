@@ -11,6 +11,7 @@ import {
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
+  describeToolRouteMcpToolsHint,
   describeToolRouteRejected,
   describeToolRouteSelected,
   groupExcludedKnowledgeByReason,
@@ -21,6 +22,7 @@ import {
   resolveKnowledgeSelection,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  summarizeMcpToolConnections,
 } from "./chatTypes";
 
 function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
@@ -689,5 +691,68 @@ describe("describeToolRouteRejected (D-083 TOOL_ROUTE preflight refusal)", () =>
     const rejected = describeToolRouteRejected({ tool_name: "table_count.query", code: "MCP_INPUT_INVALID" });
     expect(rejected.status).not.toBe(noTool.status);
     expect(rejected.headline).not.toBe(noTool.headline);
+  });
+});
+
+describe("summarizeMcpToolConnections / describeToolRouteMcpToolsHint (D-080/D-084 혼동 정정 — MCP Tool 쪽 절반)", () => {
+  it("returns empty connected list and 0 not-connected count for no MCP Tool assets", () => {
+    const summary = summarizeMcpToolConnections([]);
+    expect(summary).toEqual({ connected: [], installedNotConnectedCount: 0 });
+    expect(describeToolRouteMcpToolsHint(summary)).toBe("");
+  });
+
+  it("classifies ACTIVE and ALREADY_ACTIVE MCP Tools as connected, using the business name not tool_name", () => {
+    const calculator = installedAsset({
+      assetId: "asset-calc",
+      assetType: "mcp_tool",
+      name: "숫자 더하기",
+      activation: ACTIVE,
+    });
+    const alreadyActive = installedAsset({
+      assetId: "asset-already",
+      assetType: "mcp_tool",
+      name: "이미 연결된 Tool",
+      activation: ALREADY_ACTIVE,
+    });
+
+    const summary = summarizeMcpToolConnections([calculator, alreadyActive]);
+
+    expect(summary.connected).toEqual([calculator, alreadyActive]);
+    expect(summary.installedNotConnectedCount).toBe(0);
+    expect(describeToolRouteMcpToolsHint(summary)).toContain("숫자 더하기");
+    expect(describeToolRouteMcpToolsHint(summary)).toContain("이미 연결된 Tool");
+    expect(describeToolRouteMcpToolsHint(summary)).not.toContain("calculator.add");
+  });
+
+  it("counts an installed-but-not-connected MCP Tool separately from connected ones (installed !== usable)", () => {
+    const connected = installedAsset({ assetId: "asset-connected", assetType: "mcp_tool", name: "연결됨", activation: ACTIVE });
+    const notConnected = installedAsset({
+      assetId: "asset-not-connected",
+      assetType: "mcp_tool",
+      name: "미연결",
+      activation: FAILED("연결 실패"),
+    });
+    const neverConnected = installedAsset({ assetId: "asset-never", assetType: "mcp_tool", name: "미시도" });
+
+    const summary = summarizeMcpToolConnections([connected, notConnected, neverConnected]);
+
+    expect(summary.connected).toEqual([connected]);
+    expect(summary.installedNotConnectedCount).toBe(2);
+    const hint = describeToolRouteMcpToolsHint(summary);
+    expect(hint).toContain("연결됨");
+    expect(hint).toContain("2개");
+    expect(hint).not.toContain("미연결");
+    expect(hint).not.toContain("미시도");
+  });
+
+  it("reports only the not-connected count (no names) when nothing is connected yet", () => {
+    const notConnected = installedAsset({ assetId: "asset-1", assetType: "mcp_tool", name: "설치만 됨", activation: null });
+
+    const summary = summarizeMcpToolConnections([notConnected]);
+
+    expect(summary.connected).toEqual([]);
+    expect(summary.installedNotConnectedCount).toBe(1);
+    expect(describeToolRouteMcpToolsHint(summary)).toContain("1개");
+    expect(describeToolRouteMcpToolsHint(summary)).not.toContain("설치만 됨");
   });
 });

@@ -25,11 +25,13 @@ import { formatDateTime } from "../format";
 import {
   NOT_A_SANDBOX_NOTICE,
   buildLocalToolArgs,
+  describeMcpToolsNoticeForEmptyState,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
   initialFieldText,
   type InvocationOutcomeDisplay,
+  type McpToolsSummaryForLocalToolEmptyState,
 } from "./localToolsTypes";
 
 /** 대화창에 표시되는 로컬 Tool 실행 한 건. `outcome === null`이면 아직
@@ -93,6 +95,7 @@ export function LocalToolInvokePanel({
   disabled,
   onEntryStart,
   onEntryFinish,
+  mcpToolsSummary,
 }: {
   /** `null`이면(Electron 런타임 밖 — 브라우저 개발 모드) 실행 경로 자체가
    * 없다 — Permission 상태(버튼은 보이되 비활성 + 사유)로 표시한다. */
@@ -100,6 +103,15 @@ export function LocalToolInvokePanel({
   disabled?: boolean;
   onEntryStart: (entry: LocalToolChatEntry) => void;
   onEntryFinish: (id: string, completedAt: string, outcome: InvocationOutcomeDisplay) => void;
+  /** D-080/D-084 혼동 정정 — 사용자가 자산 스토어에서 MCP Tool을
+   * 설치·연결했다면, "등록된 로컬 Tool이 없습니다" 빈 상태가 그 사실을
+   * 가리는 것처럼 읽힌다(방금 설치한 게 왜 없다고 하는지 오해). 부모
+   * (`ChatScreen.tsx`)가 이미 알고 있는 MCP Tool 연결 사실(이름/개수)만
+   * 순수 데이터로 받는다 — 이 컴포넌트는 `./chatTypes`를 import하지
+   * 않는다(구조적 격리, `local-tool-isolation.test.ts` 참고). 생략하면
+   * (`undefined`) MCP Tool 정보를 모르는 것으로 취급해 원래 빈 상태
+   * 문구만 보여준다. */
+  mcpToolsSummary?: McpToolsSummaryForLocalToolEmptyState;
 }) {
   const [step, setStep] = useState<PanelStep>("closed");
   const [tools, setTools] = useState<LocalTool[] | null>(null);
@@ -242,7 +254,12 @@ export function LocalToolInvokePanel({
             {listError && <ErrorBanner message={listError} />}
             {tools !== null && tools.length === 0 && !listError && (
               <div className="rounded-lg border border-dashed border-border px-4 py-6 text-center text-caption text-text-secondary">
-                등록된 로컬 Tool이 없습니다. 자산 허브 &gt; 로컬 Tool에서 먼저 Python 파일을 추가하세요.
+                <p>등록된 로컬 Tool이 없습니다. 자산 허브 &gt; 로컬 Tool에서 먼저 Python 파일을 추가하세요.</p>
+                {mcpToolsSummary &&
+                  (() => {
+                    const notice = describeMcpToolsNoticeForEmptyState(mcpToolsSummary);
+                    return notice ? <p className="mt-2 text-text-muted">{notice}</p> : null;
+                  })()}
               </div>
             )}
             {tools !== null && tools.length > 0 && (

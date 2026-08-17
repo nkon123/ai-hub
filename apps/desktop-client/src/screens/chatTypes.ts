@@ -214,6 +214,68 @@ export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[]
   return partitionInstalledKnowledgeByActivation(assets).usable.map((u) => u.knowledgeId);
 }
 
+// --- D-080/D-084 혼동 정정(2026-08-17) --------------------------------------
+// 실사용 관찰: 자산 스토어에서 MCP Tool(예: "숫자 더하기")을 설치·연결한
+// 사용자가 대화창의 "로컬 Tool"(D-084, 내 PC의 .py 파일을 직접 실행하는
+// 별개 기능) 버튼을 눌렀다가 "등록된 로컬 Tool이 없습니다"를 보고 방금
+// 설치한 Tool이 사라졌다고 오해했다 — 두 기능 다 코드는 정확히 동작했지만
+// 연결된 MCP Tool이 화면 어디에도 보이지 않아 그 결론이 사용자 입장에서
+// 합리적이었다. 아래 두 함수는 "설치됨"과 "연결됨"을 구분해 보여주는 자리
+// (D-083 렌치 토글의 설명, D-084 로컬 Tool 빈 상태)를 계산한다 —
+// `partitionInstalledKnowledgeByActivation`과 동일한 "설치됨 ≠ 쓸 수 있음"
+// 원칙을 MCP Tool에도 그대로 적용한다. 이름은 업무 목적 이름(`asset.name`,
+// 예: "숫자 더하기")을 쓴다 — `tool_name`(예: `calculator.add`)은 이 함수들이
+// 다루지 않는다(루트 CLAUDE.md UI 규칙: 기술 명칭보다 업무 목적을 먼저).
+
+export interface McpToolConnectionSummary<T extends InstalledAsset = InstalledAsset> {
+  /** 연결까지 완료되어(D-080, `activation.state`가 `ACTIVE`/`ALREADY_ACTIVE`)
+   * 실제로 대화에서 쓸 수 있는 MCP Tool 자산. */
+  connected: T[];
+  /** 설치는 되어 있으나 아직 연결되지 않아 대화에서 쓸 수 없는 MCP Tool
+   * 개수. 자산 자체는 노출하지 않는다(이름까지 보여주려면 "연결하라"는
+   * 행동 유도가 흐려진다 — Task Brief: 설치됨은 개수+안내로, 연결됨은
+   * 이름 목록으로). */
+  installedNotConnectedCount: number;
+}
+
+/** `mcpTools`는 이미 `assetType === "mcp_tool"`로 걸러진 목록이라고
+ * 가정한다(`ChatScreen`의 `installedMcpTools`가 이미 그렇게 필터링해
+ * 둔다) — 이 함수가 다시 assetType을 검사하지 않는다. */
+export function summarizeMcpToolConnections<T extends InstalledAsset>(
+  mcpTools: T[],
+): McpToolConnectionSummary<T> {
+  const connected = mcpTools.filter(
+    (asset) => asset.activation?.state === "ACTIVE" || asset.activation?.state === "ALREADY_ACTIVE",
+  );
+  return { connected, installedNotConnectedCount: mcpTools.length - connected.length };
+}
+
+/** D-083 렌치 토글("필요하면 Tool 자동 제안") 설명 뒤에 덧붙일 문장. 연결된
+ * Tool이 없고 설치된 것도 없으면 빈 문자열 — 기존 설명 문구를 그대로 두고
+ * 아무것도 새로 그리지 않는다(2026-08-14 "정상 상태 배너 최소화" 원칙,
+ * 이 문장은 상시 배너가 아니라 토글의 기존 hover 툴팁 안에 녹는다). */
+export function describeToolRouteMcpToolsHint(summary: McpToolConnectionSummary): string {
+  if (summary.connected.length > 0) {
+    const names = summary.connected.map((a) => a.name).join(", ");
+    const extra =
+      summary.installedNotConnectedCount > 0
+        ? ` 설치했지만 아직 연결하지 않은 Tool ${summary.installedNotConnectedCount}개는 설치된 자산 화면에서 연결하면 함께 제안 대상이 됩니다.`
+        : "";
+    return ` 지금 연결되어 바로 쓸 수 있는 Tool: ${names}.${extra}`;
+  }
+  if (summary.installedNotConnectedCount > 0) {
+    return ` 설치된 Tool ${summary.installedNotConnectedCount}개가 아직 연결되지 않았습니다. 설치된 자산 화면에서 연결하면 제안 대상이 됩니다.`;
+  }
+  return "";
+}
+
+// D-084 후속 화면(내 PC의 Python 파일을 실행하는 별개 기능)의 빈 상태
+// 안내 문구는 의도적으로 이 파일에 두지 않는다 — 구조적 격리(D-084 hard
+// requirement 1)를 지키는 다른 모듈이 그 문구를 만든다. 이 파일이 내보내는
+// `McpToolConnectionSummary`/`summarizeMcpToolConnections`는 오직 "설치됨
+// vs 연결됨"이라는 MCP Tool 쪽 사실만 계산한다 — 그 사실을 저 별개 화면의
+// 문구로 바꾸는 책임은 이 파일 밖에 있다.
+
 // --- D-079 이어 붙이기(반복 설명 정리, 2026-08-14) --------------------------
 // 실사용 화면 관찰: 활성화 실패 원인이 환경적(search-runtime 프로세스 자체가
 // 이 API를 모름, local_indexes 기능 꺼짐 등)이면 설치된 Knowledge가 몇 개든

@@ -62,6 +62,7 @@ import {
   buildMarkdown,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
+  describeToolRouteMcpToolsHint,
   describeToolRouteRejected,
   describeToolRouteSelected,
   downloadMarkdown,
@@ -72,6 +73,7 @@ import {
   resolveExcludedRowText,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  summarizeMcpToolConnections,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
@@ -646,6 +648,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       (asset.activation?.state === "ACTIVE" || asset.activation?.state === "ALREADY_ACTIVE"),
   );
   const mcpDevActive = mcpDevEnabled && (!bridge || calculatorSampleConnected);
+  // D-080/D-084 혼동 정정 — "설치됨"과 "연결됨"을 구분해 렌치 토글 설명과
+  // 로컬 Tool 빈 상태에 보여준다(chatTypes.ts의 모듈 주석 참고). 자산 스토어
+  // 목록을 다시 부르지 않는다 — 이미 위에서 불러온 `installedMcpTools`를
+  // 그대로 요약한다.
+  const mcpToolConnectionSummary = summarizeMcpToolConnections(installedMcpTools);
 
   // --- D-083 TOOL_ROUTE 동의 — 허브 조회 토글(allowHubLookup)과 같은 모양의
   // 동의: 기본 꺼짐, 세션 간 영속하지 않음, 매 Run마다 명시적으로 다시
@@ -1954,7 +1961,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     label="필요하면 Tool 자동 제안"
                     description={
                       toolRouteApplicable
-                        ? "이 질문에 사내 시스템 조회가 필요해 보이면 AI가 호출할 Tool과 입력값을 제안합니다. 실행 전에는 항상 승인/거부를 다시 확인합니다."
+                        ? `이 질문에 사내 시스템 조회가 필요해 보이면 AI가 호출할 Tool과 입력값을 제안합니다. 실행 전에는 항상 승인/거부를 다시 확인합니다.${describeToolRouteMcpToolsHint(mcpToolConnectionSummary)}`
                         : "개발 확인용 MCP Tool 호출이 켜져 있는 동안에는 사용할 수 없습니다 — 그 입력이 항상 우선합니다."
                     }
                     icon={<Wrench size={15} aria-hidden="true" />}
@@ -1972,6 +1979,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     disabled={isRunning}
                     onEntryStart={handleLocalToolEntryStart}
                     onEntryFinish={handleLocalToolEntryFinish}
+                    mcpToolsSummary={{
+                      connectedNames: mcpToolConnectionSummary.connected.map((a) => a.name),
+                      installedNotConnectedCount: mcpToolConnectionSummary.installedNotConnectedCount,
+                    }}
                   />
 
                   {settingsBridge ? (
