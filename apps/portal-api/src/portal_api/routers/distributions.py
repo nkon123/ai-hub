@@ -294,44 +294,127 @@ async def _build_service_version_root_payload(
             }
         )
 
+    # Registry Agent/Prompt (2026-08-17 후속): `snapshot["registry_agent"]`/
+    # `snapshot["registry_prompt"]` are already resolved and frozen at
+    # publish time (services.py::_build_dependency_snapshot's
+    # `_resolve_registry_asset_version`, D-034 comment there). Per D-044
+    # ("게시된 Revision의 resolved_dependency_snapshot을 유일한 진실
+    # 공급원으로 쓴다") we do NOT re-query the Registry for "the current
+    # APPROVED version" here — that could bundle a different Agent than the
+    # one the running chatbot actually uses. We *do* re-read the pinned
+    # AssetVersion row by the id the snapshot names, exactly like the
+    # `knowledge` loop above (manifest/manifest_hash/storage_path/status are
+    # read fresh so a since-revoked/suspended registry asset is caught by
+    # resolver.py, the same freshness discipline knowledge already has).
+    #
+    # Both-or-neither: only treat the pair as "Registry assets" when *both*
+    # resolved at publish time, mirroring the by-slug both-or-neither rule
+    # (services.py ~line 1049) — agent-runtime's `resolve_registry_agent_
+    # config` has no way to run a Registry Agent against a standard Prompt
+    # (or vice versa), so a mixed bundle would be uninstallable/misleading.
+    # When either side is missing, both fall back to the pre-existing
+    # STANDARD_LOCAL_COPY behavior unchanged — this is the path every
+    # already-published demo chatbot takes (no registry_agent/registry_prompt
+    # in their snapshots), and its output must stay byte-for-byte identical.
+    registry_agent = snapshot.get("registry_agent") or None
+    registry_prompt = snapshot.get("registry_prompt") or None
+    use_registry = bool(registry_agent and registry_prompt)
+
+    async def _registry_item(ref: dict, asset_type: str) -> dict:
+        version_row = (
+            await db.execute(
+                select(AssetVersion).where(AssetVersion.id == ref.get("asset_version_id"))
+            )
+        ).scalar_one_or_none()
+        if version_row is None:
+            # The snapshot points at an AssetVersion row that no longer
+            # exists. Do NOT fall back to the standard copy here — that
+            # would silently ship a different Agent/Prompt than the one the
+            # snapshot (and the running chatbot) actually names, which is
+            # the exact bug this change fixes. Fail closed: mark NOT_FOUND
+            # so resolver.py raises DEPENDENCY_MISSING and the bundle
+            # request fails loudly instead of lying about its contents.
+            return {
+                "asset_id": ref.get("asset_id"),
+                "asset_type": asset_type,
+                "asset_name": ref.get("asset_name"),
+                "role": asset_type,
+                "required": True,
+                "asset_version_id": ref.get("asset_version_id"),
+                "version": ref.get("version"),
+                "status": "NOT_FOUND",
+                "manifest": None,
+                "manifest_hash": None,
+                "storage_path": None,
+                "index_path": None,
+                "chunk_count": None,
+            }
+        return {
+            "asset_id": ref.get("asset_id"),
+            "asset_type": asset_type,
+            "asset_name": ref.get("asset_name"),
+            "role": asset_type,
+            "required": True,
+            "asset_version_id": version_row.id,
+            "version": version_row.version,
+            "status": version_row.status,
+            "manifest": version_row.manifest,
+            "manifest_hash": version_row.manifest_hash,
+            "storage_path": version_row.storage_path,
+            "index_path": None,
+            "chunk_count": None,
+        }
+
     agent_ref = service_definition.get("agent_ref") or {}
     if agent_ref.get("id"):
-        items.append(
-            {
-                "asset_id": agent_ref.get("id"),
-                "asset_type": "agent",
-                "asset_name": "Standard Knowledge Chat Agent",
-                "role": "agent",
-                "required": True,
-                "asset_version_id": None,
-                "version": agent_ref.get("version"),
-                "status": "STANDARD_LOCAL_COPY",
-                "manifest": None,
-                "manifest_hash": None,
-                "storage_path": None,
-                "index_path": None,
-                "chunk_count": None,
-            }
-        )
+        if use_registry:
+            items.append(await _registry_item(registry_agent, "agent"))
+        else:
+            items.append(
+                {
+                    "asset_id": agent_ref.get("id"),
+                    "asset_type": "agent",
+                    "asset_name": "Standard Knowledge Chat Agent",
+                    "role": "agent",
+                    "required": True,
+                    "asset_version_id": None,
+                    "version": agent_ref.get("version"),
+                    "status": "STANDARD_LOCAL_COPY",
+                    "manifest": None,
+                    "manifest_hash": None,
+                    "storage_path": None,
+                    "index_path": None,
+                    "chunk_count": None,
+                }
+            )
 
-    for binding in service_definition.get("prompt_bindings") or []:
-        items.append(
-            {
-                "asset_id": binding.get("prompt_id"),
-                "asset_type": "prompt",
-                "asset_name": "Standard Knowledge Answer Prompt",
-                "role": "prompt",
-                "required": True,
-                "asset_version_id": None,
-                "version": binding.get("prompt_version"),
-                "status": "STANDARD_LOCAL_COPY",
-                "manifest": None,
-                "manifest_hash": None,
-                "storage_path": None,
-                "index_path": None,
-                "chunk_count": None,
-            }
-        )
+    for index, binding in enumerate(service_definition.get("prompt_bindings") or []):
+        # `registry_prompt` only ever resolves `prompt_bindings[0]`
+        # (services.py `_first_prompt_ref` — one Agent+Prompt pair is all
+        # `resolve_registry_agent_config` supports). A second binding, if
+        # one ever exists, was never captured in the snapshot and keeps the
+        # pre-existing STANDARD_LOCAL_COPY behavior — unchanged from before
+        # this fix, not a new gap it introduces.
+        if use_registry and index == 0:
+            items.append(await _registry_item(registry_prompt, "prompt"))
+        else:
+            items.append(
+                {
+                    "asset_id": binding.get("prompt_id"),
+                    "asset_type": "prompt",
+                    "asset_name": "Standard Knowledge Answer Prompt",
+                    "role": "prompt",
+                    "required": True,
+                    "asset_version_id": None,
+                    "version": binding.get("prompt_version"),
+                    "status": "STANDARD_LOCAL_COPY",
+                    "manifest": None,
+                    "manifest_hash": None,
+                    "storage_path": None,
+                    "index_path": None,
+                    "chunk_count": None,
+                }
+            )
 
     return items, service_definition
 
