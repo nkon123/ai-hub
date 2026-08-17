@@ -182,6 +182,12 @@ async def create_session(
         # mid-conversation must not silently swap the answering Agent.
         registry_agent_version_id=deployment.get("registry_agent_version_id"),
         registry_prompt_version_id=deployment.get("registry_prompt_version_id"),
+        # D-034 (i) 남은 절반 — portal-api가 채워주면(신버전) 실제
+        # ServiceVersion 식별자를, 안 채워주면(구버전/미해석) None을 그대로
+        # 담는다. send_message가 이 두 값이 없을 때 기존 slug/리터럴 폴백을
+        # 쓴다 — 이 필드 부재가 채팅 응답을 막지 않는다.
+        service_version_id=deployment.get("service_version_id"),
+        service_version=deployment.get("service_version"),
     )
     logger.info(
         "chat.session.created session_id=%s slug=%s trace_id=%s",
@@ -267,7 +273,14 @@ async def send_message(
     else:
         config = get_standard_config()
 
-    run_record = run_store.create(service_id=session.slug, trace_id=trace_id)
+    # D-034 (i) 남은 절반: portal-api가 실제 ServiceVersion을 해석해 세션에
+    # 담아줬으면(`service_version_id`) 그 값을 MCP 감사 컨텍스트의 service_id
+    # 로 쓴다 — `_derive_service_uuid`는 입력이 이미 UUID면 그대로 통과시키므로
+    # (workflow.py) 여기서 진짜 값이 왜곡 없이 그대로 전달된다. 없으면(구버전
+    # portal-api, 미해석 등) 지금까지와 완전히 동일하게 slug를 쓴다 — 이 필드
+    # 하나 때문에 게시된 챗봇이 답을 못 하는 일은 없어야 한다(fail-open).
+    effective_service_id = session.service_version_id or session.slug
+    run_record = run_store.create(service_id=effective_service_id, trace_id=trace_id)
 
     session.in_flight = True
     session.message_count += 1
@@ -277,7 +290,8 @@ async def send_message(
     asyncio.create_task(
         run_knowledge_chat(
             run_id=run_record.id,
-            service_id=session.slug,
+            service_id=effective_service_id,
+            service_version=session.service_version,
             trace_id=trace_id,
             knowledge_id=session.knowledge_id,
             question=body.message,

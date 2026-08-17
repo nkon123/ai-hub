@@ -268,3 +268,71 @@ async def test_hosted_chat_never_triggers_agentic_knowledge_routing(
     assert "knowledge.route.selected" not in event_names
     completed = next(e for e in events if e["event"] == "run.completed")
     assert completed["data"]["status"] == "SUCCEEDED"
+
+
+# --- D-034 (i) 남은 절반: real service_version identifiers vs slug fallback ---
+
+
+async def test_message_uses_real_service_version_id_when_resolver_provides_one(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+    fake_deployment_resolver: FakeDeploymentResolver,
+) -> None:
+    """When portal-api's by-slug response carries `service_version_id`/
+    `service_version` (D-034 (i)), the Hosted session must use the real
+    ServiceVersion id — not the opaque slug — as the run's `service_id`, and
+    the MCP audit context's `service_version` must be the real version
+    string instead of the `_POC_SERVICE_VERSION` sentinel. Verified via the
+    hosted `run.started` SSE event's `service_id` field (workflow.py embeds
+    the exact `service_id` it was called with there), since agent-runtime
+    exposes no other way to inspect a completed run's identifiers from the
+    client's perspective."""
+    real_service_version_id = "550e8400-e29b-41d4-a716-446655440abc"
+    fake_deployment_resolver.deployments["real-identifiers-bot"] = {
+        **fake_deployment_resolver.deployments["remote-work-guide"],
+        "slug": "real-identifiers-bot",
+        "service_version_id": real_service_version_id,
+        "service_version": "2.3.1",
+    }
+    fake_llm_adapter.tokens = ["답변"]
+    session = await _create_session(client, slug="real-identifiers-bot")
+
+    async with client.stream(
+        "POST",
+        f"/chat-api/v1/sessions/{session['id']}/messages",
+        json={"message": "질문"},
+    ) as resp:
+        assert resp.status_code == 200
+        events = await _read_all_sse_events(resp)
+
+    started = next(e for e in events if e["event"] == "run.started")
+    assert started["data"]["service_id"] == real_service_version_id
+    completed = next(e for e in events if e["event"] == "run.completed")
+    assert completed["data"]["status"] == "SUCCEEDED"
+
+
+async def test_message_falls_back_to_slug_when_resolver_omits_service_version_id(
+    client: httpx.AsyncClient,
+    fake_llm_adapter: FakeLLMAdapter,
+) -> None:
+    """Fail-open regression: the 4 chatbots published before portal-api
+    returned `service_version_id`/`service_version` (and any future
+    deployment where resolution failed, per portal-api's None-on-miss
+    contract) must behave byte-for-byte as before this change — the run's
+    `service_id` stays the raw slug, with no interruption to answering."""
+    fake_llm_adapter.tokens = ["답변"]
+    # "remote-work-guide" fixture carries no service_version_id.
+    session = await _create_session(client)
+
+    async with client.stream(
+        "POST",
+        f"/chat-api/v1/sessions/{session['id']}/messages",
+        json={"message": "질문"},
+    ) as resp:
+        assert resp.status_code == 200
+        events = await _read_all_sse_events(resp)
+
+    started = next(e for e in events if e["event"] == "run.started")
+    assert started["data"]["service_id"] == "remote-work-guide"
+    completed = next(e for e in events if e["event"] == "run.completed")
+    assert completed["data"]["status"] == "SUCCEEDED"

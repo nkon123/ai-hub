@@ -392,6 +392,17 @@ class DeploymentBySlugOut(BaseModel):
     # 2026-08-16; the Hosted runtime then keeps using its standard config.
     registry_agent_version_id: str | None = None
     registry_prompt_version_id: str | None = None
+    # open-decisions.md D-034 (i) 남은 절반 — Hosted Agent Runtime의 MCP 감사
+    # 컨텍스트(packages/schemas/api/mcp-audit-context.schema.json)가 지금까지
+    # 발급해 온 service_id/service_version은 slug에서 UUID5로 지어낸 값과
+    # 리터럴 "0.0.0-poc-unregistered"였다 — 실재하는 ServiceVersion 행을
+    # 여기서 돌려준다. 셋 다 Optional: 아래 어느 값도 없으면(구버전
+    # portal-api, 또는 revision에서 ServiceVersion을 찾지 못한 경우)
+    # agent-runtime은 기존과 완전히 동일하게 slug 폴백을 쓴다 — 이 필드가
+    # 게시된 챗봇을 답변 불가로 만들면 안 된다.
+    service_version_id: str | None = None
+    service_version: str | None = None
+    service_id: str | None = None
 
 
 # --- Review workflow (M02 — §3.6 ReviewRequest/ReviewDecision) ---

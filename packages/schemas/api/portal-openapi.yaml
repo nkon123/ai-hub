@@ -3451,6 +3451,51 @@ components:
           format: uuid
         model_alias:
           type: string
+        service_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal ServiceVersion row id that this deployment's active
+            revision snapshots (additive, optional — open-decisions.md
+            D-034 (i) remaining half). Absent for a revision published
+            before this field existed; the Hosted Agent Runtime must treat
+            absence as "no real identifier available" and fall back to its
+            own opaque-slug-derived identifier, never fabricate a value.
+        service_version:
+          type: string
+          description: |
+            The `version` string (e.g. "1.0.0") of the ServiceVersion
+            identified by `service_version_id` above. Optional, same
+            fallback rule as `service_version_id`.
+        service_id:
+          type: string
+          format: uuid
+          description: |
+            Portal Service (ServiceDefinition) row id that owns the
+            ServiceVersion above. Optional, same fallback rule as
+            `service_version_id`. Not currently consumed by the Hosted
+            Agent Runtime (M05) — present for contract completeness and
+            future consumers.
+        registry_agent_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal AssetVersion id of the Registry Agent this deployment was
+            published with (D-034), resolved once at publish time from the
+            service definition's `agent_ref` and frozen into the revision
+            snapshot. Absent when the deployment uses a standard Agent whose
+            manifest is not a Portal asset — the normal case for the
+            chatbots published before Registry Agents existed. Always
+            returned together with `registry_prompt_version_id`: the Hosted
+            runtime resolves an Agent+Prompt *pair*, so a snapshot that
+            resolved only one of the two is reported as neither rather than
+            as a half pair that would fail per message at chat time.
+        registry_prompt_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal AssetVersion id of the Registry Prompt paired with
+            `registry_agent_version_id`. Same both-or-neither rule.
 
     PublishJobResponse:
       type: object

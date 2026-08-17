@@ -309,19 +309,30 @@ def _build_mcp_audit_context(
     agent_manifest: dict[str, Any],
     office_profile: dict[str, Any],
     tool_name: str,
+    service_version: str | None = None,
 ) -> dict[str, Any]:
     """05-mcp-security-governance.md §3 Request Context — built only from
     Runtime-trusted values (manifest / office profile / run identifiers),
     never from Agent Prompt or tool input (see request_context.py's module
     docstring on the office-mcp-server side for the boundary this exists to
-    enforce)."""
+    enforce).
+
+    `service_version` (additive/optional, D-034 (i) 남은 절반): when the
+    caller resolved a real Portal ServiceVersion (Hosted Chat via portal-api
+    `GET /deployments/by-slug/{slug}`), it passes that version string here
+    AND the matching real ServiceVersion id as `service_id` — the latter
+    passes through `_derive_service_uuid` unchanged because it is already a
+    valid UUID. Omitted (every Local Run / Preview, and any Hosted chatbot
+    published before portal-api returned this field) reproduces the exact
+    prior behavior: the `_POC_SERVICE_VERSION` sentinel, paired with a
+    UUID5 derived from whatever opaque string `service_id` is."""
     sites = office_profile.get("sites") or ["unknown-site"]
     return {
         "request_id": request_id,
         "trace_id": trace_id,
         "run_id": run_id,
         "service_id": _derive_service_uuid(service_id),
-        "service_version": _POC_SERVICE_VERSION,
+        "service_version": service_version or _POC_SERVICE_VERSION,
         "agent_id": agent_manifest["id"],
         "agent_version": agent_manifest["version"],
         "user": {
@@ -345,6 +356,7 @@ async def _run_mcp_tool_call(
     run_store: RunStore,
     confirmation_timeout_seconds: float,
     ai_derived: bool = False,
+    service_version: str | None = None,
 ) -> dict[str, Any] | tuple[str, str] | _Cancelled | _Denied:
     """Validate then (if valid) execute one MCP_TOOL_CALL.
 
@@ -424,6 +436,7 @@ async def _run_mcp_tool_call(
         agent_manifest=config.agent_manifest,
         office_profile=config.office_profile,
         tool_name=tool_name,
+        service_version=service_version,
     )
     call_request = {
         "tool_name": tool_name,
@@ -536,8 +549,17 @@ async def run_knowledge_chat(
     allow_hub_lookup: bool = False,
     hub_search_adapter: HubSearchAdapter | None = None,
     tool_route_enabled: bool = False,
+    service_version: str | None = None,
 ) -> None:
-    """`mcp_adapter`/`mcp_tool_request` are additive/optional — the
+    """`service_version` (additive/optional, D-034 (i) 남은 절반): the real
+    ServiceVersion `version` string, when the caller (today, only Hosted
+    Chat's `routers/chat.py`) resolved one via portal-api. Threaded straight
+    through to `_build_mcp_audit_context` — see that function's docstring
+    for the full contract. Omitted (every Local Run/Preview caller today, and
+    any Hosted chatbot whose deployment predates this field) reproduces the
+    exact prior behavior: the `_POC_SERVICE_VERSION` sentinel.
+
+    `mcp_adapter`/`mcp_tool_request` are additive/optional — the
     Knowledge-only standard-agent path (both always None/omitted, exactly
     as before this change) is byte-for-byte unaffected: `mcp_tool_request`
     stays None, the MCP_TOOL_CALL block below is skipped entirely, and
@@ -1034,6 +1056,7 @@ async def run_knowledge_chat(
                 run_store=run_store,
                 confirmation_timeout_seconds=confirmation_timeout,
                 ai_derived=tool_route_is_ai_derived,
+                service_version=service_version,
             )
             if isinstance(outcome, _Cancelled):
                 return  # terminal state already recorded by _run_mcp_tool_call

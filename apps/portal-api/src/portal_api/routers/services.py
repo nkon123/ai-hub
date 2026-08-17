@@ -1018,6 +1018,21 @@ async def get_deployment_by_slug(
     registry_agent = snapshot.get("registry_agent") or None
     registry_prompt = snapshot.get("registry_prompt") or None
 
+    # D-034 (i) 남은 절반: `revision.service_version_id`(DeploymentRevision이
+    # 가리키는 실제 ServiceVersion 행 FK)가 권위(authority)다. `service_
+    # definition`(manifest JSON) 안의 `id`/`version`은 클라이언트가 채워
+    # 제출한 값이라 DB의 `Service.id`/`ServiceVersion.version`과 일치한다는
+    # 보장이 없다(`create_service`가 검증하지 않음, routers/services.py 상단
+    # 참고) — 그래서 지어낼 수 없는 DB FK를 쓴다. 못 찾으면 세 필드 모두
+    # None으로 둔다(placeholder 금지, 위 스키마 주석과 동일한 규율).
+    service_version_row: ServiceVersion | None = None
+    if revision.service_version_id:
+        service_version_row = (
+            await db.execute(
+                select(ServiceVersion).where(ServiceVersion.id == revision.service_version_id)
+            )
+        ).scalar_one_or_none()
+
     return DeploymentBySlugOut(
         deployment_id=deployment.id,
         slug=deployment.slug,
@@ -1046,6 +1061,9 @@ async def get_deployment_by_slug(
             if registry_agent and registry_prompt
             else None
         ),
+        service_version_id=service_version_row.id if service_version_row else None,
+        service_version=service_version_row.version if service_version_row else None,
+        service_id=service_version_row.service_id if service_version_row else None,
     )
 
 
