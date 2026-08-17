@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from "electron";
 import type {
   ActivateKnowledgeResult,
   ActivateVersionResult,
+  AgentDraftExportInput,
+  AgentDraftExportResult,
   AssetDependencyView,
   AssetManifestResult,
   AssetRemovalCheck,
@@ -216,6 +218,19 @@ const bridge: DesktopBridge = {
 
   deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("conversations:delete", id, reason),
+
+  // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
+  generateAgentDraftSystemPrompt: (liveQuestions: string[]): Promise<OllamaChatResult> =>
+    ipcRenderer.invoke("agentDraft:generateSystemPrompt", liveQuestions),
+
+  cancelAgentDraftSystemPromptGeneration: (): Promise<void> =>
+    ipcRenderer.invoke("agentDraft:cancelGenerateSystemPrompt"),
+
+  pickAgentDraftExportDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke("agentDraft:pickExportDirectory"),
+
+  exportAgentDraft: (input: AgentDraftExportInput): Promise<AgentDraftExportResult> =>
+    ipcRenderer.invoke("agentDraft:export", input),
 
   // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
   pickLocalToolFile: (): Promise<string | null> => ipcRenderer.invoke("localTool:pickFile"),

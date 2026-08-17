@@ -1133,6 +1133,42 @@ export interface ConversationSummary {
   turnCount: number;
 }
 
+// ---------------------------------------------------------------------------
+// D06 대화 -> Agent 초안 (`electron/agent-draft.ts`의 순수 로직을 IPC로
+// 감싼 입출력 형태) — 현재 세션의 라이브 메시지를 재료로 Agent+Prompt
+// Manifest 초안을 로컬 디렉터리로 내보낸다. Portal로는 아무것도 전송하지
+// 않는다.
+// ---------------------------------------------------------------------------
+
+/** 시스템 프롬프트 초안 생성 입력 — 라이브 턴의 질문 텍스트만 담는다(답변
+ * 본문/Citation 발췌는 절대 포함하지 않는다, `agent-draft.ts`의
+ * `buildSystemPromptDraftRequest` 참고). */
+export interface AgentDraftGenerateSystemPromptInput {
+  liveQuestions: string[];
+}
+
+export interface AgentDraftExportInput {
+  /** `agentDraft:pickExportDirectory`가 돌려준 절대 경로 그대로 — 파일명은
+   * 항상 Main Process가 고정한다(사용자가 입력한 파일명으로 경로를 만들지
+   * 않는다, 루트 CLAUDE.md 코드 규칙). */
+  directory: string;
+  /** 렌더러가 `agent-draft.ts`의 빌더로 이미 만든 최종 Manifest 객체 —
+   * Main Process는 이 값을 그대로 JSON.stringify해서 쓴다(재검증/재계산
+   * 없음). */
+  agentManifest: unknown;
+  promptManifest: unknown;
+  templateContent: string;
+}
+
+export interface AgentDraftExportResult {
+  ok: boolean;
+  /** Non-null only when `ok === false`(디스크 쓰기 실패 등) — 재시도
+   * 가능하도록 원인을 그대로 보여준다. */
+  error: string | null;
+  /** `ok === true`일 때만 채워진다 — 실제로 파일이 저장된 디렉터리. */
+  savedPath: string | null;
+}
+
 /** Renderer-facing surface exposed via `contextBridge` in `preload.ts`. */
 export interface DesktopBridge {
   pickBundleFile(): Promise<string | null>;
@@ -1320,6 +1356,22 @@ export interface DesktopBridge {
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
    * 이중 검사). */
   deleteConversation(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
+
+  // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
+  /** 라이브 턴의 질문 텍스트만으로 시스템 프롬프트 초안을 Ollama에게
+   * 요청한다(`chatWithOllama`를 그대로 재사용, Main Process 경유). 실패 시
+   * throw — 호출자는 빈 편집 상태로 떨어뜨리고 지어낸 기본값을 채우지
+   * 않는다. */
+  generateAgentDraftSystemPrompt(liveQuestions: string[]): Promise<OllamaChatResult>;
+  /** 진행 중인 생성 요청을 취소한다(`chat:ollamaCancel`과 별개의 Abort
+   * Controller — 서로 다른 취소 대상이다). */
+  cancelAgentDraftSystemPromptGeneration(): Promise<void>;
+  /** Agent 초안을 내보낼 로컬 디렉터리를 고르는 네이티브 대화상자.
+   * 취소하면 `null`(오류가 아니다 — CLAUDE.md 취소 상태). */
+  pickAgentDraftExportDirectory(): Promise<string | null>;
+  /** 고른 디렉터리에 `agent-manifest.json`/`prompt-manifest.json`/
+   * `template.md` 세 파일을 쓴다. */
+  exportAgentDraft(input: AgentDraftExportInput): Promise<AgentDraftExportResult>;
 
   // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
   // D-083 TOOL_ROUTE/D-080 등록과 구조적으로 분리되어 있다 — 이 여섯 메서드는

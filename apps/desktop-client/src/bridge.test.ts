@@ -239,6 +239,16 @@ function createCompleteBridge(): DesktopBridge {
     async deleteConversation() {
       return { ok: true, error: null };
     },
+    async generateAgentDraftSystemPrompt() {
+      return { answer: "", model: "" };
+    },
+    async cancelAgentDraftSystemPromptGeneration() {},
+    async pickAgentDraftExportDirectory() {
+      return null;
+    },
+    async exportAgentDraft() {
+      return { ok: false, error: null, savedPath: null };
+    },
     async pickLocalToolFile() {
       return null;
     },

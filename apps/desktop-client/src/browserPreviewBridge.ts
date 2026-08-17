@@ -14,7 +14,8 @@ import {
   validateOllamaBaseUrl,
   validateSearchRuntimeBaseUrl,
 } from "../electron/network-policy";
-import { DEFAULT_CHAT_MODEL_ALIAS } from "../electron/ollama-chat";
+import { buildSystemPromptDraftRequest } from "../electron/agent-draft";
+import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../electron/ollama-chat";
 import type {
   ConversationRecord,
   ConversationSummary,
@@ -522,6 +523,34 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       }
       persistConversations(conversations.filter((conversation) => conversation.id !== id));
       return { ok: true, error: null };
+    },
+
+    // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ------------------
+    // 시스템 프롬프트 생성만은 브라우저 개발 모드에서도 실제로 동작한다 —
+    // `ChatScreen`의 Ollama 일반 대화와 같은 이유로, 이 순수 함수는
+    // Electron 없이도 loopback Ollama에 직접 fetch할 수 있다("Desktop 앱에서
+    // 실행하세요"로 막지 않는다). 실제로는 `AgentDraftDialog`가 이 메서드를
+    // 거치지 않고 같은 순수 함수를 직접 호출해 자체 AbortController로
+    // 취소한다(ChatScreen이 `chatWithOllama`를 직접 호출하는 것과 동일한
+    // 패턴) — 이 구현은 향후 다른 호출자가 브릿지를 통해서만 접근하더라도
+    // 정직하게 동작하도록 존재한다.
+    async generateAgentDraftSystemPrompt(liveQuestions) {
+      const settings = readSettings();
+      const request = buildSystemPromptDraftRequest(liveQuestions);
+      return chatWithOllama(settings.ollamaBaseUrl, settings.chatModelAlias, request);
+    },
+    async cancelAgentDraftSystemPromptGeneration() {
+      // 이 브릿지 메서드를 거쳐 생성을 시작한 요청을 추적하지 않는다(실제
+      // 경로는 `AgentDraftDialog`가 직접 호출하는 별도 AbortController) —
+      // 취소할 진행 중인 요청이 이 경로에는 없으므로 no-op.
+    },
+    // 디렉터리 선택/파일 쓰기는 파일시스템이 필요하다 — 브라우저 개발
+    // 모드에서는 정직하게 거부한다(조용히 성공한 척하지 않는다).
+    async pickAgentDraftExportDirectory() {
+      return null;
+    },
+    async exportAgentDraft() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE, savedPath: null };
     },
 
     // --- D-084 "Desktop 로컬 Tool" ------------------------------------------

@@ -9,6 +9,7 @@ import { ConversationStore } from "./conversation-store";
 import { checkAllConnections, listOllamaModels, DEFAULT_RUNTIME_BASE_URL } from "./connections";
 import { DesktopSettingsStore } from "./desktop-settings";
 import { chatWithOllama } from "./ollama-chat";
+import { buildSystemPromptDraftRequest } from "./agent-draft";
 import {
   activateAssetVersion,
   assetInstallDir,
@@ -48,6 +49,8 @@ import { buildSystemInfo } from "./system-info";
 import type {
   ActivateKnowledgeResult,
   ActivateVersionResult,
+  AgentDraftExportInput,
+  AgentDraftExportResult,
   AssetDependencyView,
   AssetManifestResult,
   AssetRemovalCheck,
@@ -108,6 +111,10 @@ let desktopSettingsStore: DesktopSettingsStore | null = null;
 let conversationStore: ConversationStore | null = null;
 let localToolStore: LocalToolStore | null = null;
 let ollamaChatAbortController: AbortController | null = null;
+// D06 "대화로 Agent 초안 만들기"의 시스템 프롬프트 생성 취소 대상 — 위
+// `ollamaChatAbortController`(일반 대화 취소)와 별개다. 같은 변수를
+// 공유하면 두 기능이 서로의 요청을 취소하게 된다.
+let agentDraftAbortController: AbortController | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
@@ -939,6 +946,67 @@ function registerIpcHandlers(): void {
   ipcMain.handle("chat:ollamaCancel", async (): Promise<void> => {
     ollamaChatAbortController?.abort();
   });
+
+  // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
+  // 대화 원문을 프롬프트에 그대로 넣지 않는다 — `liveQuestions`는 렌더러가
+  // 이미 라이브(복원되지 않은) 턴의 질문 텍스트만 골라 넘긴다(답변 본문/
+  // Citation 발췌는 절대 포함하지 않는다). 시스템 프롬프트 생성은 기존
+  // `chatWithOllama`를 그대로 재사용하고, 취소는 `chat:ollamaCancel`과
+  // 별개의 Abort Controller를 쓴다.
+  ipcMain.handle(
+    "agentDraft:generateSystemPrompt",
+    async (_event, liveQuestions: string[]): Promise<OllamaChatResult> => {
+      const settings = getDesktopSettingsStore().getPublic();
+      const controller = new AbortController();
+      agentDraftAbortController = controller;
+      try {
+        const request = buildSystemPromptDraftRequest(liveQuestions);
+        return await chatWithOllama(settings.ollamaBaseUrl, settings.chatModelAlias, request, controller.signal);
+      } finally {
+        if (agentDraftAbortController === controller) agentDraftAbortController = null;
+      }
+    },
+  );
+
+  ipcMain.handle("agentDraft:cancelGenerateSystemPrompt", async (): Promise<void> => {
+    agentDraftAbortController?.abort();
+  });
+
+  // 사용자가 입력한 파일명으로 경로를 만들지 않는다 — 디렉터리는 항상
+  // `dialog.showOpenDialog`가 돌려준 절대 경로이고, 그 아래 세 파일명은
+  // `agentDraft:export`가 고정한다(아래).
+  ipcMain.handle("agentDraft:pickExportDirectory", async (): Promise<string | null> => {
+    const win = mainWindow;
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: "Agent 초안을 저장할 폴더 선택",
+      properties: ["openDirectory", "createDirectory"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+
+  ipcMain.handle(
+    "agentDraft:export",
+    async (_event, input: AgentDraftExportInput): Promise<AgentDraftExportResult> => {
+      try {
+        const agentPath = path.join(input.directory, "agent-manifest.json");
+        const promptPath = path.join(input.directory, "prompt-manifest.json");
+        const templatePath = path.join(input.directory, "template.md");
+        fs.writeFileSync(agentPath, JSON.stringify(input.agentManifest, null, 2), "utf-8");
+        fs.writeFileSync(promptPath, JSON.stringify(input.promptManifest, null, 2), "utf-8");
+        fs.writeFileSync(templatePath, input.templateContent, "utf-8");
+        // 대화 원문/생성된 프롬프트 원문/파일 경로는 로깅하지 않는다 —
+        // 구조적 이벤트만 남긴다(conversation-store.ts와 동일한 로그 규율).
+        getLogger().info("agent-draft", "Agent 초안 내보내기 완료(파일 3개)");
+        return { ok: true, error: null, savedPath: input.directory };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : "파일을 저장하지 못했습니다.";
+        getLogger().error("agent-draft", "Agent 초안 내보내기 실패", { errorCode: "AGENT_DRAFT_EXPORT_FAILED" });
+        return { ok: false, error: message, savedPath: null };
+      }
+    },
+  );
 
   // --- D03 Service/Agent 상세 -------------------------------------------------
   ipcMain.handle(

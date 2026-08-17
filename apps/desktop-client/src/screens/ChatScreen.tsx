@@ -20,7 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Square, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -34,6 +34,7 @@ import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
+import { AgentDraftDialog } from "./AgentDraftDialog";
 import { AnswerMarkdown } from "./AnswerMarkdown";
 import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
@@ -767,6 +768,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [citationDetail, setCitationDetail] = useState<Citation | null>(null);
   const [detailMessageId, setDetailMessageId] = useState<string | null>(null);
+  const [agentDraftDialogOpen, setAgentDraftDialogOpen] = useState(false);
   // Tool 확인 Panel 처리 중(승인/거부 요청 In-flight) 및 그 요청 자체의 오류
   // — 메시지별로 추적해 두 개 이상의 Run이 동시에 대기 중이어도 서로
   // 간섭하지 않는다.
@@ -1359,6 +1361,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 않는다.
   const hubQueryPreview = allowHubLookup ? buildHubQueryPreview(question, messages) : "";
 
+  // "대화로 Agent 초안 만들기" 진입점 — 저장된 지난 대화를 복원해 보는 중인
+  // 메시지(restored===true)는 citations/toolRoute/stages가 애초에 저장되지
+  // 않은 값이라 근거로 쓸 수 없다(agent-draft.ts 문서 참고). 라이브 메시지가
+  // 하나도 없으면 버튼을 비활성화하고 이유를 title/aria-label로 보여준다.
+  const hasLiveMessagesForAgentDraft = messages.some((m) => m.restored !== true);
+
   const detailMessage = messages.find((m) => m.id === detailMessageId) ?? null;
 
   // 대화 필수 서비스 장애와 MCP 선택 기능 장애를 분리한다. 어떤 서비스가
@@ -1414,6 +1422,17 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           )}
           <IconAction label="연결 상태 다시 확인" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
             <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} />
+          </IconAction>
+          <IconAction
+            label={
+              hasLiveMessagesForAgentDraft
+                ? "대화로 Agent 초안 만들기"
+                : "이 세션에서 실제로 실행된 턴이 아직 없습니다"
+            }
+            onClick={() => setAgentDraftDialogOpen(true)}
+            disabled={!hasLiveMessagesForAgentDraft}
+          >
+            <Sparkles size={13} />
           </IconAction>
         </div>
       </div>
@@ -2037,6 +2056,9 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 
       {citationDetail && <CitationDetailModal citation={citationDetail} onClose={() => setCitationDetail(null)} />}
       {detailMessage && <RunDetailPanel message={detailMessage} onClose={() => setDetailMessageId(null)} />}
+      {agentDraftDialogOpen && (
+        <AgentDraftDialog messages={messages} onClose={() => setAgentDraftDialogOpen(false)} />
+      )}
 
       <ReasonConfirmDialog
         open={deletingConversation !== null}
