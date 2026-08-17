@@ -240,3 +240,96 @@ describe("D-084 execution approval is owned by the Main Process", () => {
     expect(denyIndex).toBeLessThan(spawnIndex);
   });
 });
+
+// D-084 후속 3 ("최초 한번만 승인", 2026-08-17) — a per-tool standing
+// approval lets `localTool:invoke` skip the native dialog, but ONLY when the
+// Main Process itself has just re-read the file and recomputed its hash to
+// match a stored approval. These checks pin the source shape that makes that
+// true — they don't replace the ipcMain.handle behavioral test above, they
+// narrow the same handler slice further.
+describe("D-084 후속 3 — standing execution approval is re-derived by the Main Process on every call, never trusted from the renderer", () => {
+  const main = read("electron/main.ts");
+  const invokeHandler = main.slice(
+    main.indexOf('ipcMain.handle(\n    "localTool:invoke"'),
+    main.indexOf("app.whenReady()"),
+  );
+
+  it("re-reads the file and recomputes the hash before deciding whether to skip the dialog", () => {
+    // The IPC handler signature only ever receives (id, args, options) —
+    // never a caller-supplied approval flag or hash. Grepping the handler's
+    // own parameter list proves the renderer has no channel to assert
+    // "already approved" into this decision.
+    const handlerSignature = main.slice(
+      main.indexOf('ipcMain.handle(\n    "localTool:invoke"'),
+      main.indexOf("): Promise<LocalToolInvocationResult> =>") + 40,
+    );
+    expect(handlerSignature).not.toMatch(/approv/i);
+
+    expect(invokeHandler).toContain("fs.readFileSync(tool.filePath");
+    expect(invokeHandler).toContain("hashLocalToolSource(currentSource)");
+  });
+
+  it("only compares against the hash stored on the LocalTool record (tool.approval), not the file path alone", () => {
+    expect(invokeHandler).toContain("tool.approval");
+    expect(invokeHandler).toContain("storedApproval.approvedFileHash === currentHash");
+  });
+
+  it("shows a distinct notice when a stale (content-changed) approval is discarded", () => {
+    expect(invokeHandler).toContain("파일 내용이 승인 이후 변경되어 이전 승인이 무효화되었습니다");
+  });
+
+  it("fails closed (never spawns) when the file can't be read, before any approval check matters", () => {
+    const readFailureIndex = invokeHandler.indexOf("catch (err) {");
+    const spawnIndex = invokeHandler.lastIndexOf("runInvokeLocalTool");
+    expect(readFailureIndex).toBeGreaterThan(-1);
+    expect(spawnIndex).toBeGreaterThan(readFailureIndex);
+    expect(invokeHandler).toContain("파일을 읽을 수 없어 실행하지 않았습니다");
+  });
+
+  it("the dialog approval branch never calls the store's approve() — a per-run 실행 click is never promoted to a standing approval", () => {
+    const dialogBranchStart = invokeHandler.indexOf("if (!approvalStillValid)");
+    const dialogBranchEnd = invokeHandler.indexOf("} else {", dialogBranchStart);
+    expect(dialogBranchStart).toBeGreaterThan(-1);
+    expect(dialogBranchEnd).toBeGreaterThan(dialogBranchStart);
+    const dialogBranch = invokeHandler.slice(dialogBranchStart, dialogBranchEnd);
+    expect(dialogBranch).not.toContain(".approve(");
+  });
+
+  it("skips dialog.showMessageBox only inside the approvalStillValid branch", () => {
+    const skipBranchStart = invokeHandler.indexOf("} else {");
+    const skipBranchEnd = invokeHandler.indexOf("const interpreterPath", skipBranchStart);
+    expect(skipBranchStart).toBeGreaterThan(-1);
+    expect(skipBranchEnd).toBeGreaterThan(skipBranchStart);
+    const skipBranch = invokeHandler.slice(skipBranchStart, skipBranchEnd);
+    expect(skipBranch).not.toContain("dialog.showMessageBox");
+  });
+});
+
+// The approve/revoke handlers themselves must derive the hash from a fresh
+// Main-process file read too — never accept a hash the renderer computed and
+// sent over IPC (the renderer can't be trusted to have read the real file,
+// or the real current content of it).
+describe("D-084 후속 3 — approve/revoke handlers are Main-process authoritative", () => {
+  const main = read("electron/main.ts");
+
+  it("approveExecution re-reads the file itself and only then calls store.approve with the freshly computed hash", () => {
+    const start = main.indexOf('"localTool:approveExecution"');
+    const end = main.indexOf('"localTool:revokeExecution"');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const handler = main.slice(start, end);
+    expect(handler).toContain("fs.readFileSync(tool.filePath");
+    expect(handler).toContain(".approve(id, hashLocalToolSource(source))");
+    // No parameter carrying a caller-supplied hash/approval value.
+    expect(handler).not.toMatch(/approveExecution["'],?\s*async \(_event, id: string, .*hash/i);
+  });
+
+  it("revokeExecution takes only an id — nothing the renderer asserts is trusted as the new state", () => {
+    const start = main.indexOf('"localTool:revokeExecution"');
+    const end = main.indexOf('ipcMain.handle(\n    "localTool:invoke"');
+    expect(start).toBeGreaterThan(-1);
+    expect(end).toBeGreaterThan(start);
+    const handler = main.slice(start, end);
+    expect(handler).toContain(".revoke(id)");
+  });
+});

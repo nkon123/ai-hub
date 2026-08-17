@@ -578,6 +578,12 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       // 없다(별도 이유가 필요하다는 Task Brief 지침).
       return { outcome: "spawn_error", message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
+    async approveLocalToolExecution() {
+      return { ok: false, tool: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async revokeLocalToolExecution() {
+      return { ok: false, tool: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
   };
   return previewBridge;
 }

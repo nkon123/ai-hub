@@ -8,14 +8,16 @@
 // `electron/__tests__/local-tool-isolation.test.ts`가 이 분리와 D-083
 // TOOL_ROUTE/D-080 등록으로부터의 배제를 소스 텍스트 검사로 강제한다.
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, FileCode2, FolderOpen, Play, Trash2 } from "lucide-react";
+import { AlertTriangle, FileCode2, FolderOpen, Play, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
 import type { LocalTool, LocalToolSignatureResult } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, ConfirmDialog, EmptyState, ErrorBanner, LoadingState, Modal, PageHeader } from "../ui";
 import { formatDateTime } from "../format";
 import {
   NOT_A_SANDBOX_NOTICE,
+  buildExecutionApprovalNotice,
   buildLocalToolArgs,
+  describeExecutionApprovalStatus,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
@@ -57,6 +59,19 @@ export function LocalToolsScreen() {
   const [removeTarget, setRemoveTarget] = useState<LocalTool | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+
+  // D-084 후속 3 ("최초 한번만 승인") — 실행 자동 허용/철회. 둘 다 별도
+  // ConfirmDialog로 명시적 확인을 요구한다(루트 CLAUDE.md UI 규칙: 승인·
+  // 반려는 확인과 사유를 요구한다). 실제 판정과 저장은 항상 Main Process
+  // (`bridge.approveLocalToolExecution`/`revokeLocalToolExecution`)가 한다 —
+  // 여기서는 그 결과를 반영할 뿐이다.
+  const [approveTarget, setApproveTarget] = useState<LocalTool | null>(null);
+  const [approving, setApproving] = useState(false);
+  const [approveError, setApproveError] = useState<string | null>(null);
+
+  const [revokeTarget, setRevokeTarget] = useState<LocalTool | null>(null);
+  const [revoking, setRevoking] = useState(false);
+  const [revokeError, setRevokeError] = useState<string | null>(null);
 
   const [runTarget, setRunTarget] = useState<LocalTool | null>(null);
   const [runFormValues, setRunFormValues] = useState<Record<string, string>>({});
@@ -162,6 +177,44 @@ export function LocalToolsScreen() {
       setRemoveError(err instanceof Error ? err.message : "제거하지 못했습니다.");
     } finally {
       setRemoving(false);
+    }
+  }
+
+  async function confirmApprove() {
+    if (!bridge || !approveTarget) return;
+    setApproving(true);
+    setApproveError(null);
+    try {
+      const result = await bridge.approveLocalToolExecution(approveTarget.id);
+      if (!result.ok) {
+        setApproveError(result.error ?? "실행을 허용하지 못했습니다.");
+        return;
+      }
+      setApproveTarget(null);
+      await load();
+    } catch (err) {
+      setApproveError(err instanceof Error ? err.message : "실행을 허용하지 못했습니다.");
+    } finally {
+      setApproving(false);
+    }
+  }
+
+  async function confirmRevoke() {
+    if (!bridge || !revokeTarget) return;
+    setRevoking(true);
+    setRevokeError(null);
+    try {
+      const result = await bridge.revokeLocalToolExecution(revokeTarget.id);
+      if (!result.ok) {
+        setRevokeError(result.error ?? "허용을 철회하지 못했습니다.");
+        return;
+      }
+      setRevokeTarget(null);
+      await load();
+    } catch (err) {
+      setRevokeError(err instanceof Error ? err.message : "허용을 철회하지 못했습니다.");
+    } finally {
+      setRevoking(false);
     }
   }
 
@@ -279,10 +332,20 @@ export function LocalToolsScreen() {
                     <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
                       로컬 Tool (검토되지 않음)
                     </span>
+                    <span
+                      className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                        tool.approval !== null
+                          ? "bg-success/10 text-success"
+                          : "bg-slate-100 text-text-secondary"
+                      }`}
+                    >
+                      {describeExecutionApprovalStatus(tool)}
+                    </span>
                   </div>
                   <p className="mt-1 break-all text-caption text-text-muted">{tool.filePath}</p>
                   <p className="mt-1 text-caption text-text-secondary">
                     파라미터 {tool.parameters.length}개 · 추가됨 {formatDateTime(tool.addedAt)}
+                    {tool.approval !== null && ` · 실행 허용됨 ${formatDateTime(tool.approval.approvedAt)}`}
                   </p>
                   {tool.parameters.length > 0 && (
                     <ul className="mt-2 flex flex-wrap gap-1.5">
@@ -302,6 +365,15 @@ export function LocalToolsScreen() {
                   <Button variant="secondary" onClick={() => openRunForm(tool)}>
                     <Play size={14} /> 실행
                   </Button>
+                  {tool.approval !== null ? (
+                    <Button variant="secondary" onClick={() => setRevokeTarget(tool)}>
+                      <ShieldOff size={14} /> 허용 해제
+                    </Button>
+                  ) : (
+                    <Button variant="secondary" onClick={() => setApproveTarget(tool)}>
+                      <ShieldCheck size={14} /> 실행 허용
+                    </Button>
+                  )}
                   <Button variant="danger" onClick={() => setRemoveTarget(tool)}>
                     <Trash2 size={14} /> 제거
                   </Button>
@@ -414,6 +486,48 @@ export function LocalToolsScreen() {
       {removeError && (
         <div className="fixed inset-x-0 bottom-4 z-50 mx-auto w-full max-w-sm px-4">
           <ErrorBanner message={removeError} />
+        </div>
+      )}
+
+      {/* --- 실행 허용 확인 (D-084 후속 3) --- */}
+      <ConfirmDialog
+        open={approveTarget !== null}
+        title="로컬 Tool 실행 허용"
+        description={approveTarget ? buildExecutionApprovalNotice(approveTarget) : undefined}
+        confirmLabel="허용"
+        submitting={approving}
+        onConfirm={() => void confirmApprove()}
+        onCancel={() => {
+          setApproveTarget(null);
+          setApproveError(null);
+        }}
+      />
+      {approveError && (
+        <div className="fixed inset-x-0 bottom-4 z-50 mx-auto w-full max-w-sm px-4">
+          <ErrorBanner message={approveError} />
+        </div>
+      )}
+
+      {/* --- 허용 철회 확인 (D-084 후속 3) --- */}
+      <ConfirmDialog
+        open={revokeTarget !== null}
+        title="실행 허용 철회"
+        description={
+          revokeTarget
+            ? `'${revokeTarget.functionName}'의 실행 자동 허용을 철회합니다. 다음 실행부터 다시 매번 확인 대화상자가 뜹니다.`
+            : undefined
+        }
+        confirmLabel="철회"
+        submitting={revoking}
+        onConfirm={() => void confirmRevoke()}
+        onCancel={() => {
+          setRevokeTarget(null);
+          setRevokeError(null);
+        }}
+      />
+      {revokeError && (
+        <div className="fixed inset-x-0 bottom-4 z-50 mx-auto w-full max-w-sm px-4">
+          <ErrorBanner message={revokeError} />
         </div>
       )}
 

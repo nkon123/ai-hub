@@ -614,12 +614,29 @@ export interface LocalToolSignatureSuccess {
 
 export type LocalToolSignatureResult = LocalToolSignatureSuccess | LocalToolSignatureFailure;
 
+/** D-084 후속 3 ("최초 한번만 승인") — a standing "skip the per-run dialog"
+ * approval for one local tool, bound to the exact file CONTENT at approval
+ * time via `approvedFileHash` (sha256 hex, `local-tool-store.ts`'s
+ * `hashLocalToolSource`), not to the path. `electron/main.ts`'s
+ * `localTool:invoke` handler re-reads the file and recomputes this hash on
+ * every invocation — a mismatch means the approval is stale and the native
+ * dialog is shown again. Set only by the 자산 > 로컬 Tool screen's explicit
+ * "실행 허용" action; the per-run execution dialog never writes this (그
+ * 대화상자의 승인은 기억되지 않는다 — Task Brief 제약). */
+export interface LocalToolApproval {
+  approvedAt: string;
+  approvedFileHash: string;
+}
+
 /** 렌더러에 노출되는 저장된 로컬 Tool 레코드. `id`는 항상
  * `crypto.randomUUID()`이며 파일명/함수명에서 파생되지 않는다(사용자가 준
  * 이름으로 경로/식별자를 만들지 않는다는 CLAUDE.md 규칙).
  * `riskAcknowledgedAt`은 절대 `null`이 아니다 — `LocalToolStore.add()`가
  * `acknowledgedRisk: true` 없이는 애초에 레코드를 만들지 않는다(구조적
- * 강제, UI 체크박스는 그 강제의 표현일 뿐이다). */
+ * 강제, UI 체크박스는 그 강제의 표현일 뿐이다). `approval`은 이것과 별개다
+ * — 항상 `null`로 시작하고(기존 Tool을 소급 승인하지 않는다), 자산 > 로컬
+ * Tool 화면에서 명시적으로 "실행 허용"을 눌러야만 값이 생기며, 언제든
+ * "허용 해제"로 다시 `null`로 되돌릴 수 있다. */
 export interface LocalTool {
   id: string;
   filePath: string;
@@ -631,6 +648,7 @@ export interface LocalTool {
   warnings: string[];
   addedAt: string;
   riskAcknowledgedAt: string;
+  approval: LocalToolApproval | null;
 }
 
 /** 매 호출의 결과 — 여섯 가지 outcome은 서로 다른 사실이며 화면에서 절대
@@ -1404,4 +1422,15 @@ export interface DesktopBridge {
     args: Record<string, unknown>,
     options?: { aiSelected?: boolean },
   ): Promise<LocalToolInvocationResult>;
+  /** D-084 후속 3 ("최초 한번만 승인") — 자산 > 로컬 Tool 화면의 "실행 허용"
+   * 액션 전용. Main Process가 승인 시점에 `filePath`를 다시 읽어 sha256을
+   * 계산해 저장한다(렌더러가 계산한 해시를 신뢰하지 않는다) — 그 사이 파일이
+   * 이동/삭제/읽기 불가면 승인 자체를 거부한다(fail-closed). 이 호출은
+   * `localTool:invoke`의 매 호출 네이티브 승인 대화상자를 대신하지 않는다 —
+   * 이후 호출에서 파일 해시가 이 시점 값과 일치할 때만 그 대화상자를
+   * 건너뛴다. */
+  approveLocalToolExecution(id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
+  /** 위 승인을 철회한다 — 되돌릴 수 없는 승인을 만들지 않는다(Task Brief
+   * 제약). 철회 후에는 다음 실행부터 다시 매번 네이티브 대화상자로 묻는다. */
+  revokeLocalToolExecution(id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
 }

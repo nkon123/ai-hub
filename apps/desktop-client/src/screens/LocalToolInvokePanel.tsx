@@ -540,8 +540,9 @@ export function LocalToolInvokePanel({
               <span>{NOT_A_SANDBOX_NOTICE}</span>
             </div>
             <p className="text-caption text-text-muted">
-              실행을 누르면 Desktop 앱이 별도의 승인 대화상자를 다시 띄웁니다 — 거기서 취소해도 이 Tool은 실행되지
-              않습니다.
+              이 Tool이 자산 &gt; 로컬 Tool에서 미리 실행 허용되어 있지 않다면, 실행을 누르면 Desktop 앱이 별도의
+              승인 대화상자를 다시 띄웁니다 — 거기서 취소해도 이 Tool은 실행되지 않습니다. 매번 묻지 않게 하려면
+              자산 &gt; 로컬 Tool에서 먼저 허용해 두세요.
             </p>
             <div className="flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setStep("filling")}>
@@ -555,7 +556,7 @@ export function LocalToolInvokePanel({
         )}
 
         {step === "invoking" && (
-          <LoadingState label="승인 대화상자를 확인하고 실행하는 중... (Desktop 앱 창을 확인하세요)" />
+          <LoadingState label="승인 대화상자가 뜨면 확인하고 실행하는 중... (Desktop 앱 창을 확인하세요)" />
         )}
 
         {step === "done" && (

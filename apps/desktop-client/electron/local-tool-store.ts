@@ -16,10 +16,34 @@
 // the mechanism, not a UI convention, behind Task Brief 구현 원칙 7's
 // "승인된" (approved) side — see `docs/implementation-spec/open-decisions.md`
 // D-084 for the full boundary writeup.
+//
+// D-084 후속 3 (2026-08-17, "최초 한번만 승인") — `approval` adds a SEPARATE,
+// independently revocable execution approval on top of `riskAcknowledgedAt`.
+// The two are not interchangeable: `riskAcknowledgedAt` is the one-time "I
+// understand this is unsandboxed" acknowledgement made when the tool is
+// added, and it is never null once a tool exists. `approval` is "you may
+// skip the per-run native dialog for THIS tool" — it starts `null` (never
+// asked) for every tool, including ones added before this field existed
+// (`read()` below normalizes missing/legacy records to `approval: null`, so
+// no pre-existing tool is silently treated as pre-approved).
+// `approval.approvedFileHash` binds the approval to the exact file CONTENT
+// at approval time, not to the path — `electron/main.ts`'s `localTool:invoke`
+// handler re-reads the file and recomputes the hash on every single
+// invocation and refuses to skip the dialog unless the hashes still match.
+// Binding to the path alone would turn "approved once" into "anything ever
+// placed at that path runs forever," which is not what was approved.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { LocalTool, LocalToolDiscardedInfo, LocalToolParameterInfo } from "./types";
+import type { LocalTool, LocalToolApproval, LocalToolDiscardedInfo, LocalToolParameterInfo } from "./types";
+
+/** sha256 of already-read file content, hex-encoded. Pure hashing step
+ * shared by the approve-time and invoke-time recomputation so both sides can
+ * never drift in how the hash is derived. Callers own the (fallible) file
+ * read — this function never touches the filesystem itself. */
+export function hashLocalToolSource(source: string): string {
+  return crypto.createHash("sha256").update(source, "utf-8").digest("hex");
+}
 
 interface LocalToolFile {
   tools: LocalTool[];
@@ -52,7 +76,15 @@ export class LocalToolStore {
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
       if (!Array.isArray(parsed?.tools)) return { tools: [] };
-      return { tools: parsed.tools as LocalTool[] };
+      // Legacy records written before `approval` existed lack the field —
+      // normalize to `null` (never pre-approved) rather than leaving it
+      // `undefined`, so every call site can rely on the field always being
+      // present and can never mistake "field missing" for "approved".
+      const tools = (parsed.tools as LocalTool[]).map((tool) => ({
+        ...tool,
+        approval: tool.approval ?? null,
+      }));
+      return { tools };
     } catch {
       // 손상된 파일은 "로컬 Tool 없음"으로 취급한다 — Desktop은 장애 시
       // 종료되지 않는다(CLAUDE.md).
@@ -94,6 +126,7 @@ export class LocalToolStore {
       warnings: input.warnings,
       addedAt: now,
       riskAcknowledgedAt: now,
+      approval: null,
     };
     const current = this.read();
     this.write({ tools: [...current.tools, tool] });
@@ -107,5 +140,43 @@ export class LocalToolStore {
     }
     this.write({ tools: current.tools.filter((tool) => tool.id !== id) });
     return { ok: true, error: null };
+  }
+
+  /** Records "skip the per-run dialog for this exact file content" — called
+   * only from the 자산 > 로컬 Tool screen's explicit "실행 허용" action
+   * (`electron/main.ts`'s `localTool:approveExecution` handler), never from
+   * the per-run execution dialog (Task Brief 제약: 그 대화상자의 승인은
+   * 영구 승인으로 승격되지 않는다). `fileHash` must be recomputed by the
+   * caller from a fresh read of `tool.filePath` immediately before calling
+   * this — this method does not read the filesystem itself and trusts the
+   * hash it's given, so callers are responsible for that freshness. */
+  approve(id: string, fileHash: string): AddLocalToolResult {
+    const current = this.read();
+    const idx = current.tools.findIndex((tool) => tool.id === id);
+    if (idx === -1) {
+      return { ok: false, error: "로컬 Tool을 찾을 수 없습니다." };
+    }
+    const approval: LocalToolApproval = { approvedAt: new Date().toISOString(), approvedFileHash: fileHash };
+    const nextTools = [...current.tools];
+    nextTools[idx] = { ...nextTools[idx], approval };
+    this.write({ tools: nextTools });
+    return { ok: true, tool: nextTools[idx] };
+  }
+
+  /** Withdraws a standing execution approval — the same 로컬 Tool 화면 must
+   * offer this next to "실행 허용" (Task Brief 제약: 되돌릴 수 없는 승인을
+   * 만들지 않는다). After this, `localTool:invoke` falls back to asking via
+   * the native dialog on every run again, exactly like a tool that was
+   * never approved. */
+  revoke(id: string): AddLocalToolResult {
+    const current = this.read();
+    const idx = current.tools.findIndex((tool) => tool.id === id);
+    if (idx === -1) {
+      return { ok: false, error: "로컬 Tool을 찾을 수 없습니다." };
+    }
+    const nextTools = [...current.tools];
+    nextTools[idx] = { ...nextTools[idx], approval: null };
+    this.write({ tools: nextTools });
+    return { ok: true, tool: nextTools[idx] };
   }
 }

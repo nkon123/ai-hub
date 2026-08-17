@@ -267,6 +267,12 @@ function createCompleteBridge(): DesktopBridge {
     async invokeLocalTool() {
       return { outcome: "interpreter_not_configured" };
     },
+    async approveLocalToolExecution() {
+      return { ok: false, tool: null, error: null };
+    },
+    async revokeLocalToolExecution() {
+      return { ok: false, tool: null, error: null };
+    },
   };
 }
 

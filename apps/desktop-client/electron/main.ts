@@ -36,7 +36,7 @@ import {
   reconcileInstalledLocalAgentRegistrations,
 } from "./local-agent-registration";
 import { parseLocalToolSignature } from "./local-tool-signature";
-import { LocalToolStore } from "./local-tool-store";
+import { hashLocalToolSource, LocalToolStore } from "./local-tool-store";
 import { invokeLocalTool as runInvokeLocalTool } from "./local-tool-runner";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
@@ -1171,6 +1171,48 @@ function registerIpcHandlers(): void {
     return result;
   });
 
+  // D-084 후속 3 ("최초 한번만 승인") — 자산 > 로컬 Tool 화면의 "실행 허용"
+  // 전용. 렌더러가 무엇을 승인했다고 주장하든 신뢰하지 않는다: 여기서
+  // `filePath`를 다시 읽어(fail-closed — 읽기 실패면 승인하지 않는다)
+  // Main Process 스스로 해시를 계산해 저장한다.
+  ipcMain.handle(
+    "localTool:approveExecution",
+    async (_event, id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> => {
+      const tool = getLocalToolStore().find(id);
+      if (!tool) {
+        return { ok: false, tool: null, error: "로컬 Tool을 찾을 수 없습니다." };
+      }
+      let source: string;
+      try {
+        source = fs.readFileSync(tool.filePath, "utf-8");
+      } catch (err) {
+        return {
+          ok: false,
+          tool: null,
+          error: `파일을 읽을 수 없어 실행을 허용할 수 없습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+        };
+      }
+      const result = getLocalToolStore().approve(id, hashLocalToolSource(source));
+      if (result.ok) {
+        getLogger().info("local-tool", `로컬 Tool 실행 자동 허용됨: ${tool.toolName} (${id})`);
+        return { ok: true, tool: result.tool, error: null };
+      }
+      return { ok: false, tool: null, error: result.error };
+    },
+  );
+
+  ipcMain.handle(
+    "localTool:revokeExecution",
+    async (_event, id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> => {
+      const result = getLocalToolStore().revoke(id);
+      if (result.ok) {
+        getLogger().info("local-tool", `로컬 Tool 실행 허용 철회됨: ${id}`);
+        return { ok: true, tool: result.tool, error: null };
+      }
+      return { ok: false, tool: null, error: result.error };
+    },
+  );
+
   ipcMain.handle(
     "localTool:invoke",
     async (
@@ -1183,40 +1225,75 @@ function registerIpcHandlers(): void {
       if (!tool) {
         return { outcome: "spawn_error", message: "로컬 Tool을 찾을 수 없습니다." };
       }
-      // 실행 직전, Main Process가 직접 묻는다. 렌더러(LocalToolsScreen)의 확인
-      // 단계와 중복처럼 보이지만 중복이 아니다 — Electron에서 신뢰 경계는 Main
-      // Process이고, 렌더러만 확인을 담당하면 이 브릿지에 도달하는 다른 코드
-      // 경로가 승인 없이 사용자 권한으로 Python을 실행할 수 있다. 그것이 구현
-      // 원칙 7이 금지하는 "승인되지 않은 임의 Python 실행"이다. 추가 시점의
-      // 위험 고지는 기억된 승인이라 이 자리를 대신하지 못한다(D-084).
-      const win = mainWindow;
-      if (!win) {
-        return { outcome: "spawn_error", message: "창이 없어 실행 승인을 받을 수 없습니다." };
+      // 승인 여부 판정은 항상 여기, Main Process에서만 한다 — 렌더러가
+      // "승인됐다"고 주장하는 값을 받지 않는다(이 IPC 인자 목록에 그런
+      // 값이 아예 없다). 파일을 지금 다시 읽어(fail-closed) 현재 내용의
+      // 해시를 계산하고, 저장된 승인의 해시와 비교한다 — 경로가 아니라
+      // 내용에 승인을 묶는다(D-084 후속 3). 읽기 자체가 실패하면(파일
+      // 이동/삭제/권한 문제) 승인 여부와 무관하게 실행하지 않는다.
+      let currentSource: string;
+      try {
+        currentSource = fs.readFileSync(tool.filePath, "utf-8");
+      } catch (err) {
+        getLogger().error("local-tool", `로컬 Tool 실행 불가(파일 읽기 실패): ${tool.toolName} (${id})`);
+        return {
+          outcome: "spawn_error",
+          message: `파일을 읽을 수 없어 실행하지 않았습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
+        };
       }
-      // D-084 후속(채팅 자동 라우팅) — Tool 선택과 인자를 사람이 아니라
-      // AI가 정했을 때는 승인 대화상자 문구가 그 사실을 반드시 밝힌다(Task
-      // Brief 제약 C: D-083의 "인자가 AI 파생이면 확인 문구가 그 사실을
-      // 밝힌다" 규칙의 확장). 승인 절차 자체는 aiSelected 여부와 무관하게
-      // 항상 동일하게 거친다 — 문구만 달라진다.
-      const aiSelectedNotice = options?.aiSelected
-        ? "이 Tool 선택과 인자는 모두 AI가 스스로 결정했습니다 — 사람이 입력하지 않았습니다.\n\n"
-        : "";
-      const approval = await dialog.showMessageBox(win, {
-        type: "warning",
-        buttons: ["실행", "취소"],
-        defaultId: 1,
-        cancelId: 1,
-        title: "로컬 Tool 실행 승인",
-        message: `'${tool.toolName}'을(를) 실행할까요?`,
-        detail:
-          aiSelectedNotice +
-          `파일: ${tool.filePath}\n함수: ${tool.functionName}\n인자: ${JSON.stringify(args ?? {})}\n\n` +
-          "이 코드는 격리되지 않은 상태로, 사용자의 권한으로 실행됩니다 — 직접 실행한 것과 동일합니다.",
-      });
-      if (approval.response !== 0) {
-        getLogger().info("local-tool", `로컬 Tool 실행 거부됨: ${tool.toolName} (${id})`);
-        return { outcome: "user_denied" };
+      const currentHash = hashLocalToolSource(currentSource);
+      const storedApproval = tool.approval;
+      const approvalStillValid = storedApproval !== null && storedApproval.approvedFileHash === currentHash;
+
+      if (!approvalStillValid) {
+        // 승인 기록이 없거나(한 번도 허용한 적 없음) 무효(파일 내용이 승인
+        // 이후 바뀜) — 지금까지와 동일하게 실행 직전 Main Process가 직접
+        // 네이티브 대화상자로 묻는다. 렌더러(LocalToolsScreen)의 확인
+        // 단계와 중복처럼 보이지만 중복이 아니다 — Electron에서 신뢰 경계는
+        // Main Process이고, 렌더러만 확인을 담당하면 이 브릿지에 도달하는
+        // 다른 코드 경로가 승인 없이 사용자 권한으로 Python을 실행할 수
+        // 있다. 그것이 구현 원칙 7이 금지하는 "승인되지 않은 임의 Python
+        // 실행"이다(D-084). 이 대화상자에서 사용자가 실행을 눌러도 그
+        // 승인은 이 1회 실행에만 적용되고 저장되지 않는다 — 영구 허용은
+        // 오직 자산 > 로컬 Tool 화면의 "실행 허용"으로만 만들 수 있다.
+        const win = mainWindow;
+        if (!win) {
+          return { outcome: "spawn_error", message: "창이 없어 실행 승인을 받을 수 없습니다." };
+        }
+        const staleApprovalNotice =
+          storedApproval !== null
+            ? "파일 내용이 승인 이후 변경되어 이전 승인이 무효화되었습니다 — 다시 확인해야 합니다.\n\n"
+            : "";
+        // D-084 후속(채팅 자동 라우팅) — Tool 선택과 인자를 사람이 아니라
+        // AI가 정했을 때는 승인 대화상자 문구가 그 사실을 반드시 밝힌다(Task
+        // Brief 제약 C: D-083의 "인자가 AI 파생이면 확인 문구가 그 사실을
+        // 밝힌다" 규칙의 확장). 승인 절차 자체는 aiSelected 여부와 무관하게
+        // 항상 동일하게 거친다 — 문구만 달라진다.
+        const aiSelectedNotice = options?.aiSelected
+          ? "이 Tool 선택과 인자는 모두 AI가 스스로 결정했습니다 — 사람이 입력하지 않았습니다.\n\n"
+          : "";
+        const approvalDialog = await dialog.showMessageBox(win, {
+          type: "warning",
+          buttons: ["실행", "취소"],
+          defaultId: 1,
+          cancelId: 1,
+          title: "로컬 Tool 실행 승인",
+          message: `'${tool.toolName}'을(를) 실행할까요?`,
+          detail:
+            staleApprovalNotice +
+            aiSelectedNotice +
+            `파일: ${tool.filePath}\n함수: ${tool.functionName}\n인자: ${JSON.stringify(args ?? {})}\n\n` +
+            "이 코드는 격리되지 않은 상태로, 사용자의 권한으로 실행됩니다 — 직접 실행한 것과 동일합니다.\n\n" +
+            "매번 묻지 않으려면 자산 > 로컬 Tool에서 이 Tool의 실행을 허용하세요.",
+        });
+        if (approvalDialog.response !== 0) {
+          getLogger().info("local-tool", `로컬 Tool 실행 거부됨: ${tool.toolName} (${id})`);
+          return { outcome: "user_denied" };
+        }
+      } else {
+        getLogger().info("local-tool", `사전 허용됨(대화상자 생략): ${tool.toolName} (${id})`);
       }
+
       const interpreterPath = getDesktopSettingsStore().getPublic().pythonInterpreterPath;
       const result = await runInvokeLocalTool({
         interpreterPath,

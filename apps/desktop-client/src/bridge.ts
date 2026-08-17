@@ -90,6 +90,8 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   listLocalTools: true,
   removeLocalTool: true,
   invokeLocalTool: true,
+  approveLocalToolExecution: true,
+  revokeLocalToolExecution: true,
 };
 
 const ALL_BRIDGE_METHOD_NAMES = Object.keys(BRIDGE_METHOD_PRESENCE) as Array<keyof DesktopBridge>;
