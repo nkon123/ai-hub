@@ -143,6 +143,15 @@ function createCompleteBridge(): DesktopBridge {
     async reconcileMcpToolConnections() {
       return { checked: true, downgradedCount: 0, registrationEnabled: true, error: null };
     },
+    async registerLocalAgent() {
+      return { ok: false, registration: null, error: null };
+    },
+    async unregisterLocalAgent() {
+      return { ok: true, remoteWarning: null, error: null };
+    },
+    async reconcileLocalAgentRegistrations() {
+      return { checked: true, downgradedCount: 0, localAgentsEnabled: true, error: null };
+    },
     async diffAssetVersions() {
       return { available: false, reason: null, diff: null };
     },

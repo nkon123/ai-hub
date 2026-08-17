@@ -408,6 +408,25 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const [installedKnowledge, setInstalledKnowledge] = useState<InstalledAssetWithStatus[] | null>(null);
   const [installedMcpTools, setInstalledMcpTools] = useState<InstalledAssetWithStatus[]>([]);
   const [installedError, setInstalledError] = useState<string | null>(null);
+  // --- D-034 해석 경로 4 — 등록된 Local Agent Package. "설치됨"이 아니라
+  // "등록됨"(localAgentRegistration?.state === "ACTIVE")만 대화에서 고를 수
+  // 있게 한다 — Knowledge/MCP Tool과 동일한 "설치됨 ≠ 쓸 수 있음" 원칙.
+  const [installedAgents, setInstalledAgents] = useState<InstalledAssetWithStatus[]>([]);
+  // 이 배포가 allow-root(AGENT_RUNTIME_LOCAL_AGENT_ROOTS)를 아예 설정하지
+  // 않았는지 — Task Brief 제약 B: Desktop이 스스로 고칠 수 없는 배포 정책
+  // 상태이므로 "안 보임"으로 조용히 넘어가지 않고 왜, 무엇이 필요한지 보여준다.
+  const [localAgentsEnabled, setLocalAgentsEnabled] = useState<boolean | null>(null);
+  const [localAgentReconcileNotice, setLocalAgentReconcileNotice] = useState<string | null>(null);
+  // Task Brief 제약 B — 관리자가 AGENT_RUNTIME_LOCAL_AGENT_ROOTS에 그대로
+  // 복사해 넣을 수 있도록 이 PC의 실제 설치 경로를 보여준다.
+  const [installRootPath, setInstallRootPath] = useState<string | null>(null);
+  useEffect(() => {
+    if (!bridge) return;
+    bridge.getInstallRootPath().then(setInstallRootPath).catch(() => setInstallRootPath(null));
+  }, [bridge]);
+  // 빈 문자열 = 표준 Agent(기본, D06 불변) — 사용자가 명시적으로 고를 때만
+  // 채워진다.
+  const [selectedLocalAgentId, setSelectedLocalAgentId] = useState("");
   const [devKnowledgeId, setDevKnowledgeId] = useState("");
   const [useKnowledge, setUseKnowledge] = useState(false);
   // search-runtime에 물어 로컬 ACTIVE 상태가 여전히 맞는지 재확인한 결과 —
@@ -448,12 +467,41 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // scope — D08 is the screen that surfaces those).
       setInstalledKnowledge(all.filter((a) => a.assetType === "knowledge" && a.status !== "INACTIVE"));
       setInstalledMcpTools(all.filter((a) => a.assetType === "mcp_tool" && a.status !== "INACTIVE"));
+      // D-034 해석 경로 4 이어 붙이기 — Knowledge와 같은 이유로 재확인
+      // 후 목록을 반영한다: agent-runtime이 다른 AGENT_RUNTIME_LOCAL_AGENT_ROOTS로
+      // 재시작되었거나 등록 레지스트리가 초기화되면 로컬만 "거짓 ACTIVE"로
+      // 남을 수 있다. 이 호출 자체가 실패/부재해도(오래된 preload.js) 절대
+      // throw하지 않는다 — 화면 전체를 무너뜨리지 않는다(2026-08-13 실제
+      // 장애와 같은 위험, `resolveReconcileNotice`가 Knowledge 쪽에서 이미
+      // 지키는 규칙을 여기서도 그대로 지킨다).
+      try {
+        const reconciled = await bridge.reconcileLocalAgentRegistrations();
+        setLocalAgentReconcileNotice(reconciled.checked ? null : reconciled.error);
+        setLocalAgentsEnabled(reconciled.localAgentsEnabled);
+      } catch (err) {
+        setLocalAgentReconcileNotice(
+          err instanceof Error ? err.message : "agent-runtime에 연결할 수 없어 Local Agent 등록 상태를 확인하지 못했습니다.",
+        );
+        setLocalAgentsEnabled(null);
+      }
+      setInstalledAgents(all.filter((a) => a.assetType === "agent" && a.status !== "INACTIVE"));
     } catch (err) {
       setInstalledError(err instanceof Error ? err.message : "설치된 Knowledge 목록을 불러오지 못했습니다.");
       setInstalledKnowledge([]);
       setInstalledMcpTools([]);
+      setInstalledAgents([]);
     }
   }, [bridge]);
+
+  // 선택했던 Local Agent가 목록에서 사라지면(등록 해제/재확인으로 다운그레이드)
+  // 선택을 표준 Agent로 되돌린다 — 사라진 선택이 그대로 남아 있으면 다음
+  // 전송에서 서버가 LOCAL_AGENT_NOT_REGISTERED로 거절하기 전까지 사용자는
+  // 아무것도 눈치채지 못한다.
+  useEffect(() => {
+    if (selectedLocalAgentId && !installedAgents.some((a) => a.assetId === selectedLocalAgentId && a.localAgentRegistration?.state === "ACTIVE")) {
+      setSelectedLocalAgentId("");
+    }
+  }, [installedAgents, selectedLocalAgentId]);
 
   useEffect(() => {
     void loadInstalledKnowledge();
@@ -617,6 +665,27 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   useEffect(() => {
     if (!toolRouteApplicable && toolRouteEnabled) setToolRouteEnabled(false);
   }, [toolRouteApplicable, toolRouteEnabled]);
+
+  // --- D-034 해석 경로 4 — 등록된 Local Agent 선택. 개발 확인용 명시적 Tool
+  // 호출(mcpDevActive)·TOOL_ROUTE 동의(toolRouteActive)는 둘 다
+  // `agent_profile: "standard-db-agent"`를 명시적으로 보내는 경로다 —
+  // `local_agent_id`가 있으면 서버가 `agent_profile`을 아예 읽지 않으므로
+  // (agentRuntime.ts 주석) 셋을 동시에 켜면 사용자가 고른 것 중 무엇이
+  // 실제로 적용됐는지 헷갈린다. 서로 배타적으로 둔다(CLAUDE.md: 호환되지
+  // 않는 선택지는 이유와 함께 비활성화한다).
+  // "설치됨"(installedAgents 전체)과 "등록됨/고를 수 있음"(registeredLocalAgents)은
+  // 서로 다른 사실이다 — 아래 UI가 설치되어 있으나 등록 안 된 개수와 등록된
+  // 목록을 각각 다른 자리에서 보여준다(Knowledge/MCP Tool과 동일한 원칙).
+  const registeredLocalAgents = installedAgents.filter((a) => a.localAgentRegistration?.state === "ACTIVE");
+  const selectedLocalAgent = registeredLocalAgents.find((a) => a.assetId === selectedLocalAgentId) ?? null;
+  const localAgentActive = !!selectedLocalAgent;
+  const localAgentSelectionDisabledReason =
+    mcpDevActive || toolRouteActive
+      ? "개발 확인용 Tool 호출/TOOL_ROUTE 동의가 켜져 있는 동안은 Local Agent를 선택할 수 없습니다 — 먼저 끄세요."
+      : null;
+  useEffect(() => {
+    if (localAgentSelectionDisabledReason && selectedLocalAgentId) setSelectedLocalAgentId("");
+  }, [localAgentSelectionDisabledReason, selectedLocalAgentId]);
 
   // --- 연결 상태 ---
   const [connections, setConnections] = useState<ConnectionStatus[] | null>(null);
@@ -1060,14 +1129,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     const id = crypto.randomUUID();
     // D-083: toolRouteActive는 명시적 Tool 요청 없이도(agentRuntime.ts에
     // `mcpTool`을 전혀 넘기지 않는다) agent-runtime을 거쳐야 한다 — Ollama
-    // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다.
-    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteActive;
+    // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다. D-034 해석 경로
+    // 4(localAgentActive) 역시 agent-runtime을 거쳐야만 그 Agent+Prompt
+    // 짝이 적용된다 — Ollama 직통 경로로 새면 표준 Agent와 구분되지 않는다.
+    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteActive && !localAgentActive;
     const serviceId = ollamaOnly
       ? `${SERVICE_ID_PREFIX}:ollama-default`
       : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
     // standard-agent는 capabilities.mcp_allowed=false라 TOOL_ROUTE가 아예
     // 실행되지 않는다(config/standard-agent/agent-manifest.json) — toolRouteActive도
-    // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다.
+    // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다. localAgentActive일
+    // 때는 이 필드가 서버에서 아예 읽히지 않으므로(agentRuntime.ts 주석) 값
+    // 자체는 의미가 없다 — ChatMessage 타입이 두 값만 허용해 placeholder로
+    // "standard-agent"를 둔다(화면에는 이 필드를 직접 표시하지 않는다,
+    // localAgentLabelUsed가 실제 표시를 담당).
     const agentProfile: ChatMessage["agentProfile"] =
       mcpDevActive || toolRouteActive ? "standard-db-agent" : "standard-agent";
     // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
@@ -1084,6 +1159,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       knowledgeLabelUsed: ollamaOnly ? "기본 Ollama 대화" : knowledgeLabel,
       serviceId,
       agentProfile,
+      localAgentIdUsed: selectedLocalAgent?.assetId ?? null,
+      localAgentLabelUsed: selectedLocalAgent?.name ?? null,
       ollamaOnly,
       status: "running",
       answer: "",
@@ -1156,20 +1233,26 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         question: q,
         allowHubLookup,
         ...(history.length > 0 ? { history } : {}),
-        ...(mcpDevActive
-          ? {
-              agentProfile: "standard-db-agent" as const,
-              mcpTool: bridge ? "calculator.add" : mcpDevTool,
-              mcpToolInput: bridge
-                ? { a: Number(calculatorA), b: Number(calculatorB) }
-                : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
-              mcpConfirmed: false,
-            }
-          : toolRouteActive
-            ? // D-083: 명시적 mcpTool은 절대 함께 보내지 않는다 — 무엇을 부를지
-              // 사용자가 아니라 TOOL_ROUTE가 이번 질문에서 고르게 한다.
-              { agentProfile: "standard-db-agent" as const, toolRoute: true }
-            : {}),
+        // D-034 해석 경로 4 — 명시적으로 선택했을 때만 보낸다(기본은 항상
+        // 표준 Agent, Task Brief 제약 D). localAgentActive는 위에서 이미
+        // mcpDevActive/toolRouteActive와 배타적으로 유지된다(선택 시 두
+        // 토글이 자동으로 꺼진다) — 셋이 동시에 보내지는 경로는 없다.
+        ...(localAgentActive && selectedLocalAgent
+          ? { localAgentId: selectedLocalAgent.assetId }
+          : mcpDevActive
+            ? {
+                agentProfile: "standard-db-agent" as const,
+                mcpTool: bridge ? "calculator.add" : mcpDevTool,
+                mcpToolInput: bridge
+                  ? { a: Number(calculatorA), b: Number(calculatorB) }
+                  : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
+                mcpConfirmed: false,
+              }
+            : toolRouteActive
+              ? // D-083: 명시적 mcpTool은 절대 함께 보내지 않는다 — 무엇을 부를지
+                // 사용자가 아니라 TOOL_ROUTE가 이번 질문에서 고르게 한다.
+                { agentProfile: "standard-db-agent" as const, toolRoute: true }
+              : {}),
       });
       runIdRef.current = created.id;
       patchMessage(id, { runId: created.id, traceId: created.trace_id });
@@ -1518,6 +1601,76 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             const isShortened = caption === RECONCILE_SAME_CAUSE_NOTICE;
             return <Notice tone="info" title={isShortened ? caption : `활성화 상태 확인 불가: ${caption}`} />;
           })()}
+
+          {/* D-034 해석 경로 4 — 등록된 Local Agent가 있을 때만 이 선택
+              영역이 나타난다(정상 상태는 배너 없이 조용히, 2026-08-14 원칙).
+              고를 때만 표준 Agent 대신 이 Agent+짝 Prompt의 capabilities/
+              limits/template이 적용된다 — Desktop 채팅이 Workflow 그래프를
+              로딩해 실행하는 것은 아니다(PR A 계약, 이 화면 어디에도 그렇게
+              적지 않는다). */}
+          {bridge && registeredLocalAgents.length > 0 && (
+            <div className="mb-4 shrink-0 rounded-card border border-border bg-white p-4">
+              <label className="mb-1.5 block text-caption font-semibold text-text-primary" htmlFor="local-agent-select">
+                실행 Agent
+              </label>
+              <select
+                id="local-agent-select"
+                value={selectedLocalAgentId}
+                onChange={(e) => setSelectedLocalAgentId(e.target.value)}
+                disabled={isRunning || !!localAgentSelectionDisabledReason}
+                title={localAgentSelectionDisabledReason ?? undefined}
+                className={fieldClass}
+              >
+                <option value="">표준 Agent(기본)</option>
+                {registeredLocalAgents.map((a) => (
+                  <option key={a.assetId} value={a.assetId}>
+                    {a.name} v{a.version}
+                    {a.localAgentRegistration?.promptLabel ? ` · ${a.localAgentRegistration.promptLabel}` : ""}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1.5 text-caption text-text-muted">
+                {selectedLocalAgent
+                  ? `이번 대화는 "${selectedLocalAgent.name}"${
+                      selectedLocalAgent.localAgentRegistration?.promptLabel
+                        ? ` (Prompt: ${selectedLocalAgent.localAgentRegistration.promptLabel})`
+                        : ""
+                    }로 실행됩니다.`
+                  : "표준 Agent로 실행됩니다. 설치된 자산 화면에서 등록한 Local Agent를 선택하면 그 Agent의 역할/제한과 짝 Prompt가 대신 적용됩니다."}
+              </p>
+            </div>
+          )}
+
+          {/* Task Brief 제약 B — Desktop은 이 배포가 allow-root
+              (AGENT_RUNTIME_LOCAL_AGENT_ROOTS)를 설정하지 않은 것을 스스로
+              고칠 수 없다. 조용히 실패하지 않고, 이 PC의 실제 설치 경로를
+              그대로 보여준다(관리자가 그대로 복사해 환경 변수에 넣을 수
+              있도록) — 사용자가 실제로 설치한 Agent가 있을 때만 보여준다
+              (정상 상태 배너 최소화 원칙: 아무 Agent도 설치하지 않은
+              사용자에게는 의미 없는 알림이다). */}
+          {bridge && installedAgents.length > 0 && localAgentsEnabled === false && (
+            <Notice
+              tone="info"
+              title="이 배포는 로컬 설치 Agent 등록을 허용하지 않습니다"
+              detail={
+                <>
+                  <p>
+                    설치된 Agent를 대화에서 선택해 쓰려면 관리자가 이 PC의 agent-runtime에
+                    <code className="mx-1 rounded bg-slate-100 px-1 py-0.5">AGENT_RUNTIME_LOCAL_AGENT_ROOTS</code>
+                    환경 변수를 설정해야 합니다(이 PC가 스스로 설정할 수 없는 배포 단계 설정입니다).
+                  </p>
+                  {installRootPath && (
+                    <p className="mt-1.5">
+                      이 PC의 설치 경로: <code className="rounded bg-slate-100 px-1 py-0.5">{installRootPath}</code>
+                    </p>
+                  )}
+                </>
+              }
+            />
+          )}
+          {bridge && localAgentReconcileNotice && (
+            <Notice tone="info" title={`Local Agent 등록 상태 확인 불가: ${localAgentReconcileNotice}`} />
+          )}
 
           {bridge && calculatorSampleConnected && (
             <div className="mb-4 shrink-0 rounded-card border border-brand-200 bg-brand-50/40 p-4">
@@ -1900,7 +2053,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 function turnContextLabel(message?: ChatMessage): string {
   if (!message) return "";
   const base = message.ollamaOnly ? "Ollama 일반 대화" : message.knowledgeLabelUsed || "지식 검색";
-  return message.restored ? `저장된 대화 · ${base}` : base;
+  // D-034 해석 경로 4 — 표준 Agent가 아니라 등록된 Local Agent로 실행된
+  // 턴은 그 사실이 항상 보여야 한다(Task Brief 제약 D) — 매 턴 캡처된 값을
+  // 그대로 쓴다(화면의 현재 선택이 바뀌어도 지난 턴의 표시가 바뀌지 않도록).
+  const withAgent = message.localAgentLabelUsed ? `${base} · Agent: ${message.localAgentLabelUsed}` : base;
+  return message.restored ? `저장된 대화 · ${withAgent}` : withAgent;
 }
 
 function turnContextTitle(message: ChatMessage): string | undefined {
@@ -2020,7 +2177,29 @@ function ChatTurn({
           <p className="text-body text-text-muted">취소됨{message.traceId ? ` (Trace ID: ${message.traceId})` : ""}</p>
         )}
 
-        {message.status === "failed" && (
+        {/* D-034 해석 경로 4 — 등록이 실행 도중 사라진 경우(재확인으로
+            다운그레이드되기 전에 발생 가능한 경합, 또는 다른 프로세스가
+            등록을 해제한 경우)를 표준 오류 배너로 뭉개지 않는다. 재시도해도
+            같은 이유로 다시 실패한다는 사실과 다음 행동(재등록)을 그대로
+            말한다 — 절대 표준 Agent로 조용히 대체되지 않는다(Task Brief
+            제약 D). */}
+        {message.status === "failed" && message.errorCode === "LOCAL_AGENT_NOT_REGISTERED" && (
+          <Notice
+            tone="warning"
+            title={`등록된 Local Agent를 찾을 수 없습니다${message.localAgentLabelUsed ? ` (${message.localAgentLabelUsed})` : ""}.`}
+            detail={
+              <>
+                <p>{message.errorMessage}</p>
+                <p className="mt-1.5">
+                  설치된 자산 화면에서 이 Agent를 다시 등록하세요 — 등록이 해제되었거나(다른 프로세스에서 해제,
+                  agent-runtime 재시작 등) 아직 한 번도 등록되지 않았을 수 있습니다. 이 턴은 표준 Agent로 자동 대체되지
+                  않았습니다.
+                </p>
+              </>
+            }
+          />
+        )}
+        {message.status === "failed" && message.errorCode !== "LOCAL_AGENT_NOT_REGISTERED" && (
           <ErrorBanner
             message={`${message.errorMessage ?? "실행 중 오류가 발생했습니다."}${
               message.errorCode ? ` (코드: ${message.errorCode})` : ""

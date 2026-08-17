@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import type { ChecksumVerification, InstalledAsset, KnowledgeActivation } from "./types";
+import type { ChecksumVerification, InstalledAsset, KnowledgeActivation, LocalAgentRegistration } from "./types";
 
 export class InstalledAssetsStore {
   private readonly filePath: string;
@@ -86,6 +86,23 @@ export class InstalledAssetsStore {
     const idx = all.findIndex((a) => a.assetType === assetType && a.assetId === assetId && a.version === version);
     if (idx === -1) return;
     all[idx] = { ...all[idx], activation };
+    this.save(all);
+  }
+
+  /** D-034 해석 경로 4 "등록" 결과를 기존 레코드에 병합 저장한다 —
+   * `updateActivation`과 동일한 패턴. 대상 레코드가 없으면 조용히 아무 것도
+   * 하지 않는다(호출자가 이미 `find`로 존재를 확인). `null`을 넘기면(명시적
+   * 등록 해제) 필드 자체를 지운다. */
+  updateLocalAgentRegistration(
+    assetType: string,
+    assetId: string,
+    version: string,
+    registration: LocalAgentRegistration | null,
+  ): void {
+    const all = this.list();
+    const idx = all.findIndex((a) => a.assetType === assetType && a.assetId === assetId && a.version === version);
+    if (idx === -1) return;
+    all[idx] = { ...all[idx], localAgentRegistration: registration };
     this.save(all);
   }
 

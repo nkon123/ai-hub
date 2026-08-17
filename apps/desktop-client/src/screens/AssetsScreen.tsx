@@ -11,7 +11,7 @@
 // 가져오기"로 바로 이동하는 액션 버튼. HomeScreen.tsx는 더 이상 쓰이지
 // 않아 삭제했다(App.tsx가 더 이상 참조하지 않음).
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Eye, FileSearch, Info, Network, Package, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
+import { AlertTriangle, Eye, FileSearch, Info, Link2, Network, Package, RefreshCw, ShieldCheck, Trash2 } from "lucide-react";
 import type {
   AssetDependencyView,
   AssetManifestResult,
@@ -113,6 +113,36 @@ const MCP_CONNECTION_TONE: Record<McpConnectionDisplayState, string> = {
   NONE: "bg-slate-100 text-text-muted",
 };
 
+// D-034 해석 경로 4 — "설치됨"과 "실행에 쓸 수 있음(agent-runtime에 짝
+// Prompt와 함께 등록됨)"은 서로 다른 사실이다. `local_agents_disabled`는
+// 고장난 자산이 아니라 이 배포가 allow-root를 설정하지 않은 배포 정책
+// 상태다(Task Brief 제약 B) — MCP Tool의 POLICY_DISABLED와 동일한 구분.
+const LOCAL_AGENTS_DISABLED_REASON = "local_agents_disabled";
+
+type LocalAgentDisplayState = "ACTIVE" | "POLICY_DISABLED" | "FAILED" | "NONE";
+
+function localAgentDisplayState(asset: InstalledAssetWithStatus): LocalAgentDisplayState {
+  const reg = asset.localAgentRegistration;
+  if (reg?.state === "ACTIVE") return "ACTIVE";
+  if (reg?.state === "FAILED" && reg.reason === LOCAL_AGENTS_DISABLED_REASON) return "POLICY_DISABLED";
+  if (reg?.state === "FAILED") return "FAILED";
+  return "NONE";
+}
+
+const LOCAL_AGENT_LABEL: Record<LocalAgentDisplayState, string> = {
+  ACTIVE: "등록됨",
+  POLICY_DISABLED: "운영자 설정 필요",
+  FAILED: "등록 실패",
+  NONE: "등록 안 됨",
+};
+
+const LOCAL_AGENT_TONE: Record<LocalAgentDisplayState, string> = {
+  ACTIVE: "bg-success/10 text-success",
+  POLICY_DISABLED: "bg-warning/10 text-warning",
+  FAILED: "bg-danger/10 text-danger",
+  NONE: "bg-slate-100 text-text-muted",
+};
+
 const SORT_OPTIONS: Array<{ key: AssetSortKey; label: string }> = [
   { key: "installedAt", label: "설치일" },
   { key: "version", label: "버전" },
@@ -182,6 +212,20 @@ export function AssetsScreen({
   const [activationNote, setActivationNote] = useState<Record<string, string>>({});
   const [mcpReconcileNotice, setMcpReconcileNotice] = useState<string | null>(null);
 
+  // --- D-034 해석 경로 4: Local Agent 등록 -------------------------------------
+  const [localAgentBusy, setLocalAgentBusy] = useState<Set<string>>(new Set());
+  const [localAgentNote, setLocalAgentNote] = useState<Record<string, string>>({});
+  const [localAgentReconcileNotice, setLocalAgentReconcileNotice] = useState<string | null>(null);
+  // Task Brief 제약 B — 이 배포가 allow-root를 아예 설정하지 않았는지.
+  // `null`은 "아직 확인 전/확인 불가"(Runtime 미도달) — false로 단정하지 않는다.
+  const [localAgentsEnabled, setLocalAgentsEnabled] = useState<boolean | null>(null);
+  // Task Brief 제약 C — 등록 대상 Agent + 사용자가 고른 Prompt. 짝은 절대
+  // 이름 유사도로 추측하지 않는다 — 반드시 이 Modal에서 명시적으로 고른다.
+  const [registerTarget, setRegisterTarget] = useState<InstalledAssetWithStatus | null>(null);
+  const [registerPromptKey, setRegisterPromptKey] = useState<string>("");
+  const [registering, setRegistering] = useState(false);
+  const [registerError, setRegisterError] = useState<string | null>(null);
+
   const [removalTarget, setRemovalTarget] = useState<InstalledAssetWithStatus | null>(null);
   const [removalCheck, setRemovalCheck] = useState<AssetRemovalCheck | null>(null);
   const [removalChecking, setRemovalChecking] = useState(false);
@@ -218,6 +262,16 @@ export function AssetsScreen({
         setMcpReconcileNotice(
           reconcileError instanceof Error ? reconcileError.message : "MCP Tool 연결 상태를 재확인하지 못했습니다.",
         );
+      }
+      try {
+        const reconciled = await bridge.reconcileLocalAgentRegistrations();
+        setLocalAgentReconcileNotice(reconciled.checked ? null : reconciled.error);
+        setLocalAgentsEnabled(reconciled.localAgentsEnabled);
+      } catch (reconcileError) {
+        setLocalAgentReconcileNotice(
+          reconcileError instanceof Error ? reconcileError.message : "Local Agent 등록 상태를 재확인하지 못했습니다.",
+        );
+        setLocalAgentsEnabled(null);
       }
       setAssets(await bridge.listInstalledAssets());
     } catch (err) {
@@ -410,6 +464,86 @@ export function AssetsScreen({
     }
   }
 
+  // Task Brief 제약 C — 설치된 Prompt 자산 전체(어떤 Agent와도 아직 짝지어지지
+  // 않은 것 포함, 이미 다른 Agent와 짝인 Prompt도 다시 고를 수 있다: agent-runtime
+  // 등록은 Agent 쪽 핸들 하나이므로 Prompt 하나를 여러 Agent가 함께 참조해도
+  // 무방하다). 정확히 하나뿐일 때만 기본값으로 미리 선택하되, 항상 Modal에
+  // 그대로 보여준다 — 조용히 골라 등록하지 않는다.
+  const installedPrompts = useMemo(() => (assets ?? []).filter((a) => a.assetType === "prompt"), [assets]);
+
+  function promptKey(a: { assetId: string; version: string }): string {
+    return `${a.assetId}::${a.version}`;
+  }
+
+  function openRegisterDialog(asset: InstalledAssetWithStatus) {
+    setRegisterTarget(asset);
+    setRegisterError(null);
+    // 정확히 1개일 때만 기본 선택 — Task Brief 제약 C "이때만 기본값으로
+    // 미리 골라 보여준다".
+    setRegisterPromptKey(installedPrompts.length === 1 ? promptKey(installedPrompts[0]) : "");
+  }
+
+  async function confirmRegister() {
+    if (!registerTarget || !bridge || !registerPromptKey) return;
+    const prompt = installedPrompts.find((p) => promptKey(p) === registerPromptKey);
+    if (!prompt) return;
+    setRegistering(true);
+    setRegisterError(null);
+    try {
+      const result = await bridge.registerLocalAgent(
+        registerTarget.assetId,
+        registerTarget.version,
+        prompt.assetId,
+        prompt.version,
+        registerTarget.name,
+      );
+      if (!result.ok) {
+        setRegisterError(result.registration?.message ?? result.error ?? "Local Agent 등록에 실패했습니다.");
+        // 실패해도(local_agents_disabled 포함) 목록에는 그 사실이 이미
+        // 저장되어 보이므로 목록을 새로고침한다 — 조용히 삼키지 않는다.
+        await load();
+        return;
+      }
+      setRegisterTarget(null);
+      await load();
+    } catch (err) {
+      setRegisterError(err instanceof Error ? err.message : "Local Agent 등록 중 알 수 없는 오류가 발생했습니다.");
+    } finally {
+      setRegistering(false);
+    }
+  }
+
+  async function runUnregisterLocalAgent(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setLocalAgentBusy((prev) => new Set(prev).add(key));
+    setLocalAgentNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.unregisterLocalAgent(asset.assetId, asset.version);
+      if (!result.ok && result.error) {
+        setLocalAgentNote((prev) => ({ ...prev, [key]: result.error! }));
+      } else if (result.remoteWarning) {
+        setLocalAgentNote((prev) => ({ ...prev, [key]: result.remoteWarning! }));
+      }
+      await load();
+    } catch (err) {
+      setLocalAgentNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "등록 해제 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setLocalAgentBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
   async function confirmActivate(reason: string) {
     if (!activateTarget || !bridge) return;
     setActivating(true);
@@ -569,6 +703,34 @@ export function AssetsScreen({
         </div>
       )}
 
+      {localAgentReconcileNotice && assets?.some((asset) => asset.assetType === "agent") && (
+        <div className="mb-3 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-caption text-warning">
+          agent-runtime에서 Local Agent 등록 상태를 확인하지 못했습니다. 마지막 로컬 상태를 표시합니다: {localAgentReconcileNotice}
+        </div>
+      )}
+
+      {/* Task Brief 제약 B — 이 배포가 allow-root를 아예 설정하지 않은 것은
+          Desktop이 스스로 고칠 수 없다. 설치된 Agent가 있을 때만 보여준다
+          (정상 상태 배너 최소화 원칙 — Agent를 설치한 적 없는 사용자에게는
+          의미 없는 알림이다). 각 카드에도 같은 사실이 반복되지만, 목록
+          전체를 스캔하지 않고도 한 눈에 원인을 알 수 있도록 상단에도 둔다. */}
+      {localAgentsEnabled === false && assets?.some((asset) => asset.assetType === "agent") && (
+        <div className="mb-3 rounded-lg border border-border bg-white px-4 py-3 text-caption text-text-secondary">
+          <p className="font-semibold text-text-primary">이 배포는 로컬 설치 Agent 등록을 허용하지 않습니다.</p>
+          <p className="mt-1">
+            관리자가 이 PC의 agent-runtime에{" "}
+            <code className="rounded bg-slate-100 px-1 py-0.5">AGENT_RUNTIME_LOCAL_AGENT_ROOTS</code> 환경 변수를
+            설정해야 합니다(이 PC가 스스로 설정할 수 없는 배포 단계 설정입니다).
+            {installRoot && (
+              <>
+                {" "}
+                이 PC의 설치 경로: <code className="rounded bg-slate-100 px-1 py-0.5">{installRoot}</code>
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
       {visibleAssets.length > 0 && (
         <div className="space-y-3">
           {visibleAssets.map((asset) => {
@@ -603,6 +765,13 @@ export function AssetsScreen({
                           className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${MCP_CONNECTION_TONE[mcpConnectionDisplayState(asset)]}`}
                         >
                           {MCP_CONNECTION_LABEL[mcpConnectionDisplayState(asset)]}
+                        </span>
+                      )}
+                      {asset.assetType === "agent" && (
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${LOCAL_AGENT_TONE[localAgentDisplayState(asset)]}`}
+                        >
+                          {LOCAL_AGENT_LABEL[localAgentDisplayState(asset)]}
                         </span>
                       )}
                     </div>
@@ -643,6 +812,43 @@ export function AssetsScreen({
                       <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
                         <Info size={13} className="mt-0.5 shrink-0" />
                         설치는 완료되었지만 agent-runtime에는 아직 연결하지 않았습니다.
+                      </p>
+                    )}
+                    {asset.assetType === "agent" && localAgentDisplayState(asset) === "ACTIVE" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        agent-runtime에 등록되어 대화에서 선택해 실행할 수 있습니다
+                        {asset.localAgentRegistration?.promptLabel
+                          ? ` — 짝 Prompt: ${asset.localAgentRegistration.promptLabel}`
+                          : ""}
+                        . Desktop 채팅은 이 Agent의 Workflow 그래프를 실행하지 않습니다 — 역할/제한(capabilities·limits)과
+                        짝 Prompt만 적용됩니다.
+                      </p>
+                    )}
+                    {asset.assetType === "agent" && localAgentDisplayState(asset) === "POLICY_DISABLED" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-warning">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        자산 고장이 아닙니다. 이 배포는 로컬 설치 Agent 등록을 허용하지 않습니다(관리자가 이 PC의
+                        agent-runtime에 AGENT_RUNTIME_LOCAL_AGENT_ROOTS를 설정해야 합니다).
+                        {installRoot ? ` 이 PC의 설치 경로: ${installRoot}` : ""}
+                      </p>
+                    )}
+                    {asset.assetType === "agent" && localAgentDisplayState(asset) === "FAILED" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-danger">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        등록하지 못했습니다: {asset.localAgentRegistration?.message ?? "알 수 없는 오류"}
+                      </p>
+                    )}
+                    {asset.assetType === "agent" && localAgentDisplayState(asset) === "NONE" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        설치는 완료되었지만 대화에서 바로 쓸 수는 없습니다 — 짝이 될 Prompt와 함께 등록해야 합니다.
+                      </p>
+                    )}
+                    {localAgentNote[key] && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-warning">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        {localAgentNote[key]}
                       </p>
                     )}
                     {activationNote[key] && (
@@ -745,6 +951,34 @@ export function AssetsScreen({
                             : mcpConnectionDisplayState(asset) === "FAILED"
                               ? "다시 연결"
                               : "연결"}
+                    </Button>
+                  )}
+                  {asset.assetType === "agent" && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={localAgentBusy.has(key) || localAgentDisplayState(asset) === "POLICY_DISABLED"}
+                      title={
+                        localAgentDisplayState(asset) === "POLICY_DISABLED"
+                          ? "관리자가 이 PC의 agent-runtime에 AGENT_RUNTIME_LOCAL_AGENT_ROOTS를 설정해야 합니다."
+                          : undefined
+                      }
+                      onClick={() =>
+                        void (localAgentDisplayState(asset) === "ACTIVE"
+                          ? runUnregisterLocalAgent(asset)
+                          : openRegisterDialog(asset))
+                      }
+                    >
+                      <Link2 size={14} />{" "}
+                      {localAgentBusy.has(key)
+                        ? "처리 중..."
+                        : localAgentDisplayState(asset) === "ACTIVE"
+                          ? "등록 해제"
+                          : localAgentDisplayState(asset) === "POLICY_DISABLED"
+                            ? "운영자 설정 필요"
+                            : localAgentDisplayState(asset) === "FAILED"
+                              ? "다시 등록"
+                              : "Local Agent로 등록"}
                     </Button>
                   )}
                   <Button
@@ -909,6 +1143,71 @@ export function AssetsScreen({
                 disabled={removing || removalChecking || !removeReason.trim() || (removalCheck?.blocked ?? false)}
               >
                 {removing ? "제거 중..." : "제거"}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={registerTarget !== null}
+        title={`Local Agent로 등록 — ${registerTarget?.name ?? ""}`}
+        onClose={() => (!registering ? setRegisterTarget(null) : undefined)}
+      >
+        {registerTarget && (
+          <div className="space-y-3">
+            <p className="text-body text-text-secondary">
+              <strong>{registerTarget.name}</strong>(v{registerTarget.version})을 짝이 될 Prompt와 함께
+              agent-runtime에 등록합니다. 등록 후에는 대화(D06)에서 이 Agent를 선택해 실행할 수 있습니다 — Desktop
+              채팅이 이 Agent의 Workflow 그래프를 실행하는 것은 아니며, 역할/제한과 짝 Prompt의 template만 적용됩니다.
+            </p>
+
+            {installedPrompts.length === 0 ? (
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3 text-caption text-warning">
+                설치된 Prompt 자산이 없습니다 — 짝지을 Prompt가 없어 등록할 수 없습니다. 먼저 Prompt 자산을 설치하세요.
+              </div>
+            ) : (
+              <div>
+                <p className="mb-1.5 text-caption font-medium text-text-secondary">
+                  짝이 될 Prompt <span className="text-danger">*</span>
+                </p>
+                <div className="space-y-1.5">
+                  {installedPrompts.map((p) => (
+                    <label
+                      key={promptKey(p)}
+                      className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-caption text-text-primary"
+                    >
+                      <input
+                        type="radio"
+                        name="register-prompt"
+                        value={promptKey(p)}
+                        checked={registerPromptKey === promptKey(p)}
+                        onChange={() => setRegisterPromptKey(promptKey(p))}
+                        disabled={registering}
+                      />
+                      {p.name} (v{p.version})
+                    </label>
+                  ))}
+                </div>
+                {installedPrompts.length === 1 && (
+                  <p className="mt-1.5 text-caption text-text-muted">
+                    설치된 Prompt가 이것 하나뿐이라 기본으로 선택되어 있습니다 — 다른 Prompt가 아님을 확인하세요.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {registerError && <ErrorBanner message={registerError} />}
+
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="secondary" onClick={() => setRegisterTarget(null)} disabled={registering}>
+                취소
+              </Button>
+              <Button
+                onClick={() => void confirmRegister()}
+                disabled={registering || !registerPromptKey || installedPrompts.length === 0}
+              >
+                {registering ? "등록 중..." : "등록"}
               </Button>
             </div>
           </div>

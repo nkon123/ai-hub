@@ -29,6 +29,11 @@ import {
   reconcileInstalledKnowledgeActivations,
 } from "./knowledge-activation";
 import { connectInstalledMcpTool, disconnectInstalledMcpTool, reconcileInstalledMcpToolConnections } from "./mcp-tool-connection";
+import {
+  registerInstalledLocalAgent,
+  unregisterInstalledLocalAgent,
+  reconcileInstalledLocalAgentRegistrations,
+} from "./local-agent-registration";
 import { parseLocalToolSignature } from "./local-tool-signature";
 import { LocalToolStore } from "./local-tool-store";
 import { invokeLocalTool as runInvokeLocalTool } from "./local-tool-runner";
@@ -77,6 +82,9 @@ import type {
   PortalCatalogResult,
   PortalSettingsPublic,
   ReconcileKnowledgeActivationsResult,
+  ReconcileLocalAgentRegistrationsResult,
+  RegisterLocalAgentResult,
+  UnregisterLocalAgentResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -329,6 +337,29 @@ function registerIpcHandlers(): void {
           getLogger().warn("mcp-tool-connection", `자산 제거 중 연결 해제 경고: ${assetType}/${assetId}@${version} — ${deactivationWarning}`);
         }
       }
+      // D-034 해석 경로 4 이어 붙이기: Agent를 지우면서 agent-runtime 등록을
+      // 남겨두지 않는다 — 등록이 가리키는 디렉터리가 사라진 뒤 Run이
+      // `LOCAL_AGENT_NOT_REGISTERED`로 실패하는 대신, 제거 시점에 정리한다
+      // (Knowledge/MCP Tool과 동일한 원칙). DELETE는 agent_asset_id만
+      // 필요하므로 파일 삭제 전/후 순서는 상관없다(Prompt와 달리 등록 해제에
+      // manifest 재조회가 필요 없다).
+      if (existing.assetType === "agent") {
+        const unregistration = await unregisterInstalledLocalAgent(store, agentRuntimeBaseUrl(), {
+          assetId,
+          version,
+        });
+        if (!unregistration.ok) {
+          deactivationWarning = `agent-runtime 등록 해제에 실패했습니다: ${unregistration.error ?? "알 수 없는 오류"} (제거는 계속 진행합니다)`;
+        } else if (unregistration.remoteWarning) {
+          deactivationWarning = unregistration.remoteWarning;
+        }
+        if (deactivationWarning) {
+          getLogger().warn(
+            "local-agent-registration",
+            `자산 제거 중 등록 해제 경고: ${assetType}/${assetId}@${version} — ${deactivationWarning}`,
+          );
+        }
+      }
       const dir = assetInstallDir(layout, assetType, assetId, version);
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -558,6 +589,85 @@ function registerIpcHandlers(): void {
     }
     return result;
   });
+
+  // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
+  ipcMain.handle(
+    "localAgent:register",
+    async (
+      _event,
+      agentAssetId: string,
+      agentVersion: string,
+      promptAssetId: string,
+      promptVersion: string,
+      label?: string | null,
+    ): Promise<RegisterLocalAgentResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const result = await registerInstalledLocalAgent(
+        store,
+        agentRuntimeBaseUrl(),
+        { assetId: agentAssetId, version: agentVersion },
+        { assetId: promptAssetId, version: promptVersion },
+        label,
+      );
+      if (result.registration) {
+        const logFn =
+          result.registration.reason === "local_agents_disabled"
+            ? "warn"
+            : result.registration.state === "FAILED"
+              ? "error"
+              : "info";
+        getLogger()[logFn](
+          "local-agent-registration",
+          `Local Agent 등록 ${result.registration.state}: ${agentAssetId}@${agentVersion}` +
+            (result.registration.reason ? ` (사유: ${result.registration.reason})` : ""),
+          result.registration.state === "FAILED" ? { errorCode: result.registration.reason ?? undefined } : {},
+        );
+      } else {
+        getLogger().warn(
+          "local-agent-registration",
+          `Local Agent 등록 요청을 시도할 수 없음: ${agentAssetId}@${agentVersion} (${result.error})`,
+        );
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "localAgent:unregister",
+    async (_event, agentAssetId: string, agentVersion: string): Promise<UnregisterLocalAgentResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const result = await unregisterInstalledLocalAgent(store, agentRuntimeBaseUrl(), {
+        assetId: agentAssetId,
+        version: agentVersion,
+      });
+      getLogger().info(
+        "local-agent-registration",
+        `Local Agent 등록 해제: ${agentAssetId}@${agentVersion}` +
+          (result.remoteWarning ? ` (원격 경고: ${result.remoteWarning})` : ""),
+      );
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "localAgent:reconcileRegistrations",
+    async (): Promise<ReconcileLocalAgentRegistrationsResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const result = await reconcileInstalledLocalAgentRegistrations(store, agentRuntimeBaseUrl());
+      if (!result.checked) {
+        getLogger().warn("local-agent-registration", `등록 상태 재확인 불가: ${result.error}`);
+      } else if (result.downgradedCount > 0) {
+        getLogger().warn(
+          "local-agent-registration",
+          `agent-runtime 현재 상태와 다른 Local Agent ${result.downgradedCount}건을 등록 필요 상태로 낮췄습니다.`,
+        );
+      }
+      return result;
+    },
+  );
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   ipcMain.handle(

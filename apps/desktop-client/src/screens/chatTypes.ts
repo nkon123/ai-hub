@@ -30,6 +30,13 @@ export interface ChatMessage {
    * (not read live off screen state) for the same reason knowledgeIdUsed is —
    * and so D07 can display what was *actually* used for this turn. */
   agentProfile: "standard-agent" | "standard-db-agent";
+  /** D-034 해석 경로 4 — `null`(기본, "표준 Agent")이 아니면 이 턴이 실제로
+   * 실행에 쓴 등록된 Local Agent Package의 `agent_asset_id`와 표시 이름.
+   * 턴마다 캡처한다(화면의 현재 선택이 바뀌어도 지난 턴의 표시가 바뀌지
+   * 않도록, `knowledgeIdUsed`와 같은 이유) — "어떤 Agent가 답했는지 항상
+   * 보여야 한다"(Task Brief 제약 D)를 지키는 필드. */
+  localAgentIdUsed: string | null;
+  localAgentLabelUsed: string | null;
   /** true when this turn bypasses Knowledge search and talks directly to Ollama. */
   ollamaOnly?: boolean;
   /** Actual installed Ollama model selected for this turn. */
@@ -618,6 +625,12 @@ export function chatMessageFromStoredTurn(
     knowledgeLabelUsed: conversation.knowledgeLabel,
     serviceId: "",
     agentProfile: "standard-agent",
+    // 복원된 턴은 어떤 Local Agent가 실제로 답했는지 저장되어 있지 않다
+    // (conversation-store.ts는 question/answer 텍스트만 보존한다) — 지어내지
+    // 않고 "모름"이 아니라 표준 Agent였다고 정직하게 표시한다(복원 이전
+    // 데이터는 전부 D-034 이전이므로 실제로도 표준 Agent였다).
+    localAgentIdUsed: null,
+    localAgentLabelUsed: null,
     status: turn.status,
     answer: turn.answer,
     citations: [],

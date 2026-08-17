@@ -39,6 +39,9 @@ import type {
   PortalSettingsPublic,
   ReconcileKnowledgeActivationsResult,
   ReconcileMcpToolConnectionsResult,
+  ReconcileLocalAgentRegistrationsResult,
+  RegisterLocalAgentResult,
+  UnregisterLocalAgentResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -111,6 +114,22 @@ const bridge: DesktopBridge = {
 
   reconcileMcpToolConnections: (): Promise<ReconcileMcpToolConnectionsResult> =>
     ipcRenderer.invoke("mcpTool:reconcileConnections"),
+
+  // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
+  registerLocalAgent: (
+    agentAssetId: string,
+    agentVersion: string,
+    promptAssetId: string,
+    promptVersion: string,
+    label?: string | null,
+  ): Promise<RegisterLocalAgentResult> =>
+    ipcRenderer.invoke("localAgent:register", agentAssetId, agentVersion, promptAssetId, promptVersion, label),
+
+  unregisterLocalAgent: (agentAssetId: string, agentVersion: string): Promise<UnregisterLocalAgentResult> =>
+    ipcRenderer.invoke("localAgent:unregister", agentAssetId, agentVersion),
+
+  reconcileLocalAgentRegistrations: (): Promise<ReconcileLocalAgentRegistrationsResult> =>
+    ipcRenderer.invoke("localAgent:reconcileRegistrations"),
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   diffAssetVersions: (

@@ -340,6 +340,17 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       return { checked: false, downgradedCount: 0, registrationEnabled: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
 
+    // --- D-034 해석 경로 4: Local Agent 등록 -----------------------------------
+    async registerLocalAgent() {
+      return { ok: false, registration: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async unregisterLocalAgent() {
+      return { ok: false, remoteWarning: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async reconcileLocalAgentRegistrations() {
+      return { checked: false, downgradedCount: 0, localAgentsEnabled: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+
     // --- D12 업데이트/복구 -------------------------------------------------------
     async diffAssetVersions() {
       return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, diff: null };

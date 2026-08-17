@@ -157,6 +157,15 @@ export interface StartRunParams {
    * (ChatScreen.tsx) sets it, since there is no Service Registry to learn
    * which Service allows which Agent/Tool from. */
   agentProfile?: "standard-agent" | "standard-db-agent";
+  /** D-034 해석 경로 4 — Desktop이 등록해 둔 로컬 Agent Package의 핸들
+   * (`agent_asset_id`). 채워지면 서버는 이것을 `agent_profile`보다 먼저
+   * 확인해 이 값으로만 Agent를 해석한다(`routers/runs.py`의 `elif` 분기 —
+   * `agent_profile`은 이 값이 있으면 아예 읽히지 않는다) — 그래서
+   * `startRun`은 이 값이 있을 때 `agent_profile`을 함께 보내지 않는다(혼동
+   * 방지, 서버가 실제로 무시하는 필드를 보내지 않는다). 기본은 항상
+   * `undefined`(표준 Agent) — 사용자가 명시적으로 등록된 Local Agent를
+   * 고를 때만 채워진다(D06 기본 동작 불변, Task Brief 제약 D). */
+  localAgentId?: string;
   mcpTool?: string;
   mcpToolInput?: Record<string, unknown>;
   mcpConfirmed?: boolean;
@@ -213,7 +222,14 @@ export async function startRun(params: StartRunParams): Promise<RunResponse> {
   } else {
     input.knowledge_ids = params.knowledgeIds;
   }
-  if (params.agentProfile) input.agent_profile = params.agentProfile;
+  // D-034 해석 경로 4 — local_agent_id가 있으면 서버는 agent_profile을 아예
+  // 읽지 않는다(routers/runs.py의 elif 분기) — 함께 보내면 실제로 적용되지
+  // 않는 필드를 보내는 것이므로 아예 생략한다.
+  if (params.localAgentId) {
+    input.local_agent_id = params.localAgentId;
+  } else if (params.agentProfile) {
+    input.agent_profile = params.agentProfile;
+  }
   if (params.mcpTool) {
     input.mcp_tool = params.mcpTool;
     input.mcp_tool_input = params.mcpToolInput ?? {};

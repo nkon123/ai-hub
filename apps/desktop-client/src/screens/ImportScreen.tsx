@@ -6,13 +6,18 @@
 // carries a single root asset, so splitting them into two navigable screens
 // would just add a click without adding clarity.
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, FileArchive, FolderOpen, Loader2, RotateCcw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileArchive, FolderOpen, Info, Loader2, RotateCcw } from "lucide-react";
 import type { ActivateKnowledgeResult, ConnectMcpToolResult, ImportProgressEvent, ImportResult } from "../../electron/types";
 import { STAGE_LABELS } from "../../electron/types";
 import { getDesktopBridge, isBridgeMethodMissing } from "../bridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, PageHeader } from "../ui";
 import { assetTypeLabel, formatBytes } from "../format";
-import { knowledgeActivationTargets, mcpToolConnectionTargets, noFurtherActionTargets } from "./knowledgeActivation";
+import {
+  agentRegistrationGuidanceTargets,
+  knowledgeActivationTargets,
+  mcpToolConnectionTargets,
+  noFurtherActionTargets,
+} from "./knowledgeActivation";
 
 type Phase = "IDLE" | "RUNNING" | "DONE";
 
@@ -306,6 +311,19 @@ export function ImportScreen({ onInstalled }: { onInstalled: () => void }) {
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {agentRegistrationGuidanceTargets(result.installPlan).length > 0 && (
+                <div className="mt-4 space-y-1.5 border-t border-success/20 pt-3">
+                  <p className="text-caption font-semibold text-text-muted">Local Agent 등록</p>
+                  {agentRegistrationGuidanceTargets(result.installPlan).map((target) => (
+                    <p key={`agent-${target.assetId}`} className="flex items-start gap-1.5 text-caption text-text-secondary">
+                      <Info size={13} className="mt-0.5 shrink-0" />
+                      {target.name ?? target.assetId}: 설치는 완료되었지만 대화에서 바로 쓸 수는 없습니다 — 짝이 될 Prompt
+                      자산을 골라 등록해야 합니다(설치된 자산 화면에서 "Local Agent로 등록").
+                    </p>
+                  ))}
                 </div>
               )}
 

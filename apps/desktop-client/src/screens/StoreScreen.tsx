@@ -8,6 +8,7 @@ import {
   CheckCircle2,
   Download,
   FileArchive,
+  Info,
   RefreshCw,
   Search,
   Settings,
@@ -43,7 +44,12 @@ import {
   type CatalogItemView,
   type StoreAssetTypeFilter,
 } from "./storeTypes";
-import { knowledgeActivationTargets, mcpToolConnectionTargets, noFurtherActionTargets } from "./knowledgeActivation";
+import {
+  agentRegistrationGuidanceTargets,
+  knowledgeActivationTargets,
+  mcpToolConnectionTargets,
+  noFurtherActionTargets,
+} from "./knowledgeActivation";
 
 function activationKey(assetId: string, version: string): string {
   return `${assetId}::${version}`;
@@ -606,6 +612,21 @@ export function StoreScreen({ onGoToImport, onInstalled }: { onGoToImport: () =>
                           </div>
                         );
                       })}
+                    </div>
+                  )}
+
+                {installResult.outcome === "SUCCESS" &&
+                  installResult.importResult &&
+                  agentRegistrationGuidanceTargets(installResult.importResult.installPlan).length > 0 && (
+                    <div className="mt-3 space-y-1.5 border-t border-success/20 pt-3">
+                      <p className="text-caption font-semibold text-text-muted">Local Agent 등록</p>
+                      {agentRegistrationGuidanceTargets(installResult.importResult.installPlan).map((target) => (
+                        <p key={`agent-${target.assetId}`} className="flex items-start gap-1.5 text-caption text-text-secondary">
+                          <Info size={13} className="mt-0.5 shrink-0" />
+                          {target.name ?? target.assetId}: 설치는 완료되었지만 대화에서 바로 쓸 수는 없습니다 — 짝이 될
+                          Prompt 자산을 골라 등록해야 합니다(설치된 자산 화면에서 "Local Agent로 등록").
+                        </p>
+                      ))}
                     </div>
                   )}
 

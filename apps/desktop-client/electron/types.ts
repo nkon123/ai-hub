@@ -160,6 +160,91 @@ export interface InstalledAsset {
    * "활성화/연결됨"(이 필드가 `state: "ACTIVE"` 또는 `"ALREADY_ACTIVE"`라는
    * 사실)은 서로 다른 사실이다(open-decisions.md D-079/D-080). */
   activation?: KnowledgeActivation | null;
+  /** D-034 해석 경로 4 이어 붙이기 — `assetType === "agent"`에만 의미가
+   * 있다. "설치됨"과 "등록됨(agent-runtime이 이 Agent+Prompt 짝을 알아
+   * `input.local_agent_id`로 Run을 실행할 수 있음)"은 서로 다른 사실이다
+   * (Knowledge/MCP Tool과 같은 원칙). `KnowledgeActivation`을 그대로
+   * 재사용하지 않는 이유: 이 등록은 Agent 하나가 아니라 Agent+Prompt
+   * "짝"을 등록하는 것이라 어떤 Prompt와 짝지어졌는지(및 그 표시 이름)를
+   * 화면에 항상 보여줘야 한다(Task Brief 제약 C) — `KnowledgeActivation`
+   * 형태에는 그 필드가 없다. 필드 자체가 없으면(`undefined`) "시도한 적
+   * 없음"이고, `null`은 명시적 등록 해제 — 위 `activation` 필드와 동일한
+   * 관례. */
+  localAgentRegistration?: LocalAgentRegistration | null;
+}
+
+/** D-034 해석 경로 4 — `electron/local-agent-registration.ts`가
+ * agent-runtime 응답(`electron/local-agent-registration-client.ts`)을 이
+ * 형태로 저장한다. `state`는 두 값뿐이다 — Knowledge의 `"ALREADY_ACTIVE"`에
+ * 대응하는 개념이 없다(agent-runtime이 "이미 다른 경로로 등록되어 있어
+ * 필요 없음"이라고 거절하는 경우가 계약에 없다, `agent_asset_id` 기준
+ * Idempotent 재등록만 있다). */
+export interface LocalAgentRegistration {
+  state: "ACTIVE" | "FAILED";
+  checkedAt: string;
+  /** `LocalAgentRefusalReason`의 값 중 하나, 또는 로컬에서만 판정한 사유
+   * (예: `"prompt_not_found"`) — 로직/Telemetry 전용, 화면 표시는 항상
+   * `message`. `state === "ACTIVE"`이면 `null`. */
+  reason: string | null;
+  /** 항상 한국어, 화면에 그대로 표시 가능. `state === "ACTIVE"`이면 `null`. */
+  message: string | null;
+  /** 짝지어진 Prompt 자산 — `state === "ACTIVE"`일 때만 채워진다.
+   * "추측으로 짝을 만들지 않는다"(Task Brief 제약 C)는 등록 시점의 규칙이고,
+   * 이 필드는 그 결과를 사후에도 계속 보여주기 위한 것이다. */
+  promptAssetId: string | null;
+  promptVersion: string | null;
+  /** 등록 시점의 Prompt 자산 표시 이름(`InstalledAsset.name`) — Prompt가
+   * 이후 제거되어도 "무엇과 짝지어 등록했는지"를 계속 보여줄 수 있도록
+   * 스냅샷으로 저장한다(재조회하지 않는다). */
+  promptLabel: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// D-034 해석 경로 4 — Local Agent 등록("설치됨" ≠ "실행에 쓸 수 있음")
+// ---------------------------------------------------------------------------
+// D-079/D-080과 같은 원칙, 다만 이번엔 자산 하나가 아니라 Agent+Prompt "짝"을
+// 등록한다(Task Brief 제약 C: 절대 이름 유사도로 자동 짝짓기하지 않는다,
+// 짝은 항상 사용자가 고르거나 — Prompt가 정확히 1개뿐일 때만 — 기본값으로
+// 미리 골라 보여준다).
+
+export interface RegisterLocalAgentResult {
+  /** `state: "FAILED"`만 `ok: false`. `reason === "local_agents_disabled"`도
+   * `ok: false`이지만(실제로 등록되지 않았다는 사실은 참이다) 이 배포가
+   * allow-root를 설정하지 않은 배포 정책 상태이지 고장난 자산이 아니다 —
+   * 화면은 "다시 등록"이 아니라 관리자에게 설치 경로를 알려주는 안내로
+   * 분기해야 한다(Task Brief 제약 B). */
+  ok: boolean;
+  /** Persisted onto the Agent asset's `InstalledAsset` record whenever an
+   * actual attempt was made. `null` only for the refusals that never touch
+   * the record because there was nothing to attempt: Agent/Prompt 대상을
+   * 찾을 수 없음 — 그 사유는 `error`에 담긴다. */
+  registration: LocalAgentRegistration | null;
+  /** Non-null only when `registration` is `null` — see above. */
+  error: string | null;
+}
+
+export interface UnregisterLocalAgentResult {
+  ok: boolean;
+  /** Non-null when the local registration state was cleared successfully but
+   * the DELETE call to agent-runtime failed or was unreachable —
+   * informational only. Unregistration must still succeed locally in this
+   * case (CLAUDE.md: Desktop은 Runtime 장애 시 종료되지 않고 복구 안내를
+   * 제공한다). */
+  remoteWarning: string | null;
+  /** Non-null only when `ok === false`(대상을 찾을 수 없음). */
+  error: string | null;
+}
+
+/** `electron/local-agent-registration.ts`의
+ * `reconcileInstalledLocalAgentRegistrations` 결과 — D-079/D-080의 reconcile과
+ * 동일한 형태. `localAgentsEnabled`는 이 배포가 allow-root를 아예 설정하지
+ * 않았는지(Task Brief 제약 B)를 재확인 시점마다 다시 알려준다 — 한 번
+ * 확인하고 캐시하지 않는다(운영자가 배포 도중 설정을 바꿀 수 있다). */
+export interface ReconcileLocalAgentRegistrationsResult {
+  checked: boolean;
+  downgradedCount: number;
+  localAgentsEnabled: boolean | null;
+  error: string | null;
 }
 
 /** D-079 활성화 결과 — `electron/knowledge-activation.ts`가 search-runtime
@@ -1128,6 +1213,32 @@ export interface DesktopBridge {
   /** 로컬 ACTIVE와 agent-runtime의 현재 등록 목록을 비교한다. Runtime에
    * 도달하지 못하면 상태를 추측해 낮추지 않고 `checked: false`를 반환한다. */
   reconcileMcpToolConnections(): Promise<ReconcileMcpToolConnectionsResult>;
+
+  // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
+  /** "설치됨"과 "실행에 쓸 수 있음"은 서로 다른 사실이다 — 설치된 Agent와
+   * 사용자가 고른 Prompt의 짝을 agent-runtime에 등록해 이후 대화에서
+   * `input.local_agent_id`로 이 Agent를 실행할 수 있게 한다. 짝은 절대
+   * 이 호출 안에서 추측하지 않는다 — `promptAssetId`/`promptVersion`은
+   * 항상 호출자(렌더러)가 명시적으로 고른 값이다(Task Brief 제약 C).
+   * Agent/Prompt 대상을 찾을 수 없으면 `registration: null` + `error`만
+   * 채워 반환한다. */
+  registerLocalAgent(
+    agentAssetId: string,
+    agentVersion: string,
+    promptAssetId: string,
+    promptVersion: string,
+    label?: string | null,
+  ): Promise<RegisterLocalAgentResult>;
+  /** agent-runtime 등록을 해제한다. agent-runtime이 응답하지 않아도 로컬
+   * 등록 상태는 항상 정리된다(정직하게 `remoteWarning`으로 알린다) —
+   * Runtime 장애 때문에 제거/재등록이 막히지 않도록(D-079/D-080과 동일한
+   * 원칙). */
+  unregisterLocalAgent(agentAssetId: string, agentVersion: string): Promise<UnregisterLocalAgentResult>;
+  /** 로컬 ACTIVE와 agent-runtime의 현재 등록 목록을 비교한다. Runtime에
+   * 도달하지 못하면 상태를 추측해 낮추지 않고 `checked: false`를 반환한다.
+   * `localAgentsEnabled`는 이 배포가 allow-root를 아예 설정하지 않았는지
+   * 매번 다시 알려준다(Task Brief 제약 B). */
+  reconcileLocalAgentRegistrations(): Promise<ReconcileLocalAgentRegistrationsResult>;
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   /** 두 설치된 버전의 Manifest를 비교한다(Manifest/Dependency/Permission 3축). */

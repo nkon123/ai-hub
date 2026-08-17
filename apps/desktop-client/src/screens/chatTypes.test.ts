@@ -31,6 +31,8 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     knowledgeLabelUsed: "재택근무 정책",
     serviceId: "service-1",
     agentProfile: "standard-agent",
+    localAgentIdUsed: null,
+    localAgentLabelUsed: null,
     status: "succeeded",
     answer: "답변",
     citations: [],
