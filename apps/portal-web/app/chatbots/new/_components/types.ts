@@ -3,6 +3,21 @@
 // (see apps/portal-web/app/assets/page.tsx and app/assets/[id]/page.tsx),
 // plus the agent-runtime `/local/v1/runs` contract (services/agent-runtime, port 8100).
 
+import type { RegistryAgentSelection, RegistryPromptSelection } from "../../../_components/registryManifests";
+
+export type { RegistryAgentSelection, RegistryPromptSelection };
+
+/** StepPublish.tsx's "응답 Agent 변경 (고급)" section — default choice, unchanged
+ * from the hardcoded standard Agent (manifest id 550e8400-e29b-41d4-a716-446655440010)
+ * this Quick Create has always published with. `RegistryAgentSelection` (from
+ * app/_components/registryManifests, shared with /services/new's StepAgent) is
+ * the other option: a Portal-registered, APPROVED Agent asset version. */
+export interface StandardAgentChoice {
+  source: "standard";
+}
+
+export type AgentChoice = StandardAgentChoice | RegistryAgentSelection;
+
 export interface AssetVersionSummary {
   id: string;
   version: string;

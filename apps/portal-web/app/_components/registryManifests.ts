@@ -1,19 +1,89 @@
-// Shared parsing/gating helpers for Step 3 (registered Agent) and Step 6
-// (registered Prompt) — both list assets via `GET /api/v1/assets?type=...`,
-// which already returns every version's full manifest (portal-api's
+// Shared Registry Agent/Prompt asset types + parsing/gating helpers.
+//
+// Originally lived under app/services/new/_components/ (Service Composer
+// Step 3/Step 6 — registered Agent/registered Prompt). Moved here on
+// 2026-08-17 (D-034 follow-up) so /chatbots/new's Quick Create "응답 Agent
+// 변경 (고급)" section can reuse it too, without app/chatbots/new/_components
+// importing across another screen's `_components` directory (root CLAUDE.md
+// module-boundary rule — screen directories don't import each other's
+// `_components`; app/_components is the shared home both already use for
+// ui.tsx/role-context.tsx). Moving only — no behavior change; see
+// app/services/new/_components/types.ts for the re-exports that keep that
+// screen's existing imports working.
+//
+// Both screens list assets via `GET /api/v1/assets?type=...`, which already
+// returns every version's full manifest (portal-api's
 // `AssetOut`/`AssetVersionOut`, `selectinload(Asset.versions)` — see
 // routers/assets.py::list_assets), so no second per-asset detail fetch is
 // needed here (unlike StepKnowledge.tsx, which needs a separate indexing
 // status lookup).
 
-import type {
-  RegistryAgentManifest,
-  RegistryAgentSelection,
-  RegistryAsset,
-  RegistryAssetVersion,
-  RegistryPromptManifest,
-  RegistryPromptSelection,
-} from "./types";
+/** Any asset type's list/detail item shape from `GET /api/v1/assets?type=...`
+ * — `AssetOut` in portal-api's schemas.py. Each version already carries its
+ * full parsed `manifest`, so no second per-asset detail fetch is needed
+ * (unlike Knowledge, which needs a separate indexing-status lookup). */
+export interface RegistryAssetVersion {
+  id: string;
+  version: string;
+  status: string;
+  created_at: string;
+  manifest: Record<string, unknown>;
+}
+
+export interface RegistryAsset {
+  id: string;
+  type: string;
+  name: string;
+  owner_org: string;
+  classification: string;
+  created_at: string;
+  versions: RegistryAssetVersion[];
+}
+
+/** Parsed subset of an APPROVED Agent asset version's manifest — everything
+ * downstream steps need. `entryRole` drives `knowledge_bindings[].role_id`/
+ * `prompt_bindings[].role_id` for a registered Agent (there is no fixed
+ * "answerer" role like the built-in standard profiles use). */
+export interface RegistryAgentManifest {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  entryRole: string;
+  knowledgeRequired: boolean;
+  mcpAllowed: boolean;
+  maxContextTokens: number;
+  timeoutSeconds: number;
+  maxMcpCalls: number;
+}
+
+export interface RegistryAgentSelection {
+  source: "registry";
+  assetId: string;
+  assetName: string;
+  versionId: string;
+  versionLabel: string;
+  status: string;
+  manifest: RegistryAgentManifest;
+}
+
+/** Parsed subset of an APPROVED Prompt asset version's manifest. */
+export interface RegistryPromptManifest {
+  id: string;
+  version: string;
+  name: string;
+  description: string;
+  variables: { name: string; required: boolean; description: string }[];
+}
+
+export interface RegistryPromptSelection {
+  assetId: string;
+  assetName: string;
+  versionId: string;
+  versionLabel: string;
+  status: string;
+  manifest: RegistryPromptManifest;
+}
 
 /** Root CLAUDE.md UI rule: "호환되지 않는 선택지는 이유와 함께 비활성화한다."
  * Mirrors StepKnowledge.tsx's `usabilityReason` — only APPROVED versions are

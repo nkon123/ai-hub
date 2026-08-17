@@ -5,7 +5,7 @@ import { Bot, Check, Clock, Inbox, Layers, Search, ShieldCheck, Wrench } from "l
 import { Badge, Card, EmptyState, ErrorBanner, LoadingState, StatusBadge, inputClass } from "../../../_components/ui";
 import { useRole } from "../../../_components/role-context";
 import { AGENT_OPTIONS } from "./constants";
-import { registryVersionUsabilityReason, toAgentSelection } from "./registryManifests";
+import { registryVersionUsabilityReason, toAgentSelection } from "../../../_components/registryManifests";
 import type { AgentSelection, RegistryAsset } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";

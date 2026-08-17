@@ -7,6 +7,28 @@
 // in page.tsx for the two schema-less spec steps (입력 정의/출력 정의) that are
 // intentionally shown as disabled rather than silently dropped.
 
+// Registry Agent/Prompt asset types moved to app/_components/registryManifests.ts
+// on 2026-08-17 (D-034 follow-up) so /chatbots/new can reuse them too.
+// Re-exported here so every existing `from "./types"` import in this screen
+// keeps working unchanged.
+import type {
+  RegistryAgentManifest,
+  RegistryAgentSelection,
+  RegistryAsset,
+  RegistryAssetVersion,
+  RegistryPromptManifest,
+  RegistryPromptSelection,
+} from "../../../_components/registryManifests";
+
+export type {
+  RegistryAgentManifest,
+  RegistryAgentSelection,
+  RegistryAsset,
+  RegistryAssetVersion,
+  RegistryPromptManifest,
+  RegistryPromptSelection,
+};
+
 export type Classification = "PUBLIC_INTERNAL" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
 
 export const CLASSIFICATIONS: Classification[] = [
@@ -82,55 +104,6 @@ export type AgentProfileId = "standard-agent" | "standard-db-agent";
  * id 종류를 섞으면 안 된다(Preview 실행이 조용히 실패한다).
  */
 
-/** Any asset type's list/detail item shape from `GET /api/v1/assets?type=...`
- * — `AssetOut` in portal-api's schemas.py. Each version already carries its
- * full parsed `manifest`, so no second per-asset detail fetch is needed
- * (unlike Knowledge, which needs a separate indexing-status lookup). */
-export interface RegistryAssetVersion {
-  id: string;
-  version: string;
-  status: string;
-  created_at: string;
-  manifest: Record<string, unknown>;
-}
-
-export interface RegistryAsset {
-  id: string;
-  type: string;
-  name: string;
-  owner_org: string;
-  classification: string;
-  created_at: string;
-  versions: RegistryAssetVersion[];
-}
-
-/** Parsed subset of an APPROVED Agent asset version's manifest — everything
- * downstream steps need. `entryRole` drives `knowledge_bindings[].role_id`/
- * `prompt_bindings[].role_id` for a registered Agent (there is no fixed
- * "answerer" role like the 2 standard profiles use). */
-export interface RegistryAgentManifest {
-  id: string;
-  version: string;
-  name: string;
-  description: string;
-  entryRole: string;
-  knowledgeRequired: boolean;
-  mcpAllowed: boolean;
-  maxContextTokens: number;
-  timeoutSeconds: number;
-  maxMcpCalls: number;
-}
-
-export interface RegistryAgentSelection {
-  source: "registry";
-  assetId: string;
-  assetName: string;
-  versionId: string;
-  versionLabel: string;
-  status: string;
-  manifest: RegistryAgentManifest;
-}
-
 export interface StandardAgentSelection {
   source: "standard";
   profileId: AgentProfileId;
@@ -141,24 +114,6 @@ export interface StandardAgentSelection {
  * (D-034 Registry resolution path 2, executable only once its paired Prompt
  * is also chosen in Step 6 and both are APPROVED). */
 export type AgentSelection = StandardAgentSelection | RegistryAgentSelection;
-
-/** Parsed subset of an APPROVED Prompt asset version's manifest. */
-export interface RegistryPromptManifest {
-  id: string;
-  version: string;
-  name: string;
-  description: string;
-  variables: { name: string; required: boolean; description: string }[];
-}
-
-export interface RegistryPromptSelection {
-  assetId: string;
-  assetName: string;
-  versionId: string;
-  versionLabel: string;
-  status: string;
-  manifest: RegistryPromptManifest;
-}
 
 // --- Step 4: Knowledge 연결 ---
 

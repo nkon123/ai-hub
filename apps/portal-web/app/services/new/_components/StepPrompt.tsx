@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Check, Inbox, Info, Lock, MessageSquareText } from "lucide-react";
 import { Badge, Card, EmptyState, ErrorBanner, LoadingState, StatusBadge } from "../../../_components/ui";
 import { useRole } from "../../../_components/role-context";
-import { registryVersionUsabilityReason, toPromptSelection } from "./registryManifests";
+import { registryVersionUsabilityReason, toPromptSelection } from "../../../_components/registryManifests";
 import type { AgentOption } from "./constants";
 import type { RegistryAsset, RegistryPromptSelection } from "./types";
 
