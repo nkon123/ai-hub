@@ -208,6 +208,23 @@ export function partitionInstalledKnowledgeByActivation<T extends InstalledAsset
   return { usable, excluded };
 }
 
+/** D-034 해석 경로 4 / D-087 — "설치됨"과 "등록됨(agent-runtime이 이
+ * Agent+Prompt 짝을 알아 대화에 쓸 수 있음)"은 서로 다른 사실이다
+ * (`partitionInstalledKnowledgeByActivation`과 같은 원칙, Local Agent
+ * 버전). `localAgentRegistration.state === "ACTIVE"`만 후보로 남긴다 —
+ * `FAILED`(사유가 `prompt_removed`든, `not_registered_on_server`든,
+ * `local_agents_disabled`든)는 전부 자동으로 제외된다. 재조정
+ * (`computeLocalAgentRegistrationReconcile`)이 짝 Prompt가 사라진 등록을
+ * FAILED로 낮추면, 이 함수를 거치는 모든 화면에서 그 즉시 선택 불가능한
+ * 상태로 반영된다 — 별도의 화면별 예외 처리가 필요 없다. 순수 함수로 뽑아
+ * 둔 이유: `environment: "node"`인 이 저장소의 vitest 설정에서는
+ * `ChatScreen.tsx`를 직접 렌더링해 이 성질을 확인할 수 없으므로
+ * (CLAUDE.md), 실제로 화면이 쓰는 이 로직 자체를 테스트 대상으로 뽑아야
+ * 회귀를 잡는다. */
+export function selectRegisteredLocalAgents<T extends InstalledAsset>(assets: T[]): T[] {
+  return assets.filter((a) => a.localAgentRegistration?.state === "ACTIVE");
+}
+
 /** `partitionInstalledKnowledgeByActivation`의 usable 목록에서 id만 뽑는다 —
  * agent-runtime `startRun`의 `knowledgeIds` 입력이 필요로 하는 형태. */
 export function resolveActivatedKnowledgeIds(assets: InstalledAsset[]): string[] {

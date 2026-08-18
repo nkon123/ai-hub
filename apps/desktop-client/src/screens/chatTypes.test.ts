@@ -22,6 +22,7 @@ import {
   resolveKnowledgeSelection,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
 
@@ -273,6 +274,54 @@ describe("partitionInstalledKnowledgeByActivation / resolveActivatedKnowledgeIds
     expect(result.usable).toEqual([{ knowledgeId: "av-1", asset: alreadyActive }]);
     expect(result.excluded).toEqual([]);
     expect(resolveActivatedKnowledgeIds([alreadyActive])).toEqual(["av-1"]);
+  });
+});
+
+describe("selectRegisteredLocalAgents (D-034 해석 경로 4 / D-087 — 대화 화면이 실제로 쓰는 후보 필터)", () => {
+  it("returns empty for an empty list", () => {
+    expect(selectRegisteredLocalAgents([])).toEqual([]);
+  });
+
+  it("includes an ACTIVE registration", () => {
+    const active = installedAsset({
+      assetId: "agent-1",
+      assetType: "agent",
+      localAgentRegistration: {
+        state: "ACTIVE",
+        checkedAt: "now",
+        reason: null,
+        message: null,
+        promptAssetId: "prompt-1",
+        promptVersion: "1.0.0",
+        promptLabel: "HR 규정 Prompt",
+      },
+    });
+
+    expect(selectRegisteredLocalAgents([active])).toEqual([active]);
+  });
+
+  it("excludes a FAILED registration whose paired Prompt was removed (D-087 — must never surface as a selectable candidate)", () => {
+    const promptRemoved = installedAsset({
+      assetId: "agent-1",
+      assetType: "agent",
+      localAgentRegistration: {
+        state: "FAILED",
+        checkedAt: "now",
+        reason: "prompt_removed",
+        message: '짝지어 등록했던 Prompt "HR 규정 Prompt"가 제거되어 이 Agent를 대화에 쓸 수 없습니다.',
+        promptAssetId: null,
+        promptVersion: null,
+        promptLabel: null,
+      },
+    });
+
+    expect(selectRegisteredLocalAgents([promptRemoved])).toEqual([]);
+  });
+
+  it("excludes an Agent that was never registered (field absent)", () => {
+    const neverRegistered = installedAsset({ assetId: "agent-1", assetType: "agent" });
+
+    expect(selectRegisteredLocalAgents([neverRegistered])).toEqual([]);
   });
 });
 

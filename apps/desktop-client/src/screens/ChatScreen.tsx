@@ -75,6 +75,7 @@ import {
   resolveExcludedRowText,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
 import { RunDetailPanel } from "./RunDetailPanel";
@@ -692,7 +693,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // "설치됨"(installedAgents 전체)과 "등록됨/고를 수 있음"(registeredLocalAgents)은
   // 서로 다른 사실이다 — 아래 UI가 설치되어 있으나 등록 안 된 개수와 등록된
   // 목록을 각각 다른 자리에서 보여준다(Knowledge/MCP Tool과 동일한 원칙).
-  const registeredLocalAgents = installedAgents.filter((a) => a.localAgentRegistration?.state === "ACTIVE");
+  const registeredLocalAgents = selectRegisteredLocalAgents(installedAgents);
   const selectedLocalAgent = registeredLocalAgents.find((a) => a.assetId === selectedLocalAgentId) ?? null;
   const localAgentActive = !!selectedLocalAgent;
   const localAgentSelectionDisabledReason =

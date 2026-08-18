@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { InstalledAssetsStore } from "../installed-assets-store";
 import {
   computeLocalAgentRegistrationReconcile,
+  PROMPT_REMOVED_REASON,
   reconcileInstalledLocalAgentRegistrations,
   registerInstalledLocalAgent,
   unregisterInstalledLocalAgent,
@@ -182,27 +183,81 @@ describe("computeLocalAgentRegistrationReconcile", () => {
       promptLabel: "P",
     },
   };
+  // Prompt is still installed for the server-reconcile scenarios below —
+  // isolates "server lost the registration" from D-087's "the paired Prompt
+  // itself is gone" so each test exercises exactly one cause.
+  const installedPrompt = { assetType: "prompt", assetId: PROMPT_ID, version: "1.0.0" };
 
   it("never downgrades on an unreachable check (serverEntries === null)", () => {
-    const result = computeLocalAgentRegistrationReconcile([activeAgent], null);
+    const result = computeLocalAgentRegistrationReconcile([activeAgent, installedPrompt], null);
     expect(result).toEqual({ downgrades: [], checked: false });
   });
 
   it("downgrades a stale local ACTIVE with a retryable reason when the server has the feature enabled", () => {
-    const result = computeLocalAgentRegistrationReconcile([activeAgent], [], true);
+    const result = computeLocalAgentRegistrationReconcile([activeAgent, installedPrompt], [], true);
     expect(result.checked).toBe(true);
     expect(result.downgrades).toHaveLength(1);
     expect(result.downgrades[0].registration.reason).toBe("not_registered_on_server");
   });
 
   it("downgrades with the non-retryable local_agents_disabled reason when the deployment has the feature off (Task Brief 제약 B)", () => {
-    const result = computeLocalAgentRegistrationReconcile([activeAgent], [], false);
+    const result = computeLocalAgentRegistrationReconcile([activeAgent, installedPrompt], [], false);
     expect(result.downgrades[0].registration.reason).toBe("local_agents_disabled");
     expect(result.downgrades[0].registration.message).toContain("AGENT_RUNTIME_LOCAL_AGENT_ROOTS");
   });
 
   it("leaves an already-registered agent untouched", () => {
+    const result = computeLocalAgentRegistrationReconcile(
+      [activeAgent, installedPrompt],
+      [{ agentAssetId: AGENT_ID }],
+      true,
+    );
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
+  // --- D-087: paired Prompt removed, Agent registration left orphaned ------
+
+  it("downgrades an ACTIVE registration to FAILED/prompt_removed when the paired Prompt is no longer installed, even though agent-runtime still lists it", () => {
+    // Server still has the registration (agent-runtime hasn't been told yet)
+    // — this is exactly the "ghost registration" scenario D-087 targets.
     const result = computeLocalAgentRegistrationReconcile([activeAgent], [{ agentAssetId: AGENT_ID }], true);
+    expect(result.checked).toBe(true);
+    expect(result.downgrades).toHaveLength(1);
+    expect(result.downgrades[0].registration).toMatchObject({ state: "FAILED", reason: PROMPT_REMOVED_REASON });
+  });
+
+  it("names the removed Prompt by its registration-time label snapshot in the message", () => {
+    const result = computeLocalAgentRegistrationReconcile([activeAgent], [{ agentAssetId: AGENT_ID }], true);
+    expect(result.downgrades[0].registration.message).toContain("P");
+  });
+
+  it("does not downgrade (no false positive) when the paired Prompt is still installed", () => {
+    const result = computeLocalAgentRegistrationReconcile(
+      [activeAgent, installedPrompt],
+      [{ agentAssetId: AGENT_ID }],
+      true,
+    );
+    expect(result).toEqual({ downgrades: [], checked: true });
+  });
+
+  it("does not auto-reactivate — a FAILED/prompt_removed registration stays FAILED even once the Prompt is reinstalled, because the compute function never reads FAILED state as a candidate", () => {
+    const failedAgent = {
+      ...activeAgent,
+      localAgentRegistration: {
+        state: "FAILED" as const,
+        checkedAt: "now",
+        reason: PROMPT_REMOVED_REASON,
+        message: "짝지어 등록했던 Prompt가 제거되었습니다.",
+        promptAssetId: null,
+        promptVersion: null,
+        promptLabel: null,
+      },
+    };
+    const result = computeLocalAgentRegistrationReconcile(
+      [failedAgent, installedPrompt],
+      [{ agentAssetId: AGENT_ID }],
+      true,
+    );
     expect(result).toEqual({ downgrades: [], checked: true });
   });
 });
@@ -224,5 +279,86 @@ describe("reconcileInstalledLocalAgentRegistrations", () => {
     expect(result.checked).toBe(false);
     expect(result.localAgentsEnabled).toBeNull();
     expect(result.error).toBeTruthy();
+  });
+
+  // --- D-087: end-to-end via the store, Prompt removed while Agent registration is ACTIVE ---
+
+  it("downgrades to FAILED/prompt_removed and unregisters the ghost entry from agent-runtime when the paired Prompt is gone (제약 C)", async () => {
+    seedAgent();
+    // Prompt intentionally not seeded — simulates removal after registration.
+    store.updateLocalAgentRegistration("agent", AGENT_ID, "1.0.0", {
+      state: "ACTIVE",
+      checkedAt: "now",
+      reason: null,
+      message: null,
+      promptAssetId: PROMPT_ID,
+      promptVersion: "1.0.0",
+      promptLabel: "HR 규정 Prompt",
+    });
+    const calls: Array<{ method: string; url: string }> = [];
+    const fetchImpl = (async (url: string, init?: RequestInit) => {
+      calls.push({ method: init?.method ?? "GET", url: String(url) });
+      if (init?.method === "DELETE") {
+        return response(200, { removed: true });
+      }
+      return response(200, { entries: [{ agent_asset_id: AGENT_ID }], local_agents_enabled: true });
+    }) as unknown as FetchLike;
+
+    const result = await reconcileInstalledLocalAgentRegistrations(store, "http://runtime", fetchImpl);
+
+    expect(result).toMatchObject({ checked: true, downgradedCount: 1, error: null });
+    const reg = store.find("agent", AGENT_ID, "1.0.0")?.localAgentRegistration;
+    expect(reg).toMatchObject({ state: "FAILED", reason: PROMPT_REMOVED_REASON });
+    expect(reg?.message).toContain("HR 규정 Prompt");
+    // Confirms the ghost registration was actually cleared server-side too.
+    expect(calls.some((c) => c.method === "DELETE" && c.url.includes(AGENT_ID))).toBe(true);
+  });
+
+  it("still downgrades locally even when the agent-runtime DELETE call fails (제약 C — Desktop은 Runtime 장애 시 종료되지 않는다)", async () => {
+    seedAgent();
+    store.updateLocalAgentRegistration("agent", AGENT_ID, "1.0.0", {
+      state: "ACTIVE",
+      checkedAt: "now",
+      reason: null,
+      message: null,
+      promptAssetId: PROMPT_ID,
+      promptVersion: "1.0.0",
+      promptLabel: "HR 규정 Prompt",
+    });
+    const fetchImpl = (async (_url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        throw new Error("agent-runtime unreachable for DELETE");
+      }
+      return response(200, { entries: [{ agent_asset_id: AGENT_ID }], local_agents_enabled: true });
+    }) as unknown as FetchLike;
+
+    const result = await reconcileInstalledLocalAgentRegistrations(store, "http://runtime", fetchImpl);
+
+    expect(result.downgradedCount).toBe(1);
+    expect(store.find("agent", AGENT_ID, "1.0.0")?.localAgentRegistration).toMatchObject({
+      state: "FAILED",
+      reason: PROMPT_REMOVED_REASON,
+    });
+  });
+
+  it("does not auto-reactivate a prompt_removed registration once the Prompt is reinstalled — reconcile only ever downgrades, never upgrades", async () => {
+    seedAgent();
+    seedPrompt(); // Prompt reinstalled after the registration had already been downgraded.
+    store.updateLocalAgentRegistration("agent", AGENT_ID, "1.0.0", {
+      state: "FAILED",
+      checkedAt: "now",
+      reason: PROMPT_REMOVED_REASON,
+      message: "짝지어 등록했던 Prompt가 제거되었습니다.",
+      promptAssetId: null,
+      promptVersion: null,
+      promptLabel: null,
+    });
+    const fetchImpl = (async () =>
+      response(200, { entries: [{ agent_asset_id: AGENT_ID }], local_agents_enabled: true })) as FetchLike;
+
+    const result = await reconcileInstalledLocalAgentRegistrations(store, "http://runtime", fetchImpl);
+
+    expect(result.downgradedCount).toBe(0);
+    expect(store.find("agent", AGENT_ID, "1.0.0")?.localAgentRegistration?.state).toBe("FAILED");
   });
 });
