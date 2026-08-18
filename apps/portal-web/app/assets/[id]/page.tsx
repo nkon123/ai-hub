@@ -2,14 +2,26 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ChevronLeft, GitBranch, Gauge, Lock, PackageOpen, PauseCircle, Send } from "lucide-react";
+import {
+  ChevronLeft,
+  GitBranch,
+  Gauge,
+  Loader2,
+  Lock,
+  PackageOpen,
+  PauseCircle,
+  Search,
+  Send,
+} from "lucide-react";
 import {
   Badge,
   Button,
   ErrorBanner,
+  FormField,
   LoadingState,
   ReasonDialog,
   StatusBadge,
+  inputClass,
 } from "../../_components/ui";
 import { canCreateDistribution, useRole, type RoleDef } from "../../_components/role-context";
 
@@ -78,6 +90,37 @@ interface KnowledgeInfo {
   search_config: SearchConfig;
 }
 
+// 검색 품질 테스트 (D-079 Feature 1) — retrieval-level 진단, LLM 응답이
+// 아니다. 필드는 packages/schemas/api/portal-openapi.yaml의
+// SearchPreviewResponse와 정확히 일치한다.
+interface SearchPreviewCitation {
+  chunk_id: string;
+  document_title: string | null;
+  section: string | null;
+  page: number | null;
+  excerpt: string;
+  score: number;
+  similarity: number | null;
+}
+
+interface SearchPreviewDiagnostics {
+  index_found: boolean;
+  embed_model_applied: string | null;
+  embed_model_source: string | null;
+  min_relevance_score_applied: number;
+  relevance_threshold_ignored: boolean;
+  clearance_applied: string;
+  asset_classification: string | null;
+  no_result_reason: "INDEX_NOT_BUILT" | "CLASSIFICATION_ABOVE_CLEARANCE" | "NO_CITATIONS" | null;
+  retry_without_threshold_available: boolean;
+}
+
+interface SearchPreviewResult {
+  citations: SearchPreviewCitation[];
+  diagnostics: SearchPreviewDiagnostics;
+  trace_id: string;
+}
+
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex gap-2 text-body">
@@ -94,6 +137,205 @@ function Section({ title, children }: { title: string; children: React.ReactNode
         <h2 className="text-card-title font-semibold text-text-primary">{title}</h2>
       </div>
       <div className="px-5 py-4">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * 검색 품질 테스트 (D-079 Feature 1) — "이 질문을 하면 실제로 무엇이
+ * 검색되는가"를 승인 전에도 확인할 수 있는 retrieval-level 진단 패널.
+ * 정적 청크 미리보기(위 Section)와 달리 실제 질의를 search-runtime에
+ * 보낸다. LLM 답변이 아니다 — 그건 챗봇 Quick Create Wizard의 몫이다.
+ *
+ * 자산 상세 화면에 두는 이유: 이 화면은 이미 `selectedVer`(버전 선택
+ * 상태)를 갖고 있고, Producer가 색인 정보/청크 미리보기를 보는 바로 그
+ * 맥락에서 "그래서 검색이 실제로 되는가"를 이어서 확인하는 것이 자연스럽다
+ * — Knowledge 품질 페이지(`/knowledge/[assetId]/quality`)는 평가
+ * 데이터셋/Quality Gate 화면이라 단발성 질의 진단과 목적이 다르다.
+ */
+function SearchPreviewPanel({
+  assetId,
+  versionId,
+  token,
+}: {
+  assetId: string;
+  versionId: string;
+  token: string;
+}) {
+  const [query, setQuery] = useState("");
+  const [topK, setTopK] = useState(5);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<SearchPreviewResult | null>(null);
+  // The threshold applied on the *first* (non-ignored) call — remembered so
+  // that if a retry with ignore_relevance_threshold=true then finds
+  // citations, we can name the exact threshold value that had filtered them
+  // out. Never fabricated any earlier than that (see the router's brief).
+  const [priorThreshold, setPriorThreshold] = useState<number | null>(null);
+
+  async function runSearch(ignoreThreshold: boolean) {
+    if (!query.trim()) return;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/assets/${assetId}/versions/${versionId}/search-preview`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({
+            query: query.trim(),
+            top_k: topK,
+            ignore_relevance_threshold: ignoreThreshold,
+          }),
+        }
+      );
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        setError(body?.error?.message ?? `검색 미리보기에 실패했습니다. (HTTP ${res.status})`);
+        return;
+      }
+      if (!ignoreThreshold) {
+        setPriorThreshold(body.diagnostics.min_relevance_score_applied);
+      }
+      setResult(body);
+    } catch {
+      setError("서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const thresholdCausedEmpty =
+    !!result &&
+    result.diagnostics.relevance_threshold_ignored &&
+    result.citations.length > 0 &&
+    priorThreshold !== null;
+
+  return (
+    <div className="space-y-3">
+      <div className="grid gap-3 sm:grid-cols-[1fr_120px]">
+        <FormField label="질문">
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && !loading && runSearch(false)}
+            placeholder="예: 육아휴직은 몇 개월까지 사용할 수 있나요?"
+            maxLength={1000}
+            className={inputClass}
+          />
+        </FormField>
+        <FormField label="결과 수 (top_k)">
+          <input
+            type="number"
+            min={1}
+            max={20}
+            value={topK}
+            onChange={(e) => setTopK(Math.min(20, Math.max(1, Number(e.target.value) || 1)))}
+            className={inputClass}
+          />
+        </FormField>
+      </div>
+      <div className="flex justify-end">
+        <Button size="sm" disabled={loading || !query.trim()} onClick={() => runSearch(false)}>
+          {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+          {loading ? "검색 중..." : "검색 실행"}
+        </Button>
+      </div>
+
+      {error && <ErrorBanner message={error} />}
+
+      {result && (
+        <div className="space-y-3 border-t border-border pt-3">
+          <div className="flex flex-wrap gap-1.5 text-caption text-text-secondary">
+            <Badge tone="neutral">
+              적용된 관련도 임계값: {result.diagnostics.min_relevance_score_applied}
+            </Badge>
+            {result.diagnostics.embed_model_applied && (
+              <Badge tone="neutral">임베딩 모델: {result.diagnostics.embed_model_applied}</Badge>
+            )}
+            <Badge tone="neutral">Clearance: {result.diagnostics.clearance_applied}</Badge>
+            {result.diagnostics.relevance_threshold_ignored && (
+              <Badge tone="warning">관련도 필터 없이 검색됨</Badge>
+            )}
+          </div>
+
+          {thresholdCausedEmpty && (
+            <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2 text-caption text-warning">
+              관련도 임계값({priorThreshold})이 원래 검색 결과를 걸러냈습니다 — 필터를 끄자
+              결과가 나타났습니다.
+            </div>
+          )}
+
+          {result.citations.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-border px-4 py-8 text-center">
+              {result.diagnostics.no_result_reason === "INDEX_NOT_BUILT" ? (
+                <p className="text-body text-text-secondary">
+                  이 버전은 아직 색인이 완성되지 않아 검색할 수 없습니다.
+                </p>
+              ) : result.diagnostics.no_result_reason === "CLASSIFICATION_ABOVE_CLEARANCE" ? (
+                <>
+                  <p className="text-body font-medium text-text-primary">
+                    이 자산의 보안등급이 현재 검색에 적용되는 접근 등급보다 높아 정책상
+                    차단되었습니다.
+                  </p>
+                  <p className="mt-1 text-caption text-text-secondary">
+                    검색 품질 문제가 아닙니다 — 관련도 필터를 꺼도 결과는 달라지지
+                    않습니다.
+                  </p>
+                  <div className="mt-3 flex flex-wrap justify-center gap-1.5 text-caption text-text-secondary">
+                    <Badge tone="warning">
+                      자산 보안등급: {result.diagnostics.asset_classification ?? "알 수 없음"}
+                    </Badge>
+                    <Badge tone="neutral">
+                      적용된 접근 등급: {result.diagnostics.clearance_applied}
+                    </Badge>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p className="text-body text-text-secondary">관련 결과가 없습니다.</p>
+                  {result.diagnostics.retry_without_threshold_available && (
+                    <Button
+                      size="sm"
+                      variant="secondary"
+                      className="mt-3"
+                      disabled={loading}
+                      onClick={() => runSearch(true)}
+                    >
+                      관련도 필터 없이 다시 검색
+                    </Button>
+                  )}
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="space-y-2">
+              {result.citations.map((c, idx) => (
+                <div key={`${c.chunk_id}-${idx}`} className="rounded-lg border border-border bg-slate-50 p-3">
+                  <div className="mb-1.5 flex flex-wrap items-center gap-1.5 text-caption text-text-secondary">
+                    {c.section && (
+                      <span className="rounded border border-brand-200 bg-brand-50 px-2 py-0.5 text-xs text-brand-700">
+                        {c.section}
+                      </span>
+                    )}
+                    {!!c.page && (
+                      <span className="rounded border border-border bg-surface px-2 py-0.5 text-xs">
+                        p.{c.page}
+                      </span>
+                    )}
+                    <span className="ml-auto rounded bg-slate-100 px-2 py-0.5 text-xs">
+                      score {c.score.toFixed(3)}
+                      {c.similarity !== null && ` · similarity ${c.similarity.toFixed(3)}`}
+                    </span>
+                  </div>
+                  <p className="text-caption leading-relaxed text-text-secondary">{c.excerpt}</p>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -183,11 +425,11 @@ function VersionActions({
           variant="secondary"
           disabled={!isExportableStatus || !canExport}
           onClick={() =>
-            router.push(`/distributions/new?assetId=${assetId}&versionId=${version.id}`)
+            router.push(`/assets/${assetId}/versions?versionId=${version.id}`)
           }
         >
           <PackageOpen size={14} />
-          Offline Bundle 요청
+          Desktop 설치 ZIP 받기
         </Button>
       </div>
 
@@ -208,7 +450,7 @@ function VersionActions({
           {exportDisabledReason && (
             <span className="inline-flex items-center gap-1">
               <Lock size={12} />
-              Offline Bundle 요청 불가: {exportDisabledReason}
+              설치 ZIP 생성 불가: {exportDisabledReason}
             </span>
           )}
         </div>
@@ -575,6 +817,11 @@ export default function KnowledgeDetailPage() {
                 value={`${info.search_config.default_top_k}개`}
               />
             </div>
+          </Section>
+
+          {/* D-079 Feature 1: 검색 품질 테스트 */}
+          <Section title="검색 품질 테스트 — 이 질문을 하면 실제로 무엇이 검색되는가">
+            <SearchPreviewPanel assetId={assetId} versionId={selectedVer.id} token={role.token} />
           </Section>
 
           {/* Chunks with metadata and tags */}

@@ -1,0 +1,159 @@
+import { describe, expect, it } from "vitest";
+import type { LocalTool, LocalToolInvocationResult } from "../../electron/types";
+import {
+  buildLocalToolArgs,
+  describeMcpToolsNoticeForEmptyState,
+  fieldKindForSchemaType,
+  formatArgsForConfirm,
+  formatInvocationOutcome,
+  parseLocalToolFieldValue,
+} from "./localToolsTypes";
+
+function tool(overrides: Partial<LocalTool> = {}): LocalTool {
+  return {
+    id: "id-1",
+    filePath: "/tmp/x.py",
+    functionName: "f",
+    toolName: "f",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+    parameters: [
+      { name: "name", schemaType: "string", required: true, defaultIncluded: false },
+      { name: "limit", schemaType: "integer", required: false, defaultIncluded: true },
+      { name: "active", schemaType: "boolean", required: false, defaultIncluded: true },
+      { name: "tags", schemaType: "array<string>", required: false, defaultIncluded: false },
+    ],
+    discarded: { bodyStatementCount: 1, decoratorCount: 0, docstringPresent: false, sourceExecuted: false, sourcePersisted: false },
+    warnings: [],
+    addedAt: "2026-08-14T00:00:00.000Z",
+    riskAcknowledgedAt: "2026-08-14T00:00:00.000Z",
+    approval: null,
+    ...overrides,
+  };
+}
+
+describe("fieldKindForSchemaType", () => {
+  it("maps primitive types", () => {
+    expect(fieldKindForSchemaType("string")).toBe("text");
+    expect(fieldKindForSchemaType("integer")).toBe("number");
+    expect(fieldKindForSchemaType("number")).toBe("number");
+    expect(fieldKindForSchemaType("boolean")).toBe("boolean");
+  });
+  it("falls back to json for compound/unknown types", () => {
+    expect(fieldKindForSchemaType("array<string>")).toBe("json");
+    expect(fieldKindForSchemaType("object<integer>")).toBe("json");
+    expect(fieldKindForSchemaType("literal")).toBe("json");
+    expect(fieldKindForSchemaType("any")).toBe("json");
+  });
+});
+
+describe("parseLocalToolFieldValue", () => {
+  it("requires a value for required fields", () => {
+    expect(parseLocalToolFieldValue("text", "", true).ok).toBe(false);
+  });
+  it("omits optional empty fields", () => {
+    const result = parseLocalToolFieldValue("text", "  ", false);
+    expect(result.ok).toBe(true);
+    expect(result.value).toBeUndefined();
+  });
+  it("parses numbers and rejects non-numeric text", () => {
+    expect(parseLocalToolFieldValue("number", "42", true)).toEqual({ ok: true, value: 42 });
+    expect(parseLocalToolFieldValue("number", "abc", true).ok).toBe(false);
+  });
+  it("parses booleans from the literal strings", () => {
+    expect(parseLocalToolFieldValue("boolean", "true", false)).toEqual({ ok: true, value: true });
+    expect(parseLocalToolFieldValue("boolean", "false", false)).toEqual({ ok: true, value: false });
+  });
+  it("parses JSON and rejects invalid JSON", () => {
+    expect(parseLocalToolFieldValue("json", "[1,2,3]", true)).toEqual({ ok: true, value: [1, 2, 3] });
+    expect(parseLocalToolFieldValue("json", "{not json", true).ok).toBe(false);
+  });
+});
+
+describe("buildLocalToolArgs", () => {
+  it("builds args and omits empty optional fields", () => {
+    const result = buildLocalToolArgs(tool(), { name: "kim", limit: "", active: "true", tags: "" });
+    expect(result.ok).toBe(true);
+    expect(result.args).toEqual({ name: "kim", active: true });
+  });
+
+  it("reports field-level errors for a missing required field", () => {
+    const result = buildLocalToolArgs(tool(), { name: "", limit: "", active: "false", tags: "" });
+    expect(result.ok).toBe(false);
+    expect(result.errors?.name).toBeTruthy();
+  });
+});
+
+describe("formatArgsForConfirm", () => {
+  it("shows a placeholder for no args", () => {
+    expect(formatArgsForConfirm({})).toBe("(인자 없음)");
+  });
+  it("pretty-prints args as JSON", () => {
+    expect(formatArgsForConfirm({ a: 1 })).toContain('"a": 1');
+  });
+});
+
+describe("formatInvocationOutcome", () => {
+  it("distinguishes all six outcomes", () => {
+    const cases: LocalToolInvocationResult[] = [
+      { outcome: "success", result: { ok: true } },
+      { outcome: "function_error", errorType: "ValueError", errorMessage: "bad" },
+      { outcome: "nonzero_exit", exitCode: 2, stderrSnippet: "boom" },
+      { outcome: "timeout", timeoutMs: 30_000 },
+      { outcome: "oversized_output", limitBytes: 262_144 },
+      { outcome: "spawn_error", message: "ENOENT" },
+      { outcome: "interpreter_not_configured" },
+    ];
+    const titles = cases.map((c) => formatInvocationOutcome(c).title);
+    expect(new Set(titles).size).toBe(titles.length); // all distinct
+  });
+
+  it("success shows the JSON result", () => {
+    const display = formatInvocationOutcome({ outcome: "success", result: { greeting: "hi" } });
+    expect(display.tone).toBe("success");
+    expect(display.detail).toContain("greeting");
+  });
+
+  it("interpreter_not_configured points at Settings", () => {
+    const display = formatInvocationOutcome({ outcome: "interpreter_not_configured" });
+    expect(display.detail).toContain("설정");
+  });
+});
+
+describe("describeMcpToolsNoticeForEmptyState (D-080/D-084 혼동 정정)", () => {
+  it("returns null when there are no MCP Tools at all — the original empty-state text stays accurate", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({ connectedNames: [], installedNotConnectedCount: 0 });
+    expect(notice).toBeNull();
+  });
+
+  it("names the connected MCP Tool(s) and points at the wrench (Tool 자동 제안) toggle", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기"],
+      installedNotConnectedCount: 0,
+    });
+    expect(notice).toContain("숫자 더하기");
+    expect(notice).toContain("렌치");
+  });
+
+  it("lists every connected name, not just the first", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기", "문서 검색"],
+      installedNotConnectedCount: 0,
+    });
+    expect(notice).toContain("숫자 더하기");
+    expect(notice).toContain("문서 검색");
+  });
+
+  it("reports only the installed-but-not-connected count (no fabricated names) when nothing is connected", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({ connectedNames: [], installedNotConnectedCount: 2 });
+    expect(notice).toContain("2개");
+    expect(notice).toContain("연결");
+  });
+
+  it("prioritizes the connected list over the not-connected count when both are present", () => {
+    const notice = describeMcpToolsNoticeForEmptyState({
+      connectedNames: ["숫자 더하기"],
+      installedNotConnectedCount: 1,
+    });
+    expect(notice).toContain("숫자 더하기");
+  });
+});

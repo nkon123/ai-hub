@@ -384,13 +384,21 @@ Loopback API는 외부 Interface에 Bind하지 않는다. Desktop이 발급한 �
 INPUT_VALIDATE
 → PREPARE
 → ANALYZE
+→ KNOWLEDGE_ROUTE (optional, opt-in)
 → KNOWLEDGE_SEARCH (0..n)
+→ TOOL_ROUTE (optional, opt-in — D-083)
 → TOOL_CONFIRM (optional)
 → MCP_TOOL_CALL (0..n)
 → ANSWER_GENERATE
 → OUTPUT_VALIDATE
 → COMPLETE
 ```
+
+두 ROUTE 단계는 모두 호출자가 명시적으로 켤 때만 실행되며, 켜지 않은 Run은
+위 목록에서 그 단계가 없는 것과 동일하게 동작한다. 실패 방향은 서로 반대다 —
+KNOWLEDGE_ROUTE는 실패 시 후보 전체를 검색하는 fail-open(검색은 읽기이므로
+안전하다), TOOL_ROUTE는 실패 시 아무 Tool도 호출하지 않는 **fail-closed**다
+(Tool 호출은 행동이므로 실패가 행동을 일으켜서는 안 된다).
 
 - Agent별 Workflow는 허용 단계의 조합으로 정의한다.
 - 단계별 Timeout과 Retry 정책을 가진다.
@@ -412,6 +420,15 @@ health(model_alias) -> model_status
 - 모델 Alias를 사용하고 Package에 실제 Secret이나 Endpoint를 넣지 않는다.
 - 모델별 Tool Calling 차이를 Agent Domain에 노출하지 않도록 Adapter에서 Capability를 보고한다.
 - Tool Calling이 약한 로컬 모델은 Runtime의 명시적 Workflow와 Schema 기반 호출을 사용한다.
+  - **D-083(2026-08-15)으로 이 규칙은 opt-in 한정으로 완화되었다.** 이 문장이 오래
+    유지된 결과, 저장소의 어떤 호출자도 `mcp_tool_request`를 보내지 않아 MCP Tool이
+    채팅에서 사실상 한 번도 호출되지 않았다. 지금은 `input.tool_route=true`인 Run에
+    한해 TOOL_ROUTE가 Tool 이름과 인자를 **제안**한다. 다만 이 문장의 핵심("모델
+    출력이 곧 Tool 호출이 되지 않는다")은 그대로다 — 제안은 명시적 호출자가 보냈을
+    것과 동일한 형태로 변환되어 `resolve_allowed_alias` → `validate_tool_input` →
+    `confirmation_policy_for` 차단점을 우회 없이 통과하며, 후보는 Office Profile이
+    이미 허용한 것보다 넓어지지 않고, 검증 실패는 재시도하지 않는다. 근거와 잔여
+    위험은 open-decisions.md D-083 참고.
 
 #### Knowledge Search Client
 

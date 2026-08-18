@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -14,19 +13,44 @@ import httpx
 from search_runtime.bm25_cache import get_cached_bm25
 from search_runtime.bm25_store import BM25_JSON_FILENAME, BM25_PICKLE_FILENAME
 from search_runtime.chroma_client_cache import get_chroma_client
+from search_runtime.local_index_registry import get_registry
 from search_runtime.settings import (
     ALLOW_LEGACY_PICKLE_BM25,
     DEFAULT_MIN_RELEVANCE_SCORE,
     DEFAULT_QUERY_INSTRUCT_PREFIX,
     EMBED_MODEL,
 )
+from search_runtime.settings import INDEX_BASE as INDEX_BASE
 
-INDEX_BASE = os.environ.get(
-    "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
-)
+# INDEX_BASE now lives in `settings` (so `local_index_registry` can read it
+# without importing this module, which imports the registry) and is
+# re-exported here unchanged — `from search_runtime.hybrid import INDEX_BASE`
+# remains the way the rest of this service and its tests get at it.
+
 OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
 
 _logger = logging.getLogger("search_runtime")
+
+
+def resolve_index_dir(index_base: str, knowledge_id: str) -> tuple[Path, bool]:
+    """Where this Knowledge's index actually lives, and whether it came from
+    the D-079 local registration table.
+
+    Returns `(path, is_registered_local)`. `INDEX_BASE/<knowledge_id>` always
+    wins when it exists, and the registry refuses to register an id that
+    exists there, so the second element can only ever be True for an id this
+    service had no index for at all before D-079 — no existing search can
+    change its answer because of this function.
+
+    The boolean matters beyond bookkeeping: a registered directory holds
+    content that arrived over a distribution channel, so `hybrid_search`
+    refuses to unpickle a legacy `bm25.pkl` from it even where the
+    deployment-wide `ALLOW_LEGACY_PICKLE_BM25` default would allow it for the
+    locally-built tree (D-054)."""
+    registered = get_registry().resolve(knowledge_id)
+    if registered is not None:
+        return registered, True
+    return Path(index_base) / knowledge_id, False
 
 
 def resolve_embed_model(
@@ -62,7 +86,12 @@ def resolve_embed_model(
     propagating, so a search against an unindexed/partially-built
     `knowledge_id` degrades the same way it always has (`hybrid_search`'s
     `bm25_path.exists()` check already returns `[]` for that case)."""
-    meta_path = Path(index_base) / knowledge_id / "index-meta.json"
+    # Resolved through the same D-079 lookup `hybrid_search` uses, so a
+    # registered local index is asked what model *it* was built with rather
+    # than falling through to this service's configured default — the exact
+    # silent-mismatch failure this function exists to prevent.
+    index_dir, _ = resolve_index_dir(index_base, knowledge_id)
+    meta_path = index_dir / "index-meta.json"
     if meta_path.exists():
         try:
             with open(meta_path, encoding="utf-8") as f:
@@ -126,10 +155,14 @@ async def hybrid_search(
         because embeddings from a different model than the index was built
         with are not comparable (silently meaningless results, no error).
     min_relevance_score: D-046 relevance floor, evaluated on cosine
-        similarity (1 - Chroma distance) of each chunk's best vector match,
-        AFTER RRF fusion picks the top_k candidates — never on the fused RRF
-        score itself, which is rank-based (1/(k+rank)) and carries no
-        absolute meaning. 0 disables filtering. A chunk that only BM25
+        similarity (1 - Chroma distance) of each chunk's best vector match —
+        never on the fused RRF score itself, which is rank-based
+        (1/(k+rank)) and carries no absolute meaning. Applied **before** the
+        top_k truncation (changed 2026-08-14): applying it after made results
+        non-monotonic in top_k — weak chunks could consume the budget and
+        then be filtered out, leaving zero results for a query the index
+        plainly answered. See the comment at the filter itself.
+        0 disables filtering. A chunk that only BM25
         found (no vector distance available) is dropped whenever filtering
         is enabled: there is no similarity evidence it clears the bar, and
         keeping it would let an exact keyword match slip an off-topic chunk
@@ -174,7 +207,11 @@ async def hybrid_search(
     Raises `search_runtime.bm25_store.LegacyPickleBm25Refused` — see
     `allow_legacy_pickle_bm25` above.
     """
-    index_path = Path(index_base) / knowledge_id
+    index_path, is_registered_local = resolve_index_dir(index_base, knowledge_id)
+    if is_registered_local:
+        # D-054/D-079: distributed content is never unpickled, whatever the
+        # deployment-wide default says for its own locally-built tree.
+        allow_legacy_pickle_bm25 = False
     bm25_json_path = index_path / BM25_JSON_FILENAME
     bm25_pkl_path = index_path / BM25_PICKLE_FILENAME
     parents_path = index_path / "parents.json"
@@ -282,17 +319,37 @@ async def hybrid_search(
     for rank, (cid, _dist) in enumerate(zip(vector_ids, vector_distances)):
         score_map[cid] = score_map.get(cid, 0) + alpha * _rrf_score(rank)
 
-    # Sort by fused score and take top_k
-    ranked_ids = sorted(score_map, key=lambda x: score_map[x], reverse=True)[:top_k]
+    ranked_ids = sorted(score_map, key=lambda x: score_map[x], reverse=True)
 
-    # D-046 relevance filter — see hybrid_search docstring for the
-    # BM25-only-chunk rule and why this uses similarity_map, not score_map.
+    # D-046 relevance filter — applied **before** the top_k truncation below.
+    #
+    # It used to run after, and that made results non-monotonic in `top_k`: a
+    # measured case (2026-08-14) returned 1 citation at top_k=2/3/10 but **0**
+    # at top_k=1/5 for the same query and index. RRF fuses by *rank*, not by
+    # similarity, so a genuinely relevant chunk (cosine 0.5887, far above the
+    # 0.42 floor) sat at fused rank 3 while low-similarity chunks (0.34, 0.29)
+    # outranked it. Truncating first let those weak chunks consume the top_k
+    # budget; the floor then removed them and left nothing — a document that
+    # plainly answered the question came back as "근거 없음". Raising top_k
+    # brought it back, which is the tell: more candidates must never yield
+    # fewer results.
+    #
+    # Filtering first fixes the ordering bug and matches what this function
+    # already does for the ACL predicate (applied before candidate
+    # truncation, see `metadata_predicate` in the docstring) — the two are
+    # the same shape of mistake, and D-046's own docstring called the
+    # post-truncation position a known limitation.
+    #
+    # The BM25-only rule is unchanged: a chunk with no vector match has no
+    # similarity evidence, so it is dropped whenever filtering is enabled.
     if min_relevance_score > 0:
         ranked_ids = [
             cid
             for cid in ranked_ids
             if cid in similarity_map and similarity_map[cid] >= min_relevance_score
         ]
+
+    ranked_ids = ranked_ids[:top_k]
 
     # Build citation dicts with parent expansion (id_to_idx computed earlier)
     citations: list[dict] = []
@@ -310,6 +367,12 @@ async def hybrid_search(
         citations.append({
             "chunk_id": cid,
             "parent_chunk_id": parent_id,
+            # §2.6/§3.12 stable document identity, written at index time by
+            # indexing-runtime (`make_document_id`). Echoed as-is and never
+            # reconstructed from `source_path` here: an index built before
+            # this field was surfaced must report "" (unknown) rather than a
+            # locally invented id that looks authoritative but is not.
+            "document_id": meta.get("document_id", ""),
             "document_path": meta.get("source_path", ""),
             "document_title": meta.get("title", ""),
             "page": meta.get("page", 1),

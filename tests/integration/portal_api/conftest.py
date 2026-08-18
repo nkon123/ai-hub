@@ -10,8 +10,10 @@ database is never opened here either.
 
 from __future__ import annotations
 
+import json
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -59,6 +61,23 @@ async def client(session_factory) -> AsyncIterator[httpx.AsyncClient]:
     app.dependency_overrides.clear()
 
 
+@pytest.fixture(autouse=True)
+def _isolated_index_base(tmp_path, monkeypatch):
+    """이 패키지의 모든 테스트를 저장소의 실제 `data/indexes/` 에서 격리한다.
+
+    두 가지를 동시에 막는다: (a) 테스트가 실제 색인 디렉터리를 우연히 읽어
+    "없어야 할 것이 있는" 상태로 통과하는 것(`hr-policy-v1` 은 이 체크아웃에
+    실제로 존재한다), (b) 테스트가 실제 운영 데이터에 쓰는 것. 아래
+    `make_indexed_knowledge` 가 만드는 색인 산출물도 전부 이 tmp 아래에
+    생성된다."""
+    from portal_api.config import settings
+
+    base = tmp_path / "indexes"
+    base.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "index_base", base)
+    return base
+
+
 def auth_header(token: str = "dev-user-token") -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
@@ -85,11 +104,34 @@ async def make_indexed_knowledge(db: AsyncSession, *, indexed: bool = True) -> A
     await db.flush()
 
     if indexed:
+        # 예전에는 존재하지 않는 경로 문자열만 넣었다. 그러면 "승인된
+        # Knowledge" 픽스처가 실제로는 **반출할 수 없는** 상태를 대표하게 되고,
+        # 2026-08-14 에 Distribution 생성 Gate(색인이 온전할 때만 반출 허용)를
+        # 넣자 12개 테스트가 한꺼번에 막혔다 — 테스트가 틀린 계약을 담고 있던
+        # 것이 아니라, 픽스처가 현실을 대표하지 못했던 것이다. 이제 검사가
+        # 요구하는 산출물을 실제로 만든다(`portal_api.knowledge_readiness`).
+        from portal_api.config import settings
+
+        index_dir = Path(settings.index_base) / version.id
+        (index_dir / "chroma").mkdir(parents=True, exist_ok=True)
+        (index_dir / "index-meta.json").write_text(
+            json.dumps(
+                {
+                    "knowledge_id": version.id,
+                    "embed_model": "qwen3-embedding:0.6b",
+                    "classification": "INTERNAL",
+                    "chunk_count": 42,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (index_dir / "bm25.json").write_text("{}", encoding="utf-8")
+
         job = IndexingJob(
             asset_version_id=version.id,
             status="COMPLETED",
             chunk_count=42,
-            index_path=f"/data/indexes/{version.id}",
+            index_path=str(index_dir),
         )
         db.add(job)
 

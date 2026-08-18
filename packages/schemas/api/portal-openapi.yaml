@@ -260,6 +260,98 @@ paths:
         "404":
           $ref: "#/components/responses/NotFound"
 
+  /api/v1/assets/{asset_id}/versions/{version_id}/search-preview:
+    post:
+      tags: [knowledge-diagnostics]
+      summary: 검색 품질 테스트 — 이 질문을 하면 실제로 무엇이 검색되는가 (retrieval preview, D-079)
+      description: |
+        Producer용 검색 단계 진단이다. 이미 있는 정적 청크 미리보기/평가
+        지표와 달리, 실제 질의를 search-runtime에 보내 어떤 청크가 어떤
+        점수로 검색되는지 보여준다 — LLM 응답이 아니다(그건 챗봇 Quick
+        Create Wizard의 몫). 승인되지 않은 버전에도 동작한다(승인 전 확인이
+        이 기능의 목적이다).
+
+        요청 Body에 `metadata_filters`/`access_context`/`retrieval_profile`이
+        의도적으로 없다 — 04-knowledge-platform.md §3.8이 금지하는 ACL
+        Override 표면을 만들지 않기 위해서다. `ignore_relevance_threshold:
+        true`는 search-runtime에 `min_relevance_score: 0`만 추가로 보낼 뿐,
+        ACL/Classification 필터링은 절대 완화하지 않는다.
+
+        `knowledge_id`로는 `asset_id`가 아니라 이 경로의 `version_id`
+        (AssetVersion id)를 그대로 사용한다(D-060).
+      operationId: search_preview
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+        - $ref: "#/components/parameters/VersionId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SearchPreviewRequest"
+      responses:
+        "200":
+          description: OK (인용문이 0개여도 200 — `diagnostics.no_result_reason`으로 구분)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SearchPreviewResponse"
+        "400":
+          description: 잘못된 요청이거나, 이 자산이 Knowledge 유형이 아님
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          description: KNOWLEDGE_SEARCH_UNAVAILABLE — search-runtime에 연결할 수 없거나 오류를 반환함
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/assets/{asset_id}/versions/{version_id}/distribution-readiness:
+    get:
+      tags: [knowledge-diagnostics]
+      summary: 반출 준비 상태 점검 — 이 버전이 Desktop에서 실제로 활성화될지 예측 (D-079)
+      description: |
+        Offline Bundle ZIP을 만들기 전에, 이 버전의 색인이 설치 후
+        search-runtime의 `POST /search/v1/local-indexes`(D-079) 등록을
+        통과해 실제로 검색 가능해질지 미리 점검한다. 읽기 전용이며 아무것도
+        만들지 않는다 — 기존 반출(Distribution ZIP 생성) 흐름을 막지 않는다.
+
+        색인 디렉터리는 `GET /api/v1/assets/{asset_id}/knowledge-info`와
+        정확히 같은 방식으로 해석한다(portal-api는 두 번째 해석 경로를
+        만들지 않는다). `checks[].activation_reason`은
+        `packages/schemas/api/knowledge-local-index.schema.json`의
+        `RegisterLocalIndexResponse`가 문서화한 거절 사유 어휘 그대로이며,
+        `services/search-runtime`의 코드를 Import하지 않는다 — 두 서비스가
+        공유하는 것은 이 Schema 파일뿐이다.
+      operationId: distribution_readiness
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+        - $ref: "#/components/parameters/VersionId"
+      responses:
+        "200":
+          description: OK (`ready`는 FAIL인 check가 하나도 없을 때만 true)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DistributionReadinessResponse"
+        "400":
+          description: 이 자산이 Knowledge 유형이 아님
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
   /api/v1/my/assets:
     get:
       tags: [assets]
@@ -487,6 +579,122 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/knowledge/suggest-metadata:
+    post:
+      tags: [knowledge-search]
+      summary: AI 추천 — suggest a 지식 명/설명 from a document excerpt (P12 등록 화면)
+      description: |
+        Thin, stateless passthrough to `agent-runtime`'s
+        `POST /local/v1/knowledge-metadata-suggest` — root CLAUDE.md UI
+        구현 규칙 "Portal API는 모델을 직접 호출하지 않는다" means portal-api
+        never calls Ollama itself; it only relays this bounded request the
+        same way `routers/knowledge_search.py` relays search-runtime calls.
+        Stores nothing, gated by `ASSET_CREATE` (registering a Knowledge
+        asset already requires this permission). Field names match
+        `local-runtime-api.yaml#/components/schemas/
+        SuggestKnowledgeMetadataRequest` /`...Response` exactly.
+
+        The result is always a suggestion — portal-web must land it in
+        editable fields, never auto-submit, never overwrite text the user
+        already typed without an explicit user action. Registration itself
+        never depends on this endpoint succeeding.
+      operationId: suggest_knowledge_metadata
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SuggestKnowledgeMetadataRequest"
+      responses:
+        "200":
+          description: OK — a suggestion, not a fact.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SuggestKnowledgeMetadataResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: >
+            KNOWLEDGE_METADATA_SUGGEST_UNAVAILABLE — agent-runtime (or its
+            underlying model) could not be reached. Registration itself is
+            unaffected; the caller should fall back to manual entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/knowledge/extract-text:
+    post:
+      tags: [knowledge-search]
+      summary: AI 추천 — extract a bounded plain-text excerpt from a .pdf/.docx upload (P12 등록 화면)
+      description: |
+        Thin, stateless passthrough to `indexing-runtime`'s
+        `POST /indexing/v1/extract-text` — root CLAUDE.md UI 구현 규칙
+        "Portal API는 모델을 직접 호출하지 않는다"의 연장으로, portal-api는
+        문서 파싱도 직접 하지 않는다(그 책임은 indexing-runtime의 `loaders/`가
+        소유, D-073). `.md`/`.txt`는 portal-web이 client-side에서 직접 읽어
+        `POST /api/v1/knowledge/suggest-metadata`로 바로 보낸다 — 이 엔드포인트는
+        브라우저가 파싱할 수 없는 `.pdf`/`.docx`에만 쓰인다. 반환된 `excerpt`는
+        그대로 `suggest-metadata`에 넘기는 입력으로만 쓰인다(그 자체가 최종
+        결과가 아니다). Stores nothing: 업로드된 파일 bytes와 excerpt 어느
+        것도 DB에 쓰거나 감사 메타데이터에 남기지 않는다. Gated by
+        `ASSET_CREATE`(Knowledge 자산 등록과 동일 권한).
+      operationId: extract_knowledge_text
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: OK — a bounded plain-text excerpt, not the whole document.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExtractKnowledgeTextResponse"
+        "400":
+          description: >
+            KNOWLEDGE_TEXT_EXTRACT_REJECTED — indexing-runtime rejected the
+            upload: an unsupported format ("이 형식은 추천을 지원하지
+            않습니다") or an empty extraction result, or a payload exceeding
+            the upload size cap. Registration itself is unaffected; the
+            caller should fall back to manual entry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: >
+            Two distinguishable causes, both reported as 503 but with
+            DIFFERENT `error.code`/`error.message` — a caller must not
+            collapse them, since only one is fixable by an operator:
+            `KNOWLEDGE_TEXT_EXTRACT_UNAVAILABLE` (indexing-runtime
+            unreachable, or a genuine downstream 5xx) vs.
+            `KNOWLEDGE_TEXT_EXTRACT_DEPENDENCY_MISSING` (the format IS
+            supported, but this deployment hasn't installed the optional
+            `pypdf`/`python-docx` dependency — 서버에 PDF/Word 추출
+            의존성이 설치되어 있지 않습니다, D-073). Registration itself
+            never depends on this endpoint succeeding.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/manifests/validate:
     post:
       tags: [assets]
@@ -511,6 +719,37 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ManifestValidateResponse"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/manifests/mcp-tool/from-python-signature:
+    post:
+      tags: [assets]
+      summary: Convert one Python function signature into an MCP Tool input Schema
+      description: |
+        Static AST-only helper for the P05 MCP Tool registration Wizard. The
+        submitted source is never executed, imported, compiled, logged, or
+        persisted. Only a top-level function signature is inspected; function
+        body, decorators, docstring, return annotation, and unrelated top-level
+        statements are discarded and reported only as structural counts/flags.
+      operationId: convert_mcp_tool_python_signature
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PythonSignatureConvertRequest"
+      responses:
+        "200":
+          description: Converted input Schema and transparent discard report
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PythonSignatureConvertResponse"
         "400":
           $ref: "#/components/responses/ValidationError"
         "401":
@@ -1253,7 +1492,90 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/deployments/{deployment_id}/retire:
+    post:
+      tags: [deployments]
+      summary: Retire a deployment permanently — terminal, no path back (RELEASE_MANAGER)
+      description: >
+        §8 게시 수명주기: ACTIVE/SUSPENDED -> RETIRED. Terminal by design —
+        resume, rollback, update and re-publish all refuse a RETIRED
+        deployment, and the slug stays reserved so the URL can never be
+        silently reused by a different chatbot. Revision history is kept for
+        audit; only its status changes.
+      operationId: retire_deployment
+      parameters:
+        - $ref: "#/components/parameters/DeploymentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RetireDeploymentRequest"
+      responses:
+        "200":
+          description: Retired
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: Deployment is already RETIRED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/deployments/{deployment_id}/revisions:
+    post:
+      tags: [deployments]
+      summary: Update a live deployment to a new Service Version as a new revision (RELEASE_MANAGER)
+      description: >
+        §8 "Service Version 변경은 새 Deployment Revision으로 수행한다" and
+        HOST-022 "Update 실패 시 기존 Version을 유지한다". The target version
+        goes through the same publish Gate as `/publish`; when it fails,
+        nothing changes — the previously active revision stays ACTIVE and
+        serving. The update itself is a single synchronous transaction, so
+        the deployment is never observably in an intermediate state.
+      operationId: update_deployment_revision
+      parameters:
+        - $ref: "#/components/parameters/DeploymentId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/UpdateDeploymentRequest"
+      responses:
+        "201":
+          description: Updated — a new revision is ACTIVE and the previous one is SUPERSEDED
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Deployment"
+        "400":
+          description: Gate 검증 실패 (기존 Revision 유지) 또는 요청 형식 오류
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            Deployment is not ACTIVE/SUSPENDED, the target version belongs to
+            another Service, or it is already the active version
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
     get:
       tags: [deployments]
       summary: List this deployment's revisions (revision_number desc) as rollback candidates
@@ -1671,13 +1993,16 @@ components:
   schemas:
     HealthResponse:
       type: object
-      required: [status]
+      required: [status, version, commit_sha]
       properties:
         status:
           type: string
           enum: [ok, degraded]
         version:
           type: string
+        commit_sha:
+          type: string
+          description: Immutable source revision injected by release automation, or unknown in local development
 
     ErrorEnvelope:
       type: object
@@ -1822,6 +2147,59 @@ components:
           items:
             type: string
 
+    PythonSignatureConvertRequest:
+      type: object
+      required: [source]
+      additionalProperties: false
+      properties:
+        source:
+          type: string
+          minLength: 1
+          maxLength: 20000
+        function_name:
+          type: string
+          description: Optional only for callers selecting one function explicitly.
+
+    PythonSignatureParameter:
+      type: object
+      required: [name, schema_type, required, default_included]
+      additionalProperties: false
+      properties:
+        name: { type: string }
+        schema_type: { type: string }
+        required: { type: boolean }
+        default_included: { type: boolean }
+
+    PythonSignatureDiscarded:
+      type: object
+      required: [body_statement_count, decorator_count, docstring_present, return_annotation_present, top_level_statement_count, source_persisted, source_executed]
+      additionalProperties: false
+      properties:
+        body_statement_count: { type: integer, minimum: 0 }
+        decorator_count: { type: integer, minimum: 0 }
+        docstring_present: { type: boolean }
+        return_annotation_present: { type: boolean }
+        top_level_statement_count: { type: integer, minimum: 0 }
+        source_persisted: { type: boolean, const: false }
+        source_executed: { type: boolean, const: false }
+
+    PythonSignatureConvertResponse:
+      type: object
+      required: [function_name, input_schema, parameters, discarded, warnings]
+      additionalProperties: false
+      properties:
+        function_name: { type: string }
+        input_schema: { type: object }
+        parameters:
+          type: array
+          items:
+            $ref: "#/components/schemas/PythonSignatureParameter"
+        discarded:
+          $ref: "#/components/schemas/PythonSignatureDiscarded"
+        warnings:
+          type: array
+          items: { type: string }
+
     KnowledgeSearchRequest:
       type: object
       required: [query]
@@ -1867,6 +2245,14 @@ components:
           type: string
         parent_chunk_id:
           type: string
+        document_id:
+          type: string
+          description: >
+            04-knowledge-platform.md §2.6/§3.12 stable document identity,
+            echoed from the chunk's indexed metadata. Absent/empty for
+            indexes built before search-runtime surfaced it — that means
+            "unknown", not "no document", and must not be reconstructed
+            from document_path (D-045).
         document_path:
           type: string
         document_title:
@@ -1915,6 +2301,225 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/KnowledgeSearchCitation"
+
+    SuggestKnowledgeMetadataRequest:
+      type: object
+      required: [excerpt, filename]
+      description: |
+        Field names mirror local-runtime-api.yaml's
+        SuggestKnowledgeMetadataRequest exactly — portal-api relays this
+        body to agent-runtime unchanged.
+      properties:
+        excerpt:
+          type: string
+          minLength: 1
+        filename:
+          type: string
+        trace_id:
+          type: string
+
+    SuggestKnowledgeMetadataResponse:
+      type: object
+      required: [suggested_name, suggested_description, trace_id]
+      description: |
+        A suggestion, not a fact — untrusted model output. The caller must
+        render both fields as editable text only.
+      properties:
+        suggested_name:
+          type: string
+        suggested_description:
+          type: string
+        trace_id:
+          type: string
+
+    ExtractKnowledgeTextResponse:
+      type: object
+      required: [excerpt, trace_id]
+      description: |
+        A BOUNDED plain-text excerpt extracted server-side from a .pdf/.docx
+        upload (indexing-runtime enforces the bound) — meant to be fed into
+        SuggestKnowledgeMetadataRequest.excerpt unchanged, the same way
+        portal-web already handles .md/.txt client-side excerpts.
+      properties:
+        excerpt:
+          type: string
+        trace_id:
+          type: string
+
+    SearchPreviewRequest:
+      type: object
+      required: [query]
+      description: |
+        No metadata_filters/access_context/retrieval_profile field exists
+        here by design — same reasoning as KnowledgeSearchRequest, plus
+        04-knowledge-platform.md §3.8's explicit ACL-override prohibition.
+      properties:
+        query:
+          type: string
+          minLength: 1
+          maxLength: 1000
+        top_k:
+          type: integer
+          minimum: 1
+          maximum: 20
+          default: 5
+        ignore_relevance_threshold:
+          type: boolean
+          default: false
+          description: |
+            true sends search-runtime `min_relevance_score: 0` and only
+            that — never relaxes ACL/classification filtering.
+
+    SearchPreviewCitation:
+      type: object
+      description: |
+        search-runtime's own Citation shape
+        (knowledge-search.schema.json#/definitions/Citation), passed
+        through unchanged. Unlike KnowledgeSearchCitation, nothing is
+        stamped on here — this endpoint already knows which single
+        AssetVersion it searched.
+      required: [chunk_id, excerpt, score]
+      properties:
+        chunk_id:
+          type: string
+        parent_chunk_id:
+          type: string
+        document_id:
+          type: string
+          description: >
+            04-knowledge-platform.md §2.6/§3.12 stable document identity,
+            echoed from the chunk's indexed metadata. Absent/empty for
+            indexes built before search-runtime surfaced it — that means
+            "unknown", not "no document", and must not be reconstructed
+            from document_path (D-045).
+        document_path:
+          type: string
+        document_title:
+          type: string
+        page:
+          type: integer
+        section:
+          type: string
+        excerpt:
+          type: string
+        parent_context:
+          type: string
+        score:
+          type: number
+        similarity:
+          type: ["number", "null"]
+
+    SearchPreviewDiagnostics:
+      type: object
+      required:
+        - index_found
+        - min_relevance_score_applied
+        - relevance_threshold_ignored
+        - clearance_applied
+        - retry_without_threshold_available
+      properties:
+        index_found:
+          type: boolean
+          description: portal-api's own filesystem check — true regardless of whether the search-runtime call itself succeeded.
+        embed_model_applied:
+          type: ["string", "null"]
+        embed_model_source:
+          type: ["string", "null"]
+        min_relevance_score_applied:
+          type: number
+        relevance_threshold_ignored:
+          type: boolean
+        clearance_applied:
+          type: string
+        asset_classification:
+          type: ["string", "null"]
+          description: |
+            Registry에 기록된 이 자산의 보안등급. `clearance_applied`와 나란히
+            보여주기 위한 값 — 둘을 함께 보여주지 않으면
+            CLASSIFICATION_ABOVE_CLEARANCE가 무슨 뜻인지 화면에서 읽을 수 없다.
+        no_result_reason:
+          type: ["string", "null"]
+          enum: [INDEX_NOT_BUILT, CLASSIFICATION_ABOVE_CLEARANCE, NO_CITATIONS, null]
+          description: |
+            이 호출이 실제로 관측한 것으로만 채운다. "임계값에 걸렸다"는
+            단일 호출로 증명할 수 없으므로 서버가 지어내지 않는다 —
+            retry_without_threshold_available 참고.
+            CLASSIFICATION_ABOVE_CLEARANCE는 예외적으로 단일 호출로 증명
+            가능하다: 자산의 기록된 등급과 이 플랫폼이 assert하는 clearance를
+            security_policy의 규칙으로 비교한 결과이며, 검색 품질 문제가 아니라
+            정책상 전면 차단이라 관련도 필터를 꺼도 결과가 달라지지 않는다
+            (그래서 이 경우 retry_without_threshold_available은 false다).
+        retry_without_threshold_available:
+          type: boolean
+          description: |
+            True only when citations came back empty, the index was
+            found, and this call did not already set
+            ignore_relevance_threshold. The UI re-runs with
+            ignore_relevance_threshold: true, and only if THAT returns
+            citations may it then attribute the empty result to the
+            relevance threshold.
+
+    SearchPreviewResponse:
+      type: object
+      required: [citations, diagnostics, trace_id]
+      properties:
+        citations:
+          type: array
+          items:
+            $ref: "#/components/schemas/SearchPreviewCitation"
+        diagnostics:
+          $ref: "#/components/schemas/SearchPreviewDiagnostics"
+        trace_id:
+          type: string
+
+    DistributionReadinessCheck:
+      type: object
+      required: [id, status, message]
+      properties:
+        id:
+          type: string
+          enum:
+            - INDEXING_COMPLETED
+            - INDEX_DIR_FOUND
+            - INDEX_META_KNOWLEDGE_ID
+            - BM25_FORMAT
+            - CHROMA_PRESENT
+            - EMBED_MODEL_RECORDED
+            - CLASSIFICATION_STAMPED
+        status:
+          type: string
+          enum: [PASS, WARN, FAIL]
+        message:
+          type: string
+          description: Korean, user-facing.
+        remedy:
+          type: ["string", "null"]
+          description: A concrete action, e.g. the CLI command to run.
+        activation_reason:
+          type: ["string", "null"]
+          description: |
+            The D-079 refusal (knowledge-local-index.schema.json
+            RegisterLocalIndexResponse `details.reason`) this check
+            predicts, or null when there is none (a pre-install state) or
+            the check could not be evaluated (cascaded from an earlier
+            FAIL).
+
+    DistributionReadinessResponse:
+      type: object
+      required: [version_id, ready, checks, trace_id]
+      properties:
+        version_id:
+          type: string
+          format: uuid
+        ready:
+          type: boolean
+          description: True only when no check has status FAIL.
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/DistributionReadinessCheck"
+        trace_id:
+          type: string
 
     AssetListResponse:
       type: object
@@ -2648,6 +3253,16 @@ components:
           type: string
         service_definition:
           type: object
+        service_id:
+          type: string
+          format: uuid
+          description: >
+            Optional. When present, a new ServiceVersion is added to this
+            existing Service instead of a new Service being created — the
+            path that produces the "same Service, different Version" that
+            POST /deployments/{deployment_id}/revisions requires. Refused
+            with 409 SERVICE_VERSION_EXISTS if the Service already has this
+            service_definition.version.
 
     ValidationResult:
       type: object
@@ -2781,6 +3396,13 @@ components:
           format: date-time
         suspend_reason:
           type: string
+        retired_by:
+          type: string
+        retired_at:
+          type: string
+          format: date-time
+        retire_reason:
+          type: string
 
     DeploymentListResponse:
       type: object
@@ -2829,6 +3451,51 @@ components:
           format: uuid
         model_alias:
           type: string
+        service_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal ServiceVersion row id that this deployment's active
+            revision snapshots (additive, optional — open-decisions.md
+            D-034 (i) remaining half). Absent for a revision published
+            before this field existed; the Hosted Agent Runtime must treat
+            absence as "no real identifier available" and fall back to its
+            own opaque-slug-derived identifier, never fabricate a value.
+        service_version:
+          type: string
+          description: |
+            The `version` string (e.g. "1.0.0") of the ServiceVersion
+            identified by `service_version_id` above. Optional, same
+            fallback rule as `service_version_id`.
+        service_id:
+          type: string
+          format: uuid
+          description: |
+            Portal Service (ServiceDefinition) row id that owns the
+            ServiceVersion above. Optional, same fallback rule as
+            `service_version_id`. Not currently consumed by the Hosted
+            Agent Runtime (M05) — present for contract completeness and
+            future consumers.
+        registry_agent_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal AssetVersion id of the Registry Agent this deployment was
+            published with (D-034), resolved once at publish time from the
+            service definition's `agent_ref` and frozen into the revision
+            snapshot. Absent when the deployment uses a standard Agent whose
+            manifest is not a Portal asset — the normal case for the
+            chatbots published before Registry Agents existed. Always
+            returned together with `registry_prompt_version_id`: the Hosted
+            runtime resolves an Agent+Prompt *pair*, so a snapshot that
+            resolved only one of the two is reported as neither rather than
+            as a half pair that would fail per message at chat time.
+        registry_prompt_version_id:
+          type: string
+          format: uuid
+          description: |
+            Portal AssetVersion id of the Registry Prompt paired with
+            `registry_agent_version_id`. Same both-or-neither rule.
 
     PublishJobResponse:
       type: object
@@ -2840,6 +3507,35 @@ components:
         deployment_url:
           type: string
           description: "https://ai.company.local/chat/{slug}"
+
+    UpdateDeploymentRequest:
+      type: object
+      required: [service_version_id]
+      properties:
+        service_version_id:
+          type: string
+          format: uuid
+          description: >
+            The ServiceVersion to publish as a new revision. Must belong to
+            the same Service as this deployment and must not be the version
+            already active — 10-hosted-chatbot-publication.md §8 "Service
+            Version 변경은 새 Deployment Revision으로 수행한다".
+        reason:
+          type: string
+          description: >
+            Optional. Update is not one of the CLAUDE.md 승인·반려·중단·폐기
+            actions that mandate a reason, but it is recorded in the audit
+            event when supplied.
+
+    RetireDeploymentRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          description: >
+            Mandatory. RETIRED is terminal (§8) — 폐기는 확인과 사유를 요구한다.
 
     RollbackRequest:
       type: object

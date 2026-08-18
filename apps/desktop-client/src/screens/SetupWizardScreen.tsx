@@ -16,11 +16,13 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import type { ConnectionStatus, DesktopSettingsPublic, DiskSpaceInfo, OllamaModelsResult } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
+import { getBrowserSettingsBridge, isBrowserDesktopPreviewEnabled } from "../browserPreviewBridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, LabeledInput, LoadingState, PageHeader } from "../ui";
 import { computeDiskSpaceCheck, computeModelsCheck, computeOverallStatus, WIZARD_STEPS } from "./setupWizardTypes";
 
 export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) {
-  const bridge = getDesktopBridge();
+  const bridge = getDesktopBridge() ?? getBrowserSettingsBridge();
+  const browserPreview = isBrowserDesktopPreviewEnabled();
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -32,7 +34,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
   const [ollamaBaseUrl, setOllamaBaseUrl] = useState("");
   const [ollamaAllowNonLoopback, setOllamaAllowNonLoopback] = useState(false);
   const [chatModelAlias, setChatModelAlias] = useState("");
-  const [embeddingModelAlias, setEmbeddingModelAlias] = useState("");
   const [mcpServerAlias, setMcpServerAlias] = useState("");
   const [mcpServerUrl, setMcpServerUrl] = useState("");
 
@@ -58,7 +59,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
     setOllamaBaseUrl(s.ollamaBaseUrl);
     setOllamaAllowNonLoopback(s.ollamaAllowNonLoopback);
     setChatModelAlias(s.chatModelAlias);
-    setEmbeddingModelAlias(s.embeddingModelAlias);
     setMcpServerAlias(s.mcpServerAlias);
     setMcpServerUrl(s.mcpServerUrl);
     setMaxConcurrentRunsReason(s.maxConcurrentRuns.reason);
@@ -199,6 +199,13 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
     <div>
       <PageHeader title="최초 설정" description="Ollama·모델·MCP·자산 경로를 확인하고 저장합니다." />
 
+      {browserPreview && (
+        <div className="mb-4 rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-body text-amber-900">
+          <strong>브라우저 개발 모드</strong> — 이 마법사의 설정은 현재 브라우저에만 저장됩니다. 파일·디스크 관련
+          단계는 Electron에서 최종 확인하세요.
+        </div>
+      )}
+
       {/* 진행 단계 표시 */}
       <div className="mb-6 flex items-center gap-2">
         {WIZARD_STEPS.map((s, idx) => (
@@ -306,7 +313,6 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
             </p>
             <div className="grid gap-3 sm:grid-cols-2">
               <LabeledInput id="wizard-chat-alias" label="기본 Chat Model Alias" value={chatModelAlias} onChange={setChatModelAlias} placeholder="default-chat" />
-              <LabeledInput id="wizard-embedding-alias" label="기본 Embedding Model Alias" value={embeddingModelAlias} onChange={setEmbeddingModelAlias} placeholder="default-embedding" />
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -317,7 +323,7 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
                     setSaving(true);
                     setSaveError(null);
                     try {
-                      const result = await bridge.updateDesktopSettings({ chatModelAlias, embeddingModelAlias });
+                      const result = await bridge.updateDesktopSettings({ chatModelAlias });
                       if (!result.ok) {
                         setSaveError(result.error);
                         return;

@@ -48,6 +48,12 @@ from portal_api.auth import UserContext, get_current_user
 from portal_api.config import settings
 from portal_api.database import AsyncSessionLocal, get_db
 from portal_api.errors import error_response, not_found
+from portal_api.knowledge_readiness import (
+    distribution_readiness_checks,
+    first_failing_check,
+    is_ready,
+    latest_indexing_job,
+)
 from portal_api.models import (
     Asset,
     AssetVersion,
@@ -288,46 +294,219 @@ async def _build_service_version_root_payload(
             }
         )
 
+    # Registry Agent/Prompt (2026-08-17 후속): `snapshot["registry_agent"]`/
+    # `snapshot["registry_prompt"]` are already resolved and frozen at
+    # publish time (services.py::_build_dependency_snapshot's
+    # `_resolve_registry_asset_version`, D-034 comment there). Per D-044
+    # ("게시된 Revision의 resolved_dependency_snapshot을 유일한 진실
+    # 공급원으로 쓴다") we do NOT re-query the Registry for "the current
+    # APPROVED version" here — that could bundle a different Agent than the
+    # one the running chatbot actually uses. We *do* re-read the pinned
+    # AssetVersion row by the id the snapshot names, exactly like the
+    # `knowledge` loop above (manifest/manifest_hash/storage_path/status are
+    # read fresh so a since-revoked/suspended registry asset is caught by
+    # resolver.py, the same freshness discipline knowledge already has).
+    #
+    # Both-or-neither: only treat the pair as "Registry assets" when *both*
+    # resolved at publish time, mirroring the by-slug both-or-neither rule
+    # (services.py ~line 1049) — agent-runtime's `resolve_registry_agent_
+    # config` has no way to run a Registry Agent against a standard Prompt
+    # (or vice versa), so a mixed bundle would be uninstallable/misleading.
+    # When either side is missing, both fall back to the pre-existing
+    # STANDARD_LOCAL_COPY behavior unchanged — this is the path every
+    # already-published demo chatbot takes (no registry_agent/registry_prompt
+    # in their snapshots), and its output must stay byte-for-byte identical.
+    registry_agent = snapshot.get("registry_agent") or None
+    registry_prompt = snapshot.get("registry_prompt") or None
+    use_registry = bool(registry_agent and registry_prompt)
+
+    async def _registry_item(ref: dict, asset_type: str) -> dict:
+        version_row = (
+            await db.execute(
+                select(AssetVersion).where(AssetVersion.id == ref.get("asset_version_id"))
+            )
+        ).scalar_one_or_none()
+        if version_row is None:
+            # The snapshot points at an AssetVersion row that no longer
+            # exists. Do NOT fall back to the standard copy here — that
+            # would silently ship a different Agent/Prompt than the one the
+            # snapshot (and the running chatbot) actually names, which is
+            # the exact bug this change fixes. Fail closed: mark NOT_FOUND
+            # so resolver.py raises DEPENDENCY_MISSING and the bundle
+            # request fails loudly instead of lying about its contents.
+            return {
+                "asset_id": ref.get("asset_id"),
+                "asset_type": asset_type,
+                "asset_name": ref.get("asset_name"),
+                "role": asset_type,
+                "required": True,
+                "asset_version_id": ref.get("asset_version_id"),
+                "version": ref.get("version"),
+                "status": "NOT_FOUND",
+                "manifest": None,
+                "manifest_hash": None,
+                "storage_path": None,
+                "index_path": None,
+                "chunk_count": None,
+            }
+        return {
+            "asset_id": ref.get("asset_id"),
+            "asset_type": asset_type,
+            "asset_name": ref.get("asset_name"),
+            "role": asset_type,
+            "required": True,
+            "asset_version_id": version_row.id,
+            "version": version_row.version,
+            "status": version_row.status,
+            "manifest": version_row.manifest,
+            "manifest_hash": version_row.manifest_hash,
+            "storage_path": version_row.storage_path,
+            "index_path": None,
+            "chunk_count": None,
+        }
+
     agent_ref = service_definition.get("agent_ref") or {}
     if agent_ref.get("id"):
-        items.append(
-            {
-                "asset_id": agent_ref.get("id"),
-                "asset_type": "agent",
-                "asset_name": "Standard Knowledge Chat Agent",
-                "role": "agent",
-                "required": True,
-                "asset_version_id": None,
-                "version": agent_ref.get("version"),
-                "status": "STANDARD_LOCAL_COPY",
-                "manifest": None,
-                "manifest_hash": None,
-                "storage_path": None,
-                "index_path": None,
-                "chunk_count": None,
-            }
-        )
+        if use_registry:
+            items.append(await _registry_item(registry_agent, "agent"))
+        else:
+            items.append(
+                {
+                    "asset_id": agent_ref.get("id"),
+                    "asset_type": "agent",
+                    "asset_name": "Standard Knowledge Chat Agent",
+                    "role": "agent",
+                    "required": True,
+                    "asset_version_id": None,
+                    "version": agent_ref.get("version"),
+                    "status": "STANDARD_LOCAL_COPY",
+                    "manifest": None,
+                    "manifest_hash": None,
+                    "storage_path": None,
+                    "index_path": None,
+                    "chunk_count": None,
+                }
+            )
 
-    for binding in service_definition.get("prompt_bindings") or []:
-        items.append(
-            {
-                "asset_id": binding.get("prompt_id"),
-                "asset_type": "prompt",
-                "asset_name": "Standard Knowledge Answer Prompt",
-                "role": "prompt",
-                "required": True,
-                "asset_version_id": None,
-                "version": binding.get("prompt_version"),
-                "status": "STANDARD_LOCAL_COPY",
-                "manifest": None,
-                "manifest_hash": None,
-                "storage_path": None,
-                "index_path": None,
-                "chunk_count": None,
-            }
-        )
+    for index, binding in enumerate(service_definition.get("prompt_bindings") or []):
+        # `registry_prompt` only ever resolves `prompt_bindings[0]`
+        # (services.py `_first_prompt_ref` — one Agent+Prompt pair is all
+        # `resolve_registry_agent_config` supports). A second binding, if
+        # one ever exists, was never captured in the snapshot and keeps the
+        # pre-existing STANDARD_LOCAL_COPY behavior — unchanged from before
+        # this fix, not a new gap it introduces.
+        if use_registry and index == 0:
+            items.append(await _registry_item(registry_prompt, "prompt"))
+        else:
+            items.append(
+                {
+                    "asset_id": binding.get("prompt_id"),
+                    "asset_type": "prompt",
+                    "asset_name": "Standard Knowledge Answer Prompt",
+                    "role": "prompt",
+                    "required": True,
+                    "asset_version_id": None,
+                    "version": binding.get("prompt_version"),
+                    "status": "STANDARD_LOCAL_COPY",
+                    "manifest": None,
+                    "manifest_hash": None,
+                    "storage_path": None,
+                    "index_path": None,
+                    "chunk_count": None,
+                }
+            )
 
     return items, service_definition
+
+
+# Action-first Korean guidance per failing check id, deliberately NOT the
+# check's own `remedy` string verbatim — `BM25_FORMAT`'s remedy
+# (`convert-bm25-format {index_dir}`) carries an absolute local filesystem
+# path, and 07-data-api-contracts.md §10.2 forbids internal paths in a
+# user-facing message. The 반출 준비 상태 점검 screen (P10/P11) still shows the
+# raw `remedy` field in its own panel — this Gate's error message only
+# points at the fix in general terms; the panel is not duplicated here per
+# the task brief.
+_READINESS_ACTION_TEXT = {
+    "INDEXING_COMPLETED": "색인 작업을 실행하거나, 실패했다면 다시 실행하세요.",
+    "INDEX_DIR_FOUND": "색인 작업을 다시 실행하세요.",
+    "INDEX_META_KNOWLEDGE_ID": "색인 작업을 다시 실행하세요.",
+    "BM25_FORMAT": "BM25 색인을 최신(JSON) 형식으로 변환한 뒤 다시 시도하세요.",
+    "CHROMA_PRESENT": "색인 작업을 다시 실행하세요.",
+}
+_READINESS_DEFAULT_ACTION_TEXT = "색인 작업을 다시 실행하세요."
+
+
+async def _knowledge_distribution_readiness_gate(
+    db: AsyncSession, items: list[dict], trace_id: str
+) -> JSONResponse | None:
+    """D-079 반출 준비 상태 점검을 Distribution 생성 시점의 Gate로 실행한다
+    (측정된 사고: 색인 Job이 FAILED인 Knowledge가 승인 -> Offline Bundle ->
+    Desktop 설치까지 그대로 통과해, 활성화 시점에야 사용자가 손댈 수 없는
+    오류로 실패했다).
+
+    `routers.knowledge_diagnostics.distribution_readiness`가 쓰는 것과
+    완전히 같은 판정(`portal_api.knowledge_readiness`)을 재사용한다 — 화면과
+    Gate가 서로 다른 답을 낼 수 없다(브리핑 1항). `items`는 이 Distribution이
+    실제로 담으려는 것 전부를 대상으로 한다: ASSET_VERSION root가 Knowledge
+    Asset 자신이든, SERVICE_VERSION root의 Knowledge 의존성이든 `asset_type
+    == "knowledge"`이면 동일하게 검사한다 — non-Knowledge Asset(agent 등)은
+    이 필터에 걸리지 않으므로 Gate가 실수로 그것들을 붙잡을 수 없다(브리핑
+    2항의 "non-Knowledge asset unaffected" 요구).
+
+    `ready is False`(FAIL 등급 Check가 하나라도 있음)면 즉시 거부한다 — WARN
+    (`EMBED_MODEL_RECORDED`/`CLASSIFICATION_STAMPED`)은 설계상 Block하지
+    않는다. 인덱스 자체를 읽을 수 없는 경우도 `distribution_readiness_checks`
+    안에서 이미 FAIL로 취급되므로(WARN으로 낙관하지 않음) 별도 처리가
+    필요 없다.
+    """
+    for item in items:
+        if item.get("asset_type") != "knowledge":
+            continue
+        version_id = item.get("asset_version_id")
+        if not version_id:
+            continue
+        job = await latest_indexing_job(db, version_id)
+        checks = distribution_readiness_checks(job, version_id)
+        if is_ready(checks):
+            continue
+
+        failing = first_failing_check(checks)
+        assert failing is not None  # is_ready() is False iff some check FAILed
+
+        # 오류코드: `KNOWLEDGE_INDEX_CORRUPT`(07-data-api-contracts.md §8
+        # Knowledge 분류)를 선택했다. 이 Gate가 막는 모든 FAIL 원인
+        # (색인 미완료/디렉터리 없음/메타데이터 불일치/BM25 legacy
+        # pickle-only/BM25 또는 Chroma 누락)은 전부 "이 버전의 색인이 Desktop
+        # 활성화에 쓸 수 있는 온전한 상태가 아니다"라는 하나의 사실을
+        # 서술한다. search-runtime은 이 중 BM25 legacy pickle 케이스에 대해
+        # 질의 시점에 정확히 이 코드를 이미 사용하고 있고(D-054,
+        # `search_runtime.main`의 `LegacyPickleBm25Refused` 처리),
+        # 나머지 등록 시점 거부(`local_index_registry.py`)는
+        # `VALIDATION_ERROR`를 쓰지만 그건 "이 등록 요청 자체가 잘못됨"이라는
+        # 다른 화자(호출자의 등록 시도)의 의미라 이 Gate(포털이 스스로
+        # 예측해 사전에 막는 상황)에는 맞지 않는다. `ASSET_STATE_TRANSITION_
+        # INVALID`(바로 위 APPROVED 여부 검사에서 쓰는 코드)도 검토했으나
+        # 그 코드는 이 라우터 전체에서 `AssetVersion.status`/서비스 게시
+        # 여부 같은 수명주기 필드 전이에만 쓰이고 있어(reviews.py/assets.py
+        # 전체 용례 확인), 색인 완전성이라는 다른 축의 실패를 같은 코드에
+        # 얹으면 오류코드 하나가 두 가지 원인을 가리키게 된다. `KNOWLEDGE_
+        # INDEX_CORRUPT`가 Knowledge 색인이라는 동일 도메인 안에서 가장
+        # 정확히 들어맞는다고 판단했다.
+        action = _READINESS_ACTION_TEXT.get(failing.id, _READINESS_DEFAULT_ACTION_TEXT)
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "KNOWLEDGE_INDEX_CORRUPT",
+            f"이 Knowledge 버전의 색인이 아직 반출 가능한 상태가 아니어서 "
+            f"Distribution을 생성할 수 없습니다 ({failing.id}). {action}",
+            trace_id,
+            details={
+                "asset_version_id": version_id,
+                "check": failing.id,
+                "activation_reason": failing.activation_reason,
+            },
+        )
+    return None
 
 
 @router.post("", response_model=CreateDistributionResponseOut, status_code=status.HTTP_202_ACCEPTED)
@@ -402,6 +581,10 @@ async def create_distribution(
             "지원하지 않는 root_type입니다.",
             trace_id,
         )
+
+    readiness_denial = await _knowledge_distribution_readiness_gate(db, items, trace_id)
+    if readiness_denial:
+        return readiness_denial
 
     known_revocations = await _known_revocations(db)
 

@@ -11,9 +11,14 @@ import { ASSET_TYPE_FOLDER, sha256OfFile, walkFiles, type InstallRootLayout } fr
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { computeAssetStatus } from "./asset-status";
+import {
+  resolveKnowledgeEmbedModelInfo,
+  type KnowledgeIndexMetaReadResult,
+} from "./knowledge-embed-model";
 import { findReferencingServices, parseServiceDefinition, type InstalledServiceBindings } from "./service-dependencies";
 import { evaluateAssetRemoval, type ActivePointerInput } from "./removal-guard";
 import { computeManifestDiff, manifestFileNameHint } from "./version-diff";
+import { buildKnowledgeCandidates } from "./knowledge-candidates";
 import type {
   ActivateVersionResult,
   AssetDependencyView,
@@ -24,6 +29,8 @@ import type {
   ChecksumVerification,
   InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeEmbedModelInfo,
+  KnowledgeCandidate,
   OrphanedInstallCleanupResult,
 } from "./types";
 
@@ -39,6 +46,86 @@ function readJsonIfExists(filePath: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const KNOWLEDGE_INDEX_META_PATH = "index/index-meta.json";
+
+/**
+ * Repairs a pre-D-060 Knowledge install only when its own index metadata is
+ * still covered by, and matches, the checksum verified during installation.
+ * Missing evidence leaves the record untouched (fail closed).
+ */
+export function recoverLegacyKnowledgeAssetVersionIds(
+  layout: InstallRootLayout,
+  store: InstalledAssetsStore,
+): number {
+  let recovered = 0;
+  const assetsRoot = `${path.resolve(layout.assetsDir)}${path.sep}`;
+
+  for (const asset of store.list()) {
+    if (asset.assetType !== "knowledge" || asset.assetVersionId) continue;
+    const expectedChecksum = asset.fileChecksums?.[KNOWLEDGE_INDEX_META_PATH]?.toLowerCase();
+    if (!expectedChecksum || !/^[0-9a-f]{64}$/.test(expectedChecksum)) continue;
+
+    try {
+      const installDir = path.resolve(assetInstallDir(layout, "knowledge", asset.assetId, asset.version));
+      if (!`${installDir}${path.sep}`.startsWith(assetsRoot)) continue;
+      const metaPath = path.join(installDir, KNOWLEDGE_INDEX_META_PATH);
+      // Offline Bundle import rejects symlinks; keep the recovery path just
+      // as strict in case local files were changed after installation.
+      if (!fs.existsSync(metaPath) || !fs.lstatSync(metaPath).isFile()) continue;
+      if (sha256OfFile(metaPath).toLowerCase() !== expectedChecksum) continue;
+
+      const raw = readJsonIfExists(metaPath);
+      if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+      const candidate = (raw as Record<string, unknown>).knowledge_id;
+      if (typeof candidate !== "string" || !UUID_PATTERN.test(candidate) || candidate === asset.assetId) continue;
+      if (store.backfillAssetVersionId(asset.assetType, asset.assetId, asset.version, candidate)) recovered += 1;
+    } catch {
+      // A damaged/unreadable local file or unwritable state registry must not
+      // crash Desktop. The record remains disabled and keeps its explanation.
+      continue;
+    }
+  }
+
+  return recovered;
+}
+
+// ---------------------------------------------------------------------------
+// D10 설정 — 설치된 Knowledge가 실제로 어떤 임베딩 모델로 색인되었는가
+// ---------------------------------------------------------------------------
+
+/** 색인 메타데이터를 읽어 "없음"과 "손상됨"을 구분해 돌려준다 — 두 경우는
+ * 사용자에게 보여줄 문구가 다르므로 하나로 합치지 않는다. 판정 자체는
+ * `knowledge-embed-model.ts`(순수)가 하고 이 함수는 fs 읽기만 담당한다. */
+function readKnowledgeIndexMeta(layout: InstallRootLayout, asset: InstalledAsset): KnowledgeIndexMetaReadResult {
+  const metaPath = path.join(
+    assetInstallDir(layout, "knowledge", asset.assetId, asset.version),
+    KNOWLEDGE_INDEX_META_PATH,
+  );
+  if (!fs.existsSync(metaPath)) return { status: "MISSING" };
+  const raw = readJsonIfExists(metaPath);
+  if (raw === null) return { status: "UNREADABLE" };
+  return { status: "OK", raw };
+}
+
+/** 설치된 Knowledge 각각에 대해 "검색이 실제로 쓸 임베딩 모델"을 판정한다.
+ * Knowledge마다 색인 시점이 다르면 모델도 다를 수 있으므로 하나의 전역 값으로
+ * 합치지 않고 자산별로 돌려준다. */
+export function listKnowledgeEmbedModels(
+  layout: InstallRootLayout,
+  store: InstalledAssetsStore,
+): KnowledgeEmbedModelInfo[] {
+  return store
+    .list()
+    .filter((a) => a.assetType === "knowledge")
+    .map((a) =>
+      resolveKnowledgeEmbedModelInfo(
+        { assetId: a.assetId, name: a.name, version: a.version },
+        readKnowledgeIndexMeta(layout, a),
+      ),
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +255,24 @@ export function readAssetManifest(layout: InstallRootLayout, asset: InstalledAss
     };
   }
   return { available: true, reason: null, manifest };
+}
+
+// ---------------------------------------------------------------------------
+// D06 대화 — KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택)
+// ---------------------------------------------------------------------------
+
+/** `assets`(렌더러가 이미 "검색 가능"으로 판정해 넘긴 목록, `chatTypes.ts`의
+ * `partitionInstalledKnowledgeByActivation`)마다 `manifest.json`을 읽고
+ * `buildKnowledgeCandidates`(순수 조립 규칙, `knowledge-candidates.ts`)로
+ * agent-runtime의 `knowledge_candidates` 입력 형태로 만든다. fs 읽기(이
+ * 함수)와 필드 조립(순수 모듈)의 경계는 `diffAssetVersions`가
+ * `readAssetManifest`+`computeManifestDiff`에 대해 갖는 관계와 동일하다. */
+export function buildKnowledgeCandidatesForChat(
+  layout: InstallRootLayout,
+  assets: InstalledAsset[],
+): KnowledgeCandidate[] {
+  const manifests = assets.map((asset) => readAssetManifest(layout, asset));
+  return buildKnowledgeCandidates(assets, manifests);
 }
 
 // ---------------------------------------------------------------------------

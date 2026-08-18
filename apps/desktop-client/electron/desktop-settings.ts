@@ -19,13 +19,41 @@ import path from "node:path";
 // Endpoint 기본값은 connections.ts가 유일한 출처다 — 여기서 다시 상수를
 // 정의하면 두 파일이 서로 다른 기본값으로 갈라질 위험이 생긴다(D01 3/5단계와
 // D09가 결국 같은 값을 봐야 한다).
-import { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL } from "./connections";
-import { validateGenericUrl, validateOllamaBaseUrl } from "./network-policy";
+import {
+  DEFAULT_MCP_SERVER_ALIAS,
+  DEFAULT_MCP_SERVER_URL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_RUNTIME_BASE_URL,
+  DEFAULT_SEARCH_RUNTIME_BASE_URL,
+} from "./connections";
+import {
+  validateAgentRuntimeBaseUrl,
+  validateGenericUrl,
+  validateOllamaBaseUrl,
+  validateSearchRuntimeBaseUrl,
+} from "./network-policy";
+import { DEFAULT_CHAT_MODEL_ALIAS } from "./ollama-chat";
 import type { DesktopSettingsInput, DesktopSettingsPublic, DesktopSettingsUpdateResult } from "./types";
 
-export const DEFAULT_CHAT_MODEL_ALIAS = "default-chat";
-export const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
-export { DEFAULT_MCP_SERVER_ALIAS, DEFAULT_MCP_SERVER_URL, DEFAULT_OLLAMA_BASE_URL };
+export { DEFAULT_CHAT_MODEL_ALIAS };
+export {
+  DEFAULT_MCP_SERVER_ALIAS,
+  DEFAULT_MCP_SERVER_URL,
+  DEFAULT_OLLAMA_BASE_URL,
+  DEFAULT_RUNTIME_BASE_URL,
+  DEFAULT_SEARCH_RUNTIME_BASE_URL,
+};
+
+// `embeddingModelAlias`(자유 입력 텍스트 필드)는 2026-08-14 제거되었다 —
+// 전체 참조 검색 결과 이 값을 저장 이후 실제로 읽는 코드가 어디에도 없었다
+// (search-runtime/indexing-runtime/agent-runtime 어디에도 전달되지 않음).
+// "바꿔도 아무것도 달라지지 않는 설정은 없는 것보다 나쁘다"는 이 파일의
+// `MAX_CONCURRENT_RUNS_*`(D-074)와 같은 원칙을 그대로 따른 것 — 다만
+// 여기서는 대체할 고정값이 하나가 아니라(Knowledge마다 다를 수 있음) D10이
+// `getKnowledgeEmbedModels()`(asset-management.ts)로 설치된 Knowledge마다
+// 실제 색인 기록을 직접 읽어 보여준다. `desktop-settings.json`에 예전 값이
+// 남아 있어도 아래 `read()`가 알려진 필드만 골라 읽으므로 조용히 무시되고
+// 로드는 계속 성공한다(마이그레이션 없이도 깨지지 않음).
 
 // D-074(open-decisions.md): 오늘 Desktop은 창 하나·대화 하나에서만 Run을
 // 실행할 수 있다(ChatScreen의 `isRunning` 게이트, 다중 창/다중 대화 UI 없음,
@@ -44,9 +72,11 @@ interface DesktopSettingsFile {
   ollamaBaseUrl: string;
   ollamaAllowNonLoopback: boolean;
   chatModelAlias: string;
-  embeddingModelAlias: string;
   mcpServerAlias: string;
   mcpServerUrl: string;
+  searchRuntimeBaseUrl: string;
+  agentRuntimeBaseUrl: string;
+  pythonInterpreterPath: string | null;
   setupCompletedAt: string | null;
   updatedAt: string | null;
 }
@@ -57,9 +87,13 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   ollamaBaseUrl: DEFAULT_OLLAMA_BASE_URL,
   ollamaAllowNonLoopback: false,
   chatModelAlias: DEFAULT_CHAT_MODEL_ALIAS,
-  embeddingModelAlias: DEFAULT_EMBEDDING_MODEL_ALIAS,
   mcpServerAlias: DEFAULT_MCP_SERVER_ALIAS,
   mcpServerUrl: DEFAULT_MCP_SERVER_URL,
+  searchRuntimeBaseUrl: DEFAULT_SEARCH_RUNTIME_BASE_URL,
+  agentRuntimeBaseUrl: DEFAULT_RUNTIME_BASE_URL,
+  // D-084: 절대 `python`/`python3` PATH 기본값으로 대체하지 않는다 — 값이
+  // 없으면 로컬 Tool 실행 자체가 막힌다(구현 원칙 7).
+  pythonInterpreterPath: null,
   setupCompletedAt: null,
   updatedAt: null,
 };
@@ -82,10 +116,13 @@ export class DesktopSettingsStore {
         ollamaBaseUrl: typeof parsed.ollamaBaseUrl === "string" ? parsed.ollamaBaseUrl : DEFAULT_OLLAMA_BASE_URL,
         ollamaAllowNonLoopback: parsed.ollamaAllowNonLoopback === true,
         chatModelAlias: typeof parsed.chatModelAlias === "string" ? parsed.chatModelAlias : DEFAULT_CHAT_MODEL_ALIAS,
-        embeddingModelAlias:
-          typeof parsed.embeddingModelAlias === "string" ? parsed.embeddingModelAlias : DEFAULT_EMBEDDING_MODEL_ALIAS,
         mcpServerAlias: typeof parsed.mcpServerAlias === "string" ? parsed.mcpServerAlias : DEFAULT_MCP_SERVER_ALIAS,
         mcpServerUrl: typeof parsed.mcpServerUrl === "string" ? parsed.mcpServerUrl : DEFAULT_MCP_SERVER_URL,
+        searchRuntimeBaseUrl:
+          typeof parsed.searchRuntimeBaseUrl === "string" ? parsed.searchRuntimeBaseUrl : DEFAULT_SEARCH_RUNTIME_BASE_URL,
+        agentRuntimeBaseUrl:
+          typeof parsed.agentRuntimeBaseUrl === "string" ? parsed.agentRuntimeBaseUrl : DEFAULT_RUNTIME_BASE_URL,
+        pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       };
@@ -108,9 +145,11 @@ export class DesktopSettingsStore {
       ollamaBaseUrl: current.ollamaBaseUrl,
       ollamaAllowNonLoopback: current.ollamaAllowNonLoopback,
       chatModelAlias: current.chatModelAlias,
-      embeddingModelAlias: current.embeddingModelAlias,
       mcpServerAlias: current.mcpServerAlias,
       mcpServerUrl: current.mcpServerUrl,
+      searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
+      agentRuntimeBaseUrl: current.agentRuntimeBaseUrl,
+      pythonInterpreterPath: current.pythonInterpreterPath,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
       updatedAt: current.updatedAt,
@@ -149,12 +188,6 @@ export class DesktopSettingsStore {
       }
       next.chatModelAlias = patch.chatModelAlias.trim();
     }
-    if (patch.embeddingModelAlias !== undefined) {
-      if (!patch.embeddingModelAlias.trim()) {
-        return { ok: false, error: "기본 Embedding Model Alias를 입력하세요.", settings: this.getPublic() };
-      }
-      next.embeddingModelAlias = patch.embeddingModelAlias.trim();
-    }
     if (patch.mcpServerAlias !== undefined) {
       if (!patch.mcpServerAlias.trim()) {
         return { ok: false, error: "MCP Server Alias를 입력하세요.", settings: this.getPublic() };
@@ -165,6 +198,25 @@ export class DesktopSettingsStore {
       const check = validateGenericUrl(patch.mcpServerUrl, "MCP Server URL");
       if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
       next.mcpServerUrl = patch.mcpServerUrl.trim();
+    }
+    if (patch.searchRuntimeBaseUrl !== undefined) {
+      const check = validateSearchRuntimeBaseUrl(patch.searchRuntimeBaseUrl);
+      if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
+      next.searchRuntimeBaseUrl = patch.searchRuntimeBaseUrl.trim();
+    }
+    if (patch.agentRuntimeBaseUrl !== undefined) {
+      const check = validateAgentRuntimeBaseUrl(patch.agentRuntimeBaseUrl);
+      if (!check.ok) return { ok: false, error: check.error, settings: this.getPublic() };
+      next.agentRuntimeBaseUrl = patch.agentRuntimeBaseUrl.trim();
+    }
+    if (patch.pythonInterpreterPath !== undefined) {
+      // D-084: 파일시스템 경로이지 URL이 아니므로 URL 검증을 거치지 않는다.
+      // 저장 시점에 존재 여부(fs.existsSync)를 요구하지도 않는다 — 사용자가
+      // Python을 아직 설치하지 않았거나, 이 개발 환경에서 fs 확인을 신뢰할
+      // 수 없는 경우에도 값을 먼저 저장할 수 있어야 한다(Task Brief). 빈
+      // 문자열은 "미설정"(null)으로 되돌린다 — 다른 선택형 문자열 필드
+      // (clientDisplayName 등)와 동일한 trim -> empty-to-null 관례.
+      next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
     }
 
     next.updatedAt = new Date().toISOString();

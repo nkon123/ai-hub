@@ -101,6 +101,36 @@ class ManifestValidateResponseOut(BaseModel):
     errors: list[str] = []
 
 
+class PythonSignatureConvertRequest(BaseModel):
+    source: str
+    function_name: str | None = None
+
+
+class PythonSignatureParameterOut(BaseModel):
+    name: str
+    schema_type: str
+    required: bool
+    default_included: bool
+
+
+class PythonSignatureDiscardedOut(BaseModel):
+    body_statement_count: int
+    decorator_count: int
+    docstring_present: bool
+    return_annotation_present: bool
+    top_level_statement_count: int
+    source_persisted: bool
+    source_executed: bool
+
+
+class PythonSignatureConvertResponseOut(BaseModel):
+    function_name: str
+    input_schema: dict
+    parameters: list[PythonSignatureParameterOut]
+    discarded: PythonSignatureDiscardedOut
+    warnings: list[str] = []
+
+
 class PromptTemplateOut(BaseModel):
     content: str
 
@@ -134,6 +164,12 @@ class ErrorResponse(BaseModel):
 class CreateServiceRequest(BaseModel):
     name: str
     service_definition: dict
+    # When present, add a new ServiceVersion to this existing Service instead
+    # of creating a new Service. This is what makes `POST
+    # /deployments/{id}/revisions` (update) reachable at all: an update needs
+    # a *different* version of the *same* Service, and without this field the
+    # only way to get one was to write it straight into the database.
+    service_id: str | None = None
 
 
 class ServiceVersionOut(BaseModel):
@@ -273,6 +309,9 @@ class DeploymentOut(BaseModel):
     suspended_by: str | None = None
     suspended_at: datetime | None = None
     suspend_reason: str | None = None
+    retired_by: str | None = None
+    retired_at: datetime | None = None
+    retire_reason: str | None = None
 
 
 class DeploymentListResponse(BaseModel):
@@ -290,6 +329,21 @@ class PublishJobResponseOut(BaseModel):
 class RollbackDeploymentRequest(BaseModel):
     reason: str
     target_revision_id: str | None = None
+
+
+class UpdateDeploymentRequest(BaseModel):
+    """POST /deployments/{id}/revisions — §8 "Service Version 변경은 새
+    Deployment Revision으로 수행한다". `reason` is optional: Update is not
+    one of the CLAUDE.md 승인·반려·중단·폐기 actions that mandate one."""
+
+    service_version_id: str
+    reason: str | None = None
+
+
+class RetireDeploymentRequest(BaseModel):
+    """POST /deployments/{id}/retire — terminal, so 사유는 필수."""
+
+    reason: str
 
 
 class DeploymentRevisionKnowledgeSummary(BaseModel):
@@ -331,6 +385,24 @@ class DeploymentBySlugOut(BaseModel):
     active_revision_id: str | None = None
     knowledge_id: str | None = None
     model_alias: str | None = None
+    # D-034 — resolved once at publish time into the immutable revision
+    # snapshot. Both are null for a Deployment whose Service Definition
+    # points at one of the two standard Agents (their manifests are not
+    # Portal assets), which is the case for every chatbot published before
+    # 2026-08-16; the Hosted runtime then keeps using its standard config.
+    registry_agent_version_id: str | None = None
+    registry_prompt_version_id: str | None = None
+    # open-decisions.md D-034 (i) 남은 절반 — Hosted Agent Runtime의 MCP 감사
+    # 컨텍스트(packages/schemas/api/mcp-audit-context.schema.json)가 지금까지
+    # 발급해 온 service_id/service_version은 slug에서 UUID5로 지어낸 값과
+    # 리터럴 "0.0.0-poc-unregistered"였다 — 실재하는 ServiceVersion 행을
+    # 여기서 돌려준다. 셋 다 Optional: 아래 어느 값도 없으면(구버전
+    # portal-api, 또는 revision에서 ServiceVersion을 찾지 못한 경우)
+    # agent-runtime은 기존과 완전히 동일하게 slug 폴백을 쓴다 — 이 필드가
+    # 게시된 챗봇을 답변 불가로 만들면 안 된다.
+    service_version_id: str | None = None
+    service_version: str | None = None
+    service_id: str | None = None
 
 
 # --- Review workflow (M02 — §3.6 ReviewRequest/ReviewDecision) ---
@@ -986,6 +1058,10 @@ class KnowledgeSearchCitationOut(BaseModel):
 
     chunk_id: str
     parent_chunk_id: str | None = None
+    # §2.6/§3.12 stable document identity. Optional because indexes built
+    # before search-runtime surfaced it return nothing here — None means
+    # "this index predates it", never "no document".
+    document_id: str | None = None
     document_path: str | None = None
     document_title: str | None = None
     page: int | None = None
@@ -1009,3 +1085,139 @@ class KnowledgeSearchResponseOut(BaseModel):
     # call failed — see the router's partial-failure handling).
     knowledge_ids_searched: list[str]
     citations: list[KnowledgeSearchCitationOut]
+
+
+class SuggestKnowledgeMetadataRequest(BaseModel):
+    """Field names mirror agent-runtime's `local-runtime-api.yaml`
+    `SuggestKnowledgeMetadataRequest` exactly — this router relays the body
+    unchanged (`routers/knowledge_metadata_suggest.py`)."""
+
+    excerpt: str = Field(min_length=1)
+    filename: str
+    trace_id: str | None = None
+
+
+class SuggestKnowledgeMetadataResponseOut(BaseModel):
+    """A suggestion, not a fact — untrusted model output relayed verbatim.
+    The caller (portal-web) must render both fields as editable text only."""
+
+    suggested_name: str
+    suggested_description: str
+    trace_id: str
+
+
+class ExtractKnowledgeTextResponseOut(BaseModel):
+    """`routers/knowledge_text_extract.py` — the .pdf/.docx leg of P12's AI
+    추천 button. `excerpt` is a BOUNDED plain-text excerpt (indexing-runtime
+    enforces the bound, see `INDEXING_EXTRACT_TEXT_EXCERPT_MAX_CHARS`), meant
+    to be fed into `POST /api/v1/knowledge/suggest-metadata` unchanged — the
+    same client-side flow portal-web already uses for .md/.txt excerpts."""
+
+    excerpt: str
+    trace_id: str
+
+
+# ---------------------------------------------------------------------------
+# D-079 Knowledge diagnostics — see routers/knowledge_diagnostics.py.
+#
+# Feature 1 (검색 품질 테스트, POST .../search-preview): a retrieval-level
+# diagnostic, distinct from KnowledgeSearchRequest/Response above in scope
+# (this endpoint targets exactly one AssetVersion, including non-APPROVED
+# ones — "이 질문을 하면 실제로 무엇이 검색되는가" before publication) but
+# identical in the one design choice that matters most: NO ACL/clearance/
+# classification/metadata_filters override field. 04-knowledge-platform.md
+# §3.8 forbids handing the caller a surface to widen its own access, and
+# that rule applies here exactly as it does to the Hub Search request above.
+#
+# Feature 2 (반출 준비 상태 점검, GET .../distribution-readiness): predicts,
+# from Registry state and the same index directory
+# `routers.assets.resolve_knowledge_index_dir` resolves, whether a D-079
+# `POST /search/v1/local-indexes` registration of this version's index would
+# be accepted after a Desktop install. `activation_reason` values are never
+# invented here — they are exactly the `details.reason` vocabulary
+# `packages/schemas/api/knowledge-local-index.schema.json`'s
+# RegisterLocalIndexResponse documents (`tests/contract/
+# test_distribution_readiness_activation_reasons.py` guards this).
+# ---------------------------------------------------------------------------
+
+
+class SearchPreviewRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    top_k: int = Field(default=5, ge=1, le=20)
+    # True sends search-runtime `min_relevance_score: 0` and *only* that —
+    # it must never relax ACL/classification filtering (see the router's
+    # `_search_preview_payload` docstring and its dedicated test).
+    ignore_relevance_threshold: bool = False
+
+
+class SearchPreviewCitationOut(BaseModel):
+    """search-runtime's own Citation shape
+    (knowledge-search.schema.json#/definitions/Citation), passed through
+    field-for-field — unlike KnowledgeSearchCitationOut above, this endpoint
+    searches exactly one already-known AssetVersion, so there is nothing to
+    stamp on (no knowledge_id/asset_id/asset_name/source: the caller already
+    supplied all three as path/body parameters)."""
+
+    chunk_id: str
+    parent_chunk_id: str | None = None
+    # §2.6/§3.12 stable document identity. Optional because indexes built
+    # before search-runtime surfaced it return nothing here — None means
+    # "this index predates it", never "no document".
+    document_id: str | None = None
+    document_path: str | None = None
+    document_title: str | None = None
+    page: int | None = None
+    section: str | None = None
+    excerpt: str
+    parent_context: str | None = None
+    score: float
+    similarity: float | None = None
+
+
+class SearchPreviewDiagnosticsOut(BaseModel):
+    index_found: bool
+    embed_model_applied: str | None = None
+    embed_model_source: str | None = None
+    min_relevance_score_applied: float
+    relevance_threshold_ignored: bool
+    clearance_applied: str
+    # The Registry's recorded classification for this asset, echoed so the
+    # screen can put it next to `clearance_applied` — the two together are
+    # what make CLASSIFICATION_ABOVE_CLEARANCE readable instead of cryptic.
+    asset_classification: str | None = None
+    # Every value here must be provable from what this call actually
+    # observed — see the router for why "임계값에 걸렸다" specifically is
+    # never fabricated server-side (it needs a second call with the
+    # threshold off, which the client makes deliberately).
+    # CLASSIFICATION_ABOVE_CLEARANCE is provable without a second call: it
+    # compares the asset's recorded classification against the clearance this
+    # platform asserts, using security_policy's own rule.
+    no_result_reason: (
+        Literal["INDEX_NOT_BUILT", "CLASSIFICATION_ABOVE_CLEARANCE", "NO_CITATIONS"] | None
+    ) = None
+    retry_without_threshold_available: bool
+
+
+class SearchPreviewResponseOut(BaseModel):
+    citations: list[SearchPreviewCitationOut]
+    diagnostics: SearchPreviewDiagnosticsOut
+    trace_id: str
+
+
+class DistributionReadinessCheckOut(BaseModel):
+    id: str
+    status: Literal["PASS", "WARN", "FAIL"]
+    message: str
+    remedy: str | None = None
+    # The D-079 refusal this check predicts, or null when the check has no
+    # corresponding search-runtime refusal (INDEXING_COMPLETED — a state
+    # before an index directory exists at all) or could not be evaluated
+    # (cascaded from an earlier FAIL — see the router).
+    activation_reason: str | None = None
+
+
+class DistributionReadinessResponseOut(BaseModel):
+    version_id: str
+    ready: bool
+    checks: list[DistributionReadinessCheckOut]
+    trace_id: str

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -18,13 +19,19 @@ from portal_api.routers.assets import router as assets_router
 from portal_api.routers.deployments import router as deployments_router
 from portal_api.routers.distributions import router as distributions_router
 from portal_api.routers.evaluations import router as evaluations_router
+from portal_api.routers.knowledge_diagnostics import router as knowledge_diagnostics_router
+from portal_api.routers.knowledge_metadata_suggest import (
+    router as knowledge_metadata_suggest_router,
+)
 from portal_api.routers.knowledge_search import router as knowledge_search_router
+from portal_api.routers.knowledge_text_extract import router as knowledge_text_extract_router
 from portal_api.routers.reviews import router as reviews_router
 from portal_api.routers.services import router as services_router
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn.
 configure_logging("portal-api")
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -32,12 +39,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # See `database.init_db()` docstring: schema is owned by Alembic
     # (`make migrate`), not created here.
     await init_db()
+    logger.info(
+        "service.started service=portal-api build_version=%s commit_sha=%s",
+        settings.build_version,
+        settings.commit_sha,
+    )
     yield
 
 
 app = FastAPI(
     title="Enterprise AI Asset Hub — Portal API",
-    version="0.1.0",
+    version=settings.build_version,
     lifespan=lifespan,
 )
 
@@ -75,13 +87,30 @@ app.include_router(deployments_router)
 app.include_router(distributions_router)
 app.include_router(evaluations_router)
 app.include_router(admin_router)
+# `/api/v1/assets/{asset_id}/versions/{version_id}/search-preview` and
+# `.../distribution-readiness` are new literal suffixes on an existing
+# `{param}` path, same shape as evaluations_router's `.../evaluations`
+# above — no catch-all collision (D-034) is possible.
+app.include_router(knowledge_diagnostics_router)
 # `/api/v1/knowledge-search` is a brand-new literal path segment (no
 # `{param}` catch-all), so unlike the reviews_router/assets_router ordering
 # above (D-034), registration order here cannot shadow or be shadowed by
 # any existing route.
 app.include_router(knowledge_search_router)
+# `/api/v1/knowledge/suggest-metadata` is likewise a brand-new literal path
+# segment — same D-034 non-collision reasoning as knowledge_search_router.
+app.include_router(knowledge_metadata_suggest_router)
+# `/api/v1/knowledge/extract-text` — brand-new literal path segment, same
+# D-034 non-collision reasoning.
+app.include_router(knowledge_text_extract_router)
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "version": settings.build_version,
+            "commit_sha": settings.commit_sha,
+        }
+    )

@@ -1,22 +1,50 @@
-// Static registry stand-ins for the Composer wizard.
+// The 2 built-in standard Agent/Prompt profiles for the Composer wizard, plus
+// (2026-08-16) the glue that lets Steps 3/6 offer Portal Registry-registered
+// Agent/Prompt asset versions alongside them.
 //
-// D-034 (open-decisions.md): Agent and Prompt assets are NOT in the Portal
-// Registry yet — they exist only as static config under
+// D-034 (open-decisions.md) originally noted that Agent/Prompt assets were
+// NOT in the Portal Registry at all — only these 2 static configs under
 // services/agent-runtime/config/{standard-agent,standard-db-agent,
-// standard-prompt,standard-db-prompt}/*.json. There is no
-// `GET /api/v1/assets?type=agent` or `type=prompt` result to page through
-// (verified live: both return `{items: [], total: 0}`), so Steps 3 and 6
-// present these two known built-in options honestly, instead of pretending a
-// registry lookup happened. The ids/versions below are copied byte-for-byte
-// from those manifest files so agent_ref/prompt_bindings in the generated
-// Service Definition point at the same ids the running agent-runtime (and
-// hr-chatbot-service fixture) already use.
+// standard-prompt,standard-db-prompt}/*.json existed, and
+// `GET /api/v1/assets?type=agent`/`type=prompt` always returned
+// `{items: [], total: 0}`. That registration gap closed on 2026-08-16 (P05's
+// structured Agent/Prompt forms) — but the *execution* side was still
+// missing until this same date: agent-runtime's `manifests.py` already had
+// an unused "resolution path 2" (`resolve_registry_agent_config`, wired
+// through `POST /local/v1/runs`'s `registry_agent_version_id`/
+// `registry_prompt_version_id`) that no UI ever called. `StepAgent.tsx` and
+// `StepPrompt.tsx` now call `GET /api/v1/assets?type=agent`/`type=prompt`
+// for real and let a registered, APPROVED Agent+Prompt pair be selected and
+// actually Preview-run — see `resolveAgentOption()` below and
+// `registryManifests.ts` for the parsing/gating helpers both steps share.
+//
+// The 2 standard options below still exist and still work exactly as
+// before — the ids/versions are copied byte-for-byte from their manifest
+// files so agent_ref/prompt_bindings in the generated Service Definition
+// point at the same ids the running agent-runtime (and hr-chatbot-service
+// fixture) already use. They remain the only Agent choice that needs no
+// Registry round-trip and no APPROVED-version gate (D-034's local fallback,
+// unchanged).
 
-import type { AgentProfileId, Classification } from "./types";
+import type { AgentProfileId, AgentSelection, Classification, RegistryPromptSelection } from "./types";
 
+/** Unified shape every downstream step (StepMcp/StepPrompt/StepLimits/
+ * StepPreview/StepSummary/buildServiceDefinition) consumes, regardless of
+ * whether the Agent came from the 2 built-in profiles or a Portal-registered
+ * asset version (D-034 path 2, resolveAgentOption() below). `prompt` is only
+ * absent for a registry Agent before Step 6 picks its paired Prompt — every
+ * consumer that needs `prompt` runs at/after Step 6, where page.tsx already
+ * gates progress on it being non-null (see page.tsx canGoNext case 6). */
 export interface AgentOption {
-  id: AgentProfileId;
-  /** agent_ref.id — services/agent-runtime/config/{id}/agent-manifest.json's own `id`. */
+  /** Stable React key / "selected" comparison — profileId for standard,
+   * asset id for registry (a registry Agent asset has exactly one selectable
+   * version at a time, so the asset id alone is enough to key on). */
+  id: string;
+  source: "standard" | "registry";
+  /** agent_ref.id — the manifest's OWN `id` field, never the Portal asset_id
+   * or asset-version id (those are different identifiers — see
+   * `registryAgentVersionId` below for the one agent-runtime actually needs
+   * for Registry resolution). */
   manifestId: string;
   manifestVersion: string;
   name: string;
@@ -27,7 +55,12 @@ export interface AgentOption {
   maxContextTokens: number;
   timeoutSeconds: number;
   maxMcpCalls: number;
-  prompt: PromptOption;
+  /** Portal asset-VERSION id — set only for `source: "registry"`. This is
+   * what `registry_agent_version_id` on `POST /local/v1/runs` needs
+   * (agent-runtime's `manifests.py` resolution path 2), and is intentionally
+   * NOT the same value as `manifestId` above. */
+  registryAgentVersionId?: string;
+  prompt?: PromptOption;
 }
 
 export interface PromptOption {
@@ -36,6 +69,10 @@ export interface PromptOption {
   name: string;
   description: string;
   variables: { name: string; required: boolean; description: string }[];
+  /** Portal asset-VERSION id — set only when this Prompt came from the
+   * Registry (Step 6's registered-Prompt picker), for the same reason
+   * `AgentOption.registryAgentVersionId` exists. */
+  registryPromptVersionId?: string;
 }
 
 const STANDARD_PROMPT: PromptOption = {
@@ -64,6 +101,7 @@ const STANDARD_DB_PROMPT: PromptOption = {
 export const AGENT_OPTIONS: AgentOption[] = [
   {
     id: "standard-agent",
+    source: "standard",
     manifestId: "550e8400-e29b-41d4-a716-446655440010",
     manifestVersion: "1.0.0",
     name: "Standard Knowledge Chat Agent",
@@ -78,6 +116,7 @@ export const AGENT_OPTIONS: AgentOption[] = [
   },
   {
     id: "standard-db-agent",
+    source: "standard",
     manifestId: "550e8400-e29b-41d4-a716-446655440011",
     manifestVersion: "1.0.0",
     name: "Standard Knowledge+DB Chat Agent",
@@ -92,6 +131,58 @@ export const AGENT_OPTIONS: AgentOption[] = [
     prompt: STANDARD_DB_PROMPT,
   },
 ];
+
+/**
+ * Resolve the wizard's Step 3(+6) selection into the unified `AgentOption`
+ * shape every later step consumes — D-034 path 2 (open-decisions.md):
+ * `services/agent-runtime/src/agent_runtime/manifests.py`'s
+ * `resolve_registry_agent_config` already lets `POST /local/v1/runs` execute
+ * a Portal-registered Agent+Prompt pair (APPROVED-only, schema-revalidated,
+ * cached) via `registry_agent_version_id`/`registry_prompt_version_id` — no
+ * agent-runtime/contract change was needed, only this wizard actually
+ * offering the choice and wiring those two ids through
+ * (StepPreview.tsx/buildServiceDefinition.ts). Returns `null` only when
+ * nothing is selected yet; a registry Agent with no Prompt chosen yet still
+ * resolves (with `prompt: undefined`) so Steps 4/5 can render.
+ */
+export function resolveAgentOption(
+  agent: AgentSelection | null,
+  registryPrompt: RegistryPromptSelection | null
+): AgentOption | null {
+  if (!agent) return null;
+
+  if (agent.source === "standard") {
+    return AGENT_OPTIONS.find((a) => a.id === agent.profileId) ?? null;
+  }
+
+  const prompt: PromptOption | undefined = registryPrompt
+    ? {
+        manifestId: registryPrompt.manifest.id,
+        manifestVersion: registryPrompt.manifest.version,
+        name: registryPrompt.manifest.name,
+        description: registryPrompt.manifest.description,
+        variables: registryPrompt.manifest.variables,
+        registryPromptVersionId: registryPrompt.versionId,
+      }
+    : undefined;
+
+  return {
+    id: agent.assetId,
+    source: "registry",
+    manifestId: agent.manifest.id,
+    manifestVersion: agent.manifest.version,
+    name: agent.manifest.name,
+    description: agent.manifest.description,
+    roleId: agent.manifest.entryRole,
+    knowledgeRequired: agent.manifest.knowledgeRequired,
+    mcpAllowed: agent.manifest.mcpAllowed,
+    maxContextTokens: agent.manifest.maxContextTokens,
+    timeoutSeconds: agent.manifest.timeoutSeconds,
+    maxMcpCalls: agent.manifest.maxMcpCalls,
+    registryAgentVersionId: agent.versionId,
+    prompt,
+  };
+}
 
 // fixtures/valid/office-profile-default/office-profile.json — the only Office
 // Profile in this PoC. model_aliases only has one chat alias; there is no

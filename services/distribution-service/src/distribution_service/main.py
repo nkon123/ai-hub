@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import logging
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -44,14 +46,35 @@ from distribution_service.storage import FileSystemStorageAdapter
 configure_logging("distribution-service")
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Distribution Service", version="0.1.0")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    logger.info(
+        "service.started service=distribution-service build_version=%s commit_sha=%s",
+        settings.build_version,
+        settings.commit_sha,
+    )
+    yield
+
+
+app = FastAPI(
+    title="Distribution Service",
+    version=settings.build_version,
+    lifespan=lifespan,
+)
 
 _storage = FileSystemStorageAdapter(settings.bundle_output_root)
 
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    return JSONResponse(
+        {
+            "status": "ok",
+            "version": settings.build_version,
+            "commit_sha": settings.commit_sha,
+        }
+    )
 
 
 @app.post("/bundle/v1/jobs", response_model=BundleJobResponse)

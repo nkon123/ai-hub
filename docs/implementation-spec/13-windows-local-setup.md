@@ -94,6 +94,43 @@ uv run --project services/indexing-runtime convert-bm25-format data\indexes\<Ass
 uv run --project services/indexing-runtime stamp-classification data\indexes\<AssetVersion id> --classification INTERNAL
 ```
 
+## 2.6 Node 의존성과 폐쇄망 반입 (Desktop 채팅의 Markdown 렌더링 포함)
+
+Node 의존성은 `pnpm install` 로 설치하며 `pnpm-lock.yaml` 이 버전을 고정한다.
+폐쇄망 PC 에는 npm 레지스트리 접근이 없을 수 있으므로, **인터넷이 되는 곳에서
+받아 통째로 옮기는 것**이 기본 절차다.
+
+```powershell
+# (1) 인터넷이 되는 PC 에서 — 저장소 루트
+$env:ELECTRON_SKIP_BINARY_DOWNLOAD = "1"   # Electron 바이너리는 별도 반입(§7)
+pnpm install --frozen-lockfile
+pnpm store prune                            # 쓰지 않는 캐시 정리
+```
+
+옮기는 방법은 둘 중 하나다.
+
+| 방법 | 무엇을 옮기나 | 비고 |
+|---|---|---|
+| `node_modules` 통째 복사 | 저장소 루트와 각 워크스페이스의 `node_modules` | 가장 단순하다. 대상 PC 의 OS/아키텍처가 같아야 한다 |
+| pnpm store 반입 | `pnpm store path` 가 알려주는 디렉터리 | 대상 PC 에서 `pnpm install --offline` 이 이 store 만 보고 설치한다. 여러 저장소를 반입할 때 유리하다 |
+
+`pnpm install --offline` 은 네트워크를 아예 시도하지 않으므로, 반입이 빠졌으면
+조용히 옛 상태로 도는 대신 **실패한다** — 이 PoC 에서 원하는 동작이다.
+
+### Desktop 채팅의 Markdown 렌더링 (2026-08-14 추가)
+
+`apps/desktop-client` 가 `react-markdown` 과 `remark-gfm` 을 쓴다. 모델 답변이
+제목·목록·표·코드블록을 자유롭게 쓰는데 그것을 평문으로 보여주면 읽기 어렵기
+때문이다(루트 `CLAUDE.md`: 새 의존성은 이유와 폐쇄망 설치 방법을 문서화한다).
+
+- **순수 JavaScript 패키지**다. 네이티브 빌드나 별도 바이너리 다운로드가 없으므로
+  위 절차 그대로 반입된다 — Electron 바이너리처럼 따로 챙길 것이 없다.
+- 렌더링은 `src/screens/AnswerMarkdown.tsx` 한 곳에서만 한다. 그 파일은 두 가지를
+  의도적으로 하지 않는다: **raw HTML 활성화**(`rehype-raw` 를 넣지 않는다 — 모델이
+  만든 텍스트를 HTML 로 실행시키는 경로가 된다)와 **이동 가능한 링크 생성**
+  (Electron 렌더러에서 링크를 열면 SPA 문서 자체가 대체된다). 링크는 주소를 함께
+  보여주되 클릭 대상이 아니고, 이미지는 대체 텍스트만 남긴다.
+
 ## 2.5 Python 의존성 설치 (pip)
 
 **Windows 로컬 실행은 pip 만 쓴다.** uv 는 필요하지 않다.
@@ -243,7 +280,7 @@ chcp 65001
 
 **`pnpm install` 을 직접 실행하면 Electron 단계에서 막힐 수 있다.** `apps/desktop-client` 의 postinstall 이 Electron 실행 바이너리(약 100MB)를 GitHub Releases 에서 내려받는데, 사내망에서는 `RequestError: read ECONNRESET` 로 실패하는 경우가 많다.
 
-**Portal 을 띄우는 데 Electron 은 필요 없다.** 위 스크립트는 기본적으로 Electron 바이너리 내려받기를 건너뛰고 나머지를 모두 설치한다. Portal(:3000)과 Desktop 렌더러(Vite, :5174)는 그대로 동작하며, Electron 앱 자체를 띄울 때만 바이너리가 필요하다.
+**Portal 을 띄우는 데 Electron 은 필요 없다.** 위 스크립트는 기본적으로 Electron 바이너리 내려받기를 건너뛰고 나머지를 모두 설치한다. Portal(:3000)과 Desktop 렌더러(Vite, **:5173** — `vite.config.ts`가 `strictPort`로 고정)는 그대로 동작하며, Electron 앱 자체를 띄울 때만 바이너리가 필요하다.
 
 직접 실행한다면 아래와 같다.
 
@@ -261,7 +298,7 @@ pnpm install
 ```
 
 
-- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있지만, **개발 macOS 머신에서는 정책상 실제로 설치된 적이 없다** — Windows PC 에서 `install-pip.ps1` 을 실행하는 시점이 **최초로 설치되는 시점**이다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
+- **PDF/Word Knowledge 색인 지원(D-073)**: `services/indexing-runtime/pyproject.toml`에 `pypdf`, `python-docx`를 의존성으로 추가했다. 두 패키지는 `requirements.txt` 에 고정 버전으로 포함되어 있다. **2026-08-15 실측 정정**: 개발 macOS 머신에도 이미 설치되어 있다(pypdf 6.15.0, python-docx 1.2.0). 이 문서에 오래 남아 있던 "개발 머신에는 설치된 적이 없다"는 서술은 사실이 아니었고, 그 서술을 근거로 작성된 작업 지시가 실제와 어긋난 적이 있다 — Windows PC 가 **최초 설치 시점**이라는 전제도 함께 무효다. Windows PC 에서의 설치 절차 자체(아래 미러 확인)는 그대로 유효하다. 설치가 실패하면 `pip config list` 로 사내 미러 인덱스 설정을 확인한다(미러 주소는 조직마다 다르므로 이 문서에서 구체적 값을 지어내지 않는다).
   - `pypdf`: 순수 Python, BSD-3-Clause, OS/아키텍처 무관 단일 wheel.
   - `python-docx`: 순수 Python, MIT. 유일한 런타임 의존성 `lxml`은 win_amd64용 사전 빌드 wheel을 제공하므로 별도 C 빌드 도구 없이 설치 가능하다(미러에 lxml wheel도 함께 반입되어 있어야 함).
   - 두 패키지가 없어도 indexing-runtime 자체는 정상 기동하고 Markdown/Text Knowledge는 그대로 색인된다 — PDF/DOCX 파일을 실제로 색인하려 할 때만 "PDF 로더에 필요한 pypdf가 설치되어 있지 않습니다" 같은 명확한 한국어 오류로 실패한다(크래시가 아님). 상세: `services/indexing-runtime/src/indexing_runtime/loaders/`.
@@ -352,6 +389,80 @@ pnpm dev
 - **이 PoC 세션(macOS)에서는 Electron 앱을 한 번도 실제로 기동한 적이 없다**(사내 정책상 서명되지 않은 바이너리가 macOS Gatekeeper/XProtect에 격리됨, `progress-log.md` M04 항목 참고). 따라서 `pnpm dev`가 Windows에서 실제로 Electron 창을 띄우는지는 **미검증**이며, 지금까지의 M04 검증은 전부 코드/단위 테스트(`pnpm --filter desktop-client test`) 수준이다.
 - Windows 설치 패키지(NSIS)를 만들려면 `pnpm run dist:win`(electron-builder)을 사용한다 — 코드 서명 관련 세부사항은 `docs/implementation-spec/11-desktop-packaging-and-distribution.md` 참고.
 
+### 7.1 설치한 Knowledge를 실제로 검색에 활성화하기 (D-079)
+
+**"설치됨"은 "검색 가능"이 아니다.** Desktop이 ZIP을 15단계 검증 후 설치하면 색인 파일은 그 PC의 사용자 폴더(`%APPDATA%\Enterprise AI Asset Hub\assets\knowledge\...`)에 들어가지만, search-runtime은 자기 `INDEX_BASE` 트리만 검색한다. 그래서 활성화하지 않은 Knowledge는 오류 없이 **영원히 0건**을 반환한다 — 이것이 D-079가 닫은 공백이다.
+
+활성화는 search-runtime의 관리 API(`POST /search/v1/local-indexes`)로 이루어지며, 이 API는 **기본적으로 꺼져 있다.**
+
+| 서비스 | 환경 변수 | 기본값 | 의미 |
+|---|---|---|---|
+| search-runtime | `SEARCH_LOCAL_INDEX_ROOTS` | (비어 있음 = 기능 꺼짐) | 외부에 설치된 색인을 등록할 수 있는 상위 디렉터리 목록(`os.pathsep` 구분). 비어 있으면 모든 등록 요청이 403 `local_indexes_disabled`로 거절된다 |
+| search-runtime | `SEARCH_LOCAL_INDEX_REGISTRY` | `INDEX_BASE` 옆의 `local-indexes.json` | 등록 내역 저장 파일. 재기동 후에도 활성화 상태가 유지된다 |
+
+**Desktop이 있는 PC에서 search-runtime을 띄울 때:**
+
+```powershell
+$env:SEARCH_LOCAL_INDEX_ROOTS = "$env:APPDATA\Enterprise AI Asset Hub\assets"
+```
+
+```bash
+# macOS/Linux
+export SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI Asset Hub/assets"
+```
+
+**중앙에 배포된 search-runtime에는 이 값을 설정하지 않는다.** 기본값(비어 있음)이 곧 "이 서비스가 새로 접근할 수 있는 파일 경로가 늘어나지 않는다"는 뜻이다. 설정하더라도 등록은 그 루트 안쪽으로만 허용되고, 경계 검사는 symlink를 해석한 뒤에 수행하므로 루트 안에 심어 둔 링크로 바깥 디렉터리를 등록할 수 없다.
+
+**활성화가 거절되는 대표적인 경우 (모두 명시적 오류로 반환되며, 조용한 0건이 되지 않는다):**
+
+| `details.reason` | 뜻과 대처 |
+|---|---|
+| `local_indexes_disabled` | 위 `SEARCH_LOCAL_INDEX_ROOTS`가 설정되지 않았다 |
+| `bm25_legacy_pickle_only` | 색인에 `bm25.json` 없이 legacy `bm25.pkl`만 있다. **배포 채널로 들어온 pickle은 이 서비스가 절대 로드하지 않는다**(D-054) — §2.2 절차로 변환한 뒤 다시 반출/설치한다 |
+| `index_meta_knowledge_id_mismatch` | 색인 폴더의 `index-meta.json`이 다른 `knowledge_id`를 기록하고 있다. 잘못된 색인을 가리키고 있다는 뜻이므로 등록하지 않는다(D-060) |
+| `central_index_exists` | 같은 `knowledge_id` 색인이 이미 이 서비스의 `INDEX_BASE`에 있다. **중앙 색인이 항상 우선**하며, 외부 색인이 그것을 덮어쓸 수 없다 |
+| `path_outside_allowed_roots` | 허용 루트 밖의 경로다 |
+
+**실측(2026-08-13, macOS)**: 현재 저장소의 `data/indexes/d9e660b7-...`(재택근무 정책 Knowledge) 색인은 아직 `bm25.pkl`만 가지고 있어 **그대로는 활성화되지 않는다** — `bm25_legacy_pickle_only`로 거절되는 것을 실제 서비스로 확인했다. `convert-bm25-format`으로 변환한 사본은 등록에 성공했고, 같은 질의(`장비 지원은 무엇이 있나요?`)가 활성화 전 0건 → 활성화 후 실제 Citation 1건(`장비 지원` 섹션, similarity 0.53) → 비활성화 후 다시 0건으로 바뀌는 것까지 확인했다. **Offline Bundle로 반출하기 전에 §2.2 변환을 먼저 수행할 것.**
+
+**이건 이 색인 하나만의 문제가 아니었다(2026-08-13 오전, 전수 조사)**: `data/indexes/` 아래 존재하던 5개 색인을 전부 확인한 결과, 그 시점에는 **예외 없이 전부 `bm25.pkl`만 있고 변환된 `bm25.json`이 없었다.** 그리고 `87827bf9-…`는 청크 18개 전부 `classification`이 기록되지 않아 D-062(미분류 자산 fail-closed)에 걸려 어떤 클리어런스로도 결과를 반환하지 않았다.
+
+**같은 날 오후, 사용자 승인을 받아 두 조치를 실행해 해소했다(D-081, `open-decisions.md` 참고)**: 5개 색인 전부에 `convert-bm25-format`을 실행했고(전부 `"action": "converted"`를 보고, 재실행 시 전부 `"already_converted"`로 멱등성 확인), `87827bf9-…`는 사용자가 결정한 **INTERNAL** 등급으로 `stamp-classification`을 실행했다(청크 18개 전부). 현재 상태:
+
+| 색인(AssetVersion id) | bm25 포맷 (2026-08-13 조치 후) | 청크 classification |
+|---|---|---|
+| `43d83955-…` | `bm25.json` (변환 완료) | CONFIDENTIAL (청크 64개) |
+| `87827bf9-…` | `bm25.json` (변환 완료) | **INTERNAL (청크 18개, 이 세션에서 신규 stamp)** |
+| `a038442d-…` | `bm25.json` (변환 완료) | INTERNAL (청크 11개) |
+| `d9e660b7-…` | `bm25.json` (변환 완료) | INTERNAL (청크 4개) |
+| `hr-policy-v1` | `bm25.json` (변환 완료) | INTERNAL (청크 4개) |
+
+이제 이 5개 색인은 그대로 반출해도 `bm25_legacy_pickle_only`로 거절되지 않는다. 변환이 검색 결과 자체를 바꾸지 않는다는 것도 별도 포트에서 자체 기동한 search-runtime으로 실측했다 — `d9e660b7`, 질의 `장비 지원은 무엇이 있나요?`, clearance INTERNAL: 변환 전후 모두 인용 1건·섹션 `장비 지원`·similarity 0.5265(차이 0.0000). `87827bf9-…`의 분류 차단 해소도 실측했다 — 같은 조건에서 스탬프 전 0건 → 후 5건(최상위 섹션 `AX를 위한 LLM 입문 자료 짧은 요약`, similarity 0.8991). 조치 전 `data/indexes/` 전체를 세션 scratchpad(임시 디렉터리이며 영구 rollback 수단으로 취급하지 않는다)에 백업했다.
+
+**위 절차(`convert-bm25-format`/`stamp-classification`)는 이 5개 색인에 대해서는 이미 끝났지만, 앞으로 새로 만들어지는(또는 다른 PC에 있는) 색인에는 여전히 그대로 적용된다** — indexing-runtime이 새로 만드는 색인은 기본적으로 `bm25.json`을 생성하므로 보통은 필요 없지만, 구버전 파이프라인으로 만들어졌거나 이관된 색인이라면 §2.2 변환을 거쳐야 하고, classification이 기록되지 않은 색인은 `stamp-classification`으로 등급을 부여해야 검색된다. 아래 §8 표의 "챗봇/검색이 오류 없이 항상 '근거 없음'" 항목은 이 증상이 다른 색인에서 재발했을 때 그대로 쓸 수 있는 진단 가이드다.
+
+**아직 해소되지 않은 것**: Desktop 앱이 이 PC에 이미 설치해 둔 사본(`~/Library/Application Support/desktop-client/assets/knowledge/2f157a86-…/1.0.0/index`, macOS 기준)은 여전히 `bm25.pkl`만 있다 — 그 `knowledge_id`(`d9e660b7-…`)가 중앙 `INDEX_BASE`에 이미 있어 `central_index_exists`로 어차피 등록이 거절되므로 지금 변환해도 이득이 없어 의도적으로 범위 밖에 뒀다. 그리고 실행 중이던 `:8300` search-runtime 프로세스는 여전히 D-079 라우트가 없는 구버전이라 활성화 요청이 404 나며, 운영자가 재시작해야 해소된다 — 이번 조치에서 라이브 서비스 재시작은 하지 않았다.
+
+search-runtime은 Desktop과 **같은 PC**에 있어야 한다 — 등록 요청이 전달하는 것은 그 PC의 로컬 절대 경로이므로, 원격 search-runtime은 그 디렉터리를 읽을 수 없다.
+
+### 7.2 macOS 개발 세션에서 스택 제어하기 (`scripts/macos/dev-stack.sh`)
+
+이 문서의 나머지는 Windows 대상 PC 배포 절차이지만, 이 저장소를 준비·검증하는 macOS 개발 머신에서는 7개 서비스를 매번 개별 명령으로 띄우고 내리는 대신 한 스크립트로 제어할 수 있다. `scripts/windows/start-all.ps1`/`health-check.ps1`의 macOS 대응물이며, 이쪽은 시작뿐 아니라 종료까지 한 진입점에서 지원한다.
+
+```bash
+scripts/macos/dev-stack.sh <start|stop|restart|status> [서비스 이름...]
+```
+
+서비스 이름을 생략하면 7개 전체(portal-api/agent-runtime/indexing-runtime/search-runtime/distribution-service/office-mcp-server/portal-web)를 대상으로 한다. 실행 명령 자체는 `Makefile`의 `dev-*` 타겟과 동일하되 `--reload`는 뺀다 — reloader가 감시용 부모와 실제 요청을 처리하는 자식 프로세스를 분리해 PID·포트 관리를 불안정하게 만들기 때문이다. 이 스크립트로 띄운 스택은 코드가 바뀌면 `restart`로 통째로 다시 띄우는 것을 전제로 하므로 파일 감시가 필요 없다.
+
+- **`start`는 포트가 이미 점유돼 있으면 거부한다**(점유 중인 PID와 시작 시각을 표시) — 죽은 줄 알았던 프로세스 위에 새 인스턴스를 덧띄우는 사고를 막기 위함이다.
+- **`stop`은 PID 파일만 믿지 않는다** — 포트 소유자 PID와 명령줄 패턴을 함께 찾아 SIGTERM을 보내고, 그래도 남아 있으면 SIGKILL로 강제 종료하며, 그래도 포트가 비지 않으면 실패로 종료한다(조용히 넘어가지 않는다).
+- **`status`가 이 스크립트의 핵심이다.** 각 서비스가 실제로 응답하는 `commit_sha`를 저장소 현재 HEAD와 나란히 보여준다 — portal-api/distribution-service/search-runtime 세 서비스만 이 필드를 갖고 있어(`PORTAL_`/`DISTRIBUTION_`/`SEARCH_` 접두사의 `BUILD_VERSION`/`COMMIT_SHA` 환경변수로 주입) 확인할 수 있고, 나머지 세(agent-runtime/indexing-runtime/office-mcp-server)는 코드에 그 필드 자체가 없어 "미지원"으로 명시한다(빈 칸이 아니라 명시적 표시 — 실제 한계이지 누락이 아니다). 200을 반환해도 커밋이 HEAD와 다르면 "오래된 코드"로 눈에 띄게 표시한다 — 바로 위 §7.1 끝에 기록된 것처럼, 재시작하지 않은 구버전 search-runtime이 새 라우트를 404로 거부하던 사고를 다음에는 로그를 뒤지지 않고 즉시 알아챌 수 있게 하려는 목적이다.
+- search-runtime을 이 스크립트로 띄울 때는 `SEARCH_LOCAL_INDEX_ROOTS`를 위 §7.1 기본값(`$HOME/Library/Application Support/desktop-client/assets`)으로 자동 주입한다(이미 설정된 값이 있으면 그것을 우선한다).
+- PID/로그는 저장소 루트의 `.dev-stack/`(gitignored)에 쌓인다.
+- Ollama(:11434)는 `status`에서 확인만 하고, 이 스크립트가 시작/중지하지 않는다.
+- DB 마이그레이션은 자동 적용하지 않는다 — `status`가 최신이 아니면 경고만 하고, 적용은 `make migrate`를 사용자가 직접 실행해야 한다.
+
 ## 8. 문제 해결
 
 | 증상 | 원인 후보 | 조치 |
@@ -365,6 +476,7 @@ pnpm dev
 | PowerShell에서 `.ps1` 실행이 거부됨(빨간 오류) | 실행 정책이 `Restricted` | §1.1 참고. 조직 정책상 `Set-ExecutionPolicy`가 막혀 있으면 `powershell -ExecutionPolicy Bypass -File <script>.ps1`로 개별 실행 |
 | Desktop Electron 창이 뜨지 않음 | §7 참고 — 이 경로는 이번 세션 기준 미검증 | `pnpm dev`의 콘솔 출력(Vite/Electron 각각의 로그, `-n vite,electron` 접두사로 구분됨)을 그대로 공유해 원인 분석 필요 |
 | 챗봇 답변의 근거(citation)가 이상하게 관련 없어 보임(오류는 없음) | 임베딩 모델 불일치(D-075) — Knowledge 색인을 만든 모델과 검색이 실제로 쓴 모델이 다르면 코사인 유사도 자체가 의미를 잃어 조용히 품질만 나빠진다 | search-runtime 로그에서 `search.embed_model.fallback`(색인에 `embed_model` 기록이 없어 `SEARCH_EMBED_MODEL` 폴백을 썼음) 또는 `search.embed_model.mismatch`(색인 기록과 `SEARCH_EMBED_MODEL` 설정이 서로 다름 — 색인 쪽이 우선 적용됨) 로그 라인을 확인. `POST /search/v1/query` 응답의 `embed_model_applied`/`embed_model_source` 필드로도 실제 적용된 모델을 바로 확인할 수 있다. §2.1 절차대로 재색인했는지 점검 |
+| 챗봇/검색이 오류 없이 항상 "근거 없음"(citation 0건) | 분류(classification) 미기록 — D-062가 미분류 청크를 fail-closed로 숨긴다. §7.1의 `87827bf9-…` 실측 사례와 동일 원인 | `SEARCH_ALLOW_UNKNOWN_CLASSIFICATION`을 임시로 `true`로 켜서 같은 질의 결과가 늘어나는지 비교하거나, Portal의 검색 품질 테스트(§7.1, `search-preview`)가 `no_result_reason: CLASSIFICATION_ABOVE_CLEARANCE`를 보고하는지 확인. 원인이 맞으면 `stamp-classification`으로 조치(어떤 등급을 스탬프할지는 사람의 결정 — `open-decisions.md` D-081) |
 
 ## 8.1 외부 연동 점검 결과 (실측)
 
@@ -399,3 +511,4 @@ npx next telemetry status   # Status: Disabled 이어야 한다
 - D-073 (`open-decisions.md`): indexing-runtime `INDEX_BASE` 하드코딩 수정, PDF/DOCX Loader 추가, Windows 실행 스크립트 신설 — 이 문서와 함께 기록됨.
 - D-075 (`open-decisions.md`): 임베딩 모델을 `INDEXING_EMBED_MODEL`/`SEARCH_EMBED_MODEL` 설정으로 분리, search-runtime이 검색 시 자기 설정이 아니라 대상 색인의 `index-meta.json`에 기록된 `embed_model`을 우선 사용하도록 수정 — §2.1 참고.
 - D-054 (`open-decisions.md`): `bm25.pkl`(Python pickle, 실행 가능한 포맷)을 `bm25.json`(비실행 JSON)으로 교체 — §2.2 참고. 기존 색인은 `convert-bm25-format`으로 운영자가 직접 변환해야 한다.
+- D-079 (`open-decisions.md`): Desktop이 설치한 Knowledge 색인을 search-runtime에 등록해야 실제로 검색된다(`SEARCH_LOCAL_INDEX_ROOTS`) — §7.1 참고. 계약은 `packages/schemas/api/knowledge-local-index.schema.json`.

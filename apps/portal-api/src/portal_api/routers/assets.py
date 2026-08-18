@@ -42,6 +42,7 @@ from portal_api.models import Asset, AssetVersion, AssetVersionRevocation, Index
 from portal_api.models.review import ReviewDecision, ReviewRequest
 from portal_api.models.revocation import effective_filter
 from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting
+from portal_api.python_signature import PythonSignatureError, convert_python_signature
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AssetListResponse,
@@ -57,6 +58,8 @@ from portal_api.schemas import (
     MyAssetsResponseOut,
     MyAssetVersionRowOut,
     PromptTemplateOut,
+    PythonSignatureConvertRequest,
+    PythonSignatureConvertResponseOut,
     UpdateAssetVersionRequest,
 )
 from portal_api.semver import is_strictly_greater
@@ -100,15 +103,55 @@ SessionFactory = Callable[[], AsyncSession]
 
 
 async def _call_indexing_runtime_http(payload: dict) -> dict:
-    async with httpx.AsyncClient(timeout=300) as client:
-        resp = await client.post(
-            f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload
-        )
+    async with httpx.AsyncClient(timeout=settings.indexing_runtime_timeout_seconds) as client:
+        resp = await client.post(f"{settings.indexing_runtime_url}/indexing/v1/jobs", json=payload)
         # No raise_for_status() here, deliberately unchanged from this
         # function's pre-DI-seam behavior: a non-2xx response body is still
         # parsed and stored via IndexingJob.status = result.get("status",
         # "COMPLETED") below, same as before this refactor.
         return resp.json()
+
+
+def describe_indexing_failure(exc: Exception, timeout_seconds: float) -> str:
+    """Turns any exception raised while calling indexing-runtime into a
+    non-empty, Korean, user-facing message for `IndexingJob.error_message`.
+
+    Real incident this exists to prevent: `job.error_message = str(e)` left
+    the column as the empty string `''` for a real indexing job that timed
+    out after exactly `indexing_runtime_timeout_seconds` — `str()` on an
+    `httpx` timeout exception carries no text at all. The background task's
+    `except Exception` believed it had recorded a reason; it had recorded
+    nothing, and an operator looking at a FAILED job had no way to learn
+    indexing-runtime simply never answered within the configured budget.
+    Two rules follow, checked in this order:
+
+    1. The exception TYPE NAME is always included, so even an exception
+       whose own `str()` is empty still identifies itself.
+    2. `httpx` exceptions are described in business terms (the configured
+       timeout budget, or "통신 오류") instead of forwarding their own
+       `str()` — an `httpx` exception's text can embed the outbound call's
+       URL (`settings.indexing_runtime_url`), an internal detail this API
+       must not hand back to a Portal screen
+       (07-data-api-contracts.md §9 "Error Detail은 허용된 Field만 반환한다";
+       no stack trace, no internal filesystem path). Any other exception's
+       own text is preserved (bounded) — that text is raised by this
+       codebase's own code, not by an HTTP client whose message content is
+       out of our control.
+
+    The result is guaranteed non-empty for any `exc`.
+    """
+    exc_type = type(exc).__name__
+    if isinstance(exc, httpx.TimeoutException):
+        return (
+            f"indexing-runtime 응답이 설정된 대기 시간({timeout_seconds:.0f}초) 안에 "
+            f"오지 않아 색인 작업을 실패로 처리했습니다({exc_type})."
+        )
+    if isinstance(exc, httpx.HTTPError):
+        return f"indexing-runtime과 통신하는 중 오류가 발생했습니다({exc_type})."
+    detail = str(exc).strip()
+    if not detail:
+        return f"색인 작업이 실패했습니다({exc_type}) — 원인 메시지가 비어 있습니다."
+    return f"색인 작업이 실패했습니다({exc_type}): {detail[:500]}"
 
 
 def get_indexing_caller() -> IndexingCaller:
@@ -260,8 +303,12 @@ async def get_asset(
 ) -> AssetOut | JSONResponse:
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -324,8 +371,12 @@ async def get_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -354,8 +405,12 @@ async def get_prompt_template(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -423,6 +478,43 @@ async def validate_manifest_draft(
             valid=False, errors=list(e.errors) if e.errors else [str(e)]
         )
     return ManifestValidateResponseOut(valid=True, errors=[])
+
+
+@router.post(
+    "/manifests/mcp-tool/from-python-signature",
+    response_model=PythonSignatureConvertResponseOut,
+)
+async def convert_mcp_tool_python_signature(
+    body: PythonSignatureConvertRequest,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> PythonSignatureConvertResponseOut | JSONResponse:
+    """Stateless AST-only helper for P05. Submitted source is never executed,
+    imported, compiled, logged, or persisted; only the derived input Schema
+    and a structural discard report cross the response boundary."""
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_CREATE, trace_id=trace_id, resource_type="ASSET"
+    )
+    if denial:
+        return denial
+    try:
+        result = convert_python_signature(body.source, body.function_name)
+    except PythonSignatureError as exc:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            str(exc),
+            trace_id,
+            details={"reason": exc.reason, "candidates": exc.candidates},
+        )
+    return PythonSignatureConvertResponseOut(
+        function_name=result.function_name,
+        input_schema=result.input_schema,
+        parameters=result.parameters,
+        discarded=result.discarded,
+        warnings=result.warnings,
+    )
 
 
 @router.post("/assets", response_model=AssetVersionOut, status_code=status.HTTP_201_CREATED)
@@ -572,6 +664,7 @@ async def create_asset(
             configured_embed_model,
             indexing_caller,
             indexing_session_factory,
+            manifest_dict.get("indexing_profile"),
         )
 
     return AssetVersionOut.model_validate(version)
@@ -636,15 +729,23 @@ async def create_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_CREATE, trace_id=trace_id,
-        resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_CREATE,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
 
     asset, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
         denied_event="ASSET_VERSION_CREATE_DENIED",
         denied_message="본인이 소유한 자산만 새 버전을 만들 수 있습니다.",
     )
@@ -765,15 +866,23 @@ async def update_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_EDIT_DRAFT, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_EDIT_DRAFT,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_EDIT_DENIED",
         denied_message="본인이 소유한 자산만 수정할 수 있습니다.",
     )
@@ -854,9 +963,7 @@ async def update_asset_version(
     return AssetVersionOut.model_validate(version)
 
 
-@router.post(
-    "/assets/{asset_id}/versions/{version_id}/validate", response_model=AssetVersionOut
-)
+@router.post("/assets/{asset_id}/versions/{version_id}/validate", response_model=AssetVersionOut)
 async def validate_asset_version(
     asset_id: str,
     version_id: str,
@@ -873,15 +980,23 @@ async def validate_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_VALIDATE, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_VALIDATE,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_VALIDATE_DENIED",
         denied_message="본인이 소유한 자산만 검증할 수 있습니다.",
     )
@@ -954,15 +1069,23 @@ async def diff_asset_version(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
 
     _, denial = await _require_asset_owner(
-        db, user, asset_id, trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
         denied_event="ASSET_VERSION_DIFF_DENIED",
         denied_message="본인이 소유한 자산만 비교할 수 있습니다.",
     )
@@ -1072,9 +1195,7 @@ async def list_my_assets(
         asset.id for version, asset in rows if version.status == VersionStatus.APPROVED.value
     }
 
-    buckets: dict[str, list[MyAssetVersionRowOut]] = {
-        code: [] for code in _MY_ASSET_CATEGORY_ORDER
-    }
+    buckets: dict[str, list[MyAssetVersionRowOut]] = {code: [] for code in _MY_ASSET_CATEGORY_ORDER}
     for version, asset in rows:
         category = _my_asset_category(version)
         if category is None:
@@ -1125,8 +1246,12 @@ async def list_indexing_jobs(
 ) -> list[IndexingJobOut] | JSONResponse:
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -1141,6 +1266,40 @@ async def list_indexing_jobs(
     return [IndexingJobOut.model_validate(j) for j in jobs]
 
 
+def resolve_knowledge_index_dir(job: IndexingJob | None, version_id: str) -> Path | None:
+    """The single index-directory resolution rule this module uses — do not
+    duplicate this candidate list elsewhere (routers/knowledge_diagnostics.py
+    reuses this exact function for both its Feature 1 검색 품질 테스트 and
+    Feature 2 반출 준비 상태 점검 checks, per that module's brief: "resolve the
+    index dir the same way get_knowledge_info does — do not invent a second
+    resolution path").
+
+    Mirrors search-runtime's own `hybrid.resolve_index_dir`/`local_index_
+    registry` precedent of "first candidate that actually has an
+    `index-meta.json` wins", but resolved against *this* service's Registry
+    state (`IndexingJob`) rather than a live filesystem scan of INDEX_BASE —
+    portal-api and search-runtime are different processes and must not
+    import each other's internals (CLAUDE.md 구현 원칙 2).
+
+    Only looks at all once a COMPLETED `IndexingJob` exists — an in-progress
+    or absent job means there is nothing on disk to resolve yet, matching
+    this function's one existing caller's gating
+    (`if job and job.status == "COMPLETED"`) exactly. Candidates, in order:
+    the job's own recorded `index_path`, the shared `index_base/<version_id>`
+    convention, then the legacy manually-built `hr-policy-v1` fixture
+    directory. Returns `None` when no job is COMPLETED or no candidate has
+    an `index-meta.json`.
+    """
+    if not job or job.status != "COMPLETED":
+        return None
+    candidates: list[Path] = []
+    if job.index_path:
+        candidates.append(Path(job.index_path))
+    candidates.append(settings.index_base / version_id)
+    candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
+    return next((p for p in candidates if (p / "index-meta.json").exists()), None)
+
+
 @router.get("/assets/{asset_id}/knowledge-info", response_model=None)
 async def get_knowledge_info(
     asset_id: str,
@@ -1150,8 +1309,12 @@ async def get_knowledge_info(
     """Return combined Knowledge detail: versions, indexing metadata, chunk preview."""
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_READ,
-        trace_id=trace_id, resource_type="ASSET", resource_id=asset_id,
+        db,
+        user,
+        Permission.ASSET_READ,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
     )
     if denial:
         return denial
@@ -1177,14 +1340,7 @@ async def get_knowledge_info(
         index_meta: dict | None = None
         chunks_preview: list[dict] = []
         if job and job.status == "COMPLETED":
-            # Resolve index path: try stored path first, then shared index base by version_id
-            candidates = []
-            if job.index_path:
-                candidates.append(Path(job.index_path))
-            candidates.append(settings.index_base / ver.id)
-            candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
-
-            index_dir = next((p for p in candidates if (p / "index-meta.json").exists()), None)
+            index_dir = resolve_knowledge_index_dir(job, ver.id)
             if index_dir:
                 with open(index_dir / "index-meta.json") as f:
                     index_meta = json.load(f)
@@ -1213,23 +1369,29 @@ async def get_knowledge_info(
                 cp["tags"] = []
         indexing_profile = manifest.get("indexing_profile_ref", {})
 
-        versions_info.append({
-            "id": ver.id,
-            "version": ver.version,
-            "status": ver.status,
-            "created_at": ver.created_at.isoformat(),
-            "indexing_job": {
-                "id": job.id if job else None,
-                "status": job.status if job else None,
-                "chunk_count": job.chunk_count if job else None,
-                "completed_at": job.completed_at.isoformat() if job and job.completed_at else None,
-                "index_path": job.index_path if job else None,
-            } if job else None,
-            "index_meta": index_meta,
-            "indexing_profile_ref": indexing_profile,
-            "chunks_preview": chunks_preview,
-            "source_documents": manifest.get("source", {}).get("documents", []),
-        })
+        versions_info.append(
+            {
+                "id": ver.id,
+                "version": ver.version,
+                "status": ver.status,
+                "created_at": ver.created_at.isoformat(),
+                "indexing_job": {
+                    "id": job.id if job else None,
+                    "status": job.status if job else None,
+                    "chunk_count": job.chunk_count if job else None,
+                    "completed_at": job.completed_at.isoformat()
+                    if job and job.completed_at
+                    else None,
+                    "index_path": job.index_path if job else None,
+                }
+                if job
+                else None,
+                "index_meta": index_meta,
+                "indexing_profile_ref": indexing_profile,
+                "chunks_preview": chunks_preview,
+                "source_documents": manifest.get("source", {}).get("documents", []),
+            }
+        )
 
     return {
         "id": asset.id,
@@ -1268,8 +1430,12 @@ async def update_chunk_tags(
     """
     trace_id = _trace_id()
     denial = await require_permission(
-        db, user, Permission.ASSET_EDIT_DRAFT, trace_id=trace_id,
-        resource_type="ASSET_VERSION", resource_id=version_id,
+        db,
+        user,
+        Permission.ASSET_EDIT_DRAFT,
+        trace_id=trace_id,
+        resource_type="ASSET_VERSION",
+        resource_id=version_id,
     )
     if denial:
         return denial
@@ -1317,6 +1483,7 @@ async def _trigger_indexing(
     embed_model: str | None,
     caller: IndexingCaller,
     session_factory: SessionFactory,
+    indexing_profile: dict | None = None,
 ) -> None:
     """Background task: call indexing-runtime to index the Knowledge package.
 
@@ -1371,6 +1538,11 @@ async def _trigger_indexing(
     # then applies, exactly like every caller before this change.
     if embed_model is not None:
         job_body["embed_model"] = embed_model
+    if indexing_profile is not None:
+        # The Knowledge manifest schema has already validated this closed
+        # object. Forward the immutable per-version snapshot instead of
+        # silently falling back to indexing-runtime's global default.
+        job_body["profile"] = indexing_profile
 
     try:
         result = await caller(job_body)
@@ -1381,7 +1553,9 @@ async def _trigger_indexing(
             ).scalar_one_or_none()
             if job:
                 job.status = "FAILED"
-                job.error_message = str(e)
+                job.error_message = describe_indexing_failure(
+                    e, settings.indexing_runtime_timeout_seconds
+                )
                 job.completed_at = datetime.now(UTC)
                 await db.commit()
         return

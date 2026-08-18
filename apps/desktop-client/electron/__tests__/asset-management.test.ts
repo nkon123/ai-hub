@@ -21,6 +21,7 @@ import {
   getAssetDependencyView,
   listInstalledAssetsWithStatus,
   readAssetManifest,
+  recoverLegacyKnowledgeAssetVersionIds,
   reverifyAssetChecksum,
 } from "../asset-management";
 import type { InstalledAsset } from "../types";
@@ -249,6 +250,50 @@ describe("listInstalledAssetsWithStatus", () => {
     const list = listInstalledAssetsWithStatus(layout, store);
     expect(list.find((a) => a.version === "1.0.0" && a.assetId === "know-13")?.status).toBe("INACTIVE");
     expect(list.find((a) => a.version === "2.0.0" && a.assetId === "know-13")?.status).toBe("ACTIVE");
+  });
+});
+
+describe("recoverLegacyKnowledgeAssetVersionIds", () => {
+  const parentId = "2f157a86-29c2-41d7-a8a8-e3d34a36e515";
+  const recoveredVersionId = "d9e660b7-ca76-4f46-899e-2e1621bac139";
+
+  function installLegacyKnowledge(meta: unknown, declaredChecksum?: string): void {
+    const dir = installKnowledge(parentId, "1.0.0");
+    const indexDir = path.join(dir, "index");
+    fs.mkdirSync(indexDir, { recursive: true });
+    const metaPath = path.join(indexDir, "index-meta.json");
+    fs.writeFileSync(metaPath, JSON.stringify(meta));
+    const current = store.find("knowledge", parentId, "1.0.0")!;
+    store.upsert({
+      ...current,
+      assetVersionId: null,
+      fileChecksums: {
+        "index/index-meta.json":
+          declaredChecksum ?? crypto.createHash("sha256").update(fs.readFileSync(metaPath)).digest("hex"),
+      },
+    });
+  }
+
+  it("backfills the exact id from checksum-verified installed index metadata", () => {
+    installLegacyKnowledge({ knowledge_id: recoveredVersionId });
+
+    expect(recoverLegacyKnowledgeAssetVersionIds(layout, store)).toBe(1);
+    expect(store.find("knowledge", parentId, "1.0.0")?.assetVersionId).toBe(recoveredVersionId);
+    expect(recoverLegacyKnowledgeAssetVersionIds(layout, store)).toBe(0);
+  });
+
+  it("fails closed when index metadata no longer matches its install-time checksum", () => {
+    installLegacyKnowledge({ knowledge_id: recoveredVersionId }, "0".repeat(64));
+
+    expect(recoverLegacyKnowledgeAssetVersionIds(layout, store)).toBe(0);
+    expect(store.find("knowledge", parentId, "1.0.0")?.assetVersionId).toBeNull();
+  });
+
+  it("refuses the parent Asset id even when the metadata checksum is valid", () => {
+    installLegacyKnowledge({ knowledge_id: parentId });
+
+    expect(recoverLegacyKnowledgeAssetVersionIds(layout, store)).toBe(0);
+    expect(store.find("knowledge", parentId, "1.0.0")?.assetVersionId).toBeNull();
   });
 });
 

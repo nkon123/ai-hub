@@ -6,10 +6,13 @@ from evaluation_runner.matching import document_id_from_citation, normalize_expe
 from evaluation_runner.search_client import Citation
 
 
-def _citation(document_path: str = "", document_title: str = "") -> Citation:
+def _citation(
+    document_path: str = "", document_title: str = "", document_id: str = ""
+) -> Citation:
     return Citation(
         chunk_id="c1",
         parent_chunk_id=None,
+        document_id=document_id,
         document_path=document_path,
         document_title=document_title,
         page=1,
@@ -18,6 +21,37 @@ def _citation(document_path: str = "", document_title: str = "") -> Citation:
         parent_context="",
         score=1.0,
     )
+
+
+def test_document_id_prefers_the_indexers_own_document_id() -> None:
+    """§2.6 shape: `{knowledge_id}:{relative path}`. Its stem is the id a
+    dataset writes, so preferring it changes nothing about the id space —
+    it only stops the identity from depending on display fields."""
+    citation = _citation(
+        document_id="d9e660b7-ca76:documents/remote-work-policy.md",
+        document_path="/storage/knowledge/xyz/1.0.0/remote-work-policy.md",
+    )
+    assert document_id_from_citation(citation) == "remote-work-policy"
+
+
+def test_document_id_is_not_derailed_by_an_edited_title() -> None:
+    """A title edit must not change document identity — that is the whole
+    reason for preferring the indexed id over presentation fields."""
+    citation = _citation(
+        document_id="kv-1:documents/remote-work-policy.md",
+        document_path="",
+        document_title="새 제목 (2026 개정).md",
+    )
+    assert document_id_from_citation(citation) == "remote-work-policy"
+
+
+def test_document_id_falls_back_to_path_for_indexes_built_before_the_field() -> None:
+    """An older index returns an empty document_id. That is normal, not an
+    error: the previous rule still applies and Recall@K keeps working."""
+    citation = _citation(
+        document_id="", document_path="/storage/knowledge/xyz/1.0.0/remote-work-policy.md"
+    )
+    assert document_id_from_citation(citation) == "remote-work-policy"
 
 
 def test_document_id_uses_filename_stem_of_document_path() -> None:

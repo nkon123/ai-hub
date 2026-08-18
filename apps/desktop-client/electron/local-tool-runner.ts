@@ -1,0 +1,225 @@
+// D-084 "Desktop 로컬 Tool" — main-process-only invocation. Does real
+// subprocess/fs work (`node:child_process`/`node:os`/`node:fs`/`node:crypto`)
+// so it deliberately stays out of the pure module set (module split rule in
+// this app's CLAUDE.md).
+//
+// This is genuinely unsandboxed local code execution of a file the user
+// picked via a native file dialog and explicitly acknowledged is
+// unsandboxed (`LocalToolStore.add`'s `acknowledgedRisk` gate) — every
+// single call additionally requires a fresh explicit user action in the
+// renderer (there is no automated/LLM-driven call path into this file, see
+// `electron/__tests__/local-tool-isolation.test.ts`). The timeout and output
+// cap below exist ONLY to stop a runaway/hung process from pinning a CPU
+// core or filling memory forever — they are not a security boundary and
+// must never be described as one (Task Brief 요구사항 3).
+//
+// Injection-safety property this file preserves: `module_path`/
+// `function_name`/`args` are NEVER interpolated into the `-c` script text.
+// They are written to the child's stdin as one JSON object; the fixed
+// BOOTSTRAP_SCRIPT constant reads that JSON and does the rest. This means a
+// module path or argument value containing arbitrary text (including
+// something that looks like Python source) can never change what code the
+// interpreter runs — only what data it operates on.
+import { type ChildProcess, spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { LocalToolInvocationResult } from "./types";
+
+export const LOCAL_TOOL_TIMEOUT_MS = 30_000;
+export const LOCAL_TOOL_MAX_OUTPUT_BYTES = 262_144; // 256 KiB
+
+/** Fixed constant string — never built from user input. Reads exactly one
+ * JSON object from stdin, loads the target module by absolute path (never
+ * `import`s it by name, so it cannot collide with/shadow an installed
+ * package), calls the requested function with the given kwargs, and prints
+ * exactly one line of JSON to stdout describing the outcome. Every failure
+ * mode (import error, missing function, bad args, non-serializable result)
+ * is caught and turned into the `{"ok": false, ...}` shape instead of a raw
+ * traceback on stderr. */
+const BOOTSTRAP_SCRIPT = `
+import importlib.util
+import json
+import sys
+
+
+def _main() -> None:
+    try:
+        raw = sys.stdin.read()
+        request = json.loads(raw)
+        module_path = request["module_path"]
+        function_name = request["function_name"]
+        args = request.get("args") or {}
+
+        spec = importlib.util.spec_from_file_location("_desktop_local_tool_target", module_path)
+        if spec is None or spec.loader is None:
+            raise ImportError(f"module could not be loaded from {module_path!r}")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        target = getattr(module, function_name)
+        result = target(**args)
+        try:
+            json.dumps(result)
+            payload = result
+        except TypeError:
+            payload = str(result)
+        print(json.dumps({"ok": True, "result": payload}))
+    except Exception as exc:  # noqa: BLE001 - deliberately catch-all, see module docstring
+        print(json.dumps({"ok": False, "error_type": type(exc).__name__, "error_message": str(exc)}))
+
+
+_main()
+`;
+
+export interface LocalToolSpawnRequest {
+  interpreterPath: string;
+  modulePath: string;
+  functionName: string;
+  args: Record<string, unknown>;
+  /** Overridable only by tests — production call sites always pass the
+   * exported constants above. */
+  timeoutMs?: number;
+  maxOutputBytes?: number;
+  /** Test-only escape hatch: substitutes a different fixed script for
+   * BOOTSTRAP_SCRIPT so tests can exercise spawn/timeout/output-cap behavior
+   * with a small throwaway script instead of requiring a real Python
+   * install. Production call sites never pass this. */
+  scriptOverride?: string;
+}
+
+/** The testable core: spawns `interpreterPath -c <script>`, writes the
+ * request as JSON to stdin, and classifies the outcome. Parameterized by
+ * timeout/output cap so tests can use small values instead of the real
+ * 30s/256KiB constants. */
+export function runLocalToolProcess(request: LocalToolSpawnRequest): Promise<LocalToolInvocationResult> {
+  const timeoutMs = request.timeoutMs ?? LOCAL_TOOL_TIMEOUT_MS;
+  const maxOutputBytes = request.maxOutputBytes ?? LOCAL_TOOL_MAX_OUTPUT_BYTES;
+  const script = request.scriptOverride ?? BOOTSTRAP_SCRIPT;
+
+  return new Promise((resolve) => {
+    let cwd: string;
+    try {
+      cwd = fs.mkdtempSync(path.join(os.tmpdir(), "desktop-local-tool-"));
+    } catch (err) {
+      resolve({ outcome: "spawn_error", message: err instanceof Error ? err.message : "임시 작업 디렉터리를 만들지 못했습니다." });
+      return;
+    }
+
+    const cleanup = () => {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    };
+
+    let child: ChildProcess;
+    try {
+      child = spawn(request.interpreterPath, ["-c", script], {
+        cwd,
+        timeout: timeoutMs,
+        killSignal: "SIGKILL",
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+    } catch (err) {
+      cleanup();
+      resolve({ outcome: "spawn_error", message: err instanceof Error ? err.message : "인터프리터를 실행하지 못했습니다." });
+      return;
+    }
+
+    let stdout = "";
+    let stderr = "";
+    let oversized = false;
+    let settled = false;
+
+    const finish = (result: LocalToolInvocationResult) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+
+    child.on("error", (err) => {
+      // ENOENT (interpreter path doesn't exist) surfaces here.
+      finish({ outcome: "spawn_error", message: err.message });
+    });
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (oversized) return;
+      stdout += chunk.toString("utf-8");
+      if (Buffer.byteLength(stdout, "utf-8") > maxOutputBytes) {
+        oversized = true;
+        child.kill("SIGKILL");
+      }
+    });
+
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf-8");
+    });
+
+    child.on("close", (code, signal) => {
+      if (oversized) {
+        finish({ outcome: "oversized_output", limitBytes: maxOutputBytes });
+        return;
+      }
+      // Node's `spawn` `timeout` option sends `killSignal` ("SIGKILL" here)
+      // once the timer fires — `child.killed` plus a SIGKILL signal with no
+      // explicit exit code is that path's signature.
+      if (child.killed && signal === "SIGKILL" && code === null) {
+        finish({ outcome: "timeout", timeoutMs });
+        return;
+      }
+      if (code !== 0) {
+        finish({ outcome: "nonzero_exit", exitCode: code ?? -1, stderrSnippet: stderr.slice(0, 2000) });
+        return;
+      }
+      const lastLine = stdout
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0)
+        .pop();
+      if (!lastLine) {
+        finish({ outcome: "nonzero_exit", exitCode: code ?? 0, stderrSnippet: stderr.slice(0, 2000) || "출력이 없습니다." });
+        return;
+      }
+      try {
+        const parsed = JSON.parse(lastLine) as { ok: boolean; result?: unknown; error_type?: string; error_message?: string };
+        if (parsed.ok) {
+          finish({ outcome: "success", result: parsed.result });
+        } else {
+          finish({
+            outcome: "function_error",
+            errorType: parsed.error_type ?? "UnknownError",
+            errorMessage: parsed.error_message ?? "알 수 없는 오류입니다.",
+          });
+        }
+      } catch {
+        finish({ outcome: "nonzero_exit", exitCode: code ?? 0, stderrSnippet: (stderr || stdout).slice(0, 2000) });
+      }
+    });
+
+    child.stdin?.write(
+      JSON.stringify({ module_path: request.modulePath, function_name: request.functionName, args: request.args }),
+    );
+    child.stdin?.end();
+  });
+}
+
+export interface InvokeLocalToolTarget {
+  interpreterPath: string | null;
+  modulePath: string;
+  functionName: string;
+  args: Record<string, unknown>;
+}
+
+/** Production entry point — checks `interpreterPath` before spawning
+ * anything (Task Brief hard requirement 5: never fall back to a bare
+ * `python`/`python3` on PATH, and never spawn when unconfigured). */
+export async function invokeLocalTool(target: InvokeLocalToolTarget): Promise<LocalToolInvocationResult> {
+  if (!target.interpreterPath || !target.interpreterPath.trim()) {
+    return { outcome: "interpreter_not_configured" };
+  }
+  return runLocalToolProcess({
+    interpreterPath: target.interpreterPath,
+    modulePath: target.modulePath,
+    functionName: target.functionName,
+    args: target.args,
+  });
+}

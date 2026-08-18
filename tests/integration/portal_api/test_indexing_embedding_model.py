@@ -408,6 +408,57 @@ async def test_trigger_indexing_omits_embed_model_when_unset(session_factory, db
     assert "embed_model" not in captured[0]
 
 
+async def test_trigger_indexing_forwards_version_profile_snapshot(session_factory, db) -> None:
+    from portal_api.models import Asset, AssetVersion, IndexingJob
+
+    asset = Asset(
+        type="knowledge",
+        name="profile-fixture",
+        owner_org="miracom",
+        owner_creator_id="dev-user@miracom.com",
+        classification="INTERNAL",
+    )
+    db.add(asset)
+    await db.flush()
+    version = AssetVersion(
+        asset_id=asset.id,
+        version="1.0.0",
+        status="DRAFT",
+        manifest={"type": "knowledge"},
+    )
+    db.add(version)
+    await db.flush()
+    job = IndexingJob(asset_version_id=version.id, status="PENDING")
+    db.add(job)
+    await db.commit()
+    captured: list[dict] = []
+
+    async def _fake_caller(payload: dict) -> dict:
+        captured.append(payload)
+        return {"status": "COMPLETED"}
+
+    profile = {
+        "chunking_strategy": "markdown",
+        "chunk_size": 768,
+        "chunk_overlap": 80,
+        "parent_chunk_size": 2048,
+        "minimum_size": 80,
+        "language": "ko",
+    }
+    await _trigger_indexing(
+        job.id,
+        version.id,
+        "/tmp/storage",
+        "trace-profile",
+        "INTERNAL",
+        None,
+        _fake_caller,
+        session_factory,
+        profile,
+    )
+    assert captured[0]["profile"] == profile
+
+
 # --- End-to-end via POST /api/v1/assets: configured setting actually reaches
 # the indexing-runtime call the background task makes. -----------------------
 

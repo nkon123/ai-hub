@@ -18,8 +18,20 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from evaluation_runner.matching import document_id_from_citation, normalize_expected_document_id
-from evaluation_runner.models import EvaluationCase
+from evaluation_runner.models import AclCase, EvaluationCase
 from evaluation_runner.search_client import SearchResponse
+
+
+def _ranked_document_ids(response: SearchResponse) -> list[str]:
+    """Deduplicated document ids in rank order (D-045 matching rule)."""
+    ranked: list[str] = []
+    seen: set[str] = set()
+    for citation in response.citations:
+        doc_id = document_id_from_citation(citation)
+        if doc_id and doc_id not in seen:
+            seen.add(doc_id)
+            ranked.append(doc_id)
+    return ranked
 
 
 def estimate_tokens(text: str) -> int:
@@ -73,13 +85,7 @@ def evaluate_case(case: EvaluationCase, response: SearchResponse) -> CaseResult:
     expected = {normalize_expected_document_id(d) for d in case.expected_document_ids}
     forbidden = {normalize_expected_document_id(d) for d in case.forbidden_document_ids}
 
-    ranked_doc_ids: list[str] = []
-    seen: set[str] = set()
-    for citation in response.citations:
-        doc_id = document_id_from_citation(citation)
-        if doc_id and doc_id not in seen:
-            seen.add(doc_id)
-            ranked_doc_ids.append(doc_id)
+    ranked_doc_ids = _ranked_document_ids(response)
 
     hit_at_1 = bool(expected) and any(d in expected for d in ranked_doc_ids[:1])
     hit_at_5 = bool(expected) and any(d in expected for d in ranked_doc_ids[:5])
@@ -114,6 +120,108 @@ def evaluate_case(case: EvaluationCase, response: SearchResponse) -> CaseResult:
 
 
 @dataclass(frozen=True)
+class AclCaseResult:
+    case_id: str
+    question: str
+    clearance: str
+    forbidden_document_ids: list[str]
+    retrieved_document_ids: list[str]
+    leaked_document_ids: list[str]
+    expected_visible_document_ids: list[str]
+    missing_visible_document_ids: list[str]
+    returned_count: int
+    latency_ms: int
+    tags: list[str] = field(default_factory=list)
+
+    @property
+    def leaked(self) -> bool:
+        return len(self.leaked_document_ids) > 0
+
+    @property
+    def visibility_satisfied(self) -> bool | None:
+        """None means the case asserted nothing about visibility — reported
+        as such rather than collapsed into True, which would read as a
+        passed check that was never run."""
+        if not self.expected_visible_document_ids:
+            return None
+        return len(self.missing_visible_document_ids) == 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "case_id": self.case_id,
+            "question": self.question,
+            "clearance": self.clearance,
+            "forbidden_document_ids": self.forbidden_document_ids,
+            "retrieved_document_ids": self.retrieved_document_ids,
+            "leaked_document_ids": self.leaked_document_ids,
+            "leaked": self.leaked,
+            "expected_visible_document_ids": self.expected_visible_document_ids,
+            "missing_visible_document_ids": self.missing_visible_document_ids,
+            "visibility_satisfied": self.visibility_satisfied,
+            "returned_count": self.returned_count,
+            "latency_ms": self.latency_ms,
+            "tags": self.tags,
+        }
+
+
+def evaluate_acl_case(case: AclCase, response: SearchResponse) -> AclCaseResult:
+    forbidden = {normalize_expected_document_id(d) for d in case.forbidden_document_ids}
+    expected_visible = {
+        normalize_expected_document_id(d) for d in case.expected_visible_document_ids
+    }
+    ranked_doc_ids = _ranked_document_ids(response)
+    retrieved = set(ranked_doc_ids)
+
+    return AclCaseResult(
+        case_id=case.case_id,
+        question=case.question,
+        clearance=case.clearance,
+        forbidden_document_ids=sorted(forbidden),
+        retrieved_document_ids=ranked_doc_ids,
+        # Every leak is named. "1건 유출" tells an operator nothing they can
+        # act on; the document id tells them what to reclassify or re-index.
+        leaked_document_ids=sorted(d for d in ranked_doc_ids if d in forbidden),
+        expected_visible_document_ids=sorted(expected_visible),
+        missing_visible_document_ids=sorted(expected_visible - retrieved),
+        returned_count=len(response.citations),
+        latency_ms=response.latency_ms,
+        tags=list(case.tags),
+    )
+
+
+@dataclass(frozen=True)
+class AclMetrics:
+    """Aggregate of the ACL cases. `case_count == 0` is the "not measured"
+    signal every consumer must branch on — the two rates below are 0.0 by
+    arithmetic in that case and mean nothing."""
+
+    case_count: int
+    cases_with_visibility_expectation: int
+    leak_rate: float
+    visibility_rate: float
+    leaked_case_ids: list[str] = field(default_factory=list)
+
+    @property
+    def measured(self) -> bool:
+        return self.case_count > 0
+
+
+def aggregate_acl_metrics(results: list[AclCaseResult]) -> AclMetrics:
+    n = len(results)
+    with_visibility = [r for r in results if r.expected_visible_document_ids]
+    nv = len(with_visibility)
+    return AclMetrics(
+        case_count=n,
+        cases_with_visibility_expectation=nv,
+        leak_rate=(sum(1 for r in results if r.leaked) / n) if n else 0.0,
+        visibility_rate=(
+            (sum(1 for r in with_visibility if r.visibility_satisfied) / nv) if nv else 0.0
+        ),
+        leaked_case_ids=[r.case_id for r in results if r.leaked],
+    )
+
+
+@dataclass(frozen=True)
 class EvaluationMetrics:
     case_count: int
     cases_with_ground_truth: int
@@ -125,6 +233,10 @@ class EvaluationMetrics:
     latency_p95_ms: float
     avg_context_tokens: float
     forbidden_hit_rate: float
+    acl_case_count: int = 0
+    acl_cases_with_visibility_expectation: int = 0
+    acl_leak_rate: float = 0.0
+    acl_visibility_rate: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -138,6 +250,12 @@ class EvaluationMetrics:
             "latency_p95_ms": self.latency_p95_ms,
             "avg_context_tokens": self.avg_context_tokens,
             "forbidden_hit_rate": self.forbidden_hit_rate,
+            "acl_case_count": self.acl_case_count,
+            "acl_cases_with_visibility_expectation": (
+                self.acl_cases_with_visibility_expectation
+            ),
+            "acl_leak_rate": self.acl_leak_rate,
+            "acl_visibility_rate": self.acl_visibility_rate,
         }
 
 
@@ -156,7 +274,9 @@ def _percentile(values: list[float], pct: float) -> float:
     return s[f] + (s[c] - s[f]) * (k - f)
 
 
-def aggregate_metrics(case_results: list[CaseResult]) -> EvaluationMetrics:
+def aggregate_metrics(
+    case_results: list[CaseResult], acl: AclMetrics | None = None
+) -> EvaluationMetrics:
     n = len(case_results)
     with_gt = [c for c in case_results if c.has_ground_truth]
     ng = len(with_gt)
@@ -183,4 +303,10 @@ def aggregate_metrics(case_results: list[CaseResult]) -> EvaluationMetrics:
         latency_p95_ms=latency_p95,
         avg_context_tokens=avg_context_tokens,
         forbidden_hit_rate=forbidden_hit_rate,
+        acl_case_count=acl.case_count if acl else 0,
+        acl_cases_with_visibility_expectation=(
+            acl.cases_with_visibility_expectation if acl else 0
+        ),
+        acl_leak_rate=acl.leak_rate if acl else 0.0,
+        acl_visibility_rate=acl.visibility_rate if acl else 0.0,
     )

@@ -12,19 +12,32 @@
 //     "Present only for Knowledge Chatbot Quick Create services", which this
 //     general Composer is not.
 
-import { AGENT_OPTIONS, RETRIEVAL_PROFILE_REF } from "./constants";
-import type { AgentProfileId, ComposerState } from "./types";
+import { RETRIEVAL_PROFILE_REF, type AgentOption } from "./constants";
+import type { ComposerState } from "./types";
 
+/**
+ * `agent`는 호출자(page.tsx)가 `resolveAgentOption(state.agent,
+ * state.registryPrompt)`로 이미 계산해 넘긴다 — 표준 Agent든 Registry
+ * Agent든 이 함수는 동일한 `AgentOption` 모양만 소비하고, 어느 쪽 출처인지는
+ * `agent_ref`/`prompt_bindings`에 어떤 id가 들어가는지에만 영향을 준다
+ * (`manifestId`/`manifestVersion` — Manifest 자체의 id/version. Registry
+ * 실행에 필요한 `registry_agent_version_id`/`registry_prompt_version_id`는
+ * 여기 들어가지 않는다 — 그건 Service Definition의 필드가 아니라
+ * StepPreview.tsx가 `POST /local/v1/runs` 호출 시 별도로 보내는 값이다).
+ */
 export function buildServiceDefinition(
   state: ComposerState,
+  agent: AgentOption,
   ownerOrg: string,
   creatorId: string,
   existingId?: string
 ): Record<string, unknown> {
-  const agent = AGENT_OPTIONS.find((a) => a.id === state.agentId);
-  if (!agent) {
-    throw new Error("Agent를 먼저 선택해야 Service Definition을 생성할 수 있습니다.");
+  if (!agent.prompt) {
+    throw new Error(
+      "선택한 Agent에 연결된 Prompt가 없습니다. Registry Agent는 단계 6(Prompt 연결)에서 Prompt를 먼저 선택해야 합니다."
+    );
   }
+  const prompt = agent.prompt;
 
   const tags = state.basicInfo.tags.map((t) => t.trim()).filter(Boolean);
   const description = state.basicInfo.description.trim();
@@ -59,7 +72,7 @@ export function buildServiceDefinition(
     knowledge_bindings,
     mcp_bindings: [],
     prompt_bindings: [
-      { role_id: agent.roleId, prompt_id: agent.prompt.manifestId, prompt_version: agent.prompt.manifestVersion },
+      { role_id: agent.roleId, prompt_id: prompt.manifestId, prompt_version: prompt.manifestVersion },
     ],
     model_policy: {
       model_alias: state.modelPolicy.modelAlias,
@@ -80,10 +93,4 @@ export function buildServiceDefinition(
   if (Object.keys(target_users).length) definition.target_users = target_users;
 
   return definition;
-}
-
-export function agentProfileFromId(id: AgentProfileId) {
-  const agent = AGENT_OPTIONS.find((a) => a.id === id);
-  if (!agent) throw new Error(`알 수 없는 agent id: ${id}`);
-  return agent;
 }

@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import click
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import JSONResponse
 from observability import bind_trace_id, configure_logging
 from pydantic import BaseModel
@@ -20,15 +22,39 @@ from indexing_runtime.embedders import (
     list_ollama_models,
 )
 from indexing_runtime.errors import ErrorCode, error_envelope, status_for
+from indexing_runtime.loaders import (
+    LOADED_SUFFIXES,
+    MissingLoaderDependencyError,
+    load_text_from_bytes,
+)
 from indexing_runtime.pipeline import run_pipeline
-from indexing_runtime.settings import EMBED_MODEL
+from indexing_runtime.settings import (
+    BUILD_VERSION,
+    COMMIT_SHA,
+    EMBED_MODEL,
+    EXTRACT_TEXT_EXCERPT_MAX_CHARS,
+    EXTRACT_TEXT_MAX_UPLOAD_BYTES,
+)
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn.
 configure_logging("indexing-runtime")
 _logger = logging.getLogger("indexing_runtime")
 
-app = FastAPI(title="Indexing Runtime", version="0.1.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Emitted once so an operator reading this process's log can tell which
+    # revision is actually in memory — see settings.BUILD_VERSION for the
+    # stale-process incident that made this necessary across every service.
+    _logger.info(
+        "service.started service=indexing-runtime build_version=%s commit_sha=%s",
+        BUILD_VERSION,
+        COMMIT_SHA,
+    )
+    yield
+
+
+app = FastAPI(title="Indexing Runtime", version=BUILD_VERSION, lifespan=lifespan)
 
 # Repo-root-relative default, mirroring the same pattern already used by
 # sibling services for the identical value (`distribution_service.config
@@ -71,7 +97,9 @@ class IndexJobRequest(BaseModel):
 
 @app.get("/health")
 async def health() -> JSONResponse:
-    return JSONResponse({"status": "ok", "version": "0.1.0"})
+    # Same shape portal-api / distribution-service / agent-runtime /
+    # search-runtime return, so one operator check works across every service.
+    return JSONResponse({"status": "ok", "version": BUILD_VERSION, "commit_sha": COMMIT_SHA})
 
 
 @app.get("/indexing/v1/models")
@@ -120,6 +148,139 @@ async def list_embedding_models() -> JSONResponse:
         "source": f"{OLLAMA_ENDPOINT}/api/tags",
         "trace_id": trace_id,
     })
+
+
+async def _read_bounded_upload(file: UploadFile, max_bytes: int) -> bytes | None:
+    """Read `file` in chunks, aborting once `max_bytes` is exceeded — bounds
+    memory usage regardless of what the caller's `Content-Length` header
+    claims (a lying/absent header must not defeat the cap). Returns `None`
+    if the cap was exceeded."""
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(65536)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > max_bytes:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+@app.post("/indexing/v1/extract-text")
+async def extract_text(file: UploadFile = File(...)) -> JSONResponse:
+    """Server-side text extraction for the P12 AI 추천 button's .pdf/.docx
+    path (portal-web -> portal-api relay -> here, see
+    `apps/portal-api/src/portal_api/routers/knowledge_text_extract.py`).
+    portal-web already reads .md/.txt itself; a browser cannot parse PDF/Word
+    binary formats, so this is the only place that can.
+
+    Returns a BOUNDED plain-text excerpt (`EXTRACT_TEXT_EXCERPT_MAX_CHARS`),
+    never the whole document — this is a metadata-suggestion input, not a
+    document viewer. The uploaded file is read in-memory only; nothing is
+    written to disk, and `file.filename` is used only to read its suffix
+    (`load_text_from_bytes`) — never to build a filesystem path (root
+    CLAUDE.md 코드 규칙).
+
+    Three distinguishable failure states, on purpose (do not collapse them):
+    - VALIDATION_ERROR (413): upload exceeds `EXTRACT_TEXT_MAX_UPLOAD_BYTES`,
+      checked DURING the read (before any parsing) — an unbounded PDF/DOCX
+      parse is a denial-of-service path.
+    - VALIDATION_ERROR (422): the file's suffix isn't in `LOADED_SUFFIXES` —
+      "이 형식은 추천을 지원하지 않습니다", a format nobody supports here.
+    - DEPENDENCY_UNAVAILABLE (503): the suffix IS in `LOADED_SUFFIXES` but
+      the optional `pypdf`/`python-docx` dependency isn't installed on this
+      deployment (D-073) — "서버에 PDF/Word 추출 의존성이 설치되어 있지
+      않습니다", a fact an operator can fix, unlike the format case.
+    """
+    import uuid
+
+    trace_id = str(uuid.uuid4())
+    bind_trace_id(trace_id)
+
+    filename = file.filename or ""
+    if not filename:
+        return JSONResponse(
+            status_code=status_for(ErrorCode.VALIDATION_ERROR),
+            content=error_envelope(
+                ErrorCode.VALIDATION_ERROR, "파일명이 없어 형식을 확인할 수 없습니다.", trace_id
+            ),
+        )
+
+    raw = await _read_bounded_upload(file, EXTRACT_TEXT_MAX_UPLOAD_BYTES)
+    if raw is None:
+        max_mb = EXTRACT_TEXT_MAX_UPLOAD_BYTES // (1024 * 1024)
+        _logger.warning("indexing.extract_text.upload_too_large trace_id=%s", trace_id)
+        return JSONResponse(
+            status_code=413,
+            content=error_envelope(
+                ErrorCode.VALIDATION_ERROR,
+                f"업로드한 파일이 너무 큽니다(최대 {max_mb}MB). "
+                "이름과 설명을 직접 입력해 등록을 진행할 수 있습니다.",
+                trace_id,
+            ),
+        )
+
+    suffix = Path(filename).suffix.lower()
+    if suffix not in LOADED_SUFFIXES:
+        _logger.info(
+            "indexing.extract_text.unsupported_format trace_id=%s suffix=%s", trace_id, suffix
+        )
+        return JSONResponse(
+            status_code=422,
+            content=error_envelope(
+                ErrorCode.VALIDATION_ERROR,
+                f"{suffix or '이'} 형식은 추천을 지원하지 않습니다. "
+                "이름과 설명을 직접 입력해 등록을 진행할 수 있습니다.",
+                trace_id,
+            ),
+        )
+
+    try:
+        content = load_text_from_bytes(raw, filename)
+    except MissingLoaderDependencyError as exc:
+        # Never log the exception text into anything but this one-line
+        # warning (no document bytes/content) — matches the "never log
+        # prompt/document text" rule this endpoint's downstream caller
+        # (knowledge_metadata_suggest) already follows.
+        _logger.warning(
+            "indexing.extract_text.dependency_unavailable trace_id=%s suffix=%s",
+            trace_id,
+            suffix,
+        )
+        return JSONResponse(
+            status_code=status_for(ErrorCode.DEPENDENCY_UNAVAILABLE),
+            content=error_envelope(ErrorCode.DEPENDENCY_UNAVAILABLE, str(exc), trace_id),
+        )
+    except ValueError:
+        # Defense-in-depth: load_text_from_bytes independently checks
+        # LOADED_SUFFIXES too; this mirrors the 422 above and should be
+        # unreachable given the check already performed.
+        return JSONResponse(
+            status_code=422,
+            content=error_envelope(
+                ErrorCode.VALIDATION_ERROR,
+                f"{suffix or '이'} 형식은 추천을 지원하지 않습니다. "
+                "이름과 설명을 직접 입력해 등록을 진행할 수 있습니다.",
+                trace_id,
+            ),
+        )
+
+    excerpt = content.strip()[:EXTRACT_TEXT_EXCERPT_MAX_CHARS]
+    if not excerpt:
+        _logger.info("indexing.extract_text.empty_result trace_id=%s suffix=%s", trace_id, suffix)
+        return JSONResponse(
+            status_code=422,
+            content=error_envelope(
+                ErrorCode.VALIDATION_ERROR,
+                "문서에서 추출한 내용이 비어 있습니다. 이름과 설명을 직접 입력해 주세요.",
+                trace_id,
+            ),
+        )
+
+    _logger.info("indexing.extract_text.completed trace_id=%s suffix=%s", trace_id, suffix)
+    return JSONResponse({"excerpt": excerpt, "trace_id": trace_id})
 
 
 @app.post("/indexing/v1/jobs")

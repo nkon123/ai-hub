@@ -171,6 +171,16 @@ Default Value가 Secret 또는 업무상 민감할 수 있으면 반환하지 �
 - Filter 개수와 Query Timeout 제한
 - 결과는 Count만 반환
 
+### 5.4 `calculator.add` 데모 Tool
+
+Desktop에서 Hub 자산 설치 → 계약 등록 → 실제 Tool 호출까지 확인하기 위한
+순수 함수형 샘플이다. 입력은 유한한 숫자 `a`, `b` 두 개로 닫혀 있고 결과는
+`result` 숫자 하나만 반환한다. 파일·DB·네트워크·프로세스를 변경하지 않으며
+`risk_level=READ_ONLY`, 사용자 확인 정책은 `NEVER`다. Hub Bundle에는 실행
+코드나 명령줄을 넣지 않고 Manifest 계약만 포함한다. 실제 구현은 검토된
+Office MCP Server 내장 핸들러에만 존재하므로, Bundle 설치가 임의 코드 실행
+권한으로 확장되지 않는다.
+
 ## 6. System Connector
 
 Oracle Connector 요구사항:
@@ -502,4 +512,3 @@ Revocation 대상:
 - 승인되지 않거나 Revoked Package/Service/Tool이 배포·실행되지 않는다.
 - Knowledge ACL과 MCP Permission이 Service 대상 사용자와 일치하는지 검토된다.
 - 주요 12개 위협 시나리오가 자동 또는 재현 가능한 수동 테스트로 통과한다.
-

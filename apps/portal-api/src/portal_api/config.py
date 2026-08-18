@@ -8,6 +8,14 @@ _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-
 
 
 class Settings(BaseSettings):
+    # Deployment identity. Release automation must inject the immutable
+    # commit SHA; keeping an explicit "unknown" fallback makes a local/dev
+    # process honest without making Git metadata a runtime dependency.
+    # Exposed by `/health` and emitted once at startup so operators can
+    # distinguish the checked-out source from the code actually in memory.
+    build_version: str = "0.1.0"
+    commit_sha: str = "unknown"
+
     # Portal Web(브라우저)이 이 API 를 직접 호출할 때 허용할 Origin 목록.
     # `localhost` 와 `127.0.0.1` 은 브라우저 CORS 에서 **서로 다른 Origin** 이라,
     # 하나만 허용하면 다른 주소로 접속한 사용자에게는 서버가 200 을 기록해도
@@ -25,6 +33,14 @@ class Settings(BaseSettings):
     storage_root: Path = Path("./storage")
     index_base: Path = _REPO_ROOT / "data" / "indexes"
     indexing_runtime_url: str = "http://localhost:8200"
+    # `_call_indexing_runtime_http`(routers/assets.py)의 httpx 타임아웃. 예전에는
+    # `httpx.AsyncClient(timeout=300)`으로 코드에 직접 박혀 있었다 — 이 값을 바꿔도
+    # 실제 호출은 여전히 옛 리터럴로 동작하는, `services/agent-runtime/src/
+    # agent_runtime/config.py`가 이미 문서화한 것과 같은 사고 패턴(설정이 있는데
+    # 리터럴이 그것을 가림)이다. `_trigger_indexing`의 실패 메시지
+    # (`describe_indexing_failure`)도 이 값을 그대로 읽어, "타임아웃 예산이
+    # 몇 초였다"는 안내와 실제 동작이 절대 어긋나지 않게 한다.
+    indexing_runtime_timeout_seconds: float = 300.0
     distribution_service_url: str = "http://localhost:8400"
     secret_key: str = "dev-secret-key-change-in-production"
     base_url: str = "http://localhost:8000"
@@ -36,6 +52,26 @@ class Settings(BaseSettings):
     # _trigger_indexing).
     search_runtime_url: str = "http://localhost:8300"
     evaluation_timeout_seconds: float = 300.0
+
+    # `routers/knowledge_metadata_suggest.py` (POST
+    # /api/v1/knowledge/suggest-metadata) — the ONLY model-adjacent call this
+    # service makes, and it makes no model call itself: it relays to
+    # agent-runtime's `POST /local/v1/knowledge-metadata-suggest` exactly as
+    # `knowledge_search.py` relays to search-runtime (root CLAUDE.md UI 구현
+    # 규칙 "Portal API는 모델을 직접 호출하지 않는다").
+    agent_runtime_url: str = "http://localhost:8100"
+    knowledge_metadata_suggest_timeout_seconds: float = 25.0
+
+    # `routers/knowledge_text_extract.py` (POST /api/v1/knowledge/extract-text)
+    # — the .pdf/.docx leg of the P12 AI 추천 button. A thin, stateless relay
+    # to indexing-runtime's `POST /indexing/v1/extract-text` (`indexing_runtime_url`,
+    # already declared above for the indexing pipeline trigger) — portal-api
+    # parses no document formats itself, mirroring how
+    # `knowledge_metadata_suggest_timeout_seconds` mirrors agent-runtime's
+    # call budget. Shorter than `indexing_runtime_timeout_seconds` (a full
+    # indexing job) since this is a single bounded-excerpt extraction the
+    # user is actively waiting on in the registration screen.
+    knowledge_text_extract_timeout_seconds: float = 30.0
 
     # `routers/knowledge_search.py` (POST /api/v1/knowledge-search) — the
     # `access_context.clearance` portal-api asserts to search-runtime on

@@ -34,9 +34,11 @@ import {
   Button,
   Card,
   ErrorBanner,
+  FormField,
   LoadingState,
   StatusBadge,
   Tabs,
+  inputClass,
   type TabItem,
 } from "../../_components/ui";
 import {
@@ -810,16 +812,20 @@ export default function ServiceVersionDetailPage() {
             </span>
           </div>
 
+          <PublishPanel
+            serviceVersionId={version.id}
+            serviceName={def.name}
+            token={role.token}
+            onPublished={() => router.refresh()}
+          />
+
           {serviceDeployments.length === 0 ? (
             <div className="flex flex-col items-center gap-3 rounded-card border border-dashed border-border bg-surface px-6 py-10 text-center">
               <Rocket size={32} strokeWidth={1.5} className="text-slate-300" />
-              <p className="text-body font-medium text-text-primary">게시된 Hosted Deployment가 없습니다.</p>
+              <p className="text-body font-medium text-text-primary">아직 게시된 Hosted Deployment가 없습니다.</p>
               <p className="text-caption text-text-secondary">
-                이 Service를 내부 URL로 게시하려면 Knowledge 챗봇 빠른 만들기를 통해 게시하세요.
+                위에서 이 Service Version을 바로 게시할 수 있습니다.
               </p>
-              <Button href="/chatbots/new" size="sm">
-                챗봇 만들기로 이동
-              </Button>
             </div>
           ) : (
             <div className="space-y-2">
@@ -878,4 +884,140 @@ export default function ServiceVersionDetailPage() {
       )}
     </div>
   );
+}
+
+/** P22 게시 — 이 화면에 게시 액션이 없어서 Composer로 만든 Service Version은
+ * 실제로 게시할 방법이 없었다("Knowledge 챗봇 빠른 만들기를 통해 게시하세요"만
+ * 안내했는데, 그 화면은 표준 Agent를 하드코딩한 Quick Create 전용 흐름이다).
+ * D-034로 Registry Agent를 고를 수 있게 된 뒤로는 그 공백이 곧 "등록한 Agent로
+ * 만든 서비스는 게시할 수 없다"가 된다.
+ *
+ * 새 API를 만들지 않고 이미 있는 두 호출을 그대로 쓴다:
+ * `POST /deployments` → `POST /deployments/{id}/publish`(Quick Create의
+ * StepPublish와 동일한 순서). Slug는 사용자가 임의 주소를 입력하는 것이 아니라
+ * 서비스 이름에서 파생한 뒤 서버가 패턴·예약어·유일성을 검증한다(루트 UI 규칙:
+ * "플랫폼이 검증된 Slug로 발급"). */
+function PublishPanel({
+  serviceVersionId,
+  serviceName,
+  token,
+  onPublished,
+}: {
+  serviceVersionId: string;
+  serviceName: string;
+  token: string;
+  onPublished: () => void;
+}) {
+  const [slug, setSlug] = useState(() => slugifyServiceName(serviceName));
+  const [publishing, setPublishing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checks, setChecks] = useState<Array<{ name: string; passed: boolean; message: string }>>([]);
+  const [publishedUrl, setPublishedUrl] = useState<string | null>(null);
+
+  async function handlePublish() {
+    setPublishing(true);
+    setError(null);
+    setChecks([]);
+    try {
+      const created = await fetch(`${API_BASE}/api/v1/deployments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          service_version_id: serviceVersionId,
+          slug: slug.trim(),
+          environment: "internal",
+          access_policy: "INTERNAL_AUTHENTICATED",
+        }),
+      });
+      const createdBody = await safeJson(created);
+      if (!created.ok) {
+        setError(createdBody?.error?.message ?? `게시 준비에 실패했습니다. (HTTP ${created.status})`);
+        return;
+      }
+
+      const deploymentId = createdBody.id;
+      const published = await fetch(`${API_BASE}/api/v1/deployments/${deploymentId}/publish`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const publishedBody = await safeJson(published);
+      if (!published.ok) {
+        // 게시 Gate 실패는 실패 항목까지 보여준다 — "실패했습니다"만으로는
+        // 무엇을 고쳐야 할지 알 수 없다.
+        if (publishedBody?.error?.details?.checks) {
+          setChecks(
+            (publishedBody.error.details.checks as Array<{ name: string; passed: boolean; message: string }>)
+              .filter((c) => !c.passed)
+          );
+        }
+        setError(publishedBody?.error?.message ?? `게시에 실패했습니다. (HTTP ${published.status})`);
+        return;
+      }
+      setPublishedUrl(publishedBody.deployment_url ?? null);
+      onPublished();
+    } catch {
+      setError("서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.");
+    } finally {
+      setPublishing(false);
+    }
+  }
+
+  if (publishedUrl) {
+    return (
+      <Card className="mb-4 border-success/30 bg-success/5 p-5">
+        <p className="flex items-center gap-1.5 text-body font-semibold text-success">
+          <CheckCircle2 size={15} />
+          게시되었습니다.
+        </p>
+        <p className="mt-2 break-all text-body text-text-primary">{publishedUrl}</p>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="mb-4 p-5">
+      <h3 className="mb-1 text-body font-semibold text-text-primary">내부 URL로 게시</h3>
+      <p className="mb-3 text-caption text-text-secondary">
+        이 Service Version을 그대로 Hosted 챗봇으로 게시합니다. 주소는 아래 이름으로 발급되며, 서버가 형식과
+        중복을 검증합니다.
+      </p>
+      <FormField label="게시 주소(Slug)" required>
+        <input value={slug} onChange={(e) => setSlug(e.target.value)} className={inputClass} />
+      </FormField>
+      <div className="mt-3 flex items-center gap-2">
+        <Button onClick={() => void handlePublish()} disabled={publishing || !slug.trim()}>
+          {publishing && <Loader2 size={14} className="animate-spin" />}
+          게시
+        </Button>
+      </div>
+      {error && (
+        <div className="mt-3">
+          <ErrorBanner message={error} />
+        </div>
+      )}
+      {checks.length > 0 && (
+        <ul className="mt-3 space-y-1 rounded-lg border border-danger/30 bg-danger/5 px-4 py-3 text-body text-danger">
+          {checks.map((c) => (
+            <li key={c.name} className="list-disc pl-4">
+              {c.message}
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
+}
+
+/** Quick Create(`StepPublish.tsx`)와 동일한 규칙 — 한국어만 있는 이름처럼
+ * 남는 글자가 거의 없을 때는 임의 접미사로 대체한다. */
+function slugifyServiceName(name: string): string {
+  const base = name
+    .toLowerCase()
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-z0-9-]/g, "")
+    .replace(/-{2,}/g, "-")
+    .replace(/^-+|-+$/g, "");
+  if (base.length >= 4) return base.slice(0, 64);
+  return `service-${Math.random().toString(36).slice(2, 8)}`;
 }

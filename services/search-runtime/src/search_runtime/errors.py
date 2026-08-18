@@ -18,6 +18,15 @@ from enum import StrEnum
 
 class ErrorCode(StrEnum):
     VALIDATION_ERROR = "VALIDATION_ERROR"
+    # D-079: the deployment itself refuses the operation, regardless of how
+    # well-formed the request is — local Knowledge index registration is
+    # switched off (no `SEARCH_LOCAL_INDEX_ROOTS`), or the named directory
+    # lies outside the roots this deployment allows. The central "공통" code
+    # (07-data-api-contracts.md §8), not `KNOWLEDGE_ACCESS_DENIED`: nothing
+    # about the *user's* clearance is being evaluated here, so reusing the
+    # ACL code would misreport a deployment-policy refusal as a data-access
+    # one.
+    PERMISSION_DENIED = "PERMISSION_DENIED"
     KNOWLEDGE_ACCESS_DENIED = "KNOWLEDGE_ACCESS_DENIED"
     # D-054: the target index's bm25.pkl is a not-yet-migrated legacy pickle
     # and this deployment refuses to unpickle it
@@ -31,6 +40,7 @@ class ErrorCode(StrEnum):
 
 _STATUS_BY_CODE: dict[ErrorCode, int] = {
     ErrorCode.VALIDATION_ERROR: 400,
+    ErrorCode.PERMISSION_DENIED: 403,
     ErrorCode.KNOWLEDGE_ACCESS_DENIED: 403,
     ErrorCode.KNOWLEDGE_INDEX_CORRUPT: 500,
 }

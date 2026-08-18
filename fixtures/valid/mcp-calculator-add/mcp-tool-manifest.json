@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "id": "8c1d2b2f-4be6-4dc4-948e-308df4903a32",
+  "type": "mcp_tool",
+  "name": "숫자 더하기",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform-team",
+    "creator_id": "dev-user@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "두 숫자를 더해 결과를 반환하는 Desktop 설치·연결 검증용 읽기 전용 샘플 Tool입니다.",
+  "tags": ["sample", "calculator", "desktop"],
+  "server_alias": "oracle-connector",
+  "tool_name": "calculator.add",
+  "risk_level": "READ_ONLY",
+  "input_schema": {
+    "type": "object",
+    "required": ["a", "b"],
+    "additionalProperties": false,
+    "properties": {
+      "a": { "type": "number" },
+      "b": { "type": "number" }
+    }
+  },
+  "output_schema": {
+    "type": "object",
+    "required": ["result"],
+    "additionalProperties": false,
+    "properties": {
+      "result": { "type": "number" }
+    }
+  },
+  "execution_guards": {
+    "timeout_seconds": 5,
+    "max_rows": 1,
+    "max_bytes": 1024,
+    "requires_user_confirmation": false
+  },
+  "permissions": {
+    "allowed_roles": ["USER", "CREATOR", "TECH_REVIEWER", "ADMIN"],
+    "allowed_orgs": ["miracom"]
+  }
+}

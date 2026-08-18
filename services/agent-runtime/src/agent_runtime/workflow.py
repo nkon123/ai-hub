@@ -1,10 +1,21 @@
 """Standard Knowledge (+ optional MCP Tool) chat workflow (state machine).
 
-INPUT_VALIDATE -> PREPARE -> ANALYZE -> KNOWLEDGE_SEARCH (0..n) ->
-TOOL_CONFIRM (optional) -> MCP_TOOL_CALL (0..n) -> ANSWER_GENERATE ->
-OUTPUT_VALIDATE -> COMPLETE
+INPUT_VALIDATE -> PREPARE -> ANALYZE -> KNOWLEDGE_ROUTE (optional) ->
+KNOWLEDGE_SEARCH (0..n) -> TOOL_ROUTE (optional) -> TOOL_CONFIRM (optional) ->
+MCP_TOOL_CALL (0..n) -> ANSWER_GENERATE -> OUTPUT_VALIDATE -> COMPLETE
 
-(stage list per 02-desktop-and-agent-runtime.md §5.2.)
+(stage list per 02-desktop-and-agent-runtime.md §5.2, extended with
+KNOWLEDGE_ROUTE — agentic Knowledge selection, only present when the caller
+supplies `knowledge_candidates`; see `agent_runtime.knowledge_router` and
+this function's own docstring on `knowledge_candidates` for the full
+contract, including its fail-open guarantee — and TOOL_ROUTE (D-083,
+open-decisions.md) — agentic MCP Tool selection, only present when the
+caller sets `tool_route_enabled=True` and does NOT already supply an
+explicit `mcp_tool_request`; see `agent_runtime.tool_router` and this
+function's own docstring on `tool_route_enabled` for the full contract,
+including its fail-CLOSED guarantee — the opposite of KNOWLEDGE_ROUTE's
+fail-open, deliberately: a Tool Call is an action, so a failed routing
+optimization must propose nothing, never guess.)
 
 Never call the LLM to *answer* when there is no evidence at all — neither
 Knowledge citations nor MCP Tool results (hallucination guard, D-036,
@@ -22,19 +33,28 @@ it always has, one asyncio task earlier than the answer-generation call. See
 `tests/integration/agent_runtime/test_runs.py`'s
 `test_history_does_not_bypass_hallucination_guard` for the regression proof.
 
-ANALYZE (the tool-selection decision) is deterministic, not model-driven:
-the caller declares `mcp_tool_request` explicitly — an explicit field on the
-run's `input`, extracted by routers/runs.py — instead of the Runtime asking
-an LLM to decide/produce a tool call and parsing its free-form output. This
-is exactly what 02-desktop-and-agent-runtime.md §5.2 means by "Tool
-Calling이 약한 로컬 모델은 Runtime의 명시적 Workflow와 Schema 기반 호출을
-사용한다": no model output is ever interpreted as a tool invocation. Before
-any network call, the requested tool name is checked against the Office
-Profile's `allowed_mcp_servers[].allowed_tools` allowlist
+ANALYZE (the tool-selection decision) is deterministic BY DEFAULT, not
+model-driven: the caller declares `mcp_tool_request` explicitly — an
+explicit field on the run's `input`, extracted by routers/runs.py — instead
+of the Runtime asking an LLM to decide/produce a tool call and parsing its
+free-form output. This is exactly what 02-desktop-and-agent-runtime.md §5.2
+means by "Tool Calling이 약한 로컬 모델은 Runtime의 명시적 Workflow와 Schema
+기반 호출을 사용한다". D-083 (open-decisions.md) adds an opt-in exception: a
+caller may instead set `tool_route_enabled=True` (no explicit
+`mcp_tool_request`) to have ONE optional LLM call (`agent_runtime.
+tool_router.route_tool_call`) propose a tool name + arguments from the
+question. Critically, that proposal is still never treated as an
+invocation — it is converted into the exact same `mcp_tool_request` shape an
+explicit caller would have sent, and goes through the identical chokepoint
+below unchanged. Before any network call, the requested tool name (whether
+caller-declared or model-proposed) is checked against the Office Profile's
+`allowed_mcp_servers[].allowed_tools` allowlist
 (`mcp_tools.resolve_allowed_alias`) and its input is validated against the
 local static schema copy (`mcp_tools.validate_tool_input`) — both are pure,
 local, and unit-testable without a live LLM, live MCP server, or live
-search-runtime.
+search-runtime. A model-proposed request that fails either check is NOT
+retried — see `tool_router.py`'s module docstring — the run simply proceeds
+with no tool call, exactly as if `mcp_tool_request` had never been supplied.
 
 TOOL_CONFIRM (§8.4 ALWAYS/ON_PARAMETER Tools) parks the Run in
 WAITING_FOR_USER via `_await_confirmation` — RUNNING -> WAITING_FOR_USER ->
@@ -67,9 +87,11 @@ from agent_runtime.adapters.search import KnowledgeSearchError
 from agent_runtime.config import settings
 from agent_runtime.conversation import bound_history, rewrite_query_for_search
 from agent_runtime.hub_query import build_hub_query
+from agent_runtime.knowledge_router import KnowledgeRouteResult, route_knowledge_candidates
 from agent_runtime.manifests import StandardKnowledgeChatConfig
 from agent_runtime.prompt_renderer import build_messages
 from agent_runtime.run_store import PendingConfirmation, RunRecord, RunStore
+from agent_runtime.tool_router import ToolRouteResult, route_tool_call
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +172,35 @@ _TOOL_ACTION_DESCRIPTIONS: dict[str, str] = {
 }
 
 
-def _build_confirmation_summary(tool_name: str, raw_input: dict[str, Any]) -> str:
+# D-083: "the model's arguments were rejected as invalid" error codes.
+# `_run_mcp_tool_call` returns these two ways: (a) BEFORE any network call,
+# from this Runtime's own local pre-flight check (`mcp_tools.
+# resolve_allowed_alias`/`validate_tool_input`), or (b) AFTER a real
+# dispatch, when office-mcp-server's own (authoritative, and in practice
+# sometimes stricter than this Runtime's local static copy — see
+# `mcp_tools.py`'s module docstring on drift) schema check rejects the call
+# and `HttpMCPAdapter` surfaces its Error Envelope code unchanged
+# (`adapters/mcp.py`). Live verification (2026-08-15) hit exactly this
+# second case: a real Ollama call proposed a structurally-plausible
+# `db_metadata.get_columns` input that passed this Runtime's local schema
+# check but was rejected by the live server with `MCP_INPUT_INVALID`. Both
+# cases get the same treatment here on purpose — either way, the Run must
+# not fail just because the model's guessed arguments were wrong; a
+# caller-declared `mcp_tool_request` (ai_derived=False) is NEVER given this
+# leniency in either case — that path's behavior is unchanged (a bad
+# explicit request still fails the Run, exactly as before D-083).
+_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES = frozenset({"MCP_TOOL_NOT_FOUND", "MCP_INPUT_INVALID"})
+
+# D-083 confirmation summary suffix — tells the approving user the arguments
+# were not typed by them or any caller, but extracted by the model from the
+# question text. Never silently reused for a caller-supplied
+# `mcp_tool_request`'s summary (ai_derived=False never appends this).
+_AI_DERIVED_SUMMARY_SUFFIX = " 이 값은 AI가 질문에서 자동으로 추출했습니다."
+
+
+def _build_confirmation_summary(
+    tool_name: str, raw_input: dict[str, Any], *, ai_derived: bool = False
+) -> str:
     """Human-readable Korean summary of what will run if approved.
 
     Deliberately excludes filter *values* (arbitrary business/query data) —
@@ -160,6 +210,14 @@ def _build_confirmation_summary(tool_name: str, raw_input: dict[str, Any]) -> st
     never carry raw tool input/results") intact for the confirmation panel:
     the user learns *what* will be queried, never the specific values being
     filtered on.
+
+    `ai_derived` (D-083): True only when this input came from the TOOL_ROUTE
+    stage rather than an explicit caller-declared `mcp_tool_request` — see
+    `_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES`'s docstring above. When True, the
+    summary states plainly that the arguments were AI-derived, so a person
+    approving it knows what they are approving (design brief requirement:
+    model-generated arguments must never look identical to user-supplied
+    ones in the confirmation panel).
     """
     action = _TOOL_ACTION_DESCRIPTIONS.get(tool_name, "Tool을 실행")
     schema_name = raw_input.get("schema")
@@ -169,6 +227,8 @@ def _build_confirmation_summary(tool_name: str, raw_input: dict[str, Any]) -> st
     filters = raw_input.get("filters") or []
     if filters:
         summary += f" (필터 {len(filters)}개 적용, 값은 표시되지 않음)"
+    if ai_derived:
+        summary += _AI_DERIVED_SUMMARY_SUFFIX
     return summary
 
 
@@ -249,19 +309,30 @@ def _build_mcp_audit_context(
     agent_manifest: dict[str, Any],
     office_profile: dict[str, Any],
     tool_name: str,
+    service_version: str | None = None,
 ) -> dict[str, Any]:
     """05-mcp-security-governance.md §3 Request Context — built only from
     Runtime-trusted values (manifest / office profile / run identifiers),
     never from Agent Prompt or tool input (see request_context.py's module
     docstring on the office-mcp-server side for the boundary this exists to
-    enforce)."""
+    enforce).
+
+    `service_version` (additive/optional, D-034 (i) 남은 절반): when the
+    caller resolved a real Portal ServiceVersion (Hosted Chat via portal-api
+    `GET /deployments/by-slug/{slug}`), it passes that version string here
+    AND the matching real ServiceVersion id as `service_id` — the latter
+    passes through `_derive_service_uuid` unchanged because it is already a
+    valid UUID. Omitted (every Local Run / Preview, and any Hosted chatbot
+    published before portal-api returned this field) reproduces the exact
+    prior behavior: the `_POC_SERVICE_VERSION` sentinel, paired with a
+    UUID5 derived from whatever opaque string `service_id` is."""
     sites = office_profile.get("sites") or ["unknown-site"]
     return {
         "request_id": request_id,
         "trace_id": trace_id,
         "run_id": run_id,
         "service_id": _derive_service_uuid(service_id),
-        "service_version": _POC_SERVICE_VERSION,
+        "service_version": service_version or _POC_SERVICE_VERSION,
         "agent_id": agent_manifest["id"],
         "agent_version": agent_manifest["version"],
         "user": {
@@ -284,8 +355,19 @@ async def _run_mcp_tool_call(
     mcp_tool_request: dict[str, Any],
     run_store: RunStore,
     confirmation_timeout_seconds: float,
+    ai_derived: bool = False,
+    service_version: str | None = None,
 ) -> dict[str, Any] | tuple[str, str] | _Cancelled | _Denied:
     """Validate then (if valid) execute one MCP_TOOL_CALL.
+
+    `ai_derived` (D-083): True when `mcp_tool_request` was synthesized from a
+    TOOL_ROUTE proposal rather than supplied explicitly by the caller. This
+    function's own allowlist/schema/confirmation logic is completely
+    unchanged by it — `ai_derived` only affects the confirmation summary
+    text (`_build_confirmation_summary`) shown to the approving user. The
+    caller (`run_knowledge_chat`) is responsible for treating this
+    function's pre-flight rejection codes differently depending on
+    `ai_derived` — see `_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES`.
 
     Returns:
     - a common-envelope dict on success — fed into ANSWER_GENERATE as cited
@@ -329,7 +411,7 @@ async def _run_mcp_tool_call(
         # dispatches through the exact same `confirmed=true` path as a
         # caller-pre-confirmed request, so office-mcp-server independently
         # re-checks its own policy either way.
-        summary = _build_confirmation_summary(tool_name, raw_input)
+        summary = _build_confirmation_summary(tool_name, raw_input, ai_derived=ai_derived)
         outcome = await _await_confirmation(
             run_id=run_id,
             trace_id=trace_id,
@@ -354,6 +436,7 @@ async def _run_mcp_tool_call(
         agent_manifest=config.agent_manifest,
         office_profile=config.office_profile,
         tool_name=tool_name,
+        service_version=service_version,
     )
     call_request = {
         "tool_name": tool_name,
@@ -462,10 +545,21 @@ async def run_knowledge_chat(
     user_context: dict[str, Any] | None = None,
     history: list[dict[str, Any]] | None = None,
     knowledge_ids: list[str] | None = None,
+    knowledge_candidates: list[dict[str, Any]] | None = None,
     allow_hub_lookup: bool = False,
     hub_search_adapter: HubSearchAdapter | None = None,
+    tool_route_enabled: bool = False,
+    service_version: str | None = None,
 ) -> None:
-    """`mcp_adapter`/`mcp_tool_request` are additive/optional — the
+    """`service_version` (additive/optional, D-034 (i) 남은 절반): the real
+    ServiceVersion `version` string, when the caller (today, only Hosted
+    Chat's `routers/chat.py`) resolved one via portal-api. Threaded straight
+    through to `_build_mcp_audit_context` — see that function's docstring
+    for the full contract. Omitted (every Local Run/Preview caller today, and
+    any Hosted chatbot whose deployment predates this field) reproduces the
+    exact prior behavior: the `_POC_SERVICE_VERSION` sentinel.
+
+    `mcp_adapter`/`mcp_tool_request` are additive/optional — the
     Knowledge-only standard-agent path (both always None/omitted, exactly
     as before this change) is byte-for-byte unaffected: `mcp_tool_request`
     stays None, the MCP_TOOL_CALL block below is skipped entirely, and
@@ -506,6 +600,30 @@ async def run_knowledge_chat(
     Omitted/empty falls back to the single-`knowledge_id` behavior
     byte-for-byte.
 
+    `knowledge_candidates` (additive/optional — agentic Knowledge selection,
+    KNOWLEDGE_ROUTE stage, `agent_runtime.knowledge_router`) is a list of
+    `{knowledge_id, name, description?, tags?, classification?}` dicts. When
+    non-empty, it takes over Stage 1's search-target selection entirely:
+    ONE optional LLM call (`route_knowledge_candidates`) reads only this
+    call's `question` and the candidates' metadata — never document text,
+    citations, or prior answers — and picks the subset worth searching,
+    each with a short Korean reason; `knowledge_ids` is ignored in that
+    case (a caller doing agentic selection sends candidates, not a
+    pre-decided id list). Below `settings.knowledge_route_skip_threshold`
+    candidates the LLM call is skipped entirely (every candidate is
+    searched — routing that few is pure latency for no benefit). On any
+    routing failure (LLM error/timeout/unparseable output/an id outside the
+    candidate list) OR a valid-but-empty selection ("abstained"), this
+    fails open: every candidate is searched, never zero, never a
+    guessed-at subset — routing is an optimization, and a failed
+    optimization must not silently reduce recall. The decision (selected
+    ids, excluded ids, each with a reason, and whether routing ran/was
+    skipped/fell back) is emitted as a `knowledge.route.selected` event.
+    Omitting `knowledge_candidates` (every caller today, including the 4
+    published Hosted chatbots) reproduces the exact prior `knowledge_ids`/
+    `knowledge_id` behavior byte-for-byte — `route_knowledge_candidates` is
+    never even called.
+
     `allow_hub_lookup`/`hub_search_adapter` (additive/optional, default off)
     gate Stage 2: a hub (central Knowledge registry, portal-api M02) lookup
     that only ever runs when Stage 1 found zero citations AND the caller
@@ -517,7 +635,49 @@ async def run_knowledge_chat(
     Stage 1 (possibly rewritten) local search query. A hub lookup failure
     (`HubSearchError`) is logged and swallowed — it must never fail the Run;
     Stage 2 simply contributes nothing, falling through to the same
-    INSUFFICIENT_EVIDENCE path as when both stages find nothing."""
+    INSUFFICIENT_EVIDENCE path as when both stages find nothing.
+
+    `tool_route_enabled` (D-083, open-decisions.md, additive/optional,
+    default False) opts a Run into the TOOL_ROUTE stage — agentic MCP Tool
+    selection (`agent_runtime.tool_router.route_tool_call`) — ONLY when
+    `mcp_tool_request` was NOT already supplied (an explicit caller-declared
+    request always takes priority and disables routing entirely for that
+    Run) and the resolved agent's `capabilities.mcp_allowed` is true.
+    Candidates are computed here, server-side, from `config.office_profile`
+    alone via `mcp_tools.list_candidate_tools` — never from anything the
+    caller sends — so the candidate set can never be wider than what this
+    deployment's Office Profile already permits. The routing call itself
+    reads ONLY this call's `question` and each candidate's `tool_name`/
+    `input_schema` — never Knowledge citations, tool results, or `history`.
+    A successful proposal (`status="ran"`) is converted into the exact same
+    `{"tool_name", "input", "confirmed": False}` shape an explicit caller
+    would have sent and is run through the UNCHANGED
+    `resolve_allowed_alias` -> `validate_tool_input` ->
+    `confirmation_policy_for` chokepoint — never bypassed, never
+    special-cased for having come from routing. Unlike KNOWLEDGE_ROUTE, this
+    stage fails CLOSED: any routing failure (timeout, unparseable output, an
+    unknown tool name) OR the model explicitly declining all result in NO
+    tool call at all — this module's own D-036 hallucination guard then
+    decides SUCCEEDED (off Knowledge citations alone) vs
+    INSUFFICIENT_EVIDENCE, exactly as if `mcp_tool_request` had never been
+    given. If the proposal passes routing but is then rejected as
+    invalid — either by this Runtime's own local `validate_tool_input`
+    check, or (a real dispatch was attempted) by office-mcp-server's own
+    authoritative schema check surfacing the same error code — that
+    rejection is likewise treated as "propose nothing" — NOT retried, NOT
+    failed as a Run error — per `tool_router.py`'s one-shot rule and
+    `_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES`'s docstring. The confirmation summary shown to
+    an approving user for an AI-derived proposal explicitly states the
+    arguments were AI-derived (`_build_confirmation_summary`'s `ai_derived`
+    flag) — every existing `confirmation_policy_for` outcome (NEVER/
+    ON_PARAMETER/ALWAYS) is completely unchanged by routing, so a routed
+    proposal is never confirmed *less* strictly than the same tool/input
+    would be from an explicit caller. The decision (status/reason/tool_name,
+    never the raw model output or the prompt) is emitted as an
+    `mcp.tool_route.selected` event. Omitting `tool_route_enabled` (every
+    caller today, including the 4 published Hosted chatbots) reproduces the
+    exact prior `mcp_tool_request`-only behavior byte-for-byte —
+    `route_tool_call` is never even called."""
     bounded_history = bound_history(
         history, max_turns=settings.max_history_turns, max_chars=settings.max_history_chars
     )
@@ -569,8 +729,15 @@ async def run_knowledge_chat(
         # reject a valid multi-knowledge request that omits the singular
         # field. `knowledge_ok` below (PREFLIGHT) reads this same variable,
         # so this one change covers both checks.
-        has_knowledge_id = bool(knowledge_id) or bool(knowledge_ids)
-        has_mcp_request = mcp_tool_request is not None
+        has_knowledge_id = bool(knowledge_id) or bool(knowledge_ids) or bool(knowledge_candidates)
+        # D-083: a Run that opted into TOOL_ROUTE (and whose agent allows
+        # MCP at all) may still end up proposing a Tool even though no
+        # explicit `mcp_tool_request` was given — this gate must not reject
+        # such a Run before TOOL_ROUTE ever gets a chance to run. Whether
+        # TOOL_ROUTE actually proposes anything is decided later; this is
+        # only "is it possible", mirroring what `has_mcp_request` already
+        # means for the explicit path.
+        has_mcp_request = mcp_tool_request is not None or (tool_route_enabled and mcp_allowed)
         if knowledge_required and not has_knowledge_id:
             _fail(run_store, run_id, trace_id, "INVALID_INPUT", "knowledge_id is required")
             return
@@ -615,15 +782,50 @@ async def run_knowledge_chat(
         )
 
         if not preflight_passed:
-            _fail(
-                run_store, run_id, trace_id, "PREFLIGHT_FAILED", "preflight checks did not pass"
-            )
+            _fail(run_store, run_id, trace_id, "PREFLIGHT_FAILED", "preflight checks did not pass")
             return
 
         # --- ANALYZE (implicit) + KNOWLEDGE_SEARCH (0..n) ---
         run_store.set_status(run_id, "RUNNING")
         citations: list[dict[str, Any]] = []
         if has_knowledge_id:
+            # --- KNOWLEDGE_ROUTE (optional, before KNOWLEDGE_SEARCH) ---
+            # Agentic Knowledge selection — only runs when the caller
+            # supplied `knowledge_candidates` (additive/optional; every
+            # existing caller, including the 4 published Hosted chatbots,
+            # never does). See `agent_runtime.knowledge_router` for the
+            # fail-open contract this relies on: `route_result.selected_ids`
+            # is always safe to search directly, in every status.
+            route_result: KnowledgeRouteResult | None = None
+            if knowledge_candidates:
+                route_result = await route_knowledge_candidates(
+                    question,
+                    knowledge_candidates,
+                    llm_adapter,
+                    model_alias="default-chat",
+                    timeout_seconds=settings.knowledge_route_timeout_seconds,
+                    skip_threshold=settings.knowledge_route_skip_threshold,
+                )
+                run_store.append_event(
+                    run_id,
+                    "knowledge.route.selected",
+                    {
+                        "status": route_result.status,
+                        "fallback_reason": route_result.fallback_reason,
+                        "selected": route_result.selected,
+                        "excluded": route_result.excluded,
+                    },
+                )
+                logger.info(
+                    "knowledge.route run_id=%s status=%s fallback_reason=%s "
+                    "selected_count=%d excluded_count=%d",
+                    run_id,
+                    route_result.status,
+                    route_result.fallback_reason,
+                    len(route_result.selected_ids),
+                    len(route_result.excluded),
+                )
+
             run_store.append_event(
                 run_id, "knowledge.search.started", {"knowledge_id": knowledge_id}
             )
@@ -647,12 +849,19 @@ async def run_knowledge_chat(
                 )
                 run_store.append_event(run_id, "knowledge.query_rewritten", rewrite_meta)
 
-            # Stage 1 fan-out: `knowledge_ids` (non-empty) searches every id
-            # in the list with the same `search_query`, via `asyncio.gather`
-            # — unchanged access_context/clearance logic, just repeated per
-            # id. Omitted/empty `knowledge_ids` reproduces the exact prior
+            # Stage 1 fan-out: searches every id in `ids_to_search` with the
+            # same `search_query`, via `asyncio.gather` — unchanged
+            # access_context/clearance logic, just repeated per id.
+            # `route_result` (KNOWLEDGE_ROUTE, above) takes over id
+            # selection entirely when present — its `selected_ids` is
+            # always the right thing to search, fallback-inclusive.
+            # Otherwise `knowledge_ids` (non-empty) reproduces the plain
+            # fan-out; omitting both reproduces the exact prior
             # single-`knowledge_id` request/response handling.
-            ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
+            if route_result is not None:
+                ids_to_search = route_result.selected_ids
+            else:
+                ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
             access_context = {
                 # §3.8 step 1 — see this function's docstring for why this
                 # comes from `user_context`, never from `input`.
@@ -663,24 +872,42 @@ async def run_knowledge_chat(
                 or settings.default_search_clearance,
             }
 
-            async def _search_one(kid: str) -> dict[str, Any]:
-                return await knowledge_adapter.search(
-                    {
-                        "query": search_query,
-                        "knowledge_id": kid,
-                        "knowledge_version": "latest",
-                        "top_k": 5,
-                        "alpha": 0.5,
-                        "trace_id": trace_id,
-                        "run_id": run_id,
-                        "access_context": access_context,
-                    }
+            candidate_retrieval_profiles: dict[str, dict[str, Any]] = {}
+            for candidate in knowledge_candidates or []:
+                candidate_id = (
+                    candidate.get("knowledge_id") if isinstance(candidate, dict) else None
                 )
+                profile = (
+                    candidate.get("retrieval_profile") if isinstance(candidate, dict) else None
+                )
+                if isinstance(candidate_id, str) and isinstance(profile, dict):
+                    candidate_retrieval_profiles[candidate_id] = profile
+
+            async def _search_one(kid: str) -> dict[str, Any]:
+                profile = candidate_retrieval_profiles.get(kid, {})
+                raw_top_k = profile.get("top_k")
+                raw_alpha = profile.get("hybrid_alpha")
+                raw_min_score = profile.get("min_relevance_score")
+                applied_top_k = raw_top_k if type(raw_top_k) is int and 1 <= raw_top_k <= 50 else 5
+                applied_alpha = (
+                    raw_alpha if type(raw_alpha) in {int, float} and 0 <= raw_alpha <= 1 else 0.5
+                )
+                payload: dict[str, Any] = {
+                    "query": search_query,
+                    "knowledge_id": kid,
+                    "knowledge_version": "latest",
+                    "top_k": applied_top_k,
+                    "alpha": applied_alpha,
+                    "trace_id": trace_id,
+                    "run_id": run_id,
+                    "access_context": access_context,
+                }
+                if type(raw_min_score) in {int, float} and 0 <= raw_min_score <= 1:
+                    payload["min_relevance_score"] = raw_min_score
+                return await knowledge_adapter.search(payload)
 
             try:
-                search_results = await asyncio.gather(
-                    *(_search_one(kid) for kid in ids_to_search)
-                )
+                search_results = await asyncio.gather(*(_search_one(kid) for kid in ids_to_search))
             except KnowledgeSearchError as exc:
                 # Surfaces search-runtime's own code (e.g. KNOWLEDGE_ACCESS_DENIED
                 # — §3.8) instead of falling through to the generic
@@ -711,9 +938,7 @@ async def run_knowledge_chat(
                 "knowledge.search.completed",
                 {"citation_count": len(citations), "latency_ms": latency_ms},
             )
-            logger.info(
-                "run.knowledge_search run_id=%s citation_count=%d", run_id, len(citations)
-            )
+            logger.info("run.knowledge_search run_id=%s citation_count=%d", run_id, len(citations))
             for citation in citations:
                 run_store.append_event(run_id, "citation.added", citation)
 
@@ -727,9 +952,7 @@ async def run_knowledge_chat(
         if len(citations) == 0 and allow_hub_lookup and hub_search_adapter is not None:
             hub_query = build_hub_query(question, bounded_history)
             try:
-                hub_result = await hub_search_adapter.search(
-                    hub_query, top_k=5, trace_id=trace_id
-                )
+                hub_result = await hub_search_adapter.search(hub_query, top_k=5, trace_id=trace_id)
             except HubSearchError as exc:
                 # Hub unreachable/erroring must never fail the Run — Stage 2
                 # simply contributes nothing, falling through to the same
@@ -765,9 +988,54 @@ async def run_knowledge_chat(
                 for citation in hub_citations:
                     run_store.append_event(run_id, "citation.added", citation)
 
+        # --- TOOL_ROUTE (optional, D-083) ---
+        # Agentic MCP Tool selection — only runs when the caller opted in
+        # (`tool_route_enabled=True`; every existing caller, including the 4
+        # published Hosted chatbots, never does) AND did not already declare
+        # an explicit `mcp_tool_request` (that path always wins — routing
+        # never overrides an explicit caller decision) AND the resolved
+        # agent allows MCP at all. See `run_knowledge_chat`'s own docstring
+        # for the full contract, including the fail-CLOSED guarantee.
+        effective_mcp_tool_request = mcp_tool_request
+        tool_route_is_ai_derived = False
+        if mcp_tool_request is None and tool_route_enabled and mcp_allowed:
+            tool_candidates = mcp_tools.list_candidate_tools(config.office_profile)
+            tool_route_result: ToolRouteResult = await route_tool_call(
+                question,
+                tool_candidates,
+                llm_adapter,
+                model_alias="default-chat",
+                timeout_seconds=settings.tool_route_timeout_seconds,
+                skip_threshold=settings.tool_route_skip_threshold,
+                description_max_chars=settings.tool_route_description_max_chars,
+            )
+            run_store.append_event(
+                run_id,
+                "mcp.tool_route.selected",
+                {
+                    "status": tool_route_result.status,
+                    "reason": tool_route_result.reason,
+                    "tool_name": tool_route_result.tool_name,
+                },
+            )
+            logger.info(
+                "tool.route run_id=%s status=%s reason=%s tool_name=%s",
+                run_id,
+                tool_route_result.status,
+                tool_route_result.reason,
+                tool_route_result.tool_name,
+            )
+            if tool_route_result.status == "ran" and tool_route_result.tool_name:
+                effective_mcp_tool_request = {
+                    "tool_name": tool_route_result.tool_name,
+                    "input": tool_route_result.tool_input or {},
+                    "confirmed": False,
+                }
+                tool_route_is_ai_derived = True
+
         # --- TOOL_CONFIRM (optional) / MCP_TOOL_CALL (0..n) ---
         tool_results: list[dict[str, Any]] = []
-        if mcp_tool_request is not None:
+        if effective_mcp_tool_request is not None:
             if not mcp_allowed:
                 _fail(
                     run_store,
@@ -784,17 +1052,44 @@ async def run_knowledge_chat(
                 trace_id=trace_id,
                 config=config,
                 mcp_adapter=mcp_adapter,
-                mcp_tool_request=mcp_tool_request,
+                mcp_tool_request=effective_mcp_tool_request,
                 run_store=run_store,
                 confirmation_timeout_seconds=confirmation_timeout,
+                ai_derived=tool_route_is_ai_derived,
+                service_version=service_version,
             )
             if isinstance(outcome, _Cancelled):
                 return  # terminal state already recorded by _run_mcp_tool_call
             if isinstance(outcome, tuple):
                 code, message = outcome
-                _fail(run_store, run_id, trace_id, code, message)
-                return
-            if isinstance(outcome, _Denied):
+                if tool_route_is_ai_derived and code in _TOOL_ROUTE_PREFLIGHT_REJECTION_CODES:
+                    # D-083 one-shot rule (tool_router.py's module docstring):
+                    # a model-proposed request rejected as invalid — locally
+                    # or by the live office-mcp-server's own schema check
+                    # (see `_TOOL_ROUTE_PREFLIGHT_REJECTION_CODES`'s
+                    # docstring — live 2026-08-15 verification hit exactly
+                    # this: the local check passed, the real server's
+                    # stricter schema rejected it) — is NEVER retried and
+                    # NEVER fails the Run; it is treated exactly like no tool
+                    # had been proposed at all. Any OTHER outcome (a
+                    # different error code — network/execution failure,
+                    # possibly post-confirmation) still fails the Run
+                    # normally below.
+                    run_store.append_event(
+                        run_id,
+                        "mcp.tool_route.rejected",
+                        {"tool_name": effective_mcp_tool_request.get("tool_name"), "code": code},
+                    )
+                    logger.info(
+                        "tool.route.rejected run_id=%s tool_name=%s code=%s",
+                        run_id,
+                        effective_mcp_tool_request.get("tool_name"),
+                        code,
+                    )
+                else:
+                    _fail(run_store, run_id, trace_id, code, message)
+                    return
+            elif isinstance(outcome, _Denied):
                 # "Denial is a first-class outcome (run ends cleanly, not an
                 # error)" — proceed exactly as if no mcp_tool_request had
                 # been given; the hallucination guard right below decides
@@ -861,9 +1156,7 @@ async def run_knowledge_chat(
         # --- COMPLETE ---
         output = {"answer": full_answer, "citations": citations}
         run_store.set_status(run_id, "SUCCEEDED", output=output)
-        run_store.append_event(
-            run_id, "run.completed", {"status": "SUCCEEDED", "output": output}
-        )
+        run_store.append_event(run_id, "run.completed", {"status": "SUCCEEDED", "output": output})
 
     except Exception:  # noqa: BLE001 - a bug here must never leave a run RUNNING
         logger.exception("run.internal_error run_id=%s", run_id)

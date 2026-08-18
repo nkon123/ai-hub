@@ -39,8 +39,14 @@
         "request_id": { "type": "string" },
         "trace_id": { "type": "string" },
         "run_id": { "type": "string" },
-        "service_id": { "type": "string" },
-        "service_version": { "type": "string" },
+        "service_id": {
+          "type": "string",
+          "description": "Identifies the Service this run answers for. When `service_version` equals the literal `0.0.0-poc-unregistered`, this value is NOT a Portal-registered Service id — it is a deterministic UUID5 derived from an opaque caller-supplied string (a Hosted Chat slug, or any caller-chosen string in a local/Preview run) because no real Service Registry entry could be resolved for this run (open-decisions.md D-034 (i), agent_runtime.workflow._derive_service_uuid). Any other `service_version` value means both fields were resolved from a real Portal ServiceVersion row (via portal-api's `GET /api/v1/deployments/by-slug/{slug}`, D-038) and can be looked up as such."
+        },
+        "service_version": {
+          "type": "string",
+          "description": "The literal `0.0.0-poc-unregistered` is a sentinel, not a real release version — it marks a run whose `service_id` above is derived from an opaque caller string rather than resolved from a registered ServiceVersion (see `service_id`'s description). Any other value is the real `version` string of the ServiceVersion identified by `service_id`."
+        },
         "agent_id": { "type": "string" },
         "agent_version": { "type": "string" },
         "user": { "$ref": "#/definitions/RequestContextUser" },

@@ -10,10 +10,10 @@
     "creator_id": "admin@miracom.com"
   },
   "classification": "INTERNAL",
-  "description": "Oracle DB 테이블 메타데이터 및 건수 조회 (읽기 전용, PoC)",
+  "description": "허용된 Schema의 Table 목록을 조회합니다 (읽기 전용, PoC). 건수 조회는 별도 자산인 '테이블 건수 조회'가 담당합니다.",
   "tags": ["oracle", "readonly", "metadata"],
   "manifest_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-  "changelog": "Initial MCP tool — READ_ONLY only per PoC policy. tool_name/input_schema/output_schema aligned to 05-mcp-security-governance.md §5.1 (db_metadata.get_tables); see D-049 for the get_columns/table_count.query siblings not yet split into their own Portal manifest fixtures.",
+  "changelog": "Initial MCP tool — READ_ONLY only per PoC policy. tool_name/input_schema/output_schema aligned to 05-mcp-security-governance.md §5.1 (db_metadata.get_tables). D-049: the get_columns/table_count.query siblings now have their own Portal manifest fixtures (fixtures/valid/mcp-db-metadata-get-columns, fixtures/valid/mcp-table-count-query), and tests/contract/test_mcp_tool_fixtures.py keeps all three from drifting away from services/office-mcp-server's registry.",
   "created_at": "2026-08-01T09:00:00Z",
   "server_alias": "oracle-connector",
   "tool_name": "db_metadata.get_tables",

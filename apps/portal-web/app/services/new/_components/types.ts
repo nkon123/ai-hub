@@ -7,6 +7,28 @@
 // in page.tsx for the two schema-less spec steps (입력 정의/출력 정의) that are
 // intentionally shown as disabled rather than silently dropped.
 
+// Registry Agent/Prompt asset types moved to app/_components/registryManifests.ts
+// on 2026-08-17 (D-034 follow-up) so /chatbots/new can reuse them too.
+// Re-exported here so every existing `from "./types"` import in this screen
+// keeps working unchanged.
+import type {
+  RegistryAgentManifest,
+  RegistryAgentSelection,
+  RegistryAsset,
+  RegistryAssetVersion,
+  RegistryPromptManifest,
+  RegistryPromptSelection,
+} from "../../../_components/registryManifests";
+
+export type {
+  RegistryAgentManifest,
+  RegistryAgentSelection,
+  RegistryAsset,
+  RegistryAssetVersion,
+  RegistryPromptManifest,
+  RegistryPromptSelection,
+};
+
 export type Classification = "PUBLIC_INTERNAL" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
 
 export const CLASSIFICATIONS: Classification[] = [
@@ -60,6 +82,38 @@ export interface ModelPolicyDraft {
 // --- Step 3: Agent 선택 ---
 
 export type AgentProfileId = "standard-agent" | "standard-db-agent";
+
+/**
+ * 2026-08-16 (D-034 관련): 이 Step은 더 이상 2개의 표준 Agent만 보여주지
+ * 않는다. `services/agent-runtime/src/agent_runtime/manifests.py`의
+ * `resolve_registry_agent_config`(모듈 docstring의 "resolution path 2")가
+ * 이미 `registry_agent_version_id`/`registry_prompt_version_id`로 Portal
+ * Registry에 등록된 APPROVED Agent+Prompt 자산 버전 쌍을 조회해 실제로
+ * 실행할 수 있다 — agent-runtime/Contract 변경 없이. `AgentOption`(아래,
+ * `constants.ts`가 소유)은 표준 Agent(`source: "standard"`)와 Registry
+ * Agent(`source: "registry"`)를 같은 모양으로 표현해 이후 Step들이 하나의
+ * 통일된 값만 소비하면 되게 한다 — 그 통일 전 단계의 "무엇을 선택 중인가"가
+ * 바로 아래 `AgentSelection`/`RegistryPromptSelection`이다.
+ *
+ * `manifest.id`/`manifest.version`(Agent와 Prompt 둘 다)은 Manifest 자체의
+ * `id`/`version` 필드다 — Service Definition의 `agent_ref`/`prompt_bindings`
+ * 가 요구하는 값이며, Portal의 asset id/asset-version id와는 다른 값이다.
+ * `RegistryAgentSelection.versionId`/`RegistryPromptSelection.versionId`는
+ * Portal의 asset VERSION id — agent-runtime에 보낼
+ * `registry_agent_version_id`/`registry_prompt_version_id` 값이다. 이 두
+ * id 종류를 섞으면 안 된다(Preview 실행이 조용히 실패한다).
+ */
+
+export interface StandardAgentSelection {
+  source: "standard";
+  profileId: AgentProfileId;
+}
+
+/** Step 3's selection — either of the 2 built-in profiles (D-034 local
+ * fallback, always executable) or a Portal-registered Agent asset version
+ * (D-034 Registry resolution path 2, executable only once its paired Prompt
+ * is also chosen in Step 6 and both are APPROVED). */
+export type AgentSelection = StandardAgentSelection | RegistryAgentSelection;
 
 // --- Step 4: Knowledge 연결 ---
 
@@ -186,7 +240,10 @@ export interface PreviewMessage {
 export interface ComposerState {
   basicInfo: BasicInfo;
   modelPolicy: ModelPolicyDraft;
-  agentId: AgentProfileId | null;
+  agent: AgentSelection | null;
+  /** Only meaningful when `agent.source === "registry"` — the 2 standard
+   * profiles keep their fixed Prompt pairing (StepPrompt.tsx). */
+  registryPrompt: RegistryPromptSelection | null;
   knowledgeBindings: KnowledgeBindingDraft[];
   limits: LimitsDraft;
   targetUsers: TargetUsersDraft;

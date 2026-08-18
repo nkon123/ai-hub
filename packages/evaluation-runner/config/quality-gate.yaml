@@ -25,8 +25,22 @@ quality_gate:
   # is zero tolerance; loosen only with a documented reason.
   forbidden_hit_rate_max: 0.0
 
+  # §4.7 "모든 ACL Test 통과" (D-045). 데이터셋의 acl_cases 중 권한 없는
+  # 등급에서 금지 문서가 검색된 비율. 유출은 품질 문제가 아니라 보안 실패라
+  # 무관용이 기본값이다. 데이터셋에 acl_cases가 없으면 이 검사는 통과가
+  # 아니라 **아예 생성되지 않는다** — 검사하지 않은 것이 통과한 것처럼
+  # 보여서는 안 된다(metrics.acl_case_count로 측정 여부를 확인한다).
+  acl_leak_rate_max: 0.0
+
+  # 위 검사만으로는 "검색이 아무것도 못 찾는" 상태도 만점을 받는다. 그래서
+  # 허용 등급에서 보여야 하는 문서(expected_visible_document_ids)가 실제로
+  # 검색되는 비율도 함께 요구한다 — 과차단과 무의미한 통과를 동시에 잡는다.
+  # 이 기대를 선언한 acl_cases가 하나도 없으면 이 검사도 생성되지 않는다.
+  acl_visibility_min: 1.0
+
 notes: >
-  모든 ACL Test 통과, Package Smoke Test 통과(§4.7)는 이 evaluation-runner의
-  범위 밖이다 — ACL 케이스 데이터셋과 packages/knowledge-packager Smoke Test가
-  아직 없다(open-decisions.md D-045 참고). 이 파일이 표현하는 Gate는 검색
-  품질/지연시간 부분에 한정된다.
+  Package Smoke Test 통과(§4.7)는 여전히 이 evaluation-runner의 범위 밖이다
+  (packages/knowledge-packager가 자체 verify를 갖고 있으나 이 Gate와 아직
+  연결되지 않았다 — open-decisions.md D-045 참고). ACL Test는 2026-08-16에
+  이 Gate 안으로 들어왔지만, 실제로 검사되려면 해당 Knowledge의 Evaluation
+  Dataset이 acl_cases를 선언해야 한다.

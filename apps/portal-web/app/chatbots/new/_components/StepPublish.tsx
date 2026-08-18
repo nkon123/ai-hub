@@ -1,10 +1,11 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AlertTriangle, Check, Copy, ExternalLink, Loader2, Lock } from "lucide-react";
 import { Button, ErrorBanner, FormField, inputClass } from "../../../_components/ui";
 import { useRole } from "../../../_components/role-context";
-import type { ChatbotSettings, SelectedKnowledge } from "./types";
+import { AdvancedAgentSection, STANDARD_AGENT_LABEL } from "./AdvancedAgentSection";
+import type { AgentChoice, ChatbotSettings, RegistryPromptSelection, SelectedKnowledge } from "./types";
 
 // Fixed portal-api contract (apps/portal-api, port 8000).
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -29,6 +30,67 @@ interface PublishResult {
   slug: string;
   deploymentUrl: string;
 }
+
+/** `agent_ref`/`knowledge_bindings[].role_id`/`prompt_bindings` inputs, resolved
+ * from the "응답 Agent 변경 (고급)" section's choice. `null` only when a Registry
+ * Agent is selected but its paired Prompt has not been chosen yet — the publish
+ * Gate below (see `canPublish`) blocks on that, with a visible reason, rather
+ * than silently publishing a half-bound Agent (portal-api's
+ * `_resolve_registry_asset_version` treats a half pair as "no Registry match"
+ * and falls back to the standard Agent without telling anyone). */
+interface ResolvedAgent {
+  manifestId: string;
+  manifestVersion: string;
+  entryRole: string;
+  promptManifestId: string;
+  promptManifestVersion: string;
+  isRegistry: boolean;
+  displayName: string;
+}
+
+// Byte-for-byte the same ids buildServiceDefinition() has always hardcoded —
+// this is not a new decision, just named so the standard/registry paths share
+// one resolution function.
+const STANDARD_AGENT_MANIFEST_ID = "550e8400-e29b-41d4-a716-446655440010";
+const STANDARD_AGENT_MANIFEST_VERSION = "1.0.0";
+const STANDARD_PROMPT_MANIFEST_ID = "550e8400-e29b-41d4-a716-446655440020";
+const STANDARD_PROMPT_MANIFEST_VERSION = "1.0.0";
+const STANDARD_ENTRY_ROLE = "answerer";
+
+function resolveAgent(agentChoice: AgentChoice, registryPrompt: RegistryPromptSelection | null): ResolvedAgent | null {
+  if (agentChoice.source === "standard") {
+    return {
+      manifestId: STANDARD_AGENT_MANIFEST_ID,
+      manifestVersion: STANDARD_AGENT_MANIFEST_VERSION,
+      entryRole: STANDARD_ENTRY_ROLE,
+      promptManifestId: STANDARD_PROMPT_MANIFEST_ID,
+      promptManifestVersion: STANDARD_PROMPT_MANIFEST_VERSION,
+      isRegistry: false,
+      displayName: STANDARD_AGENT_LABEL,
+    };
+  }
+  if (!registryPrompt) return null;
+  return {
+    manifestId: agentChoice.manifest.id,
+    manifestVersion: agentChoice.manifest.version,
+    entryRole: agentChoice.manifest.entryRole,
+    promptManifestId: registryPrompt.manifest.id,
+    promptManifestVersion: registryPrompt.manifest.version,
+    isRegistry: true,
+    displayName: `${agentChoice.assetName} (v${agentChoice.versionLabel})`,
+  };
+}
+
+/** Result of the post-publish `GET /api/v1/deployments/by-slug/{slug}` check
+ * (root CLAUDE.md: never swallow a silent fallback). Only run when the
+ * publisher chose a Registry Agent — the standard Agent path never resolves
+ * to a Registry match by design (portal-api's `_resolve_registry_asset_version`
+ * doc comment), so checking would only ever report the expected null. */
+type ConnectionCheck =
+  | { status: "checking" }
+  | { status: "connected"; agentName: string }
+  | { status: "fallback" }
+  | { status: "unknown" };
 
 interface ValidationCheck {
   name: string;
@@ -66,7 +128,7 @@ async function safeJson(res: Response): Promise<any> {
   }
 }
 
-function buildServiceDefinition(selected: SelectedKnowledge, settings: ChatbotSettings) {
+function buildServiceDefinition(selected: SelectedKnowledge, settings: ChatbotSettings, agent: ResolvedAgent) {
   const suggestedQuestions = settings.suggestedQuestions.map((q) => q.trim()).filter(Boolean).slice(0, 5);
   return {
     schema_version: "1.0",
@@ -81,11 +143,11 @@ function buildServiceDefinition(selected: SelectedKnowledge, settings: ChatbotSe
     manifest_hash: "0".repeat(64),
     changelog: "Quick Create via Service Composer Wizard",
     created_at: new Date().toISOString(),
-    agent_ref: { id: "550e8400-e29b-41d4-a716-446655440010", version: "1.0.0" },
+    agent_ref: { id: agent.manifestId, version: agent.manifestVersion },
     // CRITICAL: knowledge_id must be the AssetVersion id (versionId), not the Asset id.
     knowledge_bindings: [
       {
-        role_id: "answerer",
+        role_id: agent.entryRole,
         knowledge_id: selected.versionId,
         knowledge_version: selected.versionLabel,
         retrieval_profile_ref: { name: "default-korean", version: "1.0.0" },
@@ -94,7 +156,7 @@ function buildServiceDefinition(selected: SelectedKnowledge, settings: ChatbotSe
     ],
     mcp_bindings: [],
     prompt_bindings: [
-      { role_id: "answerer", prompt_id: "550e8400-e29b-41d4-a716-446655440020", prompt_version: "1.0.0" },
+      { role_id: agent.entryRole, prompt_id: agent.promptManifestId, prompt_version: agent.promptManifestVersion },
     ],
     model_policy: { model_alias: "default-chat", fallback_allowed: false, max_context_tokens: 8192 },
     target_users: { orgs: ["miracom"], roles: ["USER", "CREATOR"] },
@@ -125,6 +187,16 @@ export function StepPublish({
   const [result, setResult] = useState<PublishResult | null>(null);
   const [copied, setCopied] = useState(false);
 
+  const [agentChoice, setAgentChoice] = useState<AgentChoice>({ source: "standard" });
+  const [registryPrompt, setRegistryPrompt] = useState<RegistryPromptSelection | null>(null);
+  const [connectionCheck, setConnectionCheck] = useState<ConnectionCheck | null>(null);
+
+  const resolvedAgent = useMemo(() => resolveAgent(agentChoice, registryPrompt), [agentChoice, registryPrompt]);
+  const missingPromptReason =
+    agentChoice.source === "registry" && !registryPrompt
+      ? "선택한 Agent와 짝지어 응답할 Prompt를 아직 선택하지 않았습니다. 위 '응답 Agent 변경 (고급)'에서 Prompt를 선택해야 게시할 수 있습니다."
+      : undefined;
+
   const canPublish = PUBLISH_ALLOWED_ROLES.has(role.code);
   const trimmedSlug = slug.trim();
   const localSlugError =
@@ -135,6 +207,13 @@ export function StepPublish({
       : "Slug는 소문자 영문, 숫자, 하이픈만 사용해 4자 이상 64자 이하로 입력해야 합니다.";
   const slugFieldError = serverSlugError ?? localSlugError;
   const busy = phase !== "idle" && phase !== "done";
+
+  function handleAgentChoiceChange(next: AgentChoice) {
+    setAgentChoice(next);
+    // A new Agent invalidates any previously chosen Prompt pairing —
+    // publishing with a stale Prompt would silently mismatch the Agent.
+    setRegistryPrompt(null);
+  }
 
   function handleSlugChange(value: string) {
     setSlug(value);
@@ -153,11 +232,13 @@ export function StepPublish({
   }
 
   async function handlePublish() {
-    if (trimmedSlug.length === 0 || localSlugError || !canPublish) return;
+    if (trimmedSlug.length === 0 || localSlugError || !canPublish || !resolvedAgent) return;
+    const agent = resolvedAgent;
 
     setGeneralError(null);
     setValidationChecks(null);
     setServerSlugError(undefined);
+    setConnectionCheck(null);
     setPhase("creating-service");
 
     try {
@@ -166,7 +247,7 @@ export function StepPublish({
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${role.token}` },
         body: JSON.stringify({
           name: settings.name,
-          service_definition: buildServiceDefinition(selected, settings),
+          service_definition: buildServiceDefinition(selected, settings, agent),
         }),
       });
       if (!serviceRes.ok) {
@@ -240,6 +321,28 @@ export function StepPublish({
       const publishData = await publishRes.json();
       setResult({ slug: trimmedSlug, deploymentUrl: publishData.deployment_url });
       setPhase("done");
+
+      // Registry Agent만 확인한다 — 표준 Agent 경로는 by-slug가 항상
+      // registry_agent_version_id: null을 돌려주는 것이 정상이라 확인할
+      // 필요가 없다(불필요한 호출 금지).
+      if (agent.isRegistry) {
+        setConnectionCheck({ status: "checking" });
+        try {
+          const checkRes = await fetch(`${API_BASE}/api/v1/deployments/by-slug/${trimmedSlug}`);
+          if (!checkRes.ok) {
+            setConnectionCheck({ status: "unknown" });
+          } else {
+            const checkData = await checkRes.json();
+            setConnectionCheck(
+              checkData.registry_agent_version_id
+                ? { status: "connected", agentName: agent.displayName }
+                : { status: "fallback" }
+            );
+          }
+        } catch {
+          setConnectionCheck({ status: "unknown" });
+        }
+      }
     } catch {
       setGeneralError({
         message: "서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요.",
@@ -276,8 +379,29 @@ export function StepPublish({
             <dt className="w-24 shrink-0 text-text-muted">Citation 표시</dt>
             <dd>{settings.showCitations ? "표시함" : "표시 안 함"}</dd>
           </div>
+          <div className="flex gap-2">
+            <dt className="w-24 shrink-0 text-text-muted">응답 Agent</dt>
+            <dd>
+              {agentChoice.source === "standard"
+                ? STANDARD_AGENT_LABEL
+                : `${agentChoice.assetName} (v${agentChoice.versionLabel})`}
+              {agentChoice.source === "registry" && !registryPrompt && (
+                <span className="ml-1.5 text-caption text-warning">(Prompt 미선택 — 게시 불가)</span>
+              )}
+            </dd>
+          </div>
         </dl>
       </div>
+
+      {!result && (
+        <AdvancedAgentSection
+          agentChoice={agentChoice}
+          onAgentChoiceChange={handleAgentChoiceChange}
+          registryPrompt={registryPrompt}
+          onRegistryPromptChange={setRegistryPrompt}
+          disabled={busy}
+        />
+      )}
 
       {!result && (
         <>
@@ -337,9 +461,16 @@ export function StepPublish({
             </div>
           )}
 
+          {missingPromptReason && (
+            <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-body text-warning">
+              <AlertTriangle size={15} className="mt-0.5 shrink-0" />
+              <span>{missingPromptReason}</span>
+            </div>
+          )}
+
           <Button
             onClick={handlePublish}
-            disabled={busy || trimmedSlug.length === 0 || !!localSlugError || !canPublish}
+            disabled={busy || trimmedSlug.length === 0 || !!localSlugError || !canPublish || !resolvedAgent}
           >
             {busy ? (
               <>
@@ -385,6 +516,39 @@ export function StepPublish({
               경로를 새 탭으로 엽니다.
             </p>
           </div>
+
+          {connectionCheck && (
+            <div className="border-t border-success/30 pt-3">
+              {connectionCheck.status === "checking" && (
+                <p className="flex items-center gap-1.5 text-caption text-text-secondary">
+                  <Loader2 size={13} className="animate-spin" />
+                  선택한 Agent가 실제로 연결됐는지 확인하는 중...
+                </p>
+              )}
+              {connectionCheck.status === "connected" && (
+                <p className="flex items-center gap-1.5 text-caption text-success">
+                  <Check size={13} />이 챗봇은 <strong>{connectionCheck.agentName}</strong>이(가) 응답합니다.
+                </p>
+              )}
+              {connectionCheck.status === "fallback" && (
+                <div className="flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-caption text-warning">
+                  <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+                  <span>
+                    게시는 완료되었지만 선택한 Agent가 실제로 연결되지 않아 <strong>표준 Agent</strong>가
+                    응답합니다. 선택한 Agent 또는 Prompt 버전이 승인(APPROVED) 상태가 아니거나 Manifest id가
+                    일치하지 않을 수 있습니다. 등록된 Agent/Prompt의 승인 상태를 확인한 뒤 다시 게시해 주세요.
+                  </span>
+                </div>
+              )}
+              {connectionCheck.status === "unknown" && (
+                <p className="flex items-center gap-1.5 text-caption text-text-muted">
+                  <AlertTriangle size={13} />
+                  Agent 연결 여부를 확인하지 못했습니다. 네트워크 상태를 확인한 뒤 배포 상세에서 다시 확인해
+                  주세요.
+                </p>
+              )}
+            </div>
+          )}
         </div>
       )}
 

@@ -33,11 +33,12 @@ from office_mcp_server.output_filter import apply_output_filter
 from office_mcp_server.permissions import check_permission
 from office_mcp_server.request_context import RequestContext, parse_request_context
 from office_mcp_server.tool_registry import ToolRegistry, UserConfirmationPolicy
-from office_mcp_server.tools import db_metadata, table_count
+from office_mcp_server.tools import calculator, db_metadata, table_count
 
 _logger = logging.getLogger("office_mcp_server.pipeline")
 
 _HANDLERS = {
+    "calculator.add": calculator.add,
     "db_metadata.get_tables": db_metadata.get_tables,
     "db_metadata.get_columns": db_metadata.get_columns,
     "table_count.query": table_count.query,
@@ -47,6 +48,7 @@ _HANDLERS = {
 # the §8.4 confirmation gate so a disallowed table/field fails as
 # MCP_INPUT_INVALID rather than being masked behind "please confirm".
 _INPUT_VALIDATORS = {
+    "calculator.add": calculator.validate_input,
     "db_metadata.get_tables": db_metadata.validate_tables_input,
     "db_metadata.get_columns": db_metadata.validate_columns_input,
     "table_count.query": table_count.validate_input,

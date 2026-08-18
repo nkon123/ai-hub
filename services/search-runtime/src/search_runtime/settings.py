@@ -29,6 +29,125 @@ from __future__ import annotations
 
 import os
 
+BUILD_VERSION: str = os.environ.get("SEARCH_BUILD_VERSION", "0.1.0")
+"""Deployment identity, exposed by `/health` and logged once at startup —
+mirrors `portal_api.config.Settings.build_version` and
+`distribution_service.config.Settings.build_version` byte-for-byte in intent
+(same default, same "release automation injects it, local dev is honestly
+unversioned" contract), adapted to this module's plain-`os.environ` style
+instead of pydantic-settings (see this module's docstring for why).
+
+This exists to close a real diagnosed gap, not a speculative one: a
+search-runtime process started before the D-079 local-index-activation
+endpoints existed keeps running (nothing crashes it), so `/openapi.json` on
+that process genuinely lacks `/search/v1/local-indexes` and every activation
+attempt 404s. Before this field, `/health` returned only a hardcoded
+`{"status": "ok", "version": "0.1.0"}` literal — identical whether the
+process was built five minutes or five months ago — so a stale process was
+indistinguishable from a current one short of reading `/openapi.json` by
+hand. `BUILD_VERSION`/`COMMIT_SHA` turn that into one glance, the same way
+they already do for portal-api and distribution-service."""
+
+COMMIT_SHA: str = os.environ.get("SEARCH_COMMIT_SHA", "unknown")
+"""Immutable commit SHA release automation injects alongside BUILD_VERSION
+above. Deliberately not derived by shelling out to `git` at runtime (that
+would make Git metadata a runtime dependency of a service that otherwise has
+none) — an un-injected local/dev process reports `"unknown"` honestly rather
+than guessing."""
+
+INDEX_BASE: str = os.environ.get(
+    "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
+)
+"""Root of the index tree this service builds every `knowledge_id` lookup path
+from (`INDEX_BASE/<knowledge_id>/`). Written exclusively by
+`services/indexing-runtime` (M07) — a trusted local writer, which is what
+`ALLOW_LEGACY_PICKLE_BM25` below assumes.
+
+Relocated here from `hybrid.py` (which re-exports it, so
+`from search_runtime.hybrid import INDEX_BASE` keeps working) purely so
+`local_index_registry.py` can read it without importing `hybrid.py`, which
+imports the registry — the value, the env var name and the default are
+byte-for-byte unchanged.
+
+Known defect, deliberately not fixed in that move: the default is still a
+developer's personal absolute path. `services/indexing-runtime` already
+solved this by computing a repo-root-relative default; this service has not
+adopted that pattern yet, so **always set `INDEX_BASE` explicitly** when
+running search-runtime anywhere but that one machine (see this module's
+CLAUDE.md). Changing the default is a behavior change for every existing
+deployment and belongs in its own change."""
+
+LOCAL_INDEX_ROOTS: tuple[str, ...] = tuple(
+    part.strip()
+    for part in os.environ.get("SEARCH_LOCAL_INDEX_ROOTS", "").split(os.pathsep)
+    if part.strip()
+)
+"""D-079: directories under which this deployment permits an *externally
+installed* Knowledge index to be registered for search (see
+`local_index_registry.py` and `packages/schemas/api/knowledge-local-index
+.schema.json`). `os.pathsep`-separated, e.g. on macOS
+`SEARCH_LOCAL_INDEX_ROOTS="$HOME/Library/Application Support/Enterprise AI
+Asset Hub/assets"`.
+
+Defaults to empty, which **disables local index registration entirely** —
+every `POST /search/v1/local-indexes` is refused with
+`PERMISSION_DENIED`/`local_indexes_disabled`. That default is the point: a
+centrally-deployed search-runtime (the shape every existing deployment of
+this service has) gains no new reachable filesystem surface from this feature
+unless its operator names a root on purpose. Only the Desktop-side deployment
+— where search-runtime runs on the user's own machine alongside the Desktop
+Client that installed the content — has a reason to set it.
+
+An allowed root is an *upper bound on reachable paths*, not a promise that
+anything inside it is trustworthy: registration additionally requires the
+directory to carry an `index-meta.json` whose `knowledge_id` matches the
+claimed one, and (D-054) a non-executable `bm25.json` rather than a legacy
+`bm25.pkl`. Containment is checked after `Path.resolve()`, so a symlink
+inside an allowed root that points outside it does not pass."""
+
+LOCAL_INDEX_REGISTRY_PATH: str = os.environ.get("SEARCH_LOCAL_INDEX_REGISTRY", "").strip() or str(
+    os.path.join(os.path.dirname(os.path.abspath(INDEX_BASE)), "local-indexes.json")
+)
+"""Where the D-079 registration table is persisted, so activations survive a
+search-runtime restart (a Knowledge the user activated must not silently stop
+being searchable because the service was restarted). Defaults to a
+`local-indexes.json` file next to `INDEX_BASE` — the same tree this service
+already owns — rather than inside it, so it can never be mistaken for a
+`knowledge_id` directory."""
+
+CORS_ORIGINS: tuple[str, ...] = tuple(
+    part.strip()
+    for part in os.environ.get(
+        "SEARCH_CORS_ORIGINS",
+        "http://localhost:3000,http://localhost:5173,http://127.0.0.1:5173,http://localhost:5174,http://127.0.0.1:5174",
+    ).split(",")
+    if part.strip()
+)
+"""Browser origins allowed to read this service's responses.
+
+Why this exists at all: the Desktop Client's chat screen health-checks its
+dependencies from the **renderer** (`electron/connections.ts`, called directly
+from `ChatScreen.tsx`), and D-079 made search-runtime one of those
+dependencies. Without CORS headers the browser blocks the renderer from
+reading even a `GET /health`, so a perfectly healthy search-runtime reported
+as permanently disconnected — the exact "연결 판정 오탐" class of bug this
+repo already hit once with a hardcoded value shadowing
+`agent_runtime.config.AgentRuntimeSettings.cors_origins`. The default list
+mirrors that setting's (portal-web 3000, Desktop Vite 5174 in both host
+spellings) so the two services cannot disagree about who may call them.
+
+Security note, deliberately recorded rather than assumed away: this service
+has no authentication layer (see `access_control.py` — `clearance` is
+caller-asserted), and `/search/v1/local-indexes` is administrative. CORS is
+not what protects those endpoints, and never was: a cross-origin *simple*
+request is sent to the server regardless of this list — CORS only decides
+whether the initiating page may read the response. What this list does
+control is response readability and the preflight verdict for
+non-simple requests (a JSON `POST`, any `DELETE`), which is why it stays a
+tight allowlist of known local development/desktop origins instead of `*`.
+The actual protection for this service remains its deployment shape: a
+loopback-bound process whose `LOCAL_INDEX_ROOTS` is empty by default."""
+
 EMBED_MODEL: str = os.environ.get("SEARCH_EMBED_MODEL", "qwen3-embedding:0.6b")
 """Fallback query-embedding model — used ONLY when the Knowledge index being
 searched has no `embed_model` recorded in its own `index-meta.json` (an
@@ -148,13 +267,19 @@ it — `main.py` turns this into a `KNOWLEDGE_INDEX_CORRUPT` error response,
 never a silent empty result (which would be indistinguishable from "no
 relevant evidence" and hide an actionable, security-relevant refusal).
 
-Honesty note (recorded in D-054): as of this change, no live component in
-this codebase actually runs a search-runtime instance against a
-Desktop-installed bundle's index directory — Desktop's local
-runtime/search wiring is still incomplete (see D-059/D-060). This setting
-is the mechanism a future such deployment MUST engage; it cannot itself be
-end-to-end verified against a real Desktop-facing search-runtime instance
-until that wiring exists."""
+Update (D-079): that Desktop-facing path now exists — `LOCAL_INDEX_ROOTS`
+below lets a Desktop-side search-runtime search an index directory installed
+from an Offline Bundle. It does **not** depend on an operator remembering to
+flip this setting: registration refuses any index that carries only a
+`bm25.pkl` (reason `bm25_legacy_pickle_only`), and `hybrid_search` forces
+`allow_legacy_pickle=False` for every registered path regardless of the value
+here. This setting still governs the locally-built `INDEX_BASE` tree, where
+the original default (`True`, trusted local writer) is unchanged.
+
+Honesty note (recorded in D-054, still true for this setting itself): no
+deployment in this repo runs with `ALLOW_LEGACY_PICKLE_BM25=False`, so the
+`LegacyPickleBm25Refused` → `KNOWLEDGE_INDEX_CORRUPT` response path is
+covered by unit tests rather than by a live deployment."""
 
 CHROMA_CLIENT_CACHE_MAX_SIZE: int = int(
     os.environ.get("SEARCH_CHROMA_CLIENT_CACHE_MAX_SIZE", "32")

@@ -9,6 +9,8 @@ resolution (active/non-active/unknown), and the publish RBAC gate.
 from __future__ import annotations
 
 import httpx
+from portal_api.models.service import ServiceVersion
+from sqlalchemy import delete
 
 from tests.integration.portal_api.conftest import (
     auth_header,
@@ -266,6 +268,64 @@ async def test_by_slug_returns_chatbot_config_when_active(client: httpx.AsyncCli
     assert body["chatbot_config"]["welcome_message"]
     assert body["model_alias"] == "default-chat"
     assert body["knowledge_id"]
+
+
+async def test_by_slug_returns_real_service_version_identifiers_when_active(
+    client: httpx.AsyncClient, db
+) -> None:
+    """D-034 (i) 남은 절반 — agent-runtime의 MCP 감사 컨텍스트가 slug에서
+    UUID5로 지어낸 값 대신 쓸 수 있는 실재 식별자 3종을 확인한다. `service_
+    version_id`는 `_create_service`가 반환한 실제 ServiceVersion 행 id와
+    바이트 단위로 같아야 한다 — placeholder나 재파생 값이 아니라 DB FK
+    그대로임을 고정한다."""
+    version_id = await _create_service(client, db)
+    deploy_resp = await _create_deployment(client, version_id, "hr-policy-with-identifiers")
+    deployment_id = deploy_resp.json()["id"]
+    publish_resp = await client.post(
+        f"/api/v1/deployments/{deployment_id}/publish", headers=auth_header("dev-release-token")
+    )
+    assert publish_resp.status_code == 202
+    detail_resp = await client.get(f"/api/v1/service-versions/{version_id}", headers=auth_header())
+    assert detail_resp.status_code == 200
+    expected_service_id = detail_resp.json()["service_id"]
+
+    resp = await client.get("/api/v1/deployments/by-slug/hr-policy-with-identifiers")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service_version_id"] == version_id
+    assert body["service_version"] == "1.0.0"
+    assert body["service_id"] == expected_service_id
+
+
+async def test_by_slug_reports_none_service_version_fields_when_row_is_missing(
+    client: httpx.AsyncClient, db
+) -> None:
+    """Placeholder 금지 회귀 가드: revision이 가리키는 ServiceVersion 행을
+    (직접 DB 조작으로) 없애면, 세 신규 필드는 빈 문자열이나 지어낸 값이
+    아니라 정직하게 None이어야 한다 — 그 외 기존 필드(챗봇 설정 등)는 여전히
+    정상 반환되어야 한다(이 필드 하나의 부재가 전체 응답을 막지 않는다)."""
+    version_id = await _create_service(client, db)
+    deploy_resp = await _create_deployment(client, version_id, "hr-policy-missing-version-row")
+    deployment_id = deploy_resp.json()["id"]
+    publish_resp = await client.post(
+        f"/api/v1/deployments/{deployment_id}/publish", headers=auth_header("dev-release-token")
+    )
+    assert publish_resp.status_code == 202
+
+    await db.execute(delete(ServiceVersion).where(ServiceVersion.id == version_id))
+    await db.commit()
+
+    resp = await client.get("/api/v1/deployments/by-slug/hr-policy-missing-version-row")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["service_version_id"] is None
+    assert body["service_version"] is None
+    assert body["service_id"] is None
+    # Unaffected fields still resolve normally from the revision snapshot.
+    assert body["status"] == "ACTIVE"
+    assert body["chatbot_config"]["welcome_message"]
 
 
 async def test_list_deployments(client: httpx.AsyncClient, db) -> None:

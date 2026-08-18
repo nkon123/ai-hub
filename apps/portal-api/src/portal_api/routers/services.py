@@ -136,18 +136,49 @@ async def create_service(
             details={"errors": exc.errors[:10]},
         )
 
-    owner = body.service_definition.get("owner", {})
-    service = Service(
-        name=body.name,
-        owner_org=owner.get("org", user.org),
-        owner_creator_id=owner.get("creator_id", user.user_id),
-    )
-    db.add(service)
-    await db.flush()
+    new_version_string = body.service_definition.get("version", "1.0.0")
+
+    if body.service_id:
+        # 새 Service가 아니라 기존 Service의 새 버전. `POST
+        # /deployments/{id}/revisions`(Update)가 요구하는 "같은 Service의 다른
+        # Version"을 만드는 유일한 경로다.
+        service = (
+            await db.execute(select(Service).where(Service.id == body.service_id))
+        ).scalar_one_or_none()
+        if service is None:
+            return _not_found("Service를 찾을 수 없습니다.", trace_id)
+
+        duplicate = (
+            await db.execute(
+                select(ServiceVersion).where(
+                    ServiceVersion.service_id == service.id,
+                    ServiceVersion.version == new_version_string,
+                )
+            )
+        ).scalar_one_or_none()
+        if duplicate is not None:
+            # 승인 Version을 수정하는 Update 코드를 만들지 않는다(CLAUDE.md
+            # 코드 규칙) — 같은 버전 번호를 다시 제출하면 기존 행을 고치는
+            # 대신 거부한다.
+            return _error(
+                status.HTTP_409_CONFLICT,
+                "SERVICE_VERSION_EXISTS",
+                f"이 Service에 {new_version_string} 버전이 이미 있습니다.",
+                trace_id,
+            )
+    else:
+        owner = body.service_definition.get("owner", {})
+        service = Service(
+            name=body.name,
+            owner_org=owner.get("org", user.org),
+            owner_creator_id=owner.get("creator_id", user.user_id),
+        )
+        db.add(service)
+        await db.flush()
 
     version = ServiceVersion(
         service_id=service.id,
-        version=body.service_definition.get("version", "1.0.0"),
+        version=new_version_string,
         status="DRAFT",
         service_definition=body.service_definition,
     )
@@ -662,6 +693,17 @@ async def publish_deployment(
     if deployment is None:
         return _not_found("Deployment를 찾을 수 없습니다.", trace_id)
 
+    # §8: RETIRED is terminal. Without this guard a re-publish would revive a
+    # retired chatbot at its old URL — the one thing retiring is supposed to
+    # make impossible.
+    if deployment.status == "RETIRED":
+        return _error(
+            status.HTTP_409_CONFLICT,
+            "DEPLOYMENT_RETIRED",
+            "폐기된 Deployment는 다시 게시할 수 없습니다. 새 Deployment를 만드세요.",
+            trace_id,
+        )
+
     version = (
         await db.execute(
             select(ServiceVersion).where(ServiceVersion.id == deployment.service_version_id)
@@ -680,7 +722,42 @@ async def publish_deployment(
             details={"checks": [c.model_dump() for c in validation.checks]},
         )
 
-    # Build the immutable dependency snapshot.
+    revision = await _activate_new_revision(deployment, version, user.user_id, db)
+    deployment.status = "ACTIVE"
+    await db.commit()
+
+    logger.info(
+        "deployment.publish trace_id=%s deployment_id=%s revision_id=%s slug=%s",
+        trace_id,
+        deployment.id,
+        revision.id,
+        deployment.slug,
+    )
+    await record_audit(
+        db,
+        event_type="DEPLOYMENT_PUBLISHED",
+        actor=user,
+        resource_type="DEPLOYMENT",
+        resource_id=deployment.id,
+        result="SUCCESS",
+        trace_id=trace_id,
+        metadata={"revision_id": revision.id, "slug": deployment.slug},
+    )
+    return PublishJobResponseOut(
+        job_id=revision.id, deployment_url=_deployment_url(deployment.slug)
+    )
+
+
+async def _build_dependency_snapshot(version: ServiceVersion, db: AsyncSession) -> dict:
+    """§11.2 `resolved_dependency_snapshot` — the immutable record of exactly
+    which asset versions a revision serves. Resolved once, at activation
+    time, so a later change to the Knowledge asset cannot retroactively
+    alter what a published revision claims to have shipped.
+
+    Shared by `/publish` and `/deployments/{id}/revisions` (update): both
+    activate a revision, and a snapshot assembled two different ways would
+    make the two paths silently divergent.
+    """
     knowledge_snapshot: list[dict] = []
     for binding in version.service_definition.get("knowledge_bindings") or []:
         knowledge_id = binding.get("knowledge_id")
@@ -714,14 +791,99 @@ async def publish_deployment(
             }
         )
 
-    published_at = datetime.now(UTC)
-    snapshot = {
+    return {
         "service_version_id": version.id,
         "service_definition": version.service_definition,
         "knowledge": knowledge_snapshot,
         "model_alias": (version.service_definition.get("model_policy") or {}).get("model_alias"),
-        "published_at": published_at.isoformat(),
+        # D-034: `agent_ref`/`prompt_bindings` carry *manifest* ids, which the
+        # Hosted runtime cannot resolve — `resolve_registry_agent_config`
+        # needs Portal AssetVersion ids. Resolving that mapping here, once at
+        # activation time, is the same discipline the knowledge list above
+        # follows and is what makes the snapshot self-sufficient.
+        "registry_agent": await _resolve_registry_asset_version(
+            version.service_definition.get("agent_ref") or {}, "agent", db
+        ),
+        "registry_prompt": await _resolve_registry_asset_version(
+            _first_prompt_ref(version.service_definition), "prompt", db
+        ),
+        "published_at": datetime.now(UTC).isoformat(),
     }
+
+
+def _first_prompt_ref(service_definition: dict) -> dict:
+    """`prompt_bindings[0]` normalized to the `{id, version}` shape
+    `_resolve_registry_asset_version` expects. Only the first binding is
+    resolved: `resolve_registry_agent_config` takes exactly one Agent+Prompt
+    pair, so a second binding has nowhere to go — better to resolve nothing
+    for it than to invent a pairing the runtime cannot honour."""
+    bindings = service_definition.get("prompt_bindings") or []
+    if not bindings or not isinstance(bindings[0], dict):
+        return {}
+    return {"id": bindings[0].get("prompt_id"), "version": bindings[0].get("prompt_version")}
+
+
+async def _resolve_registry_asset_version(
+    ref: dict, asset_type: str, db: AsyncSession
+) -> dict | None:
+    """Find the APPROVED AssetVersion whose *manifest* declares `ref["id"]`
+    and `ref["version"]`, or None.
+
+    None is the normal, expected outcome for the two standard Agents: their
+    manifests live only in `services/agent-runtime/config/` and were never
+    registered as Portal assets, so no row can match. That is exactly why a
+    miss must not fail the publish — the four already-published chatbots run
+    on those standard Agents, and making this lookup mandatory would break
+    every one of them. A miss simply means "not a Registry asset", and the
+    Hosted runtime falls back to its standard config.
+
+    Unapproved matches are also treated as a miss rather than an error: the
+    publish Gate is what decides whether a Service Version may go live, and
+    silently shipping a DRAFT Agent would be worse than falling back.
+    """
+    ref_id = ref.get("id")
+    ref_version = ref.get("version")
+    if not isinstance(ref_id, str) or not isinstance(ref_version, str):
+        return None
+
+    candidates = (
+        await db.execute(
+            select(AssetVersion, Asset)
+            .join(Asset, Asset.id == AssetVersion.asset_id)
+            .where(Asset.type == asset_type, AssetVersion.status == "APPROVED")
+        )
+    ).all()
+
+    for asset_version, asset in candidates:
+        manifest = asset_version.manifest or {}
+        if manifest.get("id") == ref_id and manifest.get("version") == ref_version:
+            return {
+                "asset_version_id": asset_version.id,
+                "asset_id": asset.id,
+                "asset_name": asset.name,
+                "manifest_id": ref_id,
+                "version": ref_version,
+            }
+    return None
+
+
+async def _activate_new_revision(
+    deployment: ServiceDeployment,
+    version: ServiceVersion,
+    actor_id: str,
+    db: AsyncSession,
+) -> DeploymentRevision:
+    """Create revision N+1 for `version`, make it ACTIVE, and demote the
+    previously active one to SUPERSEDED. Does not commit — the caller owns
+    the transaction, which is what makes an update atomic: the deployment is
+    never observably half-switched (see §8's UPDATING state, deliberately
+    absent from `deployment.schema.json`).
+
+    Does NOT set `deployment.status` — publish and update reach this point
+    from different states and each decides its own resulting status.
+    """
+    activated_at = datetime.now(UTC)
+    snapshot = await _build_dependency_snapshot(version, db)
 
     max_revision = (
         await db.execute(
@@ -743,8 +905,8 @@ async def publish_deployment(
         service_version_id=version.id,
         resolved_dependency_snapshot=snapshot,
         status="ACTIVE",
-        created_by=user.user_id,
-        activated_at=published_at,
+        created_by=actor_id,
+        activated_at=activated_at,
     )
     db.add(revision)
     await db.flush()
@@ -762,29 +924,8 @@ async def publish_deployment(
 
     revision.publish_job_id = revision.id  # PoC: publish is synchronous, job_id == revision id
     deployment.active_revision_id = revision.id
-    deployment.status = "ACTIVE"
-    await db.commit()
-
-    logger.info(
-        "deployment.publish trace_id=%s deployment_id=%s revision_id=%s slug=%s",
-        trace_id,
-        deployment.id,
-        revision.id,
-        deployment.slug,
-    )
-    await record_audit(
-        db,
-        event_type="DEPLOYMENT_PUBLISHED",
-        actor=user,
-        resource_type="DEPLOYMENT",
-        resource_id=deployment.id,
-        result="SUCCESS",
-        trace_id=trace_id,
-        metadata={"revision_id": revision.id, "slug": deployment.slug},
-    )
-    return PublishJobResponseOut(
-        job_id=revision.id, deployment_url=_deployment_url(deployment.slug)
-    )
+    deployment.service_version_id = version.id
+    return revision
 
 
 async def _deployment_out(deployment: ServiceDeployment, db: AsyncSession) -> DeploymentOut:
@@ -819,6 +960,9 @@ async def _deployment_out(deployment: ServiceDeployment, db: AsyncSession) -> De
         suspended_by=deployment.suspended_by,
         suspended_at=deployment.suspended_at,
         suspend_reason=deployment.suspend_reason,
+        retired_by=deployment.retired_by,
+        retired_at=deployment.retired_at,
+        retire_reason=deployment.retire_reason,
     )
 
 
@@ -871,6 +1015,23 @@ async def get_deployment_by_slug(
     chatbot_config = service_definition.get("chatbot_config") or {}
     knowledge_list = snapshot.get("knowledge") or []
     primary_knowledge_id = knowledge_list[0]["knowledge_id"] if knowledge_list else None
+    registry_agent = snapshot.get("registry_agent") or None
+    registry_prompt = snapshot.get("registry_prompt") or None
+
+    # D-034 (i) 남은 절반: `revision.service_version_id`(DeploymentRevision이
+    # 가리키는 실제 ServiceVersion 행 FK)가 권위(authority)다. `service_
+    # definition`(manifest JSON) 안의 `id`/`version`은 클라이언트가 채워
+    # 제출한 값이라 DB의 `Service.id`/`ServiceVersion.version`과 일치한다는
+    # 보장이 없다(`create_service`가 검증하지 않음, routers/services.py 상단
+    # 참고) — 그래서 지어낼 수 없는 DB FK를 쓴다. 못 찾으면 세 필드 모두
+    # None으로 둔다(placeholder 금지, 위 스키마 주석과 동일한 규율).
+    service_version_row: ServiceVersion | None = None
+    if revision.service_version_id:
+        service_version_row = (
+            await db.execute(
+                select(ServiceVersion).where(ServiceVersion.id == revision.service_version_id)
+            )
+        ).scalar_one_or_none()
 
     return DeploymentBySlugOut(
         deployment_id=deployment.id,
@@ -885,6 +1046,24 @@ async def get_deployment_by_slug(
         active_revision_id=deployment.active_revision_id,
         knowledge_id=primary_knowledge_id,
         model_alias=snapshot.get("model_alias"),
+        # D-034: both ids or neither. agent-runtime's `resolve_registry_agent_config`
+        # takes an Agent+Prompt *pair*; handing it a half pair would make it
+        # fail per message at chat time instead of here, so a snapshot that
+        # resolved only one of the two is reported as neither — the Hosted
+        # runtime then uses its standard config, exactly as before D-034.
+        registry_agent_version_id=(
+            registry_agent.get("asset_version_id")
+            if registry_agent and registry_prompt
+            else None
+        ),
+        registry_prompt_version_id=(
+            registry_prompt.get("asset_version_id")
+            if registry_agent and registry_prompt
+            else None
+        ),
+        service_version_id=service_version_row.id if service_version_row else None,
+        service_version=service_version_row.version if service_version_row else None,
+        service_id=service_version_row.service_id if service_version_row else None,
     )
 
 

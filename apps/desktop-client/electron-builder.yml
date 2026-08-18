@@ -1,12 +1,9 @@
 # electron-builder configuration — M04 apps/desktop-client
 #
-# Scope: config only. This file is NOT executed as part of this change —
-# `electron-builder` is not installed and must never be invoked on this
-# machine (see docs/implementation-spec/11-desktop-packaging-and-distribution.md
-# "런타임 동봉 문제" background: a prior `pnpm install`-triggered Electron
-# postinstall download was quarantined by macOS XProtect on this workstation).
-# A real Windows installer must be produced on Windows, or a Windows CI
-# runner, per that doc.
+# Packaging is platform-specific: Windows installers are produced on Windows
+# (or Windows CI), while macOS artifacts must use the signed/notarized
+# `pnpm dist:mac` path. Do not bypass Gatekeeper/XProtect to make an unsigned
+# Electron download run on a developer workstation.
 #
 # Why a standalone YAML file instead of package.json's "build" key: this repo
 # is a pnpm workspace and apps/desktop-client/package.json is already the
@@ -163,3 +160,23 @@ nsis:
   # weight in every build.
 
 artifactName: "${productName}-Setup-${version}-${arch}.${ext}"
+
+# macOS distribution outside the App Store. `forceCodeSigning` prevents an
+# apparently successful but unsigned Mac artifact when the Developer ID
+# identity is missing. Certificate and notarization secrets are supplied only
+# through the build machine environment; see packaging/README.md.
+mac:
+  forceCodeSigning: true
+  target:
+    - target: dmg
+      arch:
+        - arm64
+    - target: zip
+      arch:
+        - arm64
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  entitlements: packaging/entitlements.mac.plist
+  entitlementsInherit: packaging/entitlements.mac.inherit.plist
+  notarize: true
+  artifactName: "${productName}-${version}-mac-${arch}.${ext}"

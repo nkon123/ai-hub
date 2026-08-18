@@ -12,11 +12,50 @@
 // on a machine where Electron itself cannot be launched (see
 // open-decisions.md D-058).
 //
-// Base URL is configurable (never hardcoded in components) via Vite's
-// `VITE_AGENT_RUNTIME_BASE_URL` define, defaulting to the documented local
-// port.
-export const AGENT_RUNTIME_BASE_URL: string =
+// `KnowledgeCandidate`(agentic Knowledge selection, KNOWLEDGE_ROUTE stage —
+// `packages/schemas/api/local-runtime-api.yaml`'s `KnowledgeCandidateInput`,
+// `services/agent-runtime/src/agent_runtime/knowledge_router.py`) is declared
+// once in `electron/types.ts` (interface-only, zero runtime cost — see that
+// file's own header) and reused here rather than duplicated, since this is
+// the exact wire shape both places send/consume byte-for-byte.
+import type { KnowledgeCandidate } from "../electron/types";
+
+// Base URL resolution, in priority order:
+//   1. the value the user saved in Settings (D10 `agentRuntimeBaseUrl`),
+//      applied at runtime through `setAgentRuntimeBaseUrl` below;
+//   2. Vite's `VITE_AGENT_RUNTIME_BASE_URL` define (browser-only dev mode,
+//      where there is no settings store to read);
+//   3. the documented local port.
+//
+// Why this is not a plain `const` any more (D-080 후속): it used to be one,
+// and the result was a screen that talked to one address while its own
+// connection banner checked another — `apps/desktop-client/CLAUDE.md`
+// recorded it as "연결 판정 오탐(미해결)": 대화는 멀쩡히 되는데 채팅 화면에
+// 빨간 "연결 끊김"이 떴다. Anything reading the address must therefore read
+// the *same* resolved value, which means one place owns it.
+export const DEFAULT_AGENT_RUNTIME_BASE_URL: string =
   (import.meta.env.VITE_AGENT_RUNTIME_BASE_URL as string | undefined) ?? "http://127.0.0.1:8100";
+
+let resolvedAgentRuntimeBaseUrl: string = DEFAULT_AGENT_RUNTIME_BASE_URL;
+
+/** The address every call in this module actually uses. Read it (never the
+ * default constant) anywhere the current endpoint matters — connection
+ * checks, diagnostics, error messages. */
+export function getAgentRuntimeBaseUrl(): string {
+  return resolvedAgentRuntimeBaseUrl;
+}
+
+/** Applies the saved setting. A blank/absent value falls back to the default
+ * rather than producing requests to `undefined/...` — Desktop은 Runtime 장애
+ * 시 종료되지 않고 복구 안내를 제공한다, and a settings store that cannot be
+ * read (browser-only mode) must not break the chat screen. Validation is not
+ * repeated here: `network-policy.ts::validateAgentRuntimeBaseUrl` in the main
+ * process is what refuses a non-loopback address, and duplicating the rule in
+ * the renderer would create a second place for it to drift. */
+export function setAgentRuntimeBaseUrl(url: string | null | undefined): string {
+  resolvedAgentRuntimeBaseUrl = url?.trim() || DEFAULT_AGENT_RUNTIME_BASE_URL;
+  return resolvedAgentRuntimeBaseUrl;
+}
 
 /** Wire shape returned by search-runtime / echoed by agent-runtime's
  * `citation.added` event and `run.completed.output.citations`
@@ -91,9 +130,22 @@ export interface StartRunParams {
    * 자동화). */
   knowledgeId: string;
   /** Every installed Knowledge asset's AssetVersion id Stage 1 (local)
-   * search should run against — replaces the old single manual pick. See
-   * `chatTypes.ts`'s `resolveInstalledKnowledgeIds`. */
+   * search should run against — replaces the old single manual pick, and
+   * (D-079 이어 붙이기) only ever includes Knowledge search-runtime has
+   * actually registered as searchable. See `chatTypes.ts`'s
+   * `resolveActivatedKnowledgeIds`. Ignored (never sent) when
+   * `knowledgeCandidates` is non-empty — see that field's docstring. */
   knowledgeIds: string[];
+  /** Agentic Knowledge selection (KNOWLEDGE_ROUTE stage, additive/optional).
+   * When non-empty, this REPLACES `knowledgeIds` in the request entirely —
+   * `startRun` sends `knowledge_candidates`, never `knowledge_ids`, in that
+   * case (the two are mutually exclusive on the wire, per
+   * `local-runtime-api.yaml`'s `StartRunRequest.input` docstring). Each
+   * candidate carries only metadata (id/name/description/tags/
+   * classification) — never document text — agent-runtime's own optional
+   * LLM call picks the subset worth searching. Omitting/emptying this
+   * reproduces the exact prior `knowledgeIds` fan-out behavior. */
+  knowledgeCandidates?: KnowledgeCandidate[];
   question: string;
   traceId?: string;
   /** Per-session consent (default `false`, never persisted) for Stage 2 hub
@@ -105,9 +157,33 @@ export interface StartRunParams {
    * (ChatScreen.tsx) sets it, since there is no Service Registry to learn
    * which Service allows which Agent/Tool from. */
   agentProfile?: "standard-agent" | "standard-db-agent";
+  /** D-034 해석 경로 4 — Desktop이 등록해 둔 로컬 Agent Package의 핸들
+   * (`agent_asset_id`). 채워지면 서버는 이것을 `agent_profile`보다 먼저
+   * 확인해 이 값으로만 Agent를 해석한다(`routers/runs.py`의 `elif` 분기 —
+   * `agent_profile`은 이 값이 있으면 아예 읽히지 않는다) — 그래서
+   * `startRun`은 이 값이 있을 때 `agent_profile`을 함께 보내지 않는다(혼동
+   * 방지, 서버가 실제로 무시하는 필드를 보내지 않는다). 기본은 항상
+   * `undefined`(표준 Agent) — 사용자가 명시적으로 등록된 Local Agent를
+   * 고를 때만 채워진다(D06 기본 동작 불변, Task Brief 제약 D). */
+  localAgentId?: string;
   mcpTool?: string;
   mcpToolInput?: Record<string, unknown>;
   mcpConfirmed?: boolean;
+  /** D-083 TOOL_ROUTE opt-in (`input.tool_route`, `local-runtime-api.yaml`
+   * `StartRunRequest.input`) — default-off, per-run consent for agent-runtime
+   * to make ONE optional LLM call that proposes an MCP Tool name + arguments
+   * from the question text, instead of never calling MCP Tools at all (the
+   * prior behavior of every caller in this repo). Only takes effect
+   * server-side when no explicit `mcpTool` is also supplied (that path always
+   * wins — see `agent_runtime.workflow`'s `run_knowledge_chat` docstring) and
+   * the resolved agent's `capabilities.mcp_allowed` is true (`standard-agent`
+   * has it false; `standard-db-agent` has it true — so a caller wanting this
+   * to actually route anything must also pass
+   * `agentProfile: "standard-db-agent"`). Every proposal still goes through
+   * the unchanged confirmation/validation chokepoint — this flag never
+   * bypasses approval. Omitting it reproduces the exact prior
+   * no-tool-routing behavior. */
+  toolRoute?: boolean;
   /** Desktop 대화 고도화 (additive/optional) — prior turns of this same
    * conversation, oldest first. Omitting it (every call site that predates
    * this feature) reproduces the exact prior single-turn request body. */
@@ -132,22 +208,46 @@ async function parseErrorBody(res: Response): Promise<string> {
 export async function startRun(params: StartRunParams): Promise<RunResponse> {
   const input: Record<string, unknown> = {
     knowledge_id: params.knowledgeId,
-    knowledge_ids: params.knowledgeIds,
     question: params.question,
     // 로컬에서 조회하는 데이터를 허브에 넘기면 안 된다 — default-off consent,
     // always sent explicitly (never inferred server-side).
     allow_hub_lookup: params.allowHubLookup,
   };
-  if (params.agentProfile) input.agent_profile = params.agentProfile;
+  // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 후보를 보낼 때는 knowledge_ids를
+  // 절대 함께 보내지 않는다(local-runtime-api.yaml: 후보가 있으면 서버가 id
+  // 선택을 통째로 넘겨받는다). 후보가 없으면(브릿지 없음/manifest 조립 실패
+  // 등) 기존 fan-out 동작을 그대로 재현한다.
+  if (params.knowledgeCandidates && params.knowledgeCandidates.length > 0) {
+    input.knowledge_candidates = params.knowledgeCandidates;
+  } else {
+    input.knowledge_ids = params.knowledgeIds;
+  }
+  // D-034 해석 경로 4 — local_agent_id가 있으면 서버는 agent_profile을 아예
+  // 읽지 않는다(routers/runs.py의 elif 분기) — 함께 보내면 실제로 적용되지
+  // 않는 필드를 보내는 것이므로 아예 생략한다.
+  if (params.localAgentId) {
+    input.local_agent_id = params.localAgentId;
+  } else if (params.agentProfile) {
+    input.agent_profile = params.agentProfile;
+  }
   if (params.mcpTool) {
     input.mcp_tool = params.mcpTool;
     input.mcp_tool_input = params.mcpToolInput ?? {};
     input.mcp_confirmed = params.mcpConfirmed ?? false;
   }
+  // D-083 — only ever sent when the caller explicitly opted in this run.
+  // Never sent alongside `mcpTool` in practice (the caller decides which of
+  // the two consent shapes applies to a given turn), but this function does
+  // not itself enforce mutual exclusivity — that judgment belongs to the
+  // caller (ChatScreen.tsx's `toolRouteActive`), same division of
+  // responsibility as `knowledgeCandidates` vs `knowledgeIds` above.
+  if (params.toolRoute) {
+    input.tool_route = true;
+  }
   if (params.history && params.history.length > 0) {
     input.history = params.history;
   }
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs`, {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -173,7 +273,7 @@ export async function confirmRun(
   runId: string,
   decision: "approve" | "deny",
 ): Promise<RunResponse> {
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/confirm`, {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/confirm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ decision }),
@@ -185,7 +285,7 @@ export async function confirmRun(
 }
 
 export async function getRun(runId: string): Promise<RunResponse> {
-  const res = await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}`);
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}`);
   if (!res.ok) {
     throw new Error(await parseErrorBody(res));
   }
@@ -196,7 +296,7 @@ export async function cancelRun(runId: string): Promise<void> {
   // Best-effort by design (matches StepPreview.tsx): the UI reflects the
   // actual outcome once the run.cancelled SSE event arrives, not from this
   // response.
-  await fetch(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/cancel`, { method: "POST" }).catch(() => {});
+  await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/cancel`, { method: "POST" }).catch(() => {});
 }
 
 /** One SSE frame, timestamped at the moment this client received it.
@@ -214,6 +314,12 @@ export interface RunEventLogItem {
 const KNOWN_EVENT_NAMES = [
   "run.started",
   "preflight.completed",
+  // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 후보를 보냈을 때만 실제로
+  // 발생한다(agent_runtime.knowledge_router). status는 "ran"(LLM이 실제로
+  // 골랐다)/"skipped"(후보가 threshold 이하라 LLM을 부르지 않았다)/
+  // "fallback"(LLM 호출은 됐지만 신뢰할 수 없어 전체를 검색했다) 중 하나 —
+  // chatTypes.ts의 describeKnowledgeRoute가 세 경우를 구분해 보여준다.
+  "knowledge.route.selected",
   "knowledge.search.started",
   "knowledge.search.completed",
   "knowledge.query_rewritten",
@@ -227,6 +333,17 @@ const KNOWN_EVENT_NAMES = [
   "mcp.confirmation_required",
   "mcp.confirmation_resolved",
   "mcp.confirmation_expired",
+  // D-083 TOOL_ROUTE — only actually emitted when this turn sent
+  // `tool_route: true` (see `StartRunParams.toolRoute`'s docstring) AND the
+  // resolved agent allows MCP. "selected" carries the routing decision
+  // (ran/skipped/no_tool + which tool, if any); "rejected" is the rarer
+  // preflight-refusal case where a "ran" proposal failed schema validation
+  // and was dropped rather than dispatched (chatTypes.ts's
+  // `describeToolRouteSelected`/`describeToolRouteRejected` render the two
+  // distinctly — see that module for why "nothing happened" and "something
+  // was proposed and blocked" must never look the same).
+  "mcp.tool_route.selected",
+  "mcp.tool_route.rejected",
   "answer.delta",
   "run.completed",
   "run.failed",
@@ -244,7 +361,7 @@ export function openRunEventStream(
   onEvent: (item: RunEventLogItem) => void,
   onConnectionError: () => void,
 ): () => void {
-  const es = new EventSource(`${AGENT_RUNTIME_BASE_URL}/local/v1/runs/${runId}/events`);
+  const es = new EventSource(`${getAgentRuntimeBaseUrl()}/local/v1/runs/${runId}/events`);
 
   for (const name of KNOWN_EVENT_NAMES) {
     es.addEventListener(name, (evt) => {

@@ -21,6 +21,7 @@ out/
 # (docs/implementation-spec/13-windows-local-setup.md §6 참고).
 data/indexes/
 data/bundles/
+data/agent-runtime/
 apps/portal-api/storage/
 # 저장소 루트에도 같은 것이 생긴다: `portal_api.config.Settings.storage_root`
 # 기본값이 `./storage`(CWD 기준)이라, 저장소 루트에서 테스트를 돌리면 여기에
@@ -33,6 +34,10 @@ apps/portal-api/*.db-journal
 apps/portal-api/*.db-wal
 apps/portal-api/*.db-shm
 *.bak
+
+# scripts/macos/dev-stack.sh 의 PID/로그 파일. 다른 PC에서 재생 불가능한
+# 로컬 프로세스 상태이므로 위 데이터 산출물과 같은 이유로 제외한다.
+/.dev-stack/
 
 # Desktop Client가 설치한 로컬 자산/상태
 apps/desktop-client/install-root/

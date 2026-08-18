@@ -1,7 +1,13 @@
 // D01 필드 "Ollama Base URL; 기본은 loopback만 허용" — 이 규칙이 기본값이
 // 아니라 실제 강제 규칙임을 검증한다.
 import { describe, expect, it } from "vitest";
-import { isLoopbackHostname, validateGenericUrl, validateNonEmpty, validateOllamaBaseUrl } from "../network-policy";
+import {
+  isLoopbackHostname,
+  validateGenericUrl,
+  validateNonEmpty,
+  validateOllamaBaseUrl,
+  validateSearchRuntimeBaseUrl,
+} from "../network-policy";
 
 describe("isLoopbackHostname", () => {
   it("recognizes loopback hostnames", () => {
@@ -61,6 +67,27 @@ describe("validateGenericUrl", () => {
     const result = validateGenericUrl("", "MCP Server URL");
     expect(result.ok).toBe(false);
     expect(result.error).toContain("MCP Server URL");
+  });
+});
+
+describe("validateSearchRuntimeBaseUrl", () => {
+  it("accepts loopback URLs", () => {
+    expect(validateSearchRuntimeBaseUrl("http://127.0.0.1:8300")).toEqual({ ok: true, error: null });
+    expect(validateSearchRuntimeBaseUrl("http://localhost:8300")).toEqual({ ok: true, error: null });
+  });
+
+  it("rejects a remote address with no override — D-079: activation carries a local absolute path", () => {
+    const result = validateSearchRuntimeBaseUrl("http://10.0.0.5:8300");
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("loopback");
+  });
+
+  it("rejects a malformed URL", () => {
+    expect(validateSearchRuntimeBaseUrl("not-a-url").ok).toBe(false);
+  });
+
+  it("rejects empty input", () => {
+    expect(validateSearchRuntimeBaseUrl("").ok).toBe(false);
   });
 });
 

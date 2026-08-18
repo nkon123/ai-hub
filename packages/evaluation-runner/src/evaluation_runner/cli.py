@@ -40,6 +40,21 @@ def _print_metrics_report(result: EvaluationResult) -> None:
     click.echo(f"  P95 Latency          : {m.latency_p95_ms:.0f}ms")
     click.echo(f"  평균 Context Token    : {m.avg_context_tokens:.0f}")
     click.echo(f"  금지 문서 오검색 비율 : {m.forbidden_hit_rate:.1%}")
+    if m.acl_case_count == 0:
+        # 통과처럼 보이는 공란을 만들지 않는다 — 측정하지 않았다고 말한다.
+        click.echo("  ACL Test             : 측정하지 않음 (dataset에 acl_cases 없음)")
+    else:
+        click.echo(
+            f"  ACL 유출 비율         : {m.acl_leak_rate:.1%} ({m.acl_case_count}건 검사)"
+        )
+        for c in result.per_acl_case:
+            if c.leaked:
+                click.echo(
+                    f"    [LEAK] {c.case_id} (등급 {c.clearance}): "
+                    f"{', '.join(c.leaked_document_ids)}"
+                )
+        if m.acl_cases_with_visibility_expectation > 0:
+            click.echo(f"  허용 등급 가시성      : {m.acl_visibility_rate:.1%}")
     click.echo("")
     click.echo(f"Quality Gate: {'PASS' if result.gate.passed else 'FAIL'}")
     for c in result.gate.checks:

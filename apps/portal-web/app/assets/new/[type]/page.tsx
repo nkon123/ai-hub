@@ -38,10 +38,12 @@ import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import {
   AlertTriangle,
+  Braces,
   CheckCircle2,
   ChevronRight,
   Download,
   FileEdit,
+  FileUp,
   Loader2,
   Lock,
   RotateCcw,
@@ -64,6 +66,16 @@ import { ASSET_TYPE_LABEL } from "../../../_components/review-meta";
 // Permission.ASSET_CREATE holders (security_policy.roles.ROLE_PERMISSIONS) —
 // required for both POST /api/v1/manifests/validate and POST /api/v1/assets.
 const ASSET_CREATE_ROLES = new Set(["CREATOR", "ADMIN"]);
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+// Python 시그니처 파일 선택 — 클라이언트에서 텍스트로 읽어 기존 textarea를
+// 채울 뿐, 파일 자체는 업로드/저장/실행하지 않는다. 두 한계 모두 사용자에게
+// 이유를 보여주고 거부한다(자르지 않음 — 잘린 코드는 다른 시그니처로
+// 변환되어 더 위험하다).
+// MAX_SOURCE_CHARS는 apps/portal-api/src/portal_api/python_signature.py의
+// 서버 측 상한과 반드시 같은 값을 유지한다.
+const MAX_PYTHON_SOURCE_CHARS = 20_000;
+const MAX_PYTHON_FILE_BYTES = 200_000; // 텍스트로 읽기 전 1차 크기 방어(대략치)
 
 type WizardType = "agent" | "prompt" | "mcp_tool";
 
@@ -81,7 +93,7 @@ const CLASSIFICATIONS = [
 
 const STEPS = [
   { id: 1, label: "기본정보" },
-  { id: 2, label: "Manifest 입력" },
+  { id: 2, label: "동작 설정" },
   { id: 3, label: "파일 업로드" },
   { id: 4, label: "검증" },
   { id: 5, label: "제출" },
@@ -121,6 +133,33 @@ const TYPE_FIELD_NOTES: Record<WizardType, FieldNote[]> = {
     { field: "input_schema", desc: "Tool 입력 파라미터를 정의하는 JSON Schema 객체." },
   ],
 };
+
+/** agent-manifest.schema.json의 `workflow.roles[].type` enum 그대로 —
+ * 라벨만 업무 표현으로 덧붙인다(값은 스키마 값을 그대로 쓴다). */
+const AGENT_ROLE_TYPES = [
+  { value: "answerer", label: "answerer — 답변 생성" },
+  { value: "retriever", label: "retriever — 자료 검색" },
+  { value: "planner", label: "planner — 작업 계획" },
+  { value: "validator", label: "validator — 결과 검증" },
+] as const;
+
+const PROMPT_VARIABLE_TYPES = ["string", "integer", "boolean", "array"] as const;
+
+interface PromptVariable {
+  name?: string;
+  type?: string;
+  required?: boolean;
+  description?: string;
+}
+
+interface AgentRole {
+  id?: string;
+  type?: string;
+  description?: string;
+  requires_knowledge?: boolean;
+  requires_mcp?: boolean;
+  requires_prompt?: boolean;
+}
 
 const SCHEMA_DOC_BY_TYPE: Record<WizardType, string> = {
   agent: "packages/schemas/manifests/agent-manifest.schema.json",
@@ -218,10 +257,27 @@ function buildSkeleton(type: WizardType, id: string, basic: BasicInfo): Record<s
     tool_name: "",
     risk_level: "READ_ONLY",
     input_schema: { type: "object", properties: {} },
+    execution_guards: { timeout_seconds: 10, requires_user_confirmation: false },
   };
 }
 
 type ParseResult = { ok: true; value: Record<string, unknown> } | { ok: false; error: string };
+
+interface PythonSignatureConversion {
+  function_name: string;
+  input_schema: Record<string, unknown>;
+  parameters: Array<{ name: string; schema_type: string; required: boolean; default_included: boolean }>;
+  discarded: {
+    body_statement_count: number;
+    decorator_count: number;
+    docstring_present: boolean;
+    return_annotation_present: boolean;
+    top_level_statement_count: number;
+    source_persisted: false;
+    source_executed: false;
+  };
+  warnings: string[];
+}
 
 function parseManifestText(text: string): ParseResult {
   if (!text.trim()) return { ok: false, error: "Manifest가 비어 있습니다." };
@@ -450,7 +506,14 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return basic.name.trim().length > 0;
       case 2:
-        return manifestText.trim().length > 0;
+        if (type !== "mcp_tool") return manifestText.trim().length > 0;
+        return (
+          parsed.ok &&
+          typeof parsed.value.server_alias === "string" &&
+          parsed.value.server_alias.trim().length > 0 &&
+          typeof parsed.value.tool_name === "string" &&
+          parsed.value.tool_name.trim().length > 0
+        );
       case 3:
         return templateFileMatched;
       case 4:
@@ -466,7 +529,9 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return "자산 이름을 입력하세요.";
       case 2:
-        return "Manifest JSON을 입력하세요.";
+        return type === "mcp_tool"
+          ? "MCP 서버 연결 이름과 Tool 호출 이름을 입력하세요."
+          : "Manifest JSON을 입력하세요.";
       case 3:
         return expectedTemplateFileName
           ? `업로드한 파일 중 "${expectedTemplateFileName}" 이름과 일치하는 파일이 없습니다.`
@@ -818,6 +883,136 @@ function StepManifest({
   parsed: ParseResult;
   example: ExampleState;
 }) {
+  // 고급 편집기에서 JSON이 깨진 채로 구조화 폼을 조작하면, 폼이 자기가
+  // 읽어낸 빈 객체 위에 patch를 얹어 저장해 사용자가 쓰던 내용을 조용히
+  // 지워 버린다. 그래서 그동안은 편집을 막고 이유를 말한다.
+  const structuredBlocked = !parsed.ok && manifestText.trim().length > 0;
+  const structuredBlockedBanner = (
+    <ErrorBanner
+      message={`고급 설정의 JSON이 올바르지 않아 아래 항목을 편집할 수 없습니다. 먼저 JSON을 고치거나 "기본값으로 재설정"을 누르세요.${parsed.ok ? "" : ` (${parsed.error})`}`}
+    />
+  );
+
+  if (type === "agent") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">Agent 구성</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            이 Agent가 무엇을 할 수 있는지만 고르면 됩니다. 나머지 Manifest 값은 자동으로 채워집니다.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <AgentManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              위 화면이 다루지 않는 필드가 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="Agent Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  if (type === "prompt") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">Prompt 구성</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            System Prompt 본문과 이 Prompt가 받는 변수만 정하면 됩니다.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <PromptManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              위 화면이 다루지 않는 필드가 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="Prompt Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  if (type === "mcp_tool") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">MCP Tool 연결</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            Desktop에서 사용할 읽기 전용 Tool의 연결 이름과 호출 이름만 입력하세요.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <McpManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              입력·출력 JSON Schema나 세부 실행 제한이 필요할 때만 수정하세요. 기본 등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="MCP Tool Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-4">
@@ -868,6 +1063,758 @@ function StepManifest({
       />
 
       {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+    </div>
+  );
+}
+
+/** Agent Manifest 구조 입력 — P05의 "쉽게 등록" 절반.
+ *
+ * 이 화면이 다루는 것은 Agent Manifest 전체가 아니라 **실제로 두 표준 Agent를
+ * 구분 짓는 것들**이다. `services/agent-runtime/config/`의 standard-agent와
+ * standard-db-agent는 역할이 `answerer` 하나로 똑같고 `capabilities`와 한도만
+ * 다르다 — 그래서 기본 화면은 역할 하나를 전제로 하고, 역할 추가는 필요한
+ * 사람만 쓰도록 뒤에 둔다. 없는 개념(Preset 이름, 워크플로 그래프 편집기 등)을
+ * 새로 만들지 않는다: 이 폼이 쓰는 필드는 전부 agent-manifest.schema.json에
+ * 실재하는 것뿐이고, 스키마가 표현하지 못하는 규칙은 차단이 아니라 경고로만
+ * 알린다.
+ *
+ * `entry_role`은 사용자가 직접 입력하지 않는다 — 역할 id와 어긋나면 Manifest가
+ * 검증에서 떨어지는데, 그 어긋남은 폼이 구조적으로 막을 수 있는 종류다. */
+function AgentManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const workflow =
+    typeof manifest.workflow === "object" && manifest.workflow !== null
+      ? (manifest.workflow as Record<string, unknown>)
+      : {};
+  const roles: AgentRole[] = Array.isArray(workflow.roles)
+    ? (workflow.roles as AgentRole[]).filter((r) => typeof r === "object" && r !== null)
+    : [];
+  const capabilities =
+    typeof manifest.capabilities === "object" && manifest.capabilities !== null
+      ? (manifest.capabilities as Record<string, unknown>)
+      : {};
+  const limits =
+    typeof manifest.limits === "object" && manifest.limits !== null
+      ? (manifest.limits as Record<string, unknown>)
+      : {};
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function writeRoles(nextRoles: AgentRole[]) {
+    // entry_role은 항상 첫 역할을 따라간다 — 사용자가 역할 이름을 바꾸거나
+    // 첫 역할을 지워도 두 값이 어긋난 Manifest가 만들어지지 않는다.
+    updateManifest({
+      workflow: { entry_role: nextRoles[0]?.id ?? "", roles: nextRoles },
+    });
+  }
+
+  function updateRole(index: number, patch: Partial<AgentRole>) {
+    writeRoles(roles.map((role, i) => (i === index ? { ...role, ...patch } : role)));
+  }
+
+  function updateCapability(key: string, value: boolean) {
+    updateManifest({
+      capabilities: {
+        knowledge_required: false,
+        mcp_allowed: false,
+        ...capabilities,
+        [key]: value,
+      },
+    });
+  }
+
+  function updateLimit(key: string, raw: string) {
+    const next = { ...limits };
+    // 빈 칸은 0이 아니라 "미지정"이다 — timeout 0초짜리 Agent를 조용히
+    // 만들어 두지 않는다. 숫자가 아닌 입력("-", "1e" 등)도 마찬가지로
+    // 미지정으로 둔다: Number()가 NaN을 만들고 JSON.stringify가 그것을
+    // null로 직렬화해, 스키마가 integer를 요구하는 자리에 null이 박힌
+    // Manifest가 만들어지기 때문이다.
+    const parsedNumber = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(parsedNumber)) delete next[key];
+    else next[key] = parsedNumber;
+    updateManifest({ limits: next });
+  }
+
+  const knowledgeRequired = capabilities.knowledge_required === true;
+  const mcpAllowed = capabilities.mcp_allowed === true;
+  const roleNeedsKnowledge = roles.some((r) => r.requires_knowledge === true);
+  const roleNeedsMcp = roles.some((r) => r.requires_mcp === true);
+  const duplicateRoleId = roles.some((r, i) => roles.findIndex((o) => o.id === r.id) !== i);
+  const emptyRoleId = roles.some((r) => !String(r.id ?? "").trim());
+
+  return (
+    <div className="space-y-5">
+      <section className="space-y-3">
+        <div>
+          <h3 className="text-body font-semibold text-text-primary">이 Agent가 할 수 있는 일</h3>
+          <p className="text-caption text-text-secondary">
+            Service Composer가 이 값으로 호환 여부를 판단합니다.
+          </p>
+        </div>
+        <div className="space-y-2">
+          <ToggleRow
+            label="지식 검색 사용"
+            hint="등록된 Knowledge를 검색해 답변 근거로 씁니다."
+            checked={knowledgeRequired}
+            onChange={(v) => updateCapability("knowledge_required", v)}
+          />
+          <ToggleRow
+            label="MCP Tool 호출 허용"
+            hint="읽기 전용 Tool을 호출할 수 있습니다. 실제 허용 범위는 Office Profile이 정합니다."
+            checked={mcpAllowed}
+            onChange={(v) => updateCapability("mcp_allowed", v)}
+          />
+          <ToggleRow
+            label="답변 스트리밍"
+            hint="답변을 생성되는 대로 화면에 흘려보냅니다."
+            checked={capabilities.streaming !== false}
+            onChange={(v) => updateCapability("streaming", v)}
+          />
+          <ToggleRow
+            label="근거(Citation) 필수"
+            hint="근거 문서를 찾지 못하면 답변하지 않습니다."
+            checked={capabilities.citation_required === true}
+            onChange={(v) => updateCapability("citation_required", v)}
+          />
+        </div>
+        {knowledgeRequired && !roleNeedsKnowledge && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-caption text-amber-800">
+            지식 검색을 쓰도록 했지만 아래 역할 중 지식이 필요하다고 표시된 것이 없습니다. 의도한
+            구성이면 그대로 두어도 등록됩니다.
+          </p>
+        )}
+        {mcpAllowed && !roleNeedsMcp && (
+          <p className="rounded-lg bg-amber-50 px-3 py-2 text-caption text-amber-800">
+            MCP Tool 호출을 허용했지만 아래 역할 중 Tool이 필요하다고 표시된 것이 없습니다.
+          </p>
+        )}
+      </section>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body font-semibold text-text-primary">역할</h3>
+            <p className="text-caption text-text-secondary">
+              대부분의 Agent는 답변 역할 하나면 충분합니다. 첫 번째 역할이 실행 시작점
+              (<code>entry_role</code>)이 됩니다.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              writeRoles([
+                ...roles,
+                {
+                  id: `role-${roles.length + 1}`,
+                  type: "answerer",
+                  description: "",
+                  requires_knowledge: false,
+                  requires_mcp: false,
+                  requires_prompt: true,
+                },
+              ])
+            }
+          >
+            역할 추가
+          </Button>
+        </div>
+
+        {roles.length === 0 && (
+          <ErrorBanner message="역할이 하나도 없습니다. 역할 추가를 눌러 최소 하나를 만드세요." />
+        )}
+
+        {roles.map((role, index) => (
+          <div key={index} className="space-y-3 rounded-lg border border-border p-4">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-caption font-semibold text-text-secondary">
+                역할 {index + 1}
+                {index === 0 && <span className="ml-1.5 text-brand-600">· 실행 시작점</span>}
+              </span>
+              {roles.length > 1 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => writeRoles(roles.filter((_, i) => i !== index))}
+                >
+                  삭제
+                </Button>
+              )}
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label="역할 이름" required>
+                <input
+                  value={String(role.id ?? "")}
+                  onChange={(e) => updateRole(index, { id: e.target.value })}
+                  placeholder="예: answerer"
+                  className={inputClass}
+                />
+              </FormField>
+              <FormField label="역할 유형" required>
+                <select
+                  value={String(role.type ?? "answerer")}
+                  onChange={(e) => updateRole(index, { type: e.target.value })}
+                  className={inputClass}
+                >
+                  {AGENT_ROLE_TYPES.map((t) => (
+                    <option key={t.value} value={t.value}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <FormField label="역할 설명 (선택)">
+              <input
+                value={String(role.description ?? "")}
+                onChange={(e) => updateRole(index, { description: e.target.value })}
+                placeholder="예: Knowledge를 검색하고 답변을 생성한다"
+                className={inputClass}
+              />
+            </FormField>
+            <div className="space-y-2">
+              <ToggleRow
+                label="지식 필요"
+                checked={role.requires_knowledge === true}
+                onChange={(v) => updateRole(index, { requires_knowledge: v })}
+              />
+              <ToggleRow
+                label="MCP Tool 필요"
+                checked={role.requires_mcp === true}
+                onChange={(v) => updateRole(index, { requires_mcp: v })}
+              />
+              <ToggleRow
+                label="Prompt 필요"
+                checked={role.requires_prompt !== false}
+                onChange={(v) => updateRole(index, { requires_prompt: v })}
+              />
+            </div>
+          </div>
+        ))}
+
+        {emptyRoleId && <ErrorBanner message="역할 이름은 비워 둘 수 없습니다." />}
+        {duplicateRoleId && <ErrorBanner message="역할 이름이 중복되었습니다. 서로 다른 이름을 쓰세요." />}
+      </section>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div>
+          <h3 className="text-body font-semibold text-text-primary">실행 한도 (선택)</h3>
+          <p className="text-caption text-text-secondary">
+            비워 두면 Runtime 기본값이 적용됩니다.
+          </p>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <FormField label="최대 Context Token">
+            <input
+              type="number"
+              min={0}
+              value={limits.max_context_tokens === undefined ? "" : String(limits.max_context_tokens)}
+              onChange={(e) => updateLimit("max_context_tokens", e.target.value)}
+              placeholder="예: 8192"
+              className={inputClass}
+            />
+          </FormField>
+          <FormField label="Timeout (초)">
+            <input
+              type="number"
+              min={1}
+              value={limits.timeout_seconds === undefined ? "" : String(limits.timeout_seconds)}
+              onChange={(e) => updateLimit("timeout_seconds", e.target.value)}
+              placeholder="예: 60"
+              className={inputClass}
+            />
+          </FormField>
+          <FormField label="최대 MCP 호출 수">
+            <input
+              type="number"
+              min={0}
+              value={limits.max_mcp_calls === undefined ? "" : String(limits.max_mcp_calls)}
+              onChange={(e) => updateLimit("max_mcp_calls", e.target.value)}
+              placeholder={mcpAllowed ? "예: 3" : "0"}
+              className={inputClass}
+            />
+          </FormField>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  onChange,
+}: {
+  label: string;
+  hint?: string;
+  checked: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-start gap-2.5">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        className="mt-0.5 h-4 w-4 shrink-0 rounded border-border text-brand-600"
+      />
+      <span className="min-w-0">
+        <span className="block text-body text-text-primary">{label}</span>
+        {hint && <span className="block text-caption text-text-muted">{hint}</span>}
+      </span>
+    </label>
+  );
+}
+
+/** Prompt Manifest 구조 입력. `template.file`은 3단계 파일 업로드가 이름을
+ * 정확히 대조하는 값이라(스펙: "template.file에 이름이 명시된 파일") 여기서
+ * 바꾸면 그 검증 대상도 함께 바뀐다 — 그래서 그 사실을 필드 옆에 적어 둔다. */
+function PromptManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const template =
+    typeof manifest.template === "object" && manifest.template !== null
+      ? (manifest.template as Record<string, unknown>)
+      : {};
+  const variables: PromptVariable[] = Array.isArray(manifest.variables)
+    ? (manifest.variables as PromptVariable[]).filter((v) => typeof v === "object" && v !== null)
+    : [];
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function updateTemplate(key: string, value: string) {
+    updateManifest({ template: { system: "", file: "template.md", ...template, [key]: value } });
+  }
+
+  function writeVariables(next: PromptVariable[]) {
+    updateManifest({ variables: next });
+  }
+
+  const duplicateName = variables.some(
+    (v, i) => variables.findIndex((o) => o.name === v.name) !== i,
+  );
+  const emptyName = variables.some((v) => !String(v.name ?? "").trim());
+
+  return (
+    <div className="space-y-5">
+      <FormField label="System Prompt 본문" required>
+        <textarea
+          value={String(template.system ?? "")}
+          onChange={(e) => updateTemplate("system", e.target.value)}
+          rows={6}
+          placeholder="예: 당신은 사내 정책을 안내하는 도우미입니다. 근거 문서에 없는 내용은 추측하지 않습니다."
+          className={`${inputClass} resize-y`}
+        />
+      </FormField>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <FormField label="Template 파일명" required>
+          <input
+            value={String(template.file ?? "")}
+            onChange={(e) => updateTemplate("file", e.target.value)}
+            placeholder="예: template.md"
+            className={inputClass}
+          />
+          <p className="mt-1 text-caption text-text-muted">
+            3단계에서 <strong>이 이름과 정확히 같은</strong> 파일을 업로드해야 합니다.
+          </p>
+        </FormField>
+        <FormField label="언어">
+          <input
+            value={String(template.language ?? "ko")}
+            onChange={(e) => updateTemplate("language", e.target.value)}
+            placeholder="ko"
+            className={inputClass}
+          />
+        </FormField>
+      </div>
+
+      <section className="space-y-3 border-t border-border pt-5">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h3 className="text-body font-semibold text-text-primary">변수</h3>
+            <p className="text-caption text-text-secondary">
+              Template 안에서 채워 넣을 값들입니다.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() =>
+              writeVariables([
+                ...variables,
+                { name: "", type: "string", required: true, description: "" },
+              ])
+            }
+          >
+            변수 추가
+          </Button>
+        </div>
+
+        {variables.length === 0 && (
+          <p className="rounded-lg bg-slate-50 px-3 py-2 text-caption text-text-secondary">
+            변수가 없습니다. 고정된 문구만 쓰는 Prompt라면 비워 두어도 됩니다.
+          </p>
+        )}
+
+        {variables.map((variable, index) => (
+          <div key={index} className="grid gap-3 rounded-lg border border-border p-4 sm:grid-cols-12">
+            <div className="sm:col-span-4">
+              <FormField label="이름" required>
+                <input
+                  value={String(variable.name ?? "")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) => (i === index ? { ...v, name: e.target.value } : v)),
+                    )
+                  }
+                  placeholder="예: question"
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <div className="sm:col-span-3">
+              <FormField label="유형" required>
+                <select
+                  value={String(variable.type ?? "string")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) => (i === index ? { ...v, type: e.target.value } : v)),
+                    )
+                  }
+                  className={inputClass}
+                >
+                  {PROMPT_VARIABLE_TYPES.map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <div className="sm:col-span-4">
+              <FormField label="설명 (선택)">
+                <input
+                  value={String(variable.description ?? "")}
+                  onChange={(e) =>
+                    writeVariables(
+                      variables.map((v, i) =>
+                        i === index ? { ...v, description: e.target.value } : v,
+                      ),
+                    )
+                  }
+                  className={inputClass}
+                />
+              </FormField>
+            </div>
+            <div className="flex items-end justify-between gap-2 sm:col-span-1">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => writeVariables(variables.filter((_, i) => i !== index))}
+              >
+                삭제
+              </Button>
+            </div>
+            <div className="sm:col-span-12">
+              <ToggleRow
+                label="필수 변수"
+                checked={variable.required !== false}
+                onChange={(v) =>
+                  writeVariables(
+                    variables.map((item, i) => (i === index ? { ...item, required: v } : item)),
+                  )
+                }
+              />
+            </div>
+          </div>
+        ))}
+
+        {emptyName && <ErrorBanner message="변수 이름은 비워 둘 수 없습니다." />}
+        {duplicateName && <ErrorBanner message="변수 이름이 중복되었습니다." />}
+      </section>
+    </div>
+  );
+}
+
+function McpManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const { role } = useRole();
+  const manifest = parsed.ok ? parsed.value : {};
+  const guards =
+    typeof manifest.execution_guards === "object" && manifest.execution_guards !== null
+      ? (manifest.execution_guards as Record<string, unknown>)
+      : {};
+
+  function updateManifest(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function updateGuard(key: string, value: unknown) {
+    updateManifest({
+      execution_guards: {
+        timeout_seconds: 10,
+        requires_user_confirmation: false,
+        ...guards,
+        [key]: value,
+      },
+    });
+  }
+
+  const [pythonSource, setPythonSource] = useState("");
+  const [conversion, setConversion] = useState<PythonSignatureConversion | null>(null);
+  const [conversionState, setConversionState] = useState<"idle" | "loading" | "error">("idle");
+  const [conversionError, setConversionError] = useState<ServerErrorInfo | null>(null);
+  const [pythonFileName, setPythonFileName] = useState<string | null>(null);
+  const [pythonFileError, setPythonFileError] = useState<string | null>(null);
+
+  // 파일을 고르면 client-side에서 텍스트로 읽어 textarea만 채운다 — 파일
+  // 자체는 어디에도 업로드/저장/실행되지 않는다. 사용자는 변환을 누르기 전
+  // textarea에서 실제로 전송될 내용을 그대로 보고 수정할 수 있다.
+  async function handlePythonFileChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0] ?? null;
+    e.target.value = ""; // 같은 파일을 다시 선택해도 onChange가 발생하도록.
+    if (!file) return;
+
+    setConversion(null);
+    setConversionError(null);
+    setConversionState("idle");
+    setPythonFileError(null);
+    setPythonFileName(null);
+
+    const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+    if (extension !== ".py") {
+      setPythonFileError(
+        `.py 파일만 선택할 수 있습니다. 선택한 파일(${file.name})은 지원하지 않는 형식입니다.`
+      );
+      return;
+    }
+    if (file.size > MAX_PYTHON_FILE_BYTES) {
+      setPythonFileError(
+        `파일이 너무 큽니다. ${(MAX_PYTHON_FILE_BYTES / 1000).toFixed(0)}KB 이하의 .py 파일만 선택할 수 있습니다.`
+      );
+      return;
+    }
+
+    const text = await file.text();
+    if (text.length > MAX_PYTHON_SOURCE_CHARS) {
+      setPythonFileError(
+        `파일 내용이 ${MAX_PYTHON_SOURCE_CHARS.toLocaleString()}자를 초과합니다. 변환할 함수 시그니처만 남겨 다시 선택해 주세요.`
+      );
+      return;
+    }
+
+    setPythonSource(text);
+    setPythonFileName(file.name);
+  }
+
+  async function convertPythonSignature() {
+    if (!pythonSource.trim() || conversionState === "loading") return;
+    setConversionState("loading");
+    setConversionError(null);
+    setConversion(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/manifests/mcp-tool/from-python-signature`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${role.token}` },
+        body: JSON.stringify({ source: pythonSource }),
+      });
+      const body = await safeJson(res);
+      if (!res.ok) {
+        setConversionState("error");
+        setConversionError(extractServerError(res.status, body));
+        return;
+      }
+      const result = body as PythonSignatureConversion;
+      setConversion(result);
+      setConversionState("idle");
+      updateManifest({
+        input_schema: result.input_schema,
+        ...(typeof manifest.tool_name !== "string" || !manifest.tool_name.trim()
+          ? { tool_name: result.function_name }
+          : {}),
+      });
+    } catch {
+      setConversionState("error");
+      setConversionError({ message: "변환 서버에 연결할 수 없습니다. 네트워크 상태를 확인해 주세요." });
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <FormField label="MCP 서버 연결 이름" required>
+        <input
+          value={typeof manifest.server_alias === "string" ? manifest.server_alias : ""}
+          onChange={(e) => updateManifest({ server_alias: e.target.value })}
+          placeholder="예: oracle-connector"
+          className={inputClass}
+        />
+        <p className="mt-1 text-caption text-text-muted">Office Profile에 등록된 서버 이름과 같아야 합니다.</p>
+      </FormField>
+
+      <FormField label="Tool 호출 이름" required>
+        <input
+          value={typeof manifest.tool_name === "string" ? manifest.tool_name : ""}
+          onChange={(e) => updateManifest({ tool_name: e.target.value })}
+          placeholder="예: db_metadata.get_tables"
+          className={inputClass}
+        />
+        <p className="mt-1 text-caption text-text-muted">영문·숫자·밑줄을 사용하고, 그룹은 점(.)으로 구분합니다.</p>
+      </FormField>
+
+      <section className="border-y border-border py-5">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2 text-body font-semibold text-text-primary">
+              <Braces size={16} className="text-brand-600" />
+              Python 함수에서 입력 형식 가져오기
+            </div>
+            <p className="mt-1 text-caption text-text-secondary">
+              함수 시그니처만 정적으로 읽습니다. 코드는 실행·저장하지 않으며 본문과 반환 타입은 Manifest에 포함하지 않습니다.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="secondary" size="sm" onClick={() => document.getElementById("python-signature-file-input")?.click()}>
+              <FileUp size={13} />
+              .py 파일 선택
+            </Button>
+            <input
+              id="python-signature-file-input"
+              type="file"
+              accept=".py"
+              onChange={(event) => void handlePythonFileChange(event)}
+              className="hidden"
+            />
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={!pythonSource.trim() || conversionState === "loading"}
+              onClick={() => void convertPythonSignature()}
+            >
+              {conversionState === "loading" ? <Loader2 size={13} className="animate-spin" /> : <Braces size={13} />}
+              {conversionState === "loading" ? "분석 중..." : "입력 형식 추출"}
+            </Button>
+          </div>
+        </div>
+        {pythonFileName && (
+          <p className="mt-2 text-caption text-text-muted">
+            <code>{pythonFileName}</code>에서 불러왔습니다. 아래 내용을 확인·수정한 뒤 변환하세요.
+          </p>
+        )}
+        {pythonFileError && (
+          <div className="mt-2">
+            <ErrorBanner message={pythonFileError} />
+          </div>
+        )}
+        <textarea
+          value={pythonSource}
+          onChange={(event) => {
+            setPythonSource(event.target.value);
+            setConversion(null);
+            setConversionError(null);
+            setConversionState("idle");
+            setPythonFileName(null);
+            setPythonFileError(null);
+          }}
+          rows={7}
+          spellCheck={false}
+          placeholder={'def get_tables(schema: str, limit: int = 20) -> list[str]:\n    ...'}
+          aria-label="Python 함수 시그니처"
+          className={`${inputClass} mt-3 resize-y font-mono text-caption`}
+        />
+        {conversionError && (
+          <div className="mt-3">
+            <ErrorBanner
+              message={`${conversionError.message}${conversionError.traceId ? ` (Trace ID: ${conversionError.traceId})` : ""}`}
+            />
+          </div>
+        )}
+        {conversion && (
+          <div className="mt-4 grid gap-5 sm:grid-cols-2">
+            <div>
+              <p className="text-caption font-semibold text-success">Manifest에 반영됨</p>
+              <p className="mt-1 text-caption text-text-secondary">
+                함수 <code>{conversion.function_name}</code> · 파라미터 {conversion.parameters.length}개
+              </p>
+              <ul className="mt-2 space-y-1 text-caption text-text-primary">
+                {conversion.parameters.length === 0 && <li>입력 파라미터 없음</li>}
+                {conversion.parameters.map((parameter) => (
+                  <li key={parameter.name}>
+                    <code>{parameter.name}</code> · {parameter.schema_type} · {parameter.required ? "필수" : "선택"}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <div>
+              <p className="text-caption font-semibold text-text-muted">실행하지 않고 버림</p>
+              <ul className="mt-1 space-y-1 text-caption text-text-secondary">
+                <li>함수 본문 {conversion.discarded.body_statement_count}개 문장</li>
+                <li>Decorator {conversion.discarded.decorator_count}개</li>
+                <li>Docstring {conversion.discarded.docstring_present ? "있음" : "없음"}</li>
+                <li>반환 타입 {conversion.discarded.return_annotation_present ? "있음" : "없음"}</li>
+                <li>코드 실행 안 함 · 원문 저장 안 함</li>
+              </ul>
+            </div>
+            {conversion.warnings.length > 0 && (
+              <div className="sm:col-span-2 text-caption text-warning">
+                {conversion.warnings.map((warning) => <p key={warning}>· {warning}</p>)}
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <div className="grid gap-4 sm:grid-cols-2">
+        <FormField label="응답 제한 시간">
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={60}
+              value={typeof guards.timeout_seconds === "number" ? guards.timeout_seconds : 10}
+              onChange={(e) => updateGuard("timeout_seconds", Number(e.target.value))}
+              className={inputClass}
+            />
+            <span className="text-body text-text-muted">초</span>
+          </div>
+        </FormField>
+        <FormField label="사용 전 확인">
+          <label className="flex h-10 items-center gap-2 rounded-lg border border-border bg-white px-3 text-body text-text-primary">
+            <input
+              type="checkbox"
+              checked={guards.requires_user_confirmation === true}
+              onChange={(e) => updateGuard("requires_user_confirmation", e.target.checked)}
+            />
+            실행 전에 사용자에게 확인
+          </label>
+        </FormField>
+      </div>
+
+      <div className="rounded-lg bg-success/5 px-4 py-3 text-body text-success">
+        안전 정책에 따라 이 PoC에서는 읽기 전용 Tool만 등록됩니다.
+      </div>
     </div>
   );
 }

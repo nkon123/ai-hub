@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Send, Sparkles, Square } from "lucide-react";
 import { Button, ErrorBanner, FormField, inputClass } from "../../../_components/ui";
-import type { AgentProfileId } from "./types";
+import type { AgentOption } from "./constants";
 import type { KnowledgeBindingDraft, PreviewMessage, Citation } from "./types";
 
 // Fixed agent-runtime contract (services/agent-runtime, port 8100), same pattern as
@@ -41,12 +41,12 @@ function CitationCard({ citation }: { citation: Citation }) {
 
 export function StepPreview({
   serviceVersionId,
-  agentId,
+  agent,
   knowledgeBindings,
   onRunCompleted,
 }: {
   serviceVersionId: string;
-  agentId: AgentProfileId;
+  agent: AgentOption;
   knowledgeBindings: KnowledgeBindingDraft[];
   onRunCompleted: () => void;
 }) {
@@ -168,6 +168,41 @@ export function StepPreview({
     const q = question.trim();
     if (!q || isRunning || !targetVersionId) return;
 
+    // D-034 path 2 (agent-runtime `manifests.py`'s `resolve_registry_agent_config`,
+    // wired in `routers/runs.py`): a Registry Agent sends
+    // `registry_agent_version_id`/`registry_prompt_version_id` (Portal asset-VERSION
+    // ids, not manifest ids) instead of `agent_profile`. Both must be present
+    // together — `routers/runs.py` rejects exactly one being set. page.tsx already
+    // gates Step 9 on `agent.prompt` being chosen for a registry Agent, so this
+    // should never be hit in practice; it exists so a bug upstream fails loudly
+    // here instead of silently sending a half-formed run request.
+    let runInput: Record<string, unknown>;
+    if (agent.source === "registry") {
+      if (!agent.registryAgentVersionId || !agent.prompt?.registryPromptVersionId) {
+        const messageId = crypto.randomUUID();
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: messageId,
+            question: q,
+            status: "failed",
+            answer: "",
+            citations: [],
+            errorMessage: "이 Registry Agent는 아직 Prompt가 연결되지 않아 실행할 수 없습니다 (단계 6으로 돌아가 Prompt를 선택하세요).",
+          },
+        ]);
+        return;
+      }
+      runInput = {
+        registry_agent_version_id: agent.registryAgentVersionId,
+        registry_prompt_version_id: agent.prompt.registryPromptVersionId,
+        knowledge_id: targetVersionId,
+        question: q,
+      };
+    } else {
+      runInput = { agent_profile: agent.id, knowledge_id: targetVersionId, question: q };
+    }
+
     setQuestion("");
     const messageId = crypto.randomUUID();
     const traceId = crypto.randomUUID();
@@ -181,7 +216,7 @@ export function StepPreview({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           service_id: serviceVersionId,
-          input: { agent_profile: agentId, knowledge_id: targetVersionId, question: q },
+          input: runInput,
           trace_id: traceId,
         }),
       });
@@ -235,7 +270,7 @@ export function StepPreview({
       <div className="rounded-card border border-border bg-surface p-4 shadow-card">
         <div className="mb-2 flex items-center gap-2 text-body font-semibold text-text-primary">
           <Sparkles size={15} className="text-brand-500" />
-          Preview 실행 ({agentId})
+          Preview 실행 ({agent.name})
         </div>
         <p className="text-body text-text-secondary">질문을 입력해 실제 등록된 Knowledge로 답변을 테스트하세요.</p>
       </div>

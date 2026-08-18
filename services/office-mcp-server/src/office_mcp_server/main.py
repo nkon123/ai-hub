@@ -9,9 +9,13 @@ user-controlled code.
 from __future__ import annotations
 
 import logging
+import os
 import uuid
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Header
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from observability import configure_logging
 
@@ -31,10 +35,71 @@ _logger = logging.getLogger("office_mcp_server")
 SERVER_VERSION = "0.1.0"
 SCHEMA_VERSION = "1.0"
 
+# Deployment identity — distinct from SERVER_VERSION above. SERVER_VERSION is
+# the product/protocol version this MCP server advertises to clients; these
+# two answer a different question: "which build of the code is this process
+# actually running". Same contract as portal-api / distribution-service
+# (2026-08-12), search-runtime (2026-08-13) and agent-runtime /
+# indexing-runtime (2026-08-14). Plain `os.environ` because this service has
+# no settings module and two constants do not justify introducing one.
+#
+# The incident: a search-runtime process from six days earlier was still
+# listening, so a route added that week returned 404 while `/health` reported
+# a hardcoded version — a fresh process and a stale one looked identical.
+BUILD_VERSION = os.environ.get("OFFICE_MCP_BUILD_VERSION", "0.1.0")
+COMMIT_SHA = os.environ.get("OFFICE_MCP_COMMIT_SHA", "unknown")
+
+# Desktop 채팅 화면은 이 서버의 상태를 **렌더러에서** 직접 health-check 한다
+# (`electron/connections.ts`, `ChatScreen.tsx`). CORS 헤더가 없으면 브라우저가
+# `/health/live` 응답조차 읽지 못해, 서버가 200 을 기록하는데도 화면에는
+# "Failed to fetch" 로 뜬다 — 2026-08-14 실사용에서 실제로 발생했다.
+#
+# Origin 목록은 agent-runtime(`AgentRuntimeSettings.cors_origins`)·
+# search-runtime(`settings.CORS_ORIGINS`)과 **동일하게 유지한다**. 세 서비스가
+# 같은 두 프런트엔드(portal-web 3000, Desktop 렌더러 5173)에게 불리기 때문이며,
+# 목록이 갈라지면 한 서비스만 조용히 차단되는 오늘 같은 상황이 반복된다 —
+# `tests/unit/search_runtime/test_cors.py` 의 drift 테스트가 이를 고정한다.
+#
+# CORS 가 이 서버의 Tool 실행 API 를 지켜주는 장치가 **아니라는** 점은 분명히
+# 해 둔다: cross-origin 단순 요청은 이 목록과 무관하게 서버에 도달한다. 실제
+# 보호는 §8 권한 검사와 READ_ONLY 강제, 그리고 loopback 배포 형태다.
+CORS_ORIGINS = tuple(
+    part.strip()
+    for part in os.environ.get(
+        "OFFICE_MCP_CORS_ORIGINS",
+        "http://localhost:3000,"
+        "http://localhost:5173,http://127.0.0.1:5173,"
+        "http://localhost:5174,http://127.0.0.1:5174",
+    ).split(",")
+    if part.strip()
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    # Emitted once so an operator reading this process's log can tell which
+    # revision is in memory — see BUILD_VERSION above.
+    _logger.info(
+        "service.started service=office-mcp-server build_version=%s commit_sha=%s",
+        BUILD_VERSION,
+        COMMIT_SHA,
+    )
+    yield
+
+
 app = FastAPI(
     title="Office MCP Server",
-    version=SERVER_VERSION,
+    version=BUILD_VERSION,
     description="READ_ONLY MCP tools only. No arbitrary SQL or code execution.",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(CORS_ORIGINS),
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 registry = ToolRegistry()
@@ -72,7 +137,10 @@ def _require_admin(x_actor_role: str | None) -> None:
 async def health_legacy() -> JSONResponse:
     """Kept for backward compatibility with the pre-§11 stub; §11's
     `/health/live` and `/health/ready` are the canonical operational API."""
-    return JSONResponse({"status": "ok", "version": SERVER_VERSION})
+    # Same shape every other service's `/health` returns, so one operator
+    # check works across the whole stack. `/health/live` deliberately stays
+    # minimal (§11 liveness probe) and `/version` keeps SERVER_VERSION.
+    return JSONResponse({"status": "ok", "version": BUILD_VERSION, "commit_sha": COMMIT_SHA})
 
 
 @app.get("/health/live")
@@ -93,6 +161,8 @@ async def version() -> JSONResponse:
         {
             "server_version": SERVER_VERSION,
             "schema_version": SCHEMA_VERSION,
+            "build_version": BUILD_VERSION,
+            "commit_sha": COMMIT_SHA,
             "tools": [{"name": t.name, "version": t.version} for t in registry.list_all()],
         }
     )

@@ -67,6 +67,38 @@ def render_data_card(
         f"- {'PASS' if c.passed else 'FAIL'} `{c.name}` — {c.message}" for c in g.checks
     )
 
+    # §4.7 ACL Test (D-045). "측정하지 않음"과 "통과"를 절대 같은 문장으로
+    # 쓰지 않는다 — Data Card는 사람이 읽고 승인 판단에 쓰는 문서라, 검사하지
+    # 않은 항목이 통과처럼 보이면 그 판단이 틀린 근거 위에 서게 된다.
+    if m.acl_case_count == 0:
+        acl_lines = (
+            "- ACL Test: **측정하지 않음** — 이 Evaluation Dataset에 `acl_cases`가 없습니다. "
+            "이 항목의 공란은 통과를 의미하지 않습니다."
+        )
+    else:
+        leaked = [c for c in result.per_acl_case if c.leaked]
+        acl_lines = (
+            f"- ACL Test Case 수: {m.acl_case_count}\n"
+            f"- ACL 유출 비율: {m.acl_leak_rate:.1%}"
+        )
+        if leaked:
+            detail = ", ".join(
+                f"`{c.case_id}`(등급 {c.clearance} → {', '.join(c.leaked_document_ids)})"
+                for c in leaked
+            )
+            acl_lines += f"\n- 유출 발생 Case: {detail}"
+        if m.acl_cases_with_visibility_expectation > 0:
+            acl_lines += (
+                f"\n- 허용 등급 가시성 충족률: {m.acl_visibility_rate:.1%} "
+                f"({m.acl_cases_with_visibility_expectation}건 기준)"
+            )
+        else:
+            acl_lines += (
+                "\n- 허용 등급 가시성: 미검사 — 어떤 ACL Case도 "
+                "`expected_visible_document_ids`를 선언하지 않아, 검색이 아무것도 반환하지 "
+                "않아도 유출 0%가 됩니다."
+            )
+
     review_warning = ""
     if not dataset.is_expert_reviewed:
         review_warning = (
@@ -125,6 +157,10 @@ def render_data_card(
 - P95 검색 지연시간: {m.latency_p95_ms:.0f}ms
 - 평균 Context Token(추정치): {m.avg_context_tokens:.0f}
 - 금지 문서 오검색 비율: {m.forbidden_hit_rate:.1%}
+
+### ACL Test (§4.7)
+
+{acl_lines}
 
 ### Quality Gate (§4.7) — {"PASS" if g.passed else "FAIL"}
 

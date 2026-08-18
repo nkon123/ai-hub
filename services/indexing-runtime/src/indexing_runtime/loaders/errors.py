@@ -17,7 +17,10 @@ class MissingLoaderDependencyError(RuntimeError):
     sentence — not a bare `ModuleNotFoundError` traceback pointing at a
     library name most operators won't recognize. See
     docs/implementation-spec/13-windows-local-setup.md (폐쇄망 설치) and
-    open-decisions.md D-073 for why these two dependencies are declared in
-    `pyproject.toml` but intentionally not installed/lock-verified on this
-    development machine.
+    open-decisions.md D-073 for the 폐쇄망 install procedure. This error stays
+    reachable on deployments that lack the packages; it is NOT reachable by
+    simply running here — measured 2026-08-15, this development environment
+    does have pypdf/python-docx installed, contradicting an older comment
+    that claimed otherwise. Tests must force this path (monkeypatch) rather
+    than relying on the environment to be missing them.
     """

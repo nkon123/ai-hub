@@ -1,15 +1,21 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ActivateKnowledgeResult,
   ActivateVersionResult,
+  AgentDraftExportInput,
+  AgentDraftExportResult,
   AssetDependencyView,
   AssetManifestResult,
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
+  ConnectMcpToolResult,
   ConnectionStatus,
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
+  DeactivateKnowledgeResult,
+  DisconnectMcpToolResult,
   DesktopBridge,
   DesktopSettingsInput,
   DesktopSettingsPublic,
@@ -18,13 +24,26 @@ import type {
   DiskSpaceInfo,
   ImportProgressEvent,
   ImportResult,
+  InstalledAsset,
   InstalledAssetWithStatus,
+  KnowledgeEmbedModelInfo,
+  KnowledgeCandidate,
+  LocalTool,
+  LocalToolInvocationResult,
+  LocalToolSignatureResult,
   LogEntry,
   LogFilters,
+  OllamaChatInput,
+  OllamaChatResult,
   OllamaModelsResult,
   OrphanedInstallCleanupResult,
   PortalCatalogResult,
   PortalSettingsPublic,
+  ReconcileKnowledgeActivationsResult,
+  ReconcileMcpToolConnectionsResult,
+  ReconcileLocalAgentRegistrationsResult,
+  RegisterLocalAgentResult,
+  UnregisterLocalAgentResult,
   RemoveAssetResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
@@ -53,6 +72,8 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke("assets:remove", assetType, assetId, version, reason),
 
   checkConnections: (): Promise<ConnectionStatus[]> => ipcRenderer.invoke("connections:check"),
+  getKnowledgeEmbedModels: (): Promise<KnowledgeEmbedModelInfo[]> =>
+    ipcRenderer.invoke("knowledge:getEmbedModels"),
 
   getInstallRootPath: (): Promise<string> => ipcRenderer.invoke("app:getInstallRootPath"),
 
@@ -71,6 +92,46 @@ const bridge: DesktopBridge = {
 
   getAssetDependencies: (assetType: string, assetId: string, version: string): Promise<AssetDependencyView> =>
     ipcRenderer.invoke("assets:getDependencies", assetType, assetId, version),
+
+  // --- D06 대화: KNOWLEDGE_ROUTE 후보 조립(agentic Knowledge 선택) -------------
+  getKnowledgeCandidates: (assets: InstalledAsset[]): Promise<KnowledgeCandidate[]> =>
+    ipcRenderer.invoke("knowledge:getCandidates", assets),
+
+  // --- D-079 Knowledge 활성화 --------------------------------------------------
+  activateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<ActivateKnowledgeResult> =>
+    ipcRenderer.invoke("knowledge:activate", assetType, assetId, version),
+
+  deactivateInstalledKnowledge: (assetType: string, assetId: string, version: string): Promise<DeactivateKnowledgeResult> =>
+    ipcRenderer.invoke("knowledge:deactivate", assetType, assetId, version),
+
+  reconcileKnowledgeActivations: (): Promise<ReconcileKnowledgeActivationsResult> =>
+    ipcRenderer.invoke("knowledge:reconcileActivations"),
+
+  // --- D-080 MCP Tool 연결 ----------------------------------------------------
+  connectInstalledMcpTool: (assetType: string, assetId: string, version: string): Promise<ConnectMcpToolResult> =>
+    ipcRenderer.invoke("mcpTool:connect", assetType, assetId, version),
+
+  disconnectInstalledMcpTool: (assetType: string, assetId: string, version: string): Promise<DisconnectMcpToolResult> =>
+    ipcRenderer.invoke("mcpTool:disconnect", assetType, assetId, version),
+
+  reconcileMcpToolConnections: (): Promise<ReconcileMcpToolConnectionsResult> =>
+    ipcRenderer.invoke("mcpTool:reconcileConnections"),
+
+  // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
+  registerLocalAgent: (
+    agentAssetId: string,
+    agentVersion: string,
+    promptAssetId: string,
+    promptVersion: string,
+    label?: string | null,
+  ): Promise<RegisterLocalAgentResult> =>
+    ipcRenderer.invoke("localAgent:register", agentAssetId, agentVersion, promptAssetId, promptVersion, label),
+
+  unregisterLocalAgent: (agentAssetId: string, agentVersion: string): Promise<UnregisterLocalAgentResult> =>
+    ipcRenderer.invoke("localAgent:unregister", agentAssetId, agentVersion),
+
+  reconcileLocalAgentRegistrations: (): Promise<ReconcileLocalAgentRegistrationsResult> =>
+    ipcRenderer.invoke("localAgent:reconcileRegistrations"),
 
   // --- D12 업데이트/복구 -------------------------------------------------------
   diffAssetVersions: (
@@ -130,6 +191,10 @@ const bridge: DesktopBridge = {
   listOllamaModels: (ollamaBaseUrl: string): Promise<OllamaModelsResult> =>
     ipcRenderer.invoke("settings:listOllamaModels", ollamaBaseUrl),
 
+  chatWithOllama: (input: OllamaChatInput): Promise<OllamaChatResult> => ipcRenderer.invoke("chat:ollama", input),
+
+  cancelOllamaChat: (): Promise<void> => ipcRenderer.invoke("chat:ollamaCancel"),
+
   // --- D03 Service/Agent 상세 -------------------------------------------------
   getServiceDetail: (assetType: string, assetId: string, version: string): Promise<ServiceDetailResult> =>
     ipcRenderer.invoke("assets:getServiceDetail", assetType, assetId, version),
@@ -153,6 +218,45 @@ const bridge: DesktopBridge = {
 
   deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("conversations:delete", id, reason),
+
+  // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
+  generateAgentDraftSystemPrompt: (liveQuestions: string[]): Promise<OllamaChatResult> =>
+    ipcRenderer.invoke("agentDraft:generateSystemPrompt", liveQuestions),
+
+  cancelAgentDraftSystemPromptGeneration: (): Promise<void> =>
+    ipcRenderer.invoke("agentDraft:cancelGenerateSystemPrompt"),
+
+  pickAgentDraftExportDirectory: (): Promise<string | null> =>
+    ipcRenderer.invoke("agentDraft:pickExportDirectory"),
+
+  exportAgentDraft: (input: AgentDraftExportInput): Promise<AgentDraftExportResult> =>
+    ipcRenderer.invoke("agentDraft:export", input),
+
+  // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
+  pickLocalToolFile: (): Promise<string | null> => ipcRenderer.invoke("localTool:pickFile"),
+
+  inspectLocalToolFile: (filePath: string): Promise<LocalToolSignatureResult> =>
+    ipcRenderer.invoke("localTool:inspectFile", filePath),
+
+  addLocalTool: (filePath: string, acknowledgedRisk: boolean): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
+    ipcRenderer.invoke("localTool:add", filePath, acknowledgedRisk),
+
+  listLocalTools: (): Promise<LocalTool[]> => ipcRenderer.invoke("localTool:list"),
+
+  removeLocalTool: (id: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("localTool:remove", id),
+
+  invokeLocalTool: (
+    id: string,
+    args: Record<string, unknown>,
+    options?: { aiSelected?: boolean },
+  ): Promise<LocalToolInvocationResult> => ipcRenderer.invoke("localTool:invoke", id, args, options),
+
+  approveLocalToolExecution: (id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
+    ipcRenderer.invoke("localTool:approveExecution", id),
+
+  revokeLocalToolExecution: (id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
+    ipcRenderer.invoke("localTool:revokeExecution", id),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

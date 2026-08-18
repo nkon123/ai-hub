@@ -11,13 +11,17 @@
     "lint": "eslint src electron --ext .ts,.tsx",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.electron.json",
     "test": "vitest run",
-    "dist:win": "pnpm run build && electron-builder --win --x64"
+    "dist:win": "pnpm run build && electron-builder --win --x64",
+    "dist:mac": "node scripts/macos-signing-preflight.mjs && pnpm run build && electron-builder --mac dmg zip --arm64",
+    "verify:mac": "node scripts/verify-macos-artifact.mjs"
   },
   "dependencies": {
     "adm-zip": "^0.5.16",
     "lucide-react": "^1.28.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "yaml": "^2.5.0"
   },
   "devDependencies": {
@@ -28,7 +32,7 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.0",
     "concurrently": "^8.2.2",
-    "electron": "^31.0.0",
+    "electron": "^43.3.0",
     "electron-builder": "^24.13.3",
     "postcss": "^8.5.25",
     "tailwindcss": "^4.3.3",

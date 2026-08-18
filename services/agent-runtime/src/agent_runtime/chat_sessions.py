@@ -29,6 +29,21 @@ class ChatSessionRecord:
     trace_id: str
     created_at: datetime
     expires_at: datetime
+    # D-034 — resolved by portal-api at publish time and frozen into the
+    # revision snapshot, so a session keeps talking to the exact Agent the
+    # deployment was published with even if the Registry changes underneath.
+    # Both None for a deployment published with a standard Agent.
+    registry_agent_version_id: str | None = None
+    registry_prompt_version_id: str | None = None
+    # open-decisions.md D-034 (i) 남은 절반 — portal-api의 `GET /api/v1/
+    # deployments/by-slug/{slug}`가 실제 ServiceVersion을 해석해 주면
+    # 여기 담아, 대화 내내 MCP 감사 컨텍스트(mcp-audit-context.schema.json)
+    # 의 service_id/service_version이 slug에서 지어낸 값이 아니라 실재하는
+    # 값을 쓰게 한다. 위 registry_* 필드와 동일한 이유로 세션 생성 시점에
+    # 고정한다. 둘 다 None이면(구버전 portal-api 응답, 또는 해석 실패)
+    # agent-runtime은 기존과 완전히 동일한 slug 폴백을 쓴다 — fail-open.
+    service_version_id: str | None = None
+    service_version: str | None = None
     message_count: int = 0
     in_flight: bool = False
     _message_timestamps: list[datetime] = field(default_factory=list, repr=False)
@@ -48,6 +63,10 @@ class ChatSessionStore:
         knowledge_id: str,
         model_alias: str,
         trace_id: str,
+        registry_agent_version_id: str | None = None,
+        registry_prompt_version_id: str | None = None,
+        service_version_id: str | None = None,
+        service_version: str | None = None,
     ) -> ChatSessionRecord:
         now = datetime.now(UTC)
         record = ChatSessionRecord(
@@ -60,6 +79,10 @@ class ChatSessionStore:
             trace_id=trace_id,
             created_at=now,
             expires_at=now + timedelta(seconds=self._ttl_seconds),
+            registry_agent_version_id=registry_agent_version_id,
+            registry_prompt_version_id=registry_prompt_version_id,
+            service_version_id=service_version_id,
+            service_version=service_version,
         )
         self._sessions[record.id] = record
         return record

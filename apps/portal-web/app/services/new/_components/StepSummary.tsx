@@ -88,7 +88,7 @@ export function StepSummary({
             }
           />
           <SummaryRow label="MCP Tool" value="연결 없음 (등록된 MCP Tool 자산 없음)" />
-          <SummaryRow label="Prompt" value={agent.prompt.name} />
+          <SummaryRow label="Prompt" value={agent.prompt?.name ?? "연결되지 않음"} />
           <SummaryRow label="모델 Alias" value={state.modelPolicy.modelAlias} />
           <SummaryRow
             label="구성 검증"

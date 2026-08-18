@@ -10,12 +10,21 @@ metadata.
 
 from evaluation_runner.comparison import ComparisonReport, DatasetMismatchError, compare_versions
 from evaluation_runner.metrics import (
+    AclCaseResult,
+    AclMetrics,
     CaseResult,
     EvaluationMetrics,
+    aggregate_acl_metrics,
     aggregate_metrics,
+    evaluate_acl_case,
     evaluate_case,
 )
-from evaluation_runner.models import DatasetReviewStatus, EvaluationCase, EvaluationDataset
+from evaluation_runner.models import (
+    AclCase,
+    DatasetReviewStatus,
+    EvaluationCase,
+    EvaluationDataset,
+)
 from evaluation_runner.quality_gate import (
     GateCheck,
     GateResult,
@@ -35,6 +44,9 @@ from evaluation_runner.search_client import (
 )
 
 __all__ = [
+    "AclCase",
+    "AclCaseResult",
+    "AclMetrics",
     "CaseResult",
     "Citation",
     "ComparisonReport",
@@ -54,8 +66,10 @@ __all__ = [
     "SearchClient",
     "SearchClientError",
     "SearchResponse",
+    "aggregate_acl_metrics",
     "aggregate_metrics",
     "compare_versions",
+    "evaluate_acl_case",
     "evaluate_case",
     "evaluate_gate",
     "load_dataset",
