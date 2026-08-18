@@ -1,0 +1,12 @@
+{
+  "version": "1.0.0",
+  "max_single_file_bytes": 52428800,
+  "max_total_request_bytes": 157286400,
+  "max_file_count": 20,
+  "rejected_extensions": [
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".jar", ".war", ".iso",
+    ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi",
+    ".sh", ".ps1", ".vbs", ".scr", ".app", ".py", ".pyc", ".js", ".cjs", ".mjs"
+  ],
+  "_rationale": "max_single_file_bytes = 50MB: tests/fixtures/valid/** knowledge/manifest fixtures are all under 4KB and docs/implementation-spec/04-knowledge-platform.md describes the PoC corpus as small text/PDF/docx documents (tens of KB to low tens of MB) — 50MB comfortably covers a large scanned PDF while still bounding memory used per file during the streaming read in create_asset. max_total_request_bytes = 150MB (3x the single-file cap): lets a registration attach a few large files (e.g. a source doc + supporting attachments) without effectively re-allowing an unbounded request via many files, and stays far below what would risk exhausting portal-api process memory or disk in one request. max_file_count = 20: registrations in this repo (P05 wizard, fixtures) attach at most a handful of files (a manifest-referenced template plus source docs); 20 gives headroom for a knowledge asset with a spreadsheet of supporting attachments while still making an accidental or abusive bulk-upload attempt fail fast on count before any bytes are read. rejected_extensions reuses bundle-install-policy.json's executable_extensions + archive_extensions verbatim (see schema description for why: no legitimate inbound asset registration needs an executable or nested archive, and matching the outbound Desktop Bundle install policy avoids leaving registration as the weaker of the two checkpoints)."
+}

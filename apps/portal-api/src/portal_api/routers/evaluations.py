@@ -82,6 +82,7 @@ from portal_api.rbac import require_permission
 from portal_api.schemas import (
     CreateEvaluationNoteRequest,
     CreateEvaluationResponseOut,
+    EvaluationAclCaseResultOut,
     EvaluationCaseResultOut,
     EvaluationComparisonOut,
     EvaluationDetailOut,
@@ -516,9 +517,11 @@ async def _build_comparison(
     )
 
 
-def _known_limitations(record: EvaluationResultRecord) -> list[str]:
+def _known_limitations(record: EvaluationResultRecord, payload: dict) -> list[str]:
     """Real, already-recorded limitations only — never fabricated (task
-    brief item on "알려진 제한사항")."""
+    brief item on "알려진 제한사항"). Branches on the record's actual
+    payload, not a static list, so this stays true as the Quality Gate's
+    scope changes (2026-08-16 ACL Test, 2026-08-17 Package Smoke Test)."""
     limitations: list[str] = []
     if record.dataset_review_status == "AI_GENERATED_UNREVIEWED":
         limitations.append(
@@ -526,11 +529,26 @@ def _known_limitations(record: EvaluationResultRecord) -> list[str]:
             "(open-decisions.md D-045) — 업무 전문가 검토를 거쳐 EXPERT_REVIEWED로 전환되기 "
             "전까지는 D-013 품질 기준의 공식 판정 근거로 사용하지 않습니다."
         )
+
+    metrics = payload.get("metrics") or {}
     limitations.append(
         "Quality Gate는 Recall@5 최소 기준, 이전 승인 버전 대비 회귀 한도, 검색 P95 지연시간, "
-        "금지 문서 오검색 비율만 판정합니다. '모든 ACL Test 통과'와 'Package Smoke Test 통과'는 "
-        "대상 데이터셋과 검증 도구가 아직 없어 범위 밖입니다 (open-decisions.md D-045)."
+        "금지 문서 오검색 비율, 권한 안전성(ACL Test) 유출·가시성 비율, 제출된 경우 Package "
+        "Smoke Test 결과를 판정합니다 (open-decisions.md D-045)."
     )
+    if metrics.get("acl_case_count", 0) == 0:
+        limitations.append(
+            "이 평가는 ACL Test를 실행하지 않았습니다 — 이 Knowledge의 Evaluation Dataset에 "
+            "acl_cases가 선언되어 있지 않습니다. 유출 비율이 0%로 보이더라도 이는 측정하지 "
+            "않았다는 뜻이며 안전하다는 증거가 아닙니다."
+        )
+    if payload.get("package_smoke_test") is None:
+        limitations.append(
+            "Package Smoke Test 결과가 제출되지 않았습니다 — 이 화면의 평가 실행은 Knowledge "
+            "Package를 만들지 않습니다. 검증 보고서는 `package-knowledge verify --report-out`로 "
+            "생성해 CLI 평가 실행(`evaluate-knowledge run --smoke-test-report`)에 첨부해야 "
+            "이 화면과 Quality Gate에 반영됩니다."
+        )
     return limitations
 
 
@@ -585,6 +603,25 @@ async def get_evaluation(
         for c in payload.get("per_case", [])
     ]
 
+    per_acl_case_out = [
+        EvaluationAclCaseResultOut(
+            case_id=c["case_id"],
+            question=c["question"],
+            clearance=c["clearance"],
+            forbidden_document_ids=c.get("forbidden_document_ids", []),
+            retrieved_document_ids=c.get("retrieved_document_ids", []),
+            leaked_document_ids=c.get("leaked_document_ids", []),
+            leaked=c["leaked"],
+            expected_visible_document_ids=c.get("expected_visible_document_ids", []),
+            missing_visible_document_ids=c.get("missing_visible_document_ids", []),
+            visibility_satisfied=c.get("visibility_satisfied"),
+            returned_count=c["returned_count"],
+            latency_ms=c["latency_ms"],
+            tags=c.get("tags", []),
+        )
+        for c in payload.get("per_acl_case", [])
+    ]
+
     comparison = await _build_comparison(db, record)
 
     notes_stmt = (
@@ -614,8 +651,10 @@ async def get_evaluation(
         metrics=payload.get("metrics"),
         gate=payload.get("gate"),
         per_case=per_case_out,
+        per_acl_case=per_acl_case_out,
+        package_smoke_test=payload.get("package_smoke_test"),
         comparison=comparison,
-        known_limitations=_known_limitations(record),
+        known_limitations=_known_limitations(record, payload),
         notes=[EvaluationNoteOut.model_validate(n) for n in notes],
     )
 

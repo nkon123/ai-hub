@@ -141,6 +141,18 @@ class Settings(BaseSettings):
     desktop_bundle_policy_path: Path = (
         _REPO_ROOT / "packages" / "schemas" / "policies" / "bundle-install-policy.json"
     )
+    # 지식 자산 등록(M02, POST /api/v1/assets) 시 업로드되는 파일에 대한 크기/개수/
+    # 확장자 제한 — `routers/assets.py::create_asset`가 실제 스트리밍 검증에
+    # 사용하는 것과 동일한 값을 P15 관리자 설정 화면(`routers/admin.py`)이
+    # 표시하기 위한 공유 Contract. `desktop_bundle_policy_path`와 동일한 선례를
+    # 따른다 — 다만 이 정책은 sizing 대상이 다르다: `bundle-install-policy.json`은
+    # 이미 다운로드된 Offline Bundle의 압축 해제 후 내용(Zip Bomb 방지)을
+    # 제한하지만, 이 정책은 압축과 무관한 단일 인바운드 Multipart HTTP 등록
+    # 요청 하나를 제한한다. 스키마는
+    # `packages/schemas/policies/asset-upload-policy.schema.json`.
+    asset_upload_policy_path: Path = (
+        _REPO_ROOT / "packages" / "schemas" / "policies" / "asset-upload-policy.json"
+    )
 
     class Config:
         env_prefix = "PORTAL_"

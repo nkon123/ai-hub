@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import shutil
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 import httpx
 from ai_asset_schemas import SchemaType
@@ -64,6 +66,8 @@ from portal_api.schemas import (
 )
 from portal_api.semver import is_strictly_greater
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(prefix="/api/v1", tags=["assets"])
 
 # P06: only these manifest keys may be edited in place via PATCH — the rest
@@ -91,6 +95,90 @@ _MANIFEST_TYPE_TO_SCHEMA: dict[str, SchemaType] = {
     "mcp_tool": SchemaType.MCP_TOOL,
     "service": SchemaType.SERVICE,
 }
+
+# --- Inbound upload policy (POST /api/v1/assets only) -----------------------
+# `create_asset` reads `settings.asset_upload_policy_path`
+# (`packages/schemas/policies/asset-upload-policy.json`) once per request —
+# not cached at module/process scope — so an ADMIN edit to the policy file
+# takes effect on the next registration without a portal-api restart, the
+# same tradeoff `_read_desktop_bundle_policy`/`_read_knowledge_package_policy`
+# in `routers/admin.py` already make (the file is tiny; re-reading it per
+# request is not a meaningful cost). If the file is missing or malformed,
+# this does NOT fail open into "no limits" — it fails CLOSED into the
+# built-in defaults below, which mirror the schema's own PoC defaults
+# (root CLAUDE.md: 불명확하면 추측해 운영 기능으로 만들지 말고 안전한 쪽으로
+# 실패한다). A warning is logged (path + error only, never file contents).
+_DEFAULT_ASSET_UPLOAD_MAX_SINGLE_FILE_BYTES = 50 * 1024 * 1024
+_DEFAULT_ASSET_UPLOAD_MAX_TOTAL_REQUEST_BYTES = 150 * 1024 * 1024
+_DEFAULT_ASSET_UPLOAD_MAX_FILE_COUNT = 20
+_DEFAULT_ASSET_UPLOAD_REJECTED_EXTENSIONS = frozenset(
+    {
+        ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz", ".jar", ".war", ".iso",
+        ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi",
+        ".sh", ".ps1", ".vbs", ".scr", ".app", ".py", ".pyc", ".js", ".cjs", ".mjs",
+    }
+)
+
+_ASSET_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB read chunks — bounds peak memory per file
+
+
+class _AssetUploadPolicy(NamedTuple):
+    max_single_file_bytes: int
+    max_total_request_bytes: int
+    max_file_count: int
+    rejected_extensions: frozenset[str]
+
+
+def _read_asset_upload_policy() -> _AssetUploadPolicy:
+    path = settings.asset_upload_policy_path
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, dict):
+            raise ValueError("policy file does not contain a JSON object")
+        return _AssetUploadPolicy(
+            max_single_file_bytes=int(data["max_single_file_bytes"]),
+            max_total_request_bytes=int(data["max_total_request_bytes"]),
+            max_file_count=int(data["max_file_count"]),
+            rejected_extensions=frozenset(
+                str(ext).lower() for ext in data["rejected_extensions"]
+            ),
+        )
+    except (
+        FileNotFoundError,
+        OSError,
+        json.JSONDecodeError,
+        KeyError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        logger.warning(
+            "asset_upload_policy.fallback_to_builtin_defaults path=%s error=%s", path, exc
+        )
+        return _AssetUploadPolicy(
+            max_single_file_bytes=_DEFAULT_ASSET_UPLOAD_MAX_SINGLE_FILE_BYTES,
+            max_total_request_bytes=_DEFAULT_ASSET_UPLOAD_MAX_TOTAL_REQUEST_BYTES,
+            max_file_count=_DEFAULT_ASSET_UPLOAD_MAX_FILE_COUNT,
+            rejected_extensions=_DEFAULT_ASSET_UPLOAD_REJECTED_EXTENSIONS,
+        )
+
+
+def _render_asset_checksums_file(sha256_by_relative_path: dict[str, str]) -> str:
+    """Same on-disk line format as `packages/knowledge-packager/src/
+    knowledge_packager/checksums.py::render_checksums_file` and
+    `services/distribution-service/src/distribution_service/bundler.py`
+    (`"{sha256}  {relpath}"`, two spaces, sorted by path) — reproduced here
+    as plain string formatting rather than imported, because portal-api
+    deliberately does not depend on `knowledge_packager`
+    (`apps/portal-api/CLAUDE.md`: that package pulls in `chromadb` for one
+    YAML file's worth of value, so `knowledge_package_policy_path` is read
+    directly with `pyyaml` instead). Matching the format (not the code)
+    keeps this file consumable the same way if a package built from these
+    assets is later picked up by M09/M03, without adding a cross-module
+    import.
+    """
+    lines = [f"{sha}  {relpath}" for relpath, sha in sorted(sha256_by_relative_path.items())]
+    return "\n".join(lines) + "\n" if lines else ""
 
 # DI seams for `_trigger_indexing`'s background task — mirrors
 # `routers.distributions.get_distribution_caller`/`get_session_factory`
@@ -574,21 +662,108 @@ async def create_asset(
     version_str = manifest_dict.get("version", "1.0.0")
     name = manifest_dict.get("name", "")
 
+    # Asset upload hardening: before this fix, `create_asset` had
+    # no file-count/size/extension cap at all and read each upload fully
+    # into memory via `await upload.read()` — Content-Length can be forged
+    # by a caller, so the only trustworthy signal is bytes actually read.
+    # Enforced against `_read_asset_upload_policy()`, checked file-count
+    # first (before any read), then per-file extension (before any bytes
+    # are written for that file), then streamed size caps computed from
+    # actual bytes read chunk-by-chunk (never from Content-Length or
+    # `UploadFile.size`).
+    upload_policy = _read_asset_upload_policy()
+
+    if len(files) > upload_policy.max_file_count:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "ASSET_UPLOAD_TOO_MANY_FILES",
+            f"업로드 파일 개수({len(files)}개)가 허용된 최대치"
+            f"({upload_policy.max_file_count}개)를 초과했습니다.",
+            trace_id,
+        )
+
     # Save uploaded files to storage (use absolute path to share with indexing-runtime)
     version_id = str(uuid.uuid4())
     storage_path = (settings.storage_root / asset_type / asset_id / version_str).resolve()
     storage_path.mkdir(parents=True, exist_ok=True)
 
     saved_files: list[str] = []
+    written_paths: list[Path] = []
+    checksums_by_relpath: dict[str, str] = {}
+    total_bytes_read = 0
+
+    def _cleanup_partial_upload() -> None:
+        for written in written_paths:
+            written.unlink(missing_ok=True)
+
     for upload in files:
         if not upload.filename:
             continue
         # Prevent path traversal
         safe_name = Path(upload.filename).name
+        extension = Path(safe_name).suffix.lower()
+        if extension in upload_policy.rejected_extensions:
+            _cleanup_partial_upload()
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_UPLOAD_EXTENSION_REJECTED",
+                f"'{safe_name}' 파일의 확장자({extension or '(없음)'})는 "
+                "지식 자산 등록에 허용되지 않습니다.",
+                trace_id,
+            )
+
         dest = storage_path / safe_name
-        content = await upload.read()
-        dest.write_bytes(content)
+        hasher = hashlib.sha256()
+        file_bytes_read = 0
+        violation: JSONResponse | None = None
+        with dest.open("wb") as out:
+            while True:
+                chunk = await upload.read(_ASSET_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                file_bytes_read += len(chunk)
+                total_bytes_read += len(chunk)
+                if file_bytes_read > upload_policy.max_single_file_bytes:
+                    violation = error_response(
+                        status.HTTP_400_BAD_REQUEST,
+                        "ASSET_UPLOAD_FILE_TOO_LARGE",
+                        f"'{safe_name}' 파일 크기가 허용된 최대치"
+                        f"({upload_policy.max_single_file_bytes} bytes)를 초과했습니다.",
+                        trace_id,
+                    )
+                    break
+                if total_bytes_read > upload_policy.max_total_request_bytes:
+                    violation = error_response(
+                        status.HTTP_400_BAD_REQUEST,
+                        "ASSET_UPLOAD_REQUEST_TOO_LARGE",
+                        "이번 등록 요청의 전체 파일 크기가 허용된 최대치"
+                        f"({upload_policy.max_total_request_bytes} bytes)를 초과했습니다"
+                        f" ('{safe_name}' 처리 중 초과).",
+                        trace_id,
+                    )
+                    break
+                hasher.update(chunk)
+                out.write(chunk)
+
+        if violation is not None:
+            dest.unlink(missing_ok=True)
+            _cleanup_partial_upload()
+            return violation
+
+        written_paths.append(dest)
         saved_files.append(safe_name)
+        checksums_by_relpath[safe_name] = hasher.hexdigest()
+
+    # sha256 per saved file, computed from the same streamed chunks
+    # used to write the file (no re-read). Same on-disk line format as the
+    # Bundle/Knowledge Package `checksums.sha256` convention (see
+    # `_render_asset_checksums_file` docstring for why it's reproduced here
+    # instead of imported). No DB column — this is a small manifest file
+    # alongside the saved uploads, not a schema change.
+    if checksums_by_relpath:
+        (storage_path / "checksums.sha256").write_text(
+            _render_asset_checksums_file(checksums_by_relpath), encoding="utf-8"
+        )
 
     # Compute manifest hash
     canonical = json.dumps(manifest_dict, sort_keys=True, ensure_ascii=False)

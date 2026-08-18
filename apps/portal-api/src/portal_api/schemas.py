@@ -755,6 +755,29 @@ class EvaluationCaseResultOut(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class EvaluationAclCaseResultOut(BaseModel):
+    """Mirrors evaluation-result.schema.json's `per_acl_case[]` verbatim
+    (evaluation_runner.metrics.AclCaseResult.to_dict, 2026-08-16). Every
+    field here is an id/verdict/timing, same masking rationale as
+    `EvaluationCaseResultOut`. `visibility_satisfied=None` means the case
+    declared no `expected_visible_document_ids` — it asserted nothing about
+    visibility, so it must not be rendered the same as `false` (미충족)."""
+
+    case_id: str
+    question: str
+    clearance: str
+    forbidden_document_ids: list[str]
+    retrieved_document_ids: list[str]
+    leaked_document_ids: list[str]
+    leaked: bool
+    expected_visible_document_ids: list[str]
+    missing_visible_document_ids: list[str]
+    visibility_satisfied: bool | None = None
+    returned_count: int
+    latency_ms: int
+    tags: list[str] = Field(default_factory=list)
+
+
 class EvaluationComparisonOut(BaseModel):
     """04-knowledge-platform.md §4.6. `available=False` must be rendered by
     the UI as an explicit "no prior result to compare" state, never as an
@@ -804,6 +827,8 @@ class EvaluationDetailOut(EvaluationSummaryOut):
     metrics: dict | None = None
     gate: dict | None = None
     per_case: list[EvaluationCaseResultOut] = Field(default_factory=list)
+    per_acl_case: list[EvaluationAclCaseResultOut] = Field(default_factory=list)
+    package_smoke_test: dict | None = None
     comparison: EvaluationComparisonOut
     known_limitations: list[str] = Field(default_factory=list)
     notes: list[EvaluationNoteOut] = Field(default_factory=list)
@@ -949,6 +974,14 @@ class AssetSizeExtensionPolicySectionOut(BaseModel):
     desktop_bundle_max_compression_ratio: float | None = None
     desktop_bundle_forbidden_archive_extensions: list[str] | None = None
     desktop_bundle_forbidden_executable_extensions: list[str] | None = None
+    # 자산 등록(POST /api/v1/assets) 업로드 제한 — 실제 강제는
+    # `routers/assets.py::create_asset`, 표시는 `routers/admin.py::
+    # _read_asset_upload_policy`. 기존 필드는 그대로 두고 추가한다
+    # (portal-web 소비자가 이 필드들을 몰라도 렌더링이 깨지지 않도록).
+    asset_upload_max_single_file_bytes: int | None = None
+    asset_upload_max_total_request_bytes: int | None = None
+    asset_upload_max_file_count: int | None = None
+    asset_upload_rejected_extensions: list[str] | None = None
     parse_error: str | None = None
 
 

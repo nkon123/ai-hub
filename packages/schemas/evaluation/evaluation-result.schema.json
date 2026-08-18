@@ -176,6 +176,53 @@
           "tags": { "type": "array", "items": { "type": "string" } }
         }
       }
+    },
+    "package_smoke_test": {
+      "description": "§4.7 Package Smoke Test evidence, or null when none was supplied to this run. Additive optional (not in `required`): results persisted before this field existed remain valid — evaluation_runner.result.EvaluationResult.from_dict loads a missing key as None, not as a validation failure. Sourced from packages/knowledge-packager's `package-knowledge verify --report-out` JSON report (see that package's CLAUDE.md for the exact report shape) after evaluation_runner.runner._admit_smoke_test's identity check against knowledge_asset_version_id.",
+      "type": ["object", "null"],
+      "required": [
+        "passed", "checks", "knowledge_asset_version_id", "package_dir",
+        "verified_at", "admitted", "rejection_reason", "identity_verified"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "passed": { "type": "boolean" },
+        "checks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["name", "passed", "message", "not_run"],
+            "additionalProperties": false,
+            "properties": {
+              "name": { "type": "string" },
+              "passed": { "type": "boolean" },
+              "message": { "type": "string" },
+              "not_run": {
+                "type": "boolean",
+                "description": "True when this check was never attempted because knowledge-packager's integrity gate failed first (NOT_RUN) — distinct from a check that ran and failed."
+              }
+            }
+          }
+        },
+        "knowledge_asset_version_id": {
+          "type": "string",
+          "description": "AssetVersion id read from the package's package-manifest.json by knowledge-packager, or \"\" if it could not be read (never fabricated)."
+        },
+        "package_dir": { "type": "string" },
+        "verified_at": { "type": "string", "format": "date-time" },
+        "admitted": {
+          "type": "boolean",
+          "description": "False when the report's knowledge_asset_version_id names a different AssetVersion than this evaluation run's knowledge_id — the report is recorded but excluded from the Quality Gate's package_smoke_test_max_failed_checks check."
+        },
+        "rejection_reason": {
+          "type": ["string", "null"],
+          "description": "Non-null only when admitted is false."
+        },
+        "identity_verified": {
+          "type": "boolean",
+          "description": "True iff knowledge_asset_version_id is non-empty, i.e. identity could actually be compared (matched or, if admitted is false, found to mismatch). False means the packager itself could not read an id, so identity is neither confirmed nor refuted."
+        }
+      }
     }
   }
 }

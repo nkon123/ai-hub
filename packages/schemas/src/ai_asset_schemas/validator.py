@@ -26,6 +26,7 @@ class SchemaType(StrEnum):
     KNOWLEDGE_PACKAGE = "knowledge_package"
     SOURCE_MANIFEST = "source_manifest"
     BUNDLE_INSTALL_POLICY = "bundle_install_policy"
+    ASSET_UPLOAD_POLICY = "asset_upload_policy"
 
 
 _SCHEMA_PATHS: dict[SchemaType, Path] = {
@@ -44,6 +45,9 @@ _SCHEMA_PATHS: dict[SchemaType, Path] = {
     SchemaType.SOURCE_MANIFEST: _SCHEMAS_DIR / "knowledge" / "source-manifest.schema.json",
     SchemaType.BUNDLE_INSTALL_POLICY: (
         _SCHEMAS_DIR / "policies" / "bundle-install-policy.schema.json"
+    ),
+    SchemaType.ASSET_UPLOAD_POLICY: (
+        _SCHEMAS_DIR / "policies" / "asset-upload-policy.schema.json"
     ),
 }
 
@@ -101,6 +105,8 @@ def infer_schema_type(manifest: dict) -> SchemaType:
         return SchemaType.OFFICE_PROFILE
     if "archive_extensions" in manifest and "size_caps" in manifest:
         return SchemaType.BUNDLE_INSTALL_POLICY
+    if "max_single_file_bytes" in manifest and "rejected_extensions" in manifest:
+        return SchemaType.ASSET_UPLOAD_POLICY
     raise ValidationError(f"Cannot infer schema type from manifest with type='{asset_type}'")
 
 

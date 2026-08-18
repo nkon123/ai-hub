@@ -252,22 +252,79 @@ def _read_desktop_bundle_policy() -> tuple[dict, str | None]:
     )
 
 
+# --- Portal inbound asset-upload policy -------------------------------------
+# `packages/schemas/policies/asset-upload-policy.json` is the shared
+# Contract `routers/assets.py::create_asset`(M02, POST /api/v1/assets) reads
+# directly to enforce per-request size/count/extension limits at
+# registration time — see that router's `_read_asset_upload_policy` for the
+# enforcement side (streamed, chunk-counted, fail-closed to built-in
+# defaults on a missing/malformed file). This function mirrors that same
+# fail-closed honesty for the *display* side: a missing/malformed file is
+# reported as an explicit error string, never silently treated as "no
+# limits" and never silently replaced with the built-in defaults without
+# saying so — an admin reading this screen must be able to tell the
+# difference between "the policy file says X" and "the file couldn't be
+# read, so the code fell back to a default".
+def _read_asset_upload_policy() -> tuple[dict, str | None]:
+    path = settings.asset_upload_policy_path
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}, f"자산 업로드 정책 파일을 찾을 수 없습니다: {path}"
+    except (json.JSONDecodeError, OSError) as exc:
+        return {}, f"자산 업로드 정책 파일을 읽을 수 없습니다: {exc}"
+
+    if not isinstance(data, dict):
+        return {}, f"자산 업로드 정책 파일 형식이 올바르지 않습니다: {path}"
+
+    return (
+        {
+            "max_single_file_bytes": data.get("max_single_file_bytes"),
+            "max_total_request_bytes": data.get("max_total_request_bytes"),
+            "max_file_count": data.get("max_file_count"),
+            "rejected_extensions": list(data.get("rejected_extensions") or []),
+        },
+        None,
+    )
+
+
 def _build_asset_size_extension_policy() -> AssetSizeExtensionPolicySectionOut:
     package_policy, package_error = _read_knowledge_package_policy()
     desktop_policy, desktop_error = _read_desktop_bundle_policy()
-    parse_error = " / ".join(e for e in (package_error, desktop_error) if e) or None
+    upload_policy, upload_error = _read_asset_upload_policy()
+    parse_error = (
+        " / ".join(e for e in (package_error, desktop_error, upload_error) if e) or None
+    )
+
+    if upload_error:
+        # Honest about the display-only fallback: the *enforcement* side
+        # (`routers/assets.py::create_asset`) still applies its own
+        # built-in defaults even when this file can't be read — this note
+        # must not claim "no limits apply" just because the display read
+        # failed (that would be the exact false-claim bug this screen is
+        # being fixed to avoid).
+        upload_limit_note = (
+            "Portal API의 지식 자산 등록(POST /api/v1/assets)에는 파일 크기·개수·확장자 "
+            "제한이 적용됩니다. 다만 정책 파일을 읽지 못해(아래 오류 참고) 현재 이 화면은 "
+            "실제 적용 중인 값 대신 코드에 내장된 기본값 기준을 보여줄 수 없습니다 — "
+            "등록 시점에는 여전히 안전한 내장 기본값으로 제한이 적용됩니다."
+        )
+    else:
+        upload_limit_note = (
+            "Portal API의 지식 자산 등록(POST /api/v1/assets)에는 파일 크기·개수·확장자 "
+            "제한이 적용됩니다(아래 '자산 등록 업로드 제한' 참고). 아래 Knowledge "
+            "Package/Desktop Offline Bundle 정책은 각각 Knowledge Package 빌드 "
+            "시점(M09)과 Desktop Offline Bundle 설치 시점(M04)에 적용되는 별도 정책입니다."
+        )
 
     return AssetSizeExtensionPolicySectionOut(
         source=(
             f"{settings.knowledge_package_policy_path} + "
-            f"{settings.desktop_bundle_policy_path}"
+            f"{settings.desktop_bundle_policy_path} + "
+            f"{settings.asset_upload_policy_path}"
         ),
-        portal_upload_limit_note=(
-            "Portal API의 지식 자산 등록(POST /api/v1/assets)에는 별도의 "
-            "파일 크기·확장자 제한이 코드에 존재하지 않습니다 — 아래 두 "
-            "정책은 각각 Knowledge Package 빌드 시점(M09)과 Desktop Offline "
-            "Bundle 설치 시점(M04)에 적용되는 정책입니다."
-        ),
+        portal_upload_limit_note=upload_limit_note,
         knowledge_package_forbidden_filenames=(
             list(package_policy.get("forbidden_filenames") or []) if package_policy else []
         ),
@@ -285,6 +342,10 @@ def _build_asset_size_extension_policy() -> AssetSizeExtensionPolicySectionOut:
             "max_single_file_uncompressed_bytes"
         ),
         desktop_bundle_max_compression_ratio=desktop_policy.get("max_compression_ratio"),
+        asset_upload_max_single_file_bytes=upload_policy.get("max_single_file_bytes"),
+        asset_upload_max_total_request_bytes=upload_policy.get("max_total_request_bytes"),
+        asset_upload_max_file_count=upload_policy.get("max_file_count"),
+        asset_upload_rejected_extensions=upload_policy.get("rejected_extensions"),
         parse_error=parse_error,
     )
 

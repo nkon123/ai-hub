@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "asset-upload-policy",
+  "title": "Portal Asset Registration Upload Policy",
+  "description": "Per-request size/count/extension limits enforced by apps/portal-api/src/portal_api/routers/assets.py::create_asset (M02, POST /api/v1/assets) when a user registers a new Knowledge/Agent/Prompt/MCP Tool asset version by uploading files through the Portal. This is a DIFFERENT sizing regime from packages/schemas/policies/bundle-install-policy.json: that policy bounds UNCOMPRESSED contents of an already-downloaded Desktop Offline Bundle (M04, zip-bomb defense over a local archive), while this one bounds a single INBOUND multipart HTTP request during registration (no archive/decompression involved — files are read and hashed as a byte stream, chunk by chunk, so Content-Length cannot be trusted and the caps below are enforced against actual bytes read). Registered Knowledge assets today are small text/PDF/docx documents (tens of KB to low tens of MB) per docs/implementation-spec/04-knowledge-platform.md sample corpus — defaults are sized for that profile, not for bulk/archive transfer.",
+  "type": "object",
+  "required": [
+    "version",
+    "max_single_file_bytes",
+    "max_total_request_bytes",
+    "max_file_count",
+    "rejected_extensions"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "max_single_file_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Largest single uploaded file allowed in one POST /api/v1/assets call. Enforced by counting bytes as each chunk is read (streaming), not by trusting Content-Length or upload.size."
+    },
+    "max_total_request_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max summed byte size of all files in one POST /api/v1/assets call. Must be >= max_single_file_bytes (a single request with exactly one max-size file must not itself be rejected as too large)."
+    },
+    "max_file_count": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Max number of files accepted in one POST /api/v1/assets call. Checked before any file is read."
+    },
+    "rejected_extensions": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+      "description": "Lowercase, dot-prefixed extensions rejected outright for inbound asset registration uploads, checked case-insensitively against the filename before any bytes are written to disk. Deliberately reuses the same executable+archive extension set as bundle-install-policy.json's executable_extensions/archive_extensions (duplicated here as plain data, not imported, since this is a separate contract for a separate enforcement point) rather than inventing a narrower list: a registered Knowledge/Agent/Prompt/MCP Tool asset is always a small text/PDF/docx document or a manifest-referenced template file, never an executable or a nested archive, so there is no legitimate use case this would block, and rejecting the same shapes both inbound (registration) and outbound (Desktop Bundle install) closes the gap this contract exists to close instead of leaving the inbound side narrower than the outbound side for no reason."
+    },
+    "_rationale": {
+      "type": "string",
+      "description": "Optional free-text justification for the concrete values chosen in the instance file (asset-upload-policy.json), so future changes to these numbers require updating the stated reasoning, not just the numbers."
+    }
+  }
+}

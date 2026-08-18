@@ -3890,6 +3890,109 @@ components:
         latency_p95_ms: { type: number }
         avg_context_tokens: { type: number }
         forbidden_hit_rate: { type: number }
+        acl_case_count:
+          type: integer
+          description: >
+            Number of ACL Test cases run. 0 means ACL Test was not measured
+            for this evaluation (Evaluation Dataset has no acl_cases) — a
+            client must not read acl_leak_rate as "safe" when this is 0,
+            since the rate is arithmetically 0.0 with no cases either way.
+        acl_cases_with_visibility_expectation:
+          type: integer
+          description: >
+            Of acl_case_count, how many declared expected_visible_document_ids.
+            If 0, an acl_leak_rate of 0 could just mean search returned
+            nothing — that limitation must be surfaced, not hidden.
+        acl_leak_rate: { type: number }
+        acl_visibility_rate: { type: number }
+
+    EvaluationAclCaseResult:
+      type: object
+      description: >
+        04-knowledge-platform.md §4.4 ACL Test 케이스별 결과 —
+        evaluation-result.schema.json `per_acl_case[]` verbatim
+        (2026-08-16). Same masking rationale as EvaluationCaseResult — no
+        document content, only ids/verdicts/timings.
+      properties:
+        case_id: { type: string }
+        question: { type: string }
+        clearance: { type: string }
+        forbidden_document_ids:
+          type: array
+          items: { type: string }
+        retrieved_document_ids:
+          type: array
+          items: { type: string }
+        leaked_document_ids:
+          type: array
+          items: { type: string }
+        leaked: { type: boolean }
+        expected_visible_document_ids:
+          type: array
+          items: { type: string }
+        missing_visible_document_ids:
+          type: array
+          items: { type: string }
+        visibility_satisfied:
+          type: boolean
+          nullable: true
+          description: >
+            null means this case declared no expected_visible_document_ids
+            — it asserted nothing about visibility. Must not be rendered
+            the same as false (which means a declared expectation was not
+            met).
+        returned_count: { type: integer }
+        latency_ms: { type: integer }
+        tags:
+          type: array
+          items: { type: string }
+
+    PackageSmokeTestCheck:
+      type: object
+      properties:
+        name: { type: string }
+        passed: { type: boolean }
+        message: { type: string }
+        not_run:
+          type: boolean
+          description: >
+            A NOT_RUN check is neither pass nor a normal fail — it must be
+            rendered as its own third state, never collapsed into PASS or
+            FAIL.
+
+    PackageSmokeTestReport:
+      type: object
+      description: >
+        04-knowledge-platform.md §4.7 Package Smoke Test — passthrough of
+        packages/knowledge-packager's `package-knowledge verify
+        --report-out` result as admitted (or rejected) by
+        evaluation_runner. Always null until a CLI evaluation run attaches
+        one via `--smoke-test-report`; portal-api's own evaluation job does
+        not build a Knowledge Package.
+      properties:
+        passed: { type: boolean }
+        checks:
+          type: array
+          items:
+            $ref: "#/components/schemas/PackageSmokeTestCheck"
+        knowledge_asset_version_id: { type: string }
+        package_dir: { type: string }
+        verified_at: { type: string, format: date-time }
+        admitted:
+          type: boolean
+          description: >
+            False means the report's knowledge_asset_version_id did not
+            match the Knowledge being evaluated — this report was not used
+            for this evaluation's gate decision. See rejection_reason.
+        rejection_reason:
+          type: string
+          nullable: true
+        identity_verified:
+          type: boolean
+          description: >
+            Whether knowledge_asset_version_id could be read from the
+            package at all. False does not necessarily mean rejected —
+            see admitted for whether the gate actually used this report.
 
     EvaluationGateCheck:
       type: object
@@ -4012,6 +4115,17 @@ components:
               type: array
               items:
                 $ref: "#/components/schemas/EvaluationCaseResult"
+            per_acl_case:
+              type: array
+              items:
+                $ref: "#/components/schemas/EvaluationAclCaseResult"
+              description: >
+                Empty when metrics.acl_case_count is 0 (ACL Test not
+                measured for this evaluation) — not evidence of safety.
+            package_smoke_test:
+              $ref: "#/components/schemas/PackageSmokeTestReport"
+              nullable: true
+              description: null when no Package Smoke Test report was submitted with this evaluation run.
             comparison:
               $ref: "#/components/schemas/EvaluationComparison"
             known_limitations:
