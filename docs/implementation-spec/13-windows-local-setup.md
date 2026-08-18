@@ -330,6 +330,12 @@ ollama serve
 
 `Makefile`의 `dev-portal-api`/`dev-agent-runtime`/`dev-indexing-runtime`/`dev-search-runtime`/`dev-distribution-service`/`dev-office-mcp-server`/(`pnpm --filter portal-web dev`)를 각각 새 PowerShell 창에서 실행한다. 로그를 서비스별로 분리해서 보기 위함이다.
 
+**Desktop Client도 함께 뜬다(2026-08-18 추가).** 7개 서비스를 띄운 뒤 5초를 기다렸다가 `start-desktop-client.ps1`을 마지막에 실행한다 — Desktop이 기동 시점에 agent-runtime/search-runtime/office-mcp-server를 점검해 경고를 띄우기 때문이다. Desktop은 HTTP 서비스가 아니라 창을 띄우는 Electron 앱이라 위 표와 분리해 다루며, `health-check.ps1`의 점검 대상도 아니다. Portal만 쓰거나 Electron 바이너리를 반입하지 못한 PC에서는 빼고 띄운다:
+
+```powershell
+.\scripts\windows\start-all.ps1 -NoDesktop
+```
+
 | 서비스 | 포트 | 스크립트 |
 |---|---|---|
 | portal-api (M02) | 8000 | `start-portal-api.ps1` |
@@ -339,6 +345,7 @@ ollama serve
 | distribution-service (M03) | 8400 | `start-distribution-service.ps1` |
 | office-mcp-server (M10) | 8500 | `start-office-mcp-server.ps1` |
 | portal-web (M01) | 3000 | `start-portal-web.ps1` |
+| **Desktop Client (M04)** | (창, 렌더러 5173) | `start-desktop-client.ps1` |
 
 개별 서비스만 띄우거나 재시작하고 싶으면 위 스크립트를 개별 실행해도 된다(`start-all.ps1`은 이 7개를 순서대로 새 창에서 호출하는 것뿐, 특별한 조율 로직은 없다).
 
@@ -378,9 +385,38 @@ ollama serve
 Desktop Client는 Electron 앱이다. Portal/Hosted Chat과 별개로, **로컬(폐쇄망) 실행** 경로를 검증하는 용도다.
 
 ```powershell
+# 스택과 함께 (권장) — start-all.ps1 이 마지막에 Desktop 도 띄운다
+.\scripts\windows\start-all.ps1
+
+# Desktop 만 따로
+.\scripts\windows\start-desktop-client.ps1
+
+# 또는 직접
 cd apps\desktop-client
 pnpm dev
 ```
+
+### Electron 바이너리가 없거나 버전이 어긋날 때 (2026-08-18 추가, 실제로 겪음)
+
+**증상**: `pnpm dev` 를 돌렸는데 앱이 뜨지 않고, Electron 버전을 확인해 보면 이 저장소가 고정한 버전(`apps/desktop-client/package.json` 의 `devDependencies.electron`, 현재 **43.3.0**)이 아니라 훨씬 낮은 버전(예: 31.x)이 나온다.
+
+**원인**: `install-node.ps1` 은 기본적으로 `ELECTRON_SKIP_BINARY_DOWNLOAD=1` 로 **Electron 실행 바이너리를 건너뛴다**(사내망에서 GitHub Releases 다운로드가 자주 실패하기 때문). 그 상태로 `pnpm dev` 를 돌리면 `electron .` 이 `node_modules` 대신 **PATH 의 전역 Electron** 으로 넘어간다. 전역에 옛 버전이 깔려 있으면 그것이 실행되고, 증상만 봐서는 원인을 알 수 없다.
+
+**확인과 해결**:
+
+```powershell
+# 무엇이 실행될지 확인 — start-desktop-client.ps1 이 기동 전에 자동으로 점검한다
+.\scripts\windows\start-desktop-client.ps1
+
+# 바이너리를 실제로 설치 (사내 미러가 있으면 먼저 지정)
+$env:ELECTRON_MIRROR = "https://<사내미러>/electron/"
+.\scripts\windows\install-node.ps1 -WithElectron
+
+# 이미 옛 버전이 섞여 있으면 지우고 다시
+.\scripts\windows\install-node.ps1 -WithElectron -ReinstallElectron
+```
+
+`start-desktop-client.ps1` 은 기동 전에 `_preflight.ps1` 의 `Assert-ElectronReady` 로 (1) 바이너리 존재와 (2) `package.json` 이 고정한 버전과의 일치를 확인하고, 어긋나면 해결 명령을 그대로 보여준다. **버전을 올리는 것이 해결이 아니다** — 저장소는 이미 43.3.0 을 고정하고 있고, 문제는 그 버전이 실제로 설치되지 않은 것이다.
 
 `package.json`의 `dev` 스크립트는 `tsc -p tsconfig.electron.json && concurrently -k -n vite,electron "vite" "electron ."`이다 — Vite 개발 서버(Renderer)와 Electron 앱(Main)을 동시에 띄운다. Electron 창이 처음 뜨면 왼쪽 메뉴의 **"최초 설정"**(D01 Wizard)에서 Client 표시명·사업장 ID·Ollama Endpoint·기본 Chat/Embedding Model Alias·Office MCP Server Alias/URL을 확인·저장한다 — 아무것도 입력하지 않아도 이 문서 5절의 기본 포트(Ollama `127.0.0.1:11434`, Office MCP Server `127.0.0.1:8500`)로 동작한다(설정 전 기존 동작과 동일). 이후에는 **"설정"**(D10) 메뉴에서 언제든 같은 값을 다시 바꿀 수 있다. 앱 내 연결 상태 화면(`connections.ts`)은 이 설정값(미설정 시 기본값)을 사용해 Ollama·Local Agent Runtime(`127.0.0.1:8100`, 이 값은 설정 화면에 없음)·Office MCP Server를 각각 Health-check한다 — 5절에서 agent-runtime과 office-mcp-server를 먼저 띄워 두어야 정상으로 표시된다.
 
@@ -388,6 +424,35 @@ pnpm dev
 
 - **이 PoC 세션(macOS)에서는 Electron 앱을 한 번도 실제로 기동한 적이 없다**(사내 정책상 서명되지 않은 바이너리가 macOS Gatekeeper/XProtect에 격리됨, `progress-log.md` M04 항목 참고). 따라서 `pnpm dev`가 Windows에서 실제로 Electron 창을 띄우는지는 **미검증**이며, 지금까지의 M04 검증은 전부 코드/단위 테스트(`pnpm --filter desktop-client test`) 수준이다.
 - Windows 설치 패키지(NSIS)를 만들려면 `pnpm run dist:win`(electron-builder)을 사용한다 — 코드 서명 관련 세부사항은 `docs/implementation-spec/11-desktop-packaging-and-distribution.md` 참고.
+
+### 7.0 설치한 Agent를 실제로 대화에 쓰기 (D-086, 2026-08-18 추가)
+
+Knowledge(§7.1)와 **똑같은 모양의 공백**이 Agent에도 있다. Desktop이 설치한 Agent Package는 agent-runtime이 자기 트리 밖의 파일을 읽지 않으므로 그대로는 쓸 수 없다. 등록 API(`POST /local/v1/local-agents`)가 그 다리이며, 이 API도 **기본적으로 꺼져 있다.**
+
+| 서비스 | 환경 변수 | 기본값 | 의미 |
+|---|---|---|---|
+| agent-runtime | `AGENT_RUNTIME_LOCAL_AGENT_ROOTS` | (비어 있음 = 기능 꺼짐) | 설치된 Agent/Prompt를 등록할 수 있는 상위 디렉터리 목록(JSON 배열). 비어 있으면 모든 등록 요청이 거절된다 |
+
+**agent-runtime을 띄울 때** (`start-agent-runtime.ps1` 실행 전 같은 창에서):
+
+```powershell
+# 주의 1: 이 값은 설치 루트 — `assets` 의 **상위** 디렉터리다.
+#         agent-runtime 이 `assets\agents|prompts\...` 를 스스로 이어붙인다
+#         (config.py 의 local_agent_roots 주석). §7.1 의 search-runtime 값
+#         (`...\assets`)과 한 단계 다르니 그대로 복사하지 말 것.
+# 주의 2: JSON 배열로 파싱되므로 역슬래시를 그대로 넣으면 깨진다.
+#         슬래시로 바꿔서 넣는다.
+$root = "$env:APPDATA\Enterprise AI Asset Hub" -replace '\\', '/'
+$env:AGENT_RUNTIME_LOCAL_AGENT_ROOTS = "[""$root""]"
+
+# 확인 — 아래처럼 보여야 한다
+# ["C:/Users/<계정>/AppData/Roaming/Enterprise AI Asset Hub"]
+$env:AGENT_RUNTIME_LOCAL_AGENT_ROOTS
+```
+
+설정하지 않으면 Desktop 자산 화면이 *"이 배포는 로컬 설치 Agent 등록을 허용하지 않습니다"* 와 함께 이 PC의 실제 설치 경로를 보여준다 — 조용히 실패하지 않는다.
+
+**Desktop이 이 값을 대신 설정할 수 없다.** agent-runtime은 별개 프로세스이고 Desktop은 `agentRuntimeBaseUrl`로 접속만 한다. 관리자/배포 단계 설정으로 남으며 **D-047**(Desktop 배포 시 Python Runtime 동봉 방식)이 정해져야 실 배포에서 켜진다.
 
 ### 7.1 설치한 Knowledge를 실제로 검색에 활성화하기 (D-079)
 
