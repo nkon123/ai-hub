@@ -154,6 +154,63 @@ function Warn-IfPortInUse {
     Ollama 서버와 필요한 모델을 확인한다. 없으면 경고만 한다 — 서비스 자체는
     기동되고, 실제 대화/색인을 시도할 때 실패하기 때문이다.
 #>
+function Assert-ElectronReady {
+    <#
+        Electron 실행 바이너리가 이 저장소가 고정한 버전으로 실제 설치되어
+        있는지 확인한다.
+
+        install-node.ps1 은 기본적으로 ELECTRON_SKIP_BINARY_DOWNLOAD=1 로
+        바이너리를 건너뛴다(사내망에서 GitHub Releases 다운로드가 자주
+        실패하기 때문). 그 상태로 `pnpm dev` 를 돌리면 `electron .` 이
+        node_modules 대신 PATH 의 전역 Electron 으로 넘어가, 저장소가 원하는
+        버전이 아닌 것으로 실행되거나 그대로 실패한다 — 실제로 겪은 문제이며
+        (전역 31.x), 증상만 보면 원인을 알 수 없다. 그래서 여기서 명시적으로
+        구분해 알린다.
+    #>
+    $repoRoot = Get-RepoRootPath
+    $pkgPath = Join-Path $repoRoot "apps\desktop-client\package.json"
+    $expectedRange = $null
+    if (Test-Path $pkgPath) {
+        try {
+            $expectedRange = (Get-Content $pkgPath -Raw | ConvertFrom-Json).devDependencies.electron
+        } catch {
+            $expectedRange = $null
+        }
+    }
+
+    $electronDir = Join-Path $repoRoot "node_modules\electron"
+    if (-not (Test-Path $electronDir)) {
+        $electronDir = Join-Path $repoRoot "apps\desktop-client\node_modules\electron"
+    }
+
+    $pathTxt = Join-Path $electronDir "path.txt"
+    $installedVersionFile = Join-Path $electronDir "dist\version"
+
+    if (-not (Test-Path $pathTxt)) {
+        Write-Fix -Problem "Electron 실행 바이너리가 설치되어 있지 않습니다(패키지는 있어도 dist 바이너리가 없는 상태). 이대로 두면 PATH 의 전역 Electron 으로 실행되어 엉뚱한 버전이 뜹니다." -Fixes @(
+            ".\scripts\windows\install-node.ps1 -WithElectron",
+            "사내 미러가 있다면 먼저: `$env:ELECTRON_MIRROR = 'https://<사내미러>/electron/'"
+        )
+        exit 1
+    }
+
+    if (Test-Path $installedVersionFile) {
+        $installed = (Get-Content $installedVersionFile -Raw).Trim()
+        if ($expectedRange) {
+            $expected = $expectedRange.TrimStart('^', '~', '=', 'v')
+            if ($installed -ne $expected) {
+                Write-Host ""
+                Write-Host ("  [경고] 설치된 Electron 버전이 저장소가 고정한 버전과 다릅니다: {0} (기대: {1})" -f $installed, $expected) -ForegroundColor Yellow
+                Write-Host "         버전이 낮으면 앱이 뜨지 않을 수 있습니다." -ForegroundColor DarkGray
+                Write-Host "         해결: .\scripts\windows\install-node.ps1 -WithElectron -ReinstallElectron" -ForegroundColor Yellow
+                Write-Host ""
+            } else {
+                Write-Host ("Electron {0} 확인." -f $installed) -ForegroundColor Green
+            }
+        }
+    }
+}
+
 function Warn-IfOllamaMissing {
     try {
         $tags = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 3 -ErrorAction Stop
