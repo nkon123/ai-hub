@@ -4,6 +4,8 @@ import type {
   ActivateVersionResult,
   AgentDraftExportInput,
   AgentDraftExportResult,
+  AgentDraftUploadInput,
+  AgentDraftUploadResult,
   AssetDependencyView,
   AssetManifestResult,
   AssetRemovalCheck,
@@ -231,6 +233,11 @@ const bridge: DesktopBridge = {
 
   exportAgentDraft: (input: AgentDraftExportInput): Promise<AgentDraftExportResult> =>
     ipcRenderer.invoke("agentDraft:export", input),
+
+  uploadAgentDraft: (input: AgentDraftUploadInput): Promise<AgentDraftUploadResult> =>
+    ipcRenderer.invoke("agentDraft:upload", input),
+
+  cancelAgentDraftUpload: (): Promise<void> => ipcRenderer.invoke("agentDraft:cancelUpload"),
 
   // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
   pickLocalToolFile: (): Promise<string | null> => ipcRenderer.invoke("localTool:pickFile"),

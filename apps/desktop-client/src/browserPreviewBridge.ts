@@ -552,6 +552,18 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async exportAgentDraft() {
       return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE, savedPath: null };
     },
+    // Portal 업로드는 파일시스템이 아니라 Main Process의 Portal 설정
+    // 저장소(Token)가 필요하다 — 브라우저 개발 모드에는 둘 다 없다. 위
+    // `getPortalSettings()`가 항상 `baseUrl: null`을 돌려주므로
+    // `AgentDraftDialog`는 애초에 이 메서드를 호출할 업로드 진입점을
+    // 보여주지 않는다(Portal 미설정 = 폐쇄형 신호와 동일한 경로) — 이
+    // 구현은 그래도 정직하게 실패하도록 존재한다.
+    async uploadAgentDraft() {
+      return { attempted: false, notConfiguredReason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, agent: null, prompt: null };
+    },
+    async cancelAgentDraftUpload() {
+      // 위 이유로 취소할 진행 중인 업로드가 이 경로에는 존재하지 않는다.
+    },
 
     // --- D-084 "Desktop 로컬 Tool" ------------------------------------------
     // 브라우저 개발 모드에는 파일시스템도 subprocess도 없다 — 파일을 고를

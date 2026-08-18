@@ -249,6 +249,10 @@ function createCompleteBridge(): DesktopBridge {
     async exportAgentDraft() {
       return { ok: false, error: null, savedPath: null };
     },
+    async uploadAgentDraft() {
+      return { attempted: false, notConfiguredReason: null, agent: null, prompt: null };
+    },
+    async cancelAgentDraftUpload() {},
     async pickLocalToolFile() {
       return null;
     },

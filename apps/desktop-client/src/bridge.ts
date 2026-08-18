@@ -84,6 +84,8 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   cancelAgentDraftSystemPromptGeneration: true,
   pickAgentDraftExportDirectory: true,
   exportAgentDraft: true,
+  uploadAgentDraft: true,
+  cancelAgentDraftUpload: true,
   pickLocalToolFile: true,
   inspectLocalToolFile: true,
   addLocalTool: true,

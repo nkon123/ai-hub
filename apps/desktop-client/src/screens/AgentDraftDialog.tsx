@@ -11,7 +11,7 @@
 // 보여주고, 사용자가 체크박스로 뒤집을 수 있게 하고, 최종 값으로 Manifest
 // 미리보기를 그린다.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, Loader2, Sparkles } from "lucide-react";
+import { Download, Loader2, Sparkles, Upload } from "lucide-react";
 import type { ChatMessage } from "./chatTypes";
 import {
   buildAgentManifestDraft,
@@ -24,6 +24,7 @@ import {
 } from "../../electron/agent-draft";
 import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-chat";
 import { DEFAULT_OLLAMA_BASE_URL } from "../../electron/connections";
+import type { AgentDraftUploadAssetOutcome, AgentDraftUploadResult } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { Button, ErrorBanner, LoadingState, Modal } from "../ui";
@@ -228,6 +229,153 @@ export function AgentDraftDialog({ messages, onClose }: { messages: ChatMessage[
     }
   }
 
+  // --- 6. Portal에 DRAFT로 등록(선택 — Portal이 설정된 배포에서만) -----------
+  // 파일 내보내기(위)와는 완전히 독립적이다: Portal 미설정이면 이 진입점
+  // 자체를 숨긴다(폐쇄형 신호, 새 설정 항목을 만들지 않는다 — `portal-
+  // settings.ts`의 `baseUrl`/`token` 미설정을 그대로 신호로 쓴다). 자동
+  // 전송은 없다 — 사용자가 "확인하고 등록"을 눌러야만 나간다.
+  const [portalConfigured, setPortalConfigured] = useState(false);
+  useEffect(() => {
+    if (!bridge) return; // 브라우저 개발 모드: Portal 업로드 진입점 자체를 보여주지 않는다.
+    let cancelled = false;
+    bridge
+      .getPortalSettings()
+      .then((settings) => {
+        if (!cancelled) setPortalConfigured(!!settings.baseUrl && settings.tokenConfigured);
+      })
+      .catch(() => {
+        // 조회 실패는 "미설정"과 동일하게 다룬다 — 불확실하면 닫힌 쪽으로
+        // 실패한다(루트 CLAUDE.md).
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge]);
+
+  const [uploadConfirmOpen, setUploadConfirmOpen] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<"idle" | "busy" | "done" | "cancelled">("idle");
+  const [uploadResult, setUploadResult] = useState<AgentDraftUploadResult | null>(null);
+  const uploadCancelledRef = useRef(false);
+
+  async function handleConfirmUpload(): Promise<void> {
+    if (!bridge) return;
+    uploadCancelledRef.current = false;
+    setUploadConfirmOpen(false);
+    setUploadStatus("busy");
+    try {
+      const result = await bridge.uploadAgentDraft({
+        agentManifest,
+        promptManifest,
+        templateContent: systemPrompt || "(시스템 프롬프트가 아직 작성되지 않았습니다.)",
+      });
+      setUploadResult(result);
+      setUploadStatus(uploadCancelledRef.current ? "cancelled" : "done");
+    } catch (err) {
+      // 부분 실패는 이미 `uploadAgentDraft`가 resolve로 알려준다 — 이
+      // catch는 IPC 자체가 끊긴 것과 같은 예상 밖 실패만 다룬다.
+      setUploadResult({
+        attempted: true,
+        notConfiguredReason: null,
+        agent: {
+          ok: false,
+          assetId: null,
+          versionId: null,
+          version: null,
+          errorCode: "UNKNOWN",
+          errorMessage: err instanceof Error ? err.message : "Portal 등록에 실패했습니다.",
+          validationErrors: null,
+        },
+        prompt: null,
+      });
+      setUploadStatus(uploadCancelledRef.current ? "cancelled" : "done");
+    }
+  }
+
+  async function handleCancelUpload(): Promise<void> {
+    uploadCancelledRef.current = true;
+    if (bridge) await bridge.cancelAgentDraftUpload();
+  }
+
+  function renderPortalUploadSection() {
+    if (!portalConfigured) return null;
+    return (
+      <section className="rounded-lg border border-border p-3">
+        <h4 className="mb-2 text-caption font-semibold text-text-primary">Portal에 DRAFT로 등록</h4>
+
+        {uploadStatus === "idle" && !uploadConfirmOpen && (
+          <div className="flex items-center justify-between gap-3">
+            <p className="text-caption text-text-muted">
+              위 두 매니페스트를 Portal에 DRAFT 상태로 등록합니다(승인·게시는 별도로 진행됩니다).
+            </p>
+            <Button variant="secondary" size="sm" onClick={() => setUploadConfirmOpen(true)}>
+              <Upload size={13} /> Portal에 등록
+            </Button>
+          </div>
+        )}
+
+        {uploadConfirmOpen && (
+          <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+            <p className="text-body text-text-primary">아래 내용을 전송합니다 — 확인 후에만 나갑니다.</p>
+            <ul className="list-disc space-y-1 pl-5 text-caption text-text-secondary">
+              <li>Agent 자산 1건, Prompt 자산 1건(첨부: template.md) — 위 미리보기에 표시된 매니페스트 원문 그대로.</li>
+              <li>상태: 두 자산 모두 <strong>DRAFT</strong>로 생성됩니다(승인·게시는 이 Desktop에서 진행하지 않습니다).</li>
+              <li>등록 후에는 Portal에서 검토·승인을 거쳐야 합니다.</li>
+            </ul>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setUploadConfirmOpen(false)}>
+                취소
+              </Button>
+              <Button size="sm" onClick={() => void handleConfirmUpload()}>
+                확인하고 등록
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {uploadStatus === "busy" && (
+          <div className="flex items-center justify-between gap-3">
+            <LoadingState label="Portal에 등록하는 중..." />
+            <Button variant="secondary" size="sm" onClick={() => void handleCancelUpload()}>
+              취소
+            </Button>
+          </div>
+        )}
+
+        {(uploadStatus === "done" || uploadStatus === "cancelled") && uploadResult && (
+          <div className="space-y-2">
+            {uploadStatus === "cancelled" && (
+              <p className="text-caption text-warning">
+                취소를 요청했습니다 — 아래는 취소 시점까지 실제로 서버에 반영된 결과입니다. 이미 등록된 자산은 이
+                Desktop에서 되돌릴 수 없으니 Portal에서 직접 정리하세요.
+              </p>
+            )}
+            {!uploadResult.attempted && (
+              <ErrorBanner message={uploadResult.notConfiguredReason ?? "Portal에 등록할 수 없습니다."} />
+            )}
+            {uploadResult.attempted && (
+              <>
+                <UploadOutcomeRow label="Agent" outcome={uploadResult.agent} />
+                <UploadOutcomeRow label="Prompt" outcome={uploadResult.prompt} />
+              </>
+            )}
+            <div className="flex justify-end">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  setUploadStatus("idle");
+                  setUploadResult(null);
+                }}
+              >
+                닫기
+              </Button>
+            </div>
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <Modal open title="대화로 Agent 초안 만들기" onClose={onClose}>
       <div className="space-y-5">
@@ -373,6 +521,8 @@ export function AgentDraftDialog({ messages, onClose }: { messages: ChatMessage[
               </pre>
             </section>
 
+            {renderPortalUploadSection()}
+
             {exportStatus === "error" && exportError && <ErrorBanner message={exportError} />}
 
             <div className="flex justify-end gap-2">
@@ -405,10 +555,14 @@ export function AgentDraftDialog({ messages, onClose }: { messages: ChatMessage[
                 저장된 파일: agent-manifest.json, prompt-manifest.json, template.md
               </p>
               <p className="mt-2 text-caption text-text-muted">
-                Portal이 있는 환경이면 P05 자산 등록 화면에 이 두 Manifest를 그대로 올릴 수 있습니다(이 Desktop은
-                아무것도 Portal로 전송하지 않았습니다 — 안내만입니다).
+                {portalConfigured
+                  ? "Portal이 설정되어 있습니다 — 아래에서 이 두 Manifest를 Portal에 DRAFT로 등록할 수도 있습니다(파일 저장과는 별개의 선택입니다)."
+                  : "Portal이 설정되지 않은 환경입니다 — 방금 저장한 파일을 P05 자산 등록 화면에 직접 올려 사용하세요(이 Desktop은 아무것도 Portal로 전송하지 않았습니다)."}
               </p>
             </div>
+
+            {renderPortalUploadSection()}
+
             <div className="flex justify-end">
               <Button variant="secondary" onClick={onClose}>
                 닫기
@@ -426,5 +580,47 @@ export function AgentDraftDialog({ messages, onClose }: { messages: ChatMessage[
         )}
       </div>
     </Modal>
+  );
+}
+
+/** Agent 또는 Prompt 하나의 Portal 등록 결과를 그대로 보여준다 — 서버가
+ * 돌려준 오류코드/메시지를 뭉개지 않는다(브리프 E항). `PERMISSION_DENIED`와
+ * `VALIDATION_ERROR`만 별도로 안내를 덧붙이고, 나머지(업로드 상한 4종 포함)
+ * 는 서버 메시지를 코드와 함께 그대로 노출한다 — 코드별로 메시지가 이미
+ * 다르므로 이것만으로 서로 구분된다. */
+function UploadOutcomeRow({ label, outcome }: { label: string; outcome: AgentDraftUploadAssetOutcome | null }) {
+  if (!outcome) {
+    return <p className="text-caption text-text-muted">{label}: 시도되지 않았습니다.</p>;
+  }
+  if (outcome.ok) {
+    return (
+      <p className="text-caption text-success">
+        {label}: 등록 성공 — 자산 ID <code className="rounded bg-slate-100 px-1 py-0.5">{outcome.assetId}</code>,
+        버전 {outcome.version}(DRAFT). Portal에서 검토·승인을 진행하세요.
+      </p>
+    );
+  }
+  if (outcome.errorCode === "PERMISSION_DENIED") {
+    return (
+      <div className="text-caption text-danger">
+        <p>{label}: 등록 실패 — 이 작업을 수행할 권한이 없습니다.</p>
+        <p className="text-text-secondary">ASSET_CREATE 권한이 있는 Portal 토큰이 필요합니다 — 설정에서 토큰을 확인하세요.</p>
+      </div>
+    );
+  }
+  return (
+    <div className="text-caption text-danger">
+      <p>
+        {label}: 등록 실패 ({outcome.errorCode})
+      </p>
+      <p className="text-text-secondary">{outcome.errorMessage}</p>
+      {outcome.validationErrors && outcome.validationErrors.length > 0 && (
+        <ul className="mt-1 list-disc space-y-0.5 pl-5 text-text-secondary">
+          {outcome.validationErrors.map((e, i) => (
+            <li key={i}>{e}</li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }

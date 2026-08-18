@@ -1191,6 +1191,51 @@ export interface AgentDraftExportResult {
   savedPath: string | null;
 }
 
+// --- Desktop Client PR2: 대화 -> Agent 초안을 Portal에 DRAFT로 등록 --------
+// Portal이 설정된 배포에서만(Portal 미설정 = 폐쇄형 신호) 노출되는 추가
+// 경로 — 파일 내보내기(위)는 이 기능과 무관하게 항상 동작한다. Agent와
+// Prompt는 별개 자산이라 `POST /api/v1/assets`를 두 번 호출하며, 하나가
+// 실패해도 다른 하나의 시도를 막지 않고 결과를 뭉개지 않는다.
+
+export interface AgentDraftUploadInput {
+  agentManifest: unknown;
+  promptManifest: unknown;
+  templateContent: string;
+}
+
+/** 자산 하나(Agent 또는 Prompt)의 업로드 결과. */
+export interface AgentDraftUploadAssetOutcome {
+  ok: boolean;
+  /** `ok === true`일 때만 채워진다 — Portal에 실제로 생성된 자산/버전
+   * 식별자(부분 실패 시 사용자가 Portal에서 직접 정리할 수 있도록). */
+  assetId: string | null;
+  versionId: string | null;
+  version: string | null;
+  /** `ok === false`일 때만 채워진다 — portal-api Error Envelope의 `code`
+   * 그대로(`VALIDATION_ERROR`/`ASSET_UPLOAD_*`/`PERMISSION_DENIED`/
+   * `PORTAL_UNREACHABLE` 등, `portal-client.ts::createAsset` 참고). 뭉개지
+   * 않고 그대로 보여준다. */
+  errorCode: string | null;
+  /** 항상 한국어 — 화면에 그대로 표시 가능. */
+  errorMessage: string | null;
+  /** `errorCode === "VALIDATION_ERROR"`일 때만 채워지는 필드별 오류 목록
+   * (portal-api `details.errors` 그대로, 이미 한국어 문자열). */
+  validationErrors: string[] | null;
+}
+
+export interface AgentDraftUploadResult {
+  /** false면 Portal이 설정되지 않아 아예 시도하지 않았다는 뜻 — 화면은 이
+   * 경로에 도달하기 전에 업로드 진입점 자체를 숨기지만(Portal 미설정 =
+   * 폐쇄형 신호), Main Process는 방어적으로 다시 검사한다. */
+  attempted: boolean;
+  /** `attempted === false`일 때만 채워지는 한국어 안내. */
+  notConfiguredReason: string | null;
+  /** Agent/Prompt 각각 독립적으로 시도한 결과 — `attempted === false`일
+   * 때만 둘 다 null이다. */
+  agent: AgentDraftUploadAssetOutcome | null;
+  prompt: AgentDraftUploadAssetOutcome | null;
+}
+
 /** Renderer-facing surface exposed via `contextBridge` in `preload.ts`. */
 export interface DesktopBridge {
   pickBundleFile(): Promise<string | null>;
@@ -1394,6 +1439,16 @@ export interface DesktopBridge {
   /** 고른 디렉터리에 `agent-manifest.json`/`prompt-manifest.json`/
    * `template.md` 세 파일을 쓴다. */
   exportAgentDraft(input: AgentDraftExportInput): Promise<AgentDraftExportResult>;
+  /** Portal이 설정된 배포에서만 화면이 노출하는 진입점 — DRAFT 두 건
+   * (Agent+Prompt)을 Portal에 등록한다. 승인·게시 API는 절대 호출하지
+   * 않는다. Portal 미설정 시 Main Process가 `attempted:false`로 방어적으로
+   * 거부한다(화면은 이 상태에 도달하기 전에 진입점 자체를 숨겨야 한다). */
+  uploadAgentDraft(input: AgentDraftUploadInput): Promise<AgentDraftUploadResult>;
+  /** 진행 중인 업로드를 취소 요청한다(`agentDraft:upload`와 별개의 Abort
+   * Controller). 이미 서버에 반영된 자산은 되돌리지 않는다 — 취소 후에도
+   * `uploadAgentDraft`의 결과는 취소 시점까지 실제로 일어난 일(부분 성공
+   * 포함)을 그대로 보여준다. */
+  cancelAgentDraftUpload(): Promise<void>;
 
   // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
   // D-083 TOOL_ROUTE/D-080 등록과 구조적으로 분리되어 있다 — 이 여섯 메서드는

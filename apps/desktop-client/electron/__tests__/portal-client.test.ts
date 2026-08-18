@@ -3,7 +3,7 @@
 // 검증한다 — "Portal 도달 불가는 폐쇄망에서 정상 상태이며 절대 크래시하지
 // 않는다"는 요구사항의 핵심 증거.
 import { describe, expect, it, vi } from "vitest";
-import { downloadDistribution, fetchCatalog, getDistribution, requestDistribution } from "../portal-client";
+import { createAsset, downloadDistribution, fetchCatalog, getDistribution, requestDistribution } from "../portal-client";
 import type { FetchLike } from "../portal-client";
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -210,5 +210,128 @@ describe("downloadDistribution", () => {
       code: "ASSET_VERSION_REVOKED",
       message: "긴급 회수(Revocation)된 버전의 Bundle은 다운로드할 수 없습니다.",
     });
+  });
+});
+
+// Desktop Client PR2: 대화 -> Agent 초안 Portal 업로드가 쓰는 유일한 HTTP
+// 호출. 항상 DRAFT를 만드는 `POST /api/v1/assets`만 부르는지(승인/게시로
+// 이어지는 다른 엔드포인트는 절대 부르지 않는다), 서버의 업로드 상한
+// 오류코드 4종·VALIDATION_ERROR(+details.errors)·PERMISSION_DENIED(403)를
+// 뭉개지 않고 그대로 통과시키는지를 고정한다.
+describe("createAsset", () => {
+  it("POSTs multipart/form-data to /api/v1/assets with the manifest JSON and attached files, using Authorization but no manual Content-Type", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(201, { id: "v1", asset_id: "a1", version: "0.1.0", status: "DRAFT" }),
+    ) as unknown as FetchLike;
+
+    const result = await createAsset(
+      "http://127.0.0.1:8003",
+      "dev-user-token",
+      { schema_version: "1.0", id: "a1", type: "prompt", name: "테스트 프롬프트" },
+      [{ filename: "template.md", content: "# 시스템 프롬프트" }],
+      fetchImpl,
+    );
+
+    expect(result).toEqual({ ok: true, data: { id: "v1", assetId: "a1", version: "0.1.0", status: "DRAFT" } });
+
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe("http://127.0.0.1:8003/api/v1/assets");
+    expect((init as RequestInit).method).toBe("POST");
+    // Authorization만 명시한다 — multipart boundary가 포함된 Content-Type은
+    // fetch가 FormData body로부터 스스로 채운다(직접 지정하면 boundary가
+    // 깨진다).
+    expect((init as RequestInit).headers).toEqual({ Authorization: "Bearer dev-user-token" });
+    const body = (init as RequestInit).body as FormData;
+    expect(body).toBeInstanceOf(FormData);
+    const manifestField = JSON.parse(body.get("manifest") as string);
+    expect(manifestField).toMatchObject({ type: "prompt", name: "테스트 프롬프트" });
+    const fileField = body.get("files") as File;
+    expect(fileField.name).toBe("template.md");
+    expect(await fileField.text()).toBe("# 시스템 프롬프트");
+  });
+
+  it("sends no files when none are given (Agent manifest has no attachment)", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(201, { id: "v2", asset_id: "a2", version: "0.1.0", status: "DRAFT" }),
+    ) as unknown as FetchLike;
+
+    await createAsset("http://127.0.0.1:8003", "dev-user-token", { type: "agent" }, [], fetchImpl);
+
+    const [, init] = fetchImpl.mock.calls[0];
+    const body = (init as RequestInit).body as FormData;
+    expect(body.getAll("files")).toHaveLength(0);
+  });
+
+  it.each(["ASSET_UPLOAD_TOO_MANY_FILES", "ASSET_UPLOAD_EXTENSION_REJECTED", "ASSET_UPLOAD_FILE_TOO_LARGE", "ASSET_UPLOAD_REQUEST_TOO_LARGE"])(
+    "passes through %s without rewriting the server's code or message",
+    async (code) => {
+      const fetchImpl = vi.fn(async () =>
+        jsonResponse(400, { error: { code, message: `서버가 보낸 ${code} 메시지` } }),
+      ) as unknown as FetchLike;
+
+      const result = await createAsset("http://127.0.0.1:8003", "dev-user-token", { type: "agent" }, [], fetchImpl);
+      expect(result).toEqual({ ok: false, code, message: `서버가 보낸 ${code} 메시지` });
+    },
+  );
+
+  it("passes through VALIDATION_ERROR together with details.errors (field-level list)", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(400, {
+        error: {
+          code: "VALIDATION_ERROR",
+          message: "Manifest가 스키마를 충족하지 않습니다.",
+          details: { errors: ["'workflow' is a required property", "'risk_level' must be one of [...]"] },
+        },
+      }),
+    ) as unknown as FetchLike;
+
+    const result = await createAsset("http://127.0.0.1:8003", "dev-user-token", { type: "agent" }, [], fetchImpl);
+    expect(result).toEqual({
+      ok: false,
+      code: "VALIDATION_ERROR",
+      message: "Manifest가 스키마를 충족하지 않습니다.",
+      details: { errors: ["'workflow' is a required property", "'risk_level' must be one of [...]"] },
+    });
+  });
+
+  it("passes through a 403 PERMISSION_DENIED distinctly from other failures", async () => {
+    const fetchImpl = vi.fn(async () =>
+      jsonResponse(403, { error: { code: "PERMISSION_DENIED", message: "이 작업을 수행할 권한이 없습니다." } }),
+    ) as unknown as FetchLike;
+
+    const result = await createAsset("http://127.0.0.1:8003", "dev-user-token", { type: "agent" }, [], fetchImpl);
+    expect(result).toEqual({ ok: false, code: "PERMISSION_DENIED", message: "이 작업을 수행할 권한이 없습니다." });
+  });
+
+  it("reports PORTAL_UNREACHABLE (not a crash) when the network call itself fails", async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new TypeError("fetch failed");
+    }) as unknown as FetchLike;
+
+    const result = await createAsset("http://127.0.0.1:8003", "dev-user-token", { type: "agent" }, [], fetchImpl);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("PORTAL_UNREACHABLE");
+  });
+
+  it("aborts the in-flight request when the caller's externalSignal is aborted (upload cancellation)", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi.fn((url: string, init: RequestInit) => {
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")));
+      });
+    }) as unknown as FetchLike;
+
+    const promise = createAsset(
+      "http://127.0.0.1:8003",
+      "dev-user-token",
+      { type: "agent" },
+      [],
+      fetchImpl,
+      controller.signal,
+    );
+    controller.abort();
+    const result = await promise;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.code).toBe("PORTAL_UNREACHABLE");
   });
 });

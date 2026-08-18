@@ -9,7 +9,7 @@ import { ConversationStore } from "./conversation-store";
 import { checkAllConnections, listOllamaModels, DEFAULT_RUNTIME_BASE_URL } from "./connections";
 import { DesktopSettingsStore } from "./desktop-settings";
 import { chatWithOllama } from "./ollama-chat";
-import { buildSystemPromptDraftRequest } from "./agent-draft";
+import { buildSystemPromptDraftRequest, AGENT_DRAFT_TEMPLATE_FILE_NAME } from "./agent-draft";
 import {
   activateAssetVersion,
   assetInstallDir,
@@ -42,7 +42,8 @@ import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
 import { PortalSettingsStore } from "./portal-settings";
-import { fetchCatalog, requestDistribution, getDistribution, downloadDistribution } from "./portal-client";
+import { fetchCatalog, requestDistribution, getDistribution, downloadDistribution, createAsset } from "./portal-client";
+import { uploadAgentDraft } from "./agent-draft-upload";
 import { installFromStore, defaultSleep, type CancelToken } from "./store-install";
 import { getServiceDetailView } from "./service-detail";
 import { buildSystemInfo } from "./system-info";
@@ -51,6 +52,8 @@ import type {
   ActivateVersionResult,
   AgentDraftExportInput,
   AgentDraftExportResult,
+  AgentDraftUploadInput,
+  AgentDraftUploadResult,
   AssetDependencyView,
   AssetManifestResult,
   AssetRemovalCheck,
@@ -115,6 +118,7 @@ let ollamaChatAbortController: AbortController | null = null;
 // `ollamaChatAbortController`(일반 대화 취소)와 별개다. 같은 변수를
 // 공유하면 두 기능이 서로의 요청을 취소하게 된다.
 let agentDraftAbortController: AbortController | null = null;
+let agentDraftUploadAbortController: AbortController | null = null;
 // 자산 스토어는 한 번에 하나의 설치만 진행한다고 가정한다(PoC 범위) — 취소
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
@@ -1007,6 +1011,54 @@ function registerIpcHandlers(): void {
       }
     },
   );
+
+  // --- Desktop Client PR2: 대화 -> Agent 초안을 Portal에 DRAFT로 등록 --------
+  // Portal이 설정되지 않았으면(폐쇄형 신호) 방어적으로 거부한다 — 화면은
+  // 이 상태에 도달하기 전에 업로드 진입점 자체를 숨겨야 한다(브리프 A항).
+  // Agent와 Prompt는 별개 자산이라 `createAsset`을 두 번 호출하고, 하나가
+  // 실패해도 다른 하나의 시도를 막지 않는다(브리프 D항 — 부분 실패를
+  // 숨기지 않는다). 매니페스트 원문/프롬프트 원문/Token은 로그에 남기지
+  // 않는다 — `agentDraft:export`와 같은 로그 규율(구조적 이벤트+오류코드만).
+  ipcMain.handle(
+    "agentDraft:upload",
+    async (_event, input: AgentDraftUploadInput): Promise<AgentDraftUploadResult> => {
+      const settings = getPortalSettingsStore();
+      const controller = new AbortController();
+      agentDraftUploadAbortController = controller;
+      try {
+        const result = await uploadAgentDraft(
+          { baseUrl: settings.getBaseUrl(), token: settings.getToken() },
+          input,
+          AGENT_DRAFT_TEMPLATE_FILE_NAME,
+          { createAsset: (b, t, manifest, files, signal) => createAsset(b, t, manifest, files, undefined, signal) },
+          controller.signal,
+        );
+
+        if (!result.attempted) {
+          getLogger().warn("agent-draft", "Agent 초안 Portal 등록 거부 — Portal 미설정", {
+            errorCode: "PORTAL_NOT_CONFIGURED",
+          });
+        } else if (result.agent?.ok && result.prompt?.ok) {
+          getLogger().info("agent-draft", "Agent 초안 Portal 등록 완료(Agent+Prompt DRAFT 2건)");
+        } else {
+          getLogger().warn(
+            "agent-draft",
+            `Agent 초안 Portal 등록 부분/전체 실패 (agent: ${result.agent?.ok ? "성공" : "실패"}, prompt: ${
+              result.prompt?.ok ? "성공" : "실패"
+            })`,
+            { errorCode: (!result.agent?.ok ? result.agent?.errorCode : result.prompt?.errorCode) ?? undefined },
+          );
+        }
+        return result;
+      } finally {
+        if (agentDraftUploadAbortController === controller) agentDraftUploadAbortController = null;
+      }
+    },
+  );
+
+  ipcMain.handle("agentDraft:cancelUpload", async (): Promise<void> => {
+    agentDraftUploadAbortController?.abort();
+  });
 
   // --- D03 Service/Agent 상세 -------------------------------------------------
   ipcMain.handle(
