@@ -37,7 +37,11 @@
 
 param(
     [switch]$PortalOnly,
-    [switch]$WithElectron
+    [switch]$WithElectron,
+    # 이미 설치된 Electron 바이너리를 지우고 다시 받는다. 전역/구버전
+    # Electron 이 섞여 앱이 뜨지 않을 때 쓴다(실제로 겪은 문제: 전역 31.x).
+    # -WithElectron 을 함께 켠 것으로 간주한다.
+    [switch]$ReinstallElectron
 )
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -52,6 +56,17 @@ if (-not $pnpm) {
     Write-Host "    또는 npm install -g pnpm" -ForegroundColor Yellow
     Write-Host ""
     exit 1
+}
+
+if ($ReinstallElectron) {
+    $WithElectron = $true
+    foreach ($rel in @("node_modules\electron", "apps\desktop-client\node_modules\electron")) {
+        $dir = Join-Path $RepoRoot $rel
+        if (Test-Path $dir) {
+            Write-Host "기존 Electron 설치를 지웁니다: $rel" -ForegroundColor Cyan
+            Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 if (-not $WithElectron) {
