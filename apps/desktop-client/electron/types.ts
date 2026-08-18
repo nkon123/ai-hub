@@ -663,11 +663,15 @@ export type LocalToolInvocationResult =
   | { outcome: "spawn_error"; message: string }
   | { outcome: "interpreter_not_configured" }
   /** 사용자가 Main Process의 네이티브 실행 승인 대화상자에서 거부했다. 렌더러의
-   * 확인 UI와 별개로, 실행 직전 Main Process가 매번 다시 묻는다 — 렌더러만
+   * 확인 UI와 별개로, 승인 판정은 항상 Main Process가 한다 — 렌더러만
    * 확인을 담당하면 브릿지에 도달하는 다른 경로가 승인 없이 Python을 실행할 수
    * 있고, 그것이 구현 원칙 7이 금지하는 "승인되지 않은 임의 Python 실행"이다
-   * (D-084). 추가 시점의 위험 고지(`riskAcknowledgedAt`)는 이 승인을 대신하지
-   * 않는다 — 그것은 기억된 승인이라 이후 호출이 무인으로 실행될 수 있다. */
+   * (D-084). D-084 후속 3 이후 대화상자가 매번 뜨지는 않는다: `approval`이
+   * 있고 그 `approvedFileHash`가 지금 파일 내용과 일치하면 생략된다. 그 둘이
+   * 이 기능이 구현 원칙 7을 계속 만족시키는 유일한 근거다(D-089).
+   * 추가 시점의 위험 고지(`riskAcknowledgedAt`)는 여전히 이 승인을 대신하지
+   * 않는다 — 파일 내용에 묶여 있지 않아 이후 어떤 코드가 실행될지 보장하지
+   * 못한다. */
   | { outcome: "user_denied" };
 
 // ---------------------------------------------------------------------------
@@ -1413,10 +1417,12 @@ export interface DesktopBridge {
    * 강제할 수 없다) 호출부(LocalToolsScreen.tsx)가 그 규약을 지킨다.
    * `pythonInterpreterPath`가 비어 있으면 프로세스를 띄우지 않고
    * `interpreter_not_configured`를 반환한다.
-   * `options.aiSelected`(D-084 후속, 채팅 자동 라우팅)가 `true`이면 Main
-   * Process가 매번 다시 묻는 네이티브 승인 대화상자 문구가 "Tool 선택과
-   * 인자 모두 AI가 정했다"는 사실을 반드시 밝힌다 — 승인 자체를 생략하지는
-   * 않는다(구현 원칙 7). 생략하면(수동 경로) 기존 문구 그대로다. */
+   * `options.aiSelected`(D-084 후속, 채팅 자동 라우팅)가 `true`이면 네이티브
+   * 승인 대화상자 문구가 "Tool 선택과 인자 모두 AI가 정했다"는 사실을 반드시
+   * 밝힌다 — `aiSelected`가 승인 정책을 낮추지는 않는다(구현 원칙 7).
+   * 다만 그 대화상자가 뜨는지 자체는 `approval`이 정한다(D-084 후속 3):
+   * 미리 허용해 둔 Tool은 AI가 정한 인자여도 대화상자 없이 실행된다(D-089).
+   * 생략하면(수동 경로) 기존 문구 그대로다. */
   invokeLocalTool(
     id: string,
     args: Record<string, unknown>,

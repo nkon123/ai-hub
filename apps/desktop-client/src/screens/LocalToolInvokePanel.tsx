@@ -30,8 +30,10 @@
 //     제안받는다 — D-083 `tool_router.py`와 동일한 fail-closed 규율(그
 //     모듈 docstring 참고).
 //   - 실행 승인은 여전히 `bridge.invokeLocalTool`이 맡고, Main Process가
-//     매번 네이티브 대화상자로 다시 묻는다 — 자동 라우팅이라고 승인을
-//     생략하지 않는다(구현 원칙 7). 다만 이번에는 `{ aiSelected: true }`를
+//     승인 여부를 판정한다 — 자동 라우팅이라는 이유로 승인을 낮추지는
+//     않는다(구현 원칙 7). 다만 D-084 후속 3 이후, 자산 화면에서 내용
+//     해시에 묶어 미리 허용해 둔 Tool은 대화상자 없이 실행된다(AI가 정한
+//     인자여도 마찬가지다 — 그 위험은 D-089에 기록). 다만 이번에는 `{ aiSelected: true }`를
 //     넘겨 그 대화상자 문구가 "Tool 선택과 인자 모두 AI가 정했다"는 사실을
 //     밝히게 한다.
 //   - 결과 카드(`LocalToolAutoRouteEntryCard`)는 "모델이 Tool이 필요

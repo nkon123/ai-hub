@@ -2106,7 +2106,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       토글을 보여주지 않는다. 켜져 있을 때 후보로 쓰일 로컬
                       Tool 이름을 그대로 보여준다(무엇이 자동 실행될 수
                       있는지 모르는 상태를 만들지 않는다). 실행 전 네이티브
-                      승인은 이 토글과 무관하게 항상 다시 확인한다. */}
+                      승인 여부는 이 토글이 아니라 각 Tool의 `approval`(D-084
+                      후속 3, 자산 화면에서 내용 해시에 묶어 미리 허용)이
+                      정한다 — 허용해 둔 Tool은 AI가 정한 인자로도 대화상자
+                      없이 실행되므로, 후보 목록에 어느 쪽인지 표시한다. */}
                   {registeredLocalTools.length > 0 && (
                     <ComposerToggle
                       id="local-tool-route-toggle"
@@ -2114,8 +2117,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       description={
                         localToolRouteApplicable
                           ? `이 질문에 맞는 로컬 Tool과 입력값을 AI가 스스로 골라 채웁니다(후보: ${registeredLocalTools
-                              .map((t) => t.toolName)
-                              .join(", ")}). 검토되지 않은 내 PC 코드이므로, 실행 전 Desktop 창의 네이티브 승인 대화상자를 매번 다시 거칩니다.`
+                              .map((t) => (t.approval !== null ? `${t.toolName}(실행 허용됨)` : t.toolName))
+                              .join(", ")}). 검토되지 않은 내 PC 코드입니다. ${
+                              registeredLocalTools.some((t) => t.approval !== null)
+                                ? "'실행 허용됨' 표시가 있는 Tool은 자산 > 로컬 Tool에서 미리 허용해 두었으므로 승인 대화상자 없이 바로 실행됩니다 — AI가 정한 인자도 그대로 실행됩니다. 나머지는 실행 전 네이티브 승인을 다시 거칩니다."
+                                : "실행 전 Desktop 창의 네이티브 승인 대화상자를 매번 다시 거칩니다."
+                            }`
                           : !bridge
                             ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
                             : "개발 확인용 Tool 호출/Tool 자동 제안/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
