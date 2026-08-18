@@ -49,6 +49,7 @@ from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AssetListResponse,
     AssetOut,
+    AssetUploadPolicyOut,
     AssetVersionOut,
     AssetVersionRevocationSummaryOut,
     CreateAssetVersionRequest,
@@ -380,6 +381,57 @@ async def list_assets(
         page=page,
         page_size=page_size,
         total=total,
+    )
+
+
+@router.get("/assets/upload-policy", response_model=AssetUploadPolicyOut)
+async def get_asset_upload_policy(
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> AssetUploadPolicyOut | JSONResponse:
+    """P05/P12: let the registration screens show upload limits *before* the
+    user picks files, instead of only discovering them from a rejected `POST
+    /api/v1/assets` after uploading a large file. Gated on
+    `Permission.ASSET_CREATE` rather than `ASSET_CREATE`'s sibling
+    `ASSET_READ` — anyone who can reach `/assets/new/*`/`/knowledge/new`
+    already holds `ASSET_CREATE` (see `create_asset` above), so this is the
+    natural permission for "can this caller even register something", and it
+    keeps the 403-denial-audit trail consistent with the endpoint whose
+    limits it's describing. `GET /api/v1/admin/settings`
+    (`routers/admin.py`) already surfaces the same four numbers but is gated
+    on `ADMIN_SETTINGS_READ`, which CREATOR does not hold — this endpoint
+    does not replace that one, it just exposes the narrow subset a
+    non-admin registrant needs.
+
+    IMPORTANT — routing order: this must stay registered before
+    `GET /assets/{asset_id}` immediately below. Starlette matches routes in
+    registration order across the whole app (see `main.py`'s
+    reviews_router/assets_router comment for the same class of bug already
+    hit once); if this literal path were declared after the `{asset_id}`
+    catch-all, `GET /assets/upload-policy` would 200 with `asset_id`
+    resolved to the literal string "upload-policy" instead of ever reaching
+    this handler. `test_asset_upload_policy.py` pins this with a regression
+    test.
+
+    Reuses `_read_asset_upload_policy()` verbatim (same fail-closed
+    built-in-default behavior on a missing/malformed policy file as
+    `create_asset`'s enforcement) so this display path can never disagree
+    with the enforcement path — no second parse of the policy file is
+    introduced here.
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_CREATE, trace_id=trace_id, resource_type="ASSET"
+    )
+    if denial:
+        return denial
+
+    policy = _read_asset_upload_policy()
+    return AssetUploadPolicyOut(
+        max_single_file_bytes=policy.max_single_file_bytes,
+        max_total_request_bytes=policy.max_total_request_bytes,
+        max_file_count=policy.max_file_count,
+        rejected_extensions=sorted(policy.rejected_extensions),
     )
 
 

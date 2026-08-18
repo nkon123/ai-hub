@@ -87,6 +87,25 @@ class AssetListResponse(BaseModel):
     total: int
 
 
+class AssetUploadPolicyOut(BaseModel):
+    """GET /api/v1/assets/upload-policy response — P05/P12 read this *before*
+    the user picks files, so they can be warned about size/count/extension
+    limits ahead of time instead of only after a rejected `POST
+    /api/v1/assets` (D-034 실 서비스 검증). Deliberately only the four upload
+    limit values, never the full admin settings payload `GET
+    /api/v1/admin/settings` returns (root CLAUDE.md 제품 언어/구현 원칙: 최소
+    노출). These numbers are not secrets — they don't reveal anything an
+    attacker couldn't already learn by uploading files and observing which
+    ones get rejected — so exposing them to anyone who can reach the
+    registration screens creates no new risk.
+    """
+
+    max_single_file_bytes: int
+    max_total_request_bytes: int
+    max_file_count: int
+    rejected_extensions: list[str]
+
+
 class ManifestValidateRequest(BaseModel):
     """P05 자산 등록 Wizard의 사전(pre-submit) 검증 — `POST /api/v1/assets`와
     달리 아무것도 저장하지 않는다. `type`은 `_MANIFEST_TYPE_TO_SCHEMA`의 키와

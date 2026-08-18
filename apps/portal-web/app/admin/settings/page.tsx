@@ -120,6 +120,13 @@ interface AssetSizeExtensionPolicySection {
   desktop_bundle_max_compression_ratio: number | null;
   desktop_bundle_forbidden_archive_extensions: string[] | null;
   desktop_bundle_forbidden_executable_extensions: string[] | null;
+  // 자산 등록(POST /api/v1/assets) 업로드 제한 — portal_api.routers.admin의
+  // AssetSizeExtensionPolicySectionOut에 오늘 추가된 필드들. 편집 기능은
+  // 없다(정책은 파일이며 배포 단계 설정 — 아래 카드에 그대로 밝힌다).
+  asset_upload_max_single_file_bytes: number | null;
+  asset_upload_max_total_request_bytes: number | null;
+  asset_upload_max_file_count: number | null;
+  asset_upload_rejected_extensions: string[] | null;
   parse_error: string | null;
 }
 
@@ -676,6 +683,36 @@ export default function AdminSettingsPage() {
                 <ErrorBanner message={data.asset_size_extension_policy.parse_error} />
               </div>
             )}
+            <div className="mb-4 rounded-lg border border-border bg-slate-50 p-3">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <p className="text-caption font-semibold text-text-secondary">
+                  자산 등록 업로드 제한 (M02, POST /api/v1/assets)
+                </p>
+                <span className="text-[11px] text-text-muted">
+                  편집 불가 — 정책 파일 기반 배포 단계 설정입니다.
+                </span>
+              </div>
+              <ul className="list-disc space-y-0.5 pl-4 text-body text-text-secondary">
+                <li>
+                  파일당 최대 크기:{" "}
+                  {formatBytes(data.asset_size_extension_policy.asset_upload_max_single_file_bytes)}
+                </li>
+                <li>
+                  요청 전체 최대 크기:{" "}
+                  {formatBytes(data.asset_size_extension_policy.asset_upload_max_total_request_bytes)}
+                </li>
+                <li>
+                  최대 파일 개수:{" "}
+                  {data.asset_size_extension_policy.asset_upload_max_file_count ?? "미기재"}개
+                </li>
+              </ul>
+              <div className="mt-1 flex flex-wrap gap-1">
+                {(data.asset_size_extension_policy.asset_upload_rejected_extensions ?? []).map((ext) => (
+                  <Pill key={ext}>{ext}</Pill>
+                ))}
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
               <div>
                 <p className="mb-1 text-caption font-semibold text-text-secondary">

@@ -98,6 +98,34 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
 
+  /api/v1/assets/upload-policy:
+    get:
+      tags: [assets]
+      summary: Get inbound asset-upload limits (size/count/extension)
+      description: |
+        Read-only upload limits enforced by `POST /api/v1/assets` — max
+        single file size, max total request size, max file count, rejected
+        extensions. Lets the registration screens (P05, P12) show these
+        limits before the user picks files, and validate client-side before
+        submitting. Gated on the same permission as `POST /api/v1/assets`
+        (`ASSET_CREATE`) since anyone who can register an asset needs to see
+        its limits; this is a narrower, non-admin-gated view of the same
+        four numbers `GET /api/v1/admin/settings` already exposes to ADMIN.
+        Registered before `/api/v1/assets/{asset_id}` so the literal path is
+        not shadowed by that route's single-segment catch-all.
+      operationId: get_asset_upload_policy
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetUploadPolicy"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
   /api/v1/assets/{asset_id}:
     get:
       tags: [assets]
@@ -2535,6 +2563,22 @@ components:
           type: integer
         total:
           type: integer
+
+    AssetUploadPolicy:
+      type: object
+      required:
+        [max_single_file_bytes, max_total_request_bytes, max_file_count, rejected_extensions]
+      properties:
+        max_single_file_bytes:
+          type: integer
+        max_total_request_bytes:
+          type: integer
+        max_file_count:
+          type: integer
+        rejected_extensions:
+          type: array
+          items:
+            type: string
 
     AssetDetail:
       allOf:

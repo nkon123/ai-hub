@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   CheckCircle2,
   Loader2,
@@ -11,6 +11,87 @@ import {
   XCircle,
 } from "lucide-react";
 import { Button, Card, ErrorBanner, FormField, PageHeader, inputClass } from "../../_components/ui";
+
+// GET /api/v1/assets/upload-policy (D-034 실 서비스 검증) — a new endpoint,
+// so it follows the module's stated convention for new code
+// (`NEXT_PUBLIC_API_BASE`, absolute URL), unlike this file's existing calls
+// which use the relative `/api/*` + next.config.mjs rewrite pattern that
+// predates that convention (apps/portal-web/CLAUDE.md "이 모듈의 경계").
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
+
+interface UploadPolicy {
+  maxSingleFileBytes: number;
+  maxTotalRequestBytes: number;
+  maxFileCount: number;
+  rejectedExtensions: string[];
+}
+
+type UploadPolicyState =
+  | { status: "loading" }
+  | { status: "ok"; policy: UploadPolicy }
+  | { status: "unknown"; message: string };
+
+function formatBytesKo(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+
+/** 편의용 사전 검사 — 최종 판정은 서버(POST /api/v1/assets)가 한다. 통과해도
+ * 서버 오류 처리를 건너뛰지 않는다. */
+function checkFilesAgainstPolicy(files: File[], policy: UploadPolicy): string[] {
+  const problems: string[] = [];
+  if (files.length > policy.maxFileCount) {
+    problems.push(
+      `업로드 파일 개수(${files.length}개)가 허용된 최대치(${policy.maxFileCount}개)를 초과했습니다.`
+    );
+  }
+  let total = 0;
+  for (const f of files) {
+    total += f.size;
+    const ext = f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".")).toLowerCase() : "";
+    if (policy.rejectedExtensions.includes(ext)) {
+      problems.push(`'${f.name}' 파일의 확장자(${ext || "(없음)"})는 허용되지 않습니다.`);
+    }
+    if (f.size > policy.maxSingleFileBytes) {
+      problems.push(
+        `'${f.name}' 파일 크기(${formatBytesKo(f.size)})가 허용된 최대치(${formatBytesKo(policy.maxSingleFileBytes)})를 초과했습니다.`
+      );
+    }
+  }
+  if (total > policy.maxTotalRequestBytes) {
+    problems.push(
+      `전체 파일 크기(${formatBytesKo(total)})가 허용된 최대치(${formatBytesKo(policy.maxTotalRequestBytes)})를 초과했습니다.`
+    );
+  }
+  return problems;
+}
+
+async function safeJson(res: Response): Promise<any> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
+}
+
+interface ServerErrorInfo {
+  message: string;
+  traceId?: string;
+  schemaErrors?: string[];
+  permission?: boolean;
+}
+
+function extractServerError(status: number, body: any): ServerErrorInfo {
+  const message: string =
+    body?.error?.message ?? body?.detail ?? `요청을 처리하지 못했습니다. (HTTP ${status})`;
+  return {
+    message,
+    traceId: body?.error?.trace_id,
+    schemaErrors: body?.error?.details?.errors,
+    permission: status === 403,
+  };
+}
 
 // AI 추천이 지원하는 확장자 — 두 갈래로 나뉜다.
 // 1) 브라우저가 client-side로 텍스트를 바로 읽을 수 있는 형식(.md/.txt류).
@@ -76,7 +157,7 @@ export default function NewKnowledgePage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ assetVersionId: string; assetId: string } | null>(null);
   const [jobStatus, setJobStatus] = useState<IndexingJob | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<ServerErrorInfo | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
   // 이미 사용자가 입력한 칸에 대한 추천만 담긴다(빈 칸은 곧바로 채우므로
@@ -85,6 +166,52 @@ export default function NewKnowledgePage() {
     name: string | null;
     description: string | null;
   } | null>(null);
+
+  // 파일 선택 "전"에 한도를 먼저 보여주고, 선택 "직후" 클라이언트에서 검사한다
+  // — 다 올린 뒤 서버가 거절하는 일을 줄이기 위한 편의 기능일 뿐, 최종
+  // 판정은 여전히 서버(POST /api/v1/assets)가 한다. 한도 조회가 실패해도
+  // 업로드 자체는 막지 않는다(대신 "확인하지 못했습니다"를 표시).
+  const [uploadPolicyState, setUploadPolicyState] = useState<UploadPolicyState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    fetch(`${API_BASE}/api/v1/assets/upload-policy`, {
+      headers: { Authorization: "Bearer dev-user-token" },
+    })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          const body = await safeJson(res);
+          setUploadPolicyState({
+            status: "unknown",
+            message: body?.error?.message ?? `한도를 확인하지 못했습니다. (HTTP ${res.status})`,
+          });
+          return;
+        }
+        const body = await res.json();
+        setUploadPolicyState({
+          status: "ok",
+          policy: {
+            maxSingleFileBytes: body.max_single_file_bytes,
+            maxTotalRequestBytes: body.max_total_request_bytes,
+            maxFileCount: body.max_file_count,
+            rejectedExtensions: (body.rejected_extensions ?? []).map((e: string) => e.toLowerCase()),
+          },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setUploadPolicyState({ status: "unknown", message: "한도를 확인하지 못했습니다. 네트워크 상태를 확인해 주세요." });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const fileViolations =
+    uploadPolicyState.status === "ok" && files.length > 0
+      ? checkFilesAgainstPolicy(files, uploadPolicyState.policy)
+      : [];
 
   function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
     if (e.target.files) {
@@ -210,8 +337,15 @@ export default function NewKnowledgePage() {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (files.length === 0) { setError("문서 파일을 선택하세요."); return; }
-    if (!name.trim()) { setError("이름을 입력하세요."); return; }
+    if (files.length === 0) { setError({ message: "문서 파일을 선택하세요." }); return; }
+    if (!name.trim()) { setError({ message: "이름을 입력하세요." }); return; }
+    // 클라이언트 사전 검사에서 걸린 위반이 있으면 제출 전에 막는다 — 편의
+    // 기능이지만 다 올린 뒤 거절당하는 것보다는 낫다. 한도를 확인하지
+    // 못했을 때(status "unknown"/"loading")는 막지 않고 서버 판정에 맡긴다.
+    if (fileViolations.length > 0) {
+      setError({ message: fileViolations.join(" ") });
+      return;
+    }
 
     setSubmitting(true);
     setError(null);
@@ -251,8 +385,9 @@ export default function NewKnowledgePage() {
         body: formData,
       });
       if (!res.ok) {
-        const err = await res.json();
-        throw new Error(err.detail ?? `HTTP ${res.status}`);
+        const body = await safeJson(res);
+        setError(extractServerError(res.status, body));
+        return;
       }
       const version = await res.json();
       setResult({ assetVersionId: version.id, assetId: version.asset_id });
@@ -260,7 +395,7 @@ export default function NewKnowledgePage() {
       // Poll indexing job status
       pollJobStatus(version.asset_id);
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError({ message: e instanceof Error ? e.message : String(e) });
     } finally {
       setSubmitting(false);
     }
@@ -341,6 +476,32 @@ export default function NewKnowledgePage() {
       ) : (
         <form onSubmit={handleSubmit}>
           <div className="flex flex-col gap-5">
+            {/* 파일을 고르기 "전"에 한도를 먼저 보여준다 — 최종 판정은 서버가
+                한다(POST /api/v1/assets). 한도 조회 실패는 업로드를 막지
+                않되 조용히 넘기지 않는다. */}
+            {uploadPolicyState.status === "loading" && (
+              <p className="text-caption text-text-muted">업로드 한도를 확인하는 중...</p>
+            )}
+            {uploadPolicyState.status === "unknown" && (
+              <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-caption text-warning">
+                업로드 한도를 확인하지 못했습니다: {uploadPolicyState.message} 업로드는 계속 진행할 수 있으며,
+                최종 판정은 서버가 합니다.
+              </div>
+            )}
+            {uploadPolicyState.status === "ok" && (
+              <div className="rounded-lg bg-slate-50 px-3 py-2.5 text-caption text-text-secondary">
+                파일 1개당 최대 {formatBytesKo(uploadPolicyState.policy.maxSingleFileBytes)} · 전체 합계 최대{" "}
+                {formatBytesKo(uploadPolicyState.policy.maxTotalRequestBytes)} · 최대{" "}
+                {uploadPolicyState.policy.maxFileCount}개
+                {uploadPolicyState.policy.rejectedExtensions.length > 0 && (
+                  <>
+                    {" "}
+                    · 허용되지 않는 확장자: {uploadPolicyState.policy.rejectedExtensions.join(", ")}
+                  </>
+                )}
+              </div>
+            )}
+
             <FormField label="문서 업로드" required>
               <div
                 className="cursor-pointer rounded-card border-2 border-dashed border-border bg-slate-50 px-5 py-8 text-center transition-colors hover:border-brand-400"
@@ -369,6 +530,16 @@ export default function NewKnowledgePage() {
                 className="hidden"
               />
             </FormField>
+
+            {/* 파일을 고른 직후 클라이언트에서 먼저 검사한 결과 — 편의용이며
+                최종 판정이 아니다. */}
+            {fileViolations.length > 0 && (
+              <div className="space-y-1">
+                {fileViolations.map((v, i) => (
+                  <ErrorBanner key={i} message={v} />
+                ))}
+              </div>
+            )}
 
             <div className="flex items-center justify-between gap-3 rounded-card border border-border bg-slate-50 px-4 py-3">
               <div className="text-caption text-text-secondary">
@@ -506,9 +677,32 @@ export default function NewKnowledgePage() {
               </FormField>
             </div>
 
-            {error && <ErrorBanner message={error} />}
+            {error && (
+              <div className="space-y-1">
+                {error.permission ? (
+                  <div className="rounded-lg border border-warning/30 bg-warning/5 px-4 py-3 text-body text-warning">
+                    {error.message}
+                  </div>
+                ) : (
+                  <ErrorBanner message={error.message} />
+                )}
+                {error.schemaErrors && error.schemaErrors.length > 0 && (
+                  <ul className="ml-4 list-disc text-caption text-danger">
+                    {error.schemaErrors.map((e, i) => (
+                      <li key={i}>{e}</li>
+                    ))}
+                  </ul>
+                )}
+                {error.traceId && <p className="text-caption text-text-muted">Trace ID: {error.traceId}</p>}
+              </div>
+            )}
 
-            <Button type="submit" size="lg" disabled={submitting} className="self-start">
+            <Button
+              type="submit"
+              size="lg"
+              disabled={submitting || fileViolations.length > 0}
+              className="self-start"
+            >
               {submitting && <Loader2 size={16} className="animate-spin" />}
               {submitting ? "등록 중..." : "지식 등록 시작"}
             </Button>

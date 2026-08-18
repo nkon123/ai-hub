@@ -68,6 +68,106 @@ import { ASSET_TYPE_LABEL } from "../../../_components/review-meta";
 const ASSET_CREATE_ROLES = new Set(["CREATOR", "ADMIN"]);
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
+// GET /api/v1/assets/upload-policy (D-034 실 서비스 검증) — new endpoint, so
+// it follows the module's stated convention for new code
+// (`NEXT_PUBLIC_API_BASE`, absolute URL) even though the rest of this file's
+// existing calls use the relative `/api/*` + next.config.mjs rewrite
+// pattern that predates that convention (apps/portal-web/CLAUDE.md "이
+// 모듈의 경계"). Not changing the existing calls — out of scope here.
+interface UploadPolicy {
+  maxSingleFileBytes: number;
+  maxTotalRequestBytes: number;
+  maxFileCount: number;
+  rejectedExtensions: string[];
+}
+
+type UploadPolicyState =
+  | { status: "loading" }
+  | { status: "ok"; policy: UploadPolicy }
+  | { status: "unknown"; message: string };
+
+function formatBytesKo(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(0)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(0)}KB`;
+  return `${n}B`;
+}
+
+/** 파일 선택 "전"에 보여줄 수 있는 정도의 검사 — 편의용일 뿐 최종 판정이
+ * 아니다. 서버(`POST /api/v1/assets`)가 최종 판정하며, 이 검사를 통과했다고
+ * 서버 오류 처리를 건너뛰지 않는다(아래 handleSubmit은 이 검사와 무관하게
+ * 항상 서버 응답을 그대로 해석한다). */
+function checkFilesAgainstPolicy(files: File[], policy: UploadPolicy): string[] {
+  const problems: string[] = [];
+  if (files.length > policy.maxFileCount) {
+    problems.push(
+      `업로드 파일 개수(${files.length}개)가 허용된 최대치(${policy.maxFileCount}개)를 초과했습니다.`
+    );
+  }
+  let total = 0;
+  for (const f of files) {
+    total += f.size;
+    const ext = f.name.includes(".") ? f.name.slice(f.name.lastIndexOf(".")).toLowerCase() : "";
+    if (policy.rejectedExtensions.includes(ext)) {
+      problems.push(`'${f.name}' 파일의 확장자(${ext || "(없음)"})는 허용되지 않습니다.`);
+    }
+    if (f.size > policy.maxSingleFileBytes) {
+      problems.push(
+        `'${f.name}' 파일 크기(${formatBytesKo(f.size)})가 허용된 최대치(${formatBytesKo(policy.maxSingleFileBytes)})를 초과했습니다.`
+      );
+    }
+  }
+  if (total > policy.maxTotalRequestBytes) {
+    problems.push(
+      `전체 파일 크기(${formatBytesKo(total)})가 허용된 최대치(${formatBytesKo(policy.maxTotalRequestBytes)})를 초과했습니다.`
+    );
+  }
+  return problems;
+}
+
+function useUploadPolicy(token: string): UploadPolicyState {
+  const [state, setState] = useState<UploadPolicyState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    setState({ status: "loading" });
+    fetch(`${API_BASE}/api/v1/assets/upload-policy`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then(async (res) => {
+        if (cancelled) return;
+        if (!res.ok) {
+          // 한도 조회 실패는 업로드를 막지 않는다 — 다만 조용히 넘기지 않고
+          // 표시한다("한도를 확인하지 못했습니다"). 최종 판정은 서버가 한다.
+          const body = await safeJson(res);
+          setState({
+            status: "unknown",
+            message: body?.error?.message ?? `한도를 확인하지 못했습니다. (HTTP ${res.status})`,
+          });
+          return;
+        }
+        const body = await res.json();
+        setState({
+          status: "ok",
+          policy: {
+            maxSingleFileBytes: body.max_single_file_bytes,
+            maxTotalRequestBytes: body.max_total_request_bytes,
+            maxFileCount: body.max_file_count,
+            rejectedExtensions: (body.rejected_extensions ?? []).map((e: string) => e.toLowerCase()),
+          },
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setState({ status: "unknown", message: "한도를 확인하지 못했습니다. 네트워크 상태를 확인해 주세요." });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [token]);
+  return state;
+}
+
 // Python 시그니처 파일 선택 — 클라이언트에서 텍스트로 읽어 기존 textarea를
 // 채울 뿐, 파일 자체는 업로드/저장/실행하지 않는다. 두 한계 모두 사용자에게
 // 이유를 보여주고 거부한다(자르지 않음 — 잘린 코드는 다른 시그니처로
@@ -409,6 +509,11 @@ function Wizard({ type }: { type: WizardType }) {
   const [manifestGenerated, setManifestGenerated] = useState(false);
 
   const [files, setFiles] = useState<File[]>([]);
+  const uploadPolicyState = useUploadPolicy(role.token);
+  const fileViolations =
+    uploadPolicyState.status === "ok" && files.length > 0
+      ? checkFilesAgainstPolicy(files, uploadPolicyState.policy)
+      : [];
 
   // 유형별 예시 Manifest/파일 — GET /assets/new/{type}/examples가
   // fixtures/valid/*를 그대로 서버에서 읽어 돌려준다 (route.ts 참고). 실
@@ -515,7 +620,7 @@ function Wizard({ type }: { type: WizardType }) {
           parsed.value.tool_name.trim().length > 0
         );
       case 3:
-        return templateFileMatched;
+        return templateFileMatched && fileViolations.length === 0;
       case 4:
         return validationPassed;
       default:
@@ -533,6 +638,7 @@ function Wizard({ type }: { type: WizardType }) {
           ? "MCP 서버 연결 이름과 Tool 호출 이름을 입력하세요."
           : "Manifest JSON을 입력하세요.";
       case 3:
+        if (fileViolations.length > 0) return fileViolations[0];
         return expectedTemplateFileName
           ? `업로드한 파일 중 "${expectedTemplateFileName}" 이름과 일치하는 파일이 없습니다.`
           : undefined;
@@ -742,6 +848,8 @@ function Wizard({ type }: { type: WizardType }) {
             templateFileMatched={templateFileMatched}
             manifestParsed={parsed.ok}
             example={example}
+            uploadPolicyState={uploadPolicyState}
+            fileViolations={fileViolations}
           />
         )}
 
@@ -1889,6 +1997,8 @@ function StepFiles({
   templateFileMatched,
   manifestParsed,
   example,
+  uploadPolicyState,
+  fileViolations,
 }: {
   type: WizardType;
   files: File[];
@@ -1897,6 +2007,8 @@ function StepFiles({
   templateFileMatched: boolean;
   manifestParsed: boolean;
   example: ExampleState;
+  uploadPolicyState: UploadPolicyState;
+  fileViolations: string[];
 }) {
   const exampleTemplate =
     example.status === "ok"
@@ -1906,6 +2018,33 @@ function StepFiles({
   return (
     <div className="space-y-4">
       <h2 className="text-card-title font-semibold text-text-primary">파일 업로드</h2>
+
+      {/* 파일을 고르기 "전"에 한도를 먼저 보여준다 — 다 올리고 나서 서버가
+          거절하는 것을 막지는 못하지만(서버가 최종 판정), 사용자가 미리
+          알고 고를 수 있게 한다. */}
+      {uploadPolicyState.status === "loading" && (
+        <p className="text-caption text-text-muted">업로드 한도를 확인하는 중...</p>
+      )}
+      {uploadPolicyState.status === "unknown" && (
+        <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-caption text-warning">
+          업로드 한도를 확인하지 못했습니다: {uploadPolicyState.message} 업로드 자체는 계속 진행할 수 있으며,
+          최종 판정은 서버가 합니다.
+        </div>
+      )}
+      {uploadPolicyState.status === "ok" && (
+        <div className="rounded-lg bg-slate-50 px-3 py-2.5 text-caption text-text-secondary">
+          파일 1개당 최대 {formatBytesKo(uploadPolicyState.policy.maxSingleFileBytes)} · 전체 합계 최대{" "}
+          {formatBytesKo(uploadPolicyState.policy.maxTotalRequestBytes)} · 최대{" "}
+          {uploadPolicyState.policy.maxFileCount}개
+          {uploadPolicyState.policy.rejectedExtensions.length > 0 && (
+            <>
+              {" "}
+              · 허용되지 않는 확장자: {uploadPolicyState.policy.rejectedExtensions.join(", ")}
+            </>
+          )}
+        </div>
+      )}
+
       {type === "prompt" ? (
         <div className="space-y-3">
           <p className="text-body text-text-secondary">
@@ -1970,6 +2109,17 @@ function StepFiles({
         <FormField label="Template 파일" error={`"${expectedTemplateFileName}" 이름의 파일이 업로드되지 않았습니다.`}>
           <div />
         </FormField>
+      )}
+
+      {/* 파일을 고른 직후 클라이언트에서 먼저 검사한 결과 — 편의용이며 최종
+          판정이 아니다. 통과해도 서버(POST /api/v1/assets)가 다시 검사하며,
+          여기 통과가 서버 오류 처리를 대신하지 않는다. */}
+      {fileViolations.length > 0 && (
+        <div className="space-y-1">
+          {fileViolations.map((v, i) => (
+            <ErrorBanner key={i} message={v} />
+          ))}
+        </div>
       )}
     </div>
   );
