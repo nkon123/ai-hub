@@ -4,6 +4,26 @@
 
 ## 2026-08-18 추가 진행
 
+- **자산 업로드에 정책 기반 상한과 무결성 기록 (M02/M06)**: 사용자 요구("포탈 자산 업로드 기능"). 조사해 보니 **업로드 기능이 없는 게 아니라 받는 쪽 방어가 없었다** — `POST /api/v1/assets`는 multipart를 받으면서 크기 상한도, 파일 개수 제한도, 형식 제한도 없고 `await upload.read()`가 파일 전체를 메모리에 올렸으며 checksum도 남기지 않았다.
+  - **이 저장소는 같은 문제를 이미 두 번 제대로 풀었다** — `knowledge_text_extract.py`가 "Content-Length 위조와 무관하게" 청크 단위로 상한을 강제하고, Desktop Bundle 설치가 `bundle-install-policy.json`으로 크기·압축률·확장자를 막는다. 즉 **폐쇄망으로 나가는 경로는 단단한데 들어오는 자산 등록만 그 규율에서 빠져 있었다.** 새 패턴을 만들지 않고 그 둘을 그대로 가져왔다.
+  - 상한은 코드가 아니라 **정책 파일**에 둔다(`asset-upload-policy` 스키마+인스턴스, `bundle-install-policy` 쌍과 같은 형태). 값과 근거를 인스턴스의 `_rationale`에 남겼다 — 단일 50MB / 요청 합계 150MB / 20개 / 실행·아카이브 확장자 거부. **거부 확장자를 나가는 쪽 목록과 일부러 동일하게** 맞춰 등록이 둘 중 약한 검문소가 되지 않게 했다.
+  - 강제는 스트리밍(1MB 청크)으로 하고, 거절 시 **이미 쓴 부분 파일을 지운다**. sha256은 같은 패스에서 계산해 `storage_path/checksums.sha256`에 기록한다(DB 컬럼 추가 없음). 각 거절은 구분되는 오류코드와 **문제 파일명**을 준다. 정책 파일이 없으면 fail-open이 아니라 내장 기본값으로 동작하고 그 사실을 로그에 남긴다.
+  - **부수 정정**: P15 관리자 화면 주석이 "업로드 제한이 없다"고 적고 있었는데 이제 거짓이 되므로 실제 정책을 읽어 노출하도록 고쳤다.
+  - **검증**: `uv run pytest tests/ -q` 1274 → **1281 passed**(신규 7과 일치), `ruff` 0건, `validate-schemas`/`contract-test` 통과. `Content-Length` 위조와 부분 파일 미잔존을 각각 테스트로 고정. `.py` 거부가 P05의 Python 시그니처 불러오기를 깨지 않음도 확인(그쪽은 파일 업로드가 아니라 JSON 본문을 받는 별도 엔드포인트). **미검증**: e2e/security 스위트, P15 화면 육안.
+
+- **대화에서 만든 Agent 초안을 Portal에 DRAFT로 등록 (M04, PR2)**: 어제 PR1(파일 내보내기)에서 의도적으로 열지 않은 절반. 요구는 *"권장안 좋은데, 폐쇄형에서는 올리면 안 돼"*.
+  - **폐쇄형 판정에 새 설정을 만들지 않았다** — `PortalSettingsStore`의 `baseUrl`/`token` 미설정이 곧 그 신호다. 둘 중 하나라도 없으면 업로드 경로가 **아예 나타나지 않고 호출도 시도하지 않는다**(`attempted:false`로 단락). 파일 내보내기는 Portal 설정과 무관하게 그대로 동작한다 — 폐쇄형의 유일한 경로다.
+  - **DRAFT로만 올린다.** 승인·게시로 이어지는 호출이 신규 코드에 0건이며(`approve`/`publish`/`review`/`deployments` 참조 없음), D-086 로컬 등록 직행도 PR1과 동일하게 금지다(D-088 근거).
+  - Agent와 Prompt는 별개 자산이라 **호출이 두 번이고 롤백 API가 없다.** 그래서 부분 실패를 숨기지 않고 올라간 쪽 식별자와 실패한 쪽 오류를 각각 보여준다 — 지어낸 롤백보다 정직한 보고가 낫다.
+  - 같은 브랜치에서 방금 들어간 업로드 방어의 오류코드 4종과 `VALIDATION_ERROR` 필드별 목록, 403을 **각각 구분해** 표시한다.
+  - **부수 정정**: 내보내기 완료 화면의 "이 Desktop은 아무것도 Portal로 전송하지 않았습니다"는 Portal이 설정되면 거짓이 되므로 고쳤다.
+  - **검증**: Desktop `pnpm test` 717 → **734 passed**(신규 17과 일치), typecheck 클린. **실 종단 확인**: portal-api를 격리된 임시 sqlite+storage로 8003에 띄워 실제 코드로 HTTP 호출 — DRAFT 2건 생성, `template.md`+`checksums.sha256` 기록, `ASSET_CREATE` 없는 토큰은 403으로 구분됨 확인(실 `portal.db`는 건드리지 않음). **미검증**: Electron 창 미실행 — 다이얼로그 실제 렌더링.
+
+- **Windows: start-all 에 Desktop Client 편입, Electron 버전 불일치 진단 (scripts/docs)**: 사용자 제보 — Windows에서 Desktop이 안 뜨고 Electron이 31.7로 보인다. **원인은 버전이 낮은 게 아니라 저장소가 고정한 43.3.0이 실제로 설치되지 않은 것**이었다. `install-node.ps1`이 기본적으로 `ELECTRON_SKIP_BINARY_DOWNLOAD=1`로 바이너리를 건너뛰므로(사내망 다운로드 실패가 잦아서), 그 상태의 `pnpm dev`는 `electron .`이 **PATH의 전역 Electron**으로 넘어간다. 증상만으로는 원인을 알 수 없다.
+  - `_preflight.ps1`에 `Assert-ElectronReady`(바이너리 존재 + 고정 버전 일치 확인), `install-node.ps1`에 `-ReinstallElectron`, `start-desktop-client.ps1` 신규 + `start-all.ps1` 편입(`-NoDesktop`으로 제외 가능).
+  - Runbook §7.0 신규 — **D-086의 `AGENT_RUNTIME_LOCAL_AGENT_ROOTS`가 문서에 아예 없었다.** 예시를 쓰면서 두 함정을 확인해 명시했다: 이 값은 `assets`의 **상위** 디렉터리이며(§7.1의 search-runtime 값과 한 단계 다르다), JSON 배열로 파싱되므로 Windows 역슬래시를 슬래시로 바꿔야 한다.
+  - **미검증**: 이 머신에 `pwsh`가 없어 PowerShell 구문을 실행 검증하지 못했다.
+
 - **Prompt 제거 시 남던 로컬 Agent 등록을 무효로 표시 (M04, D-087 해소)**: 어제 남긴 간극. Agent 자산 제거만 등록 해제로 연쇄되고 **짝 Prompt 제거는 연쇄되지 않아**, 자산 화면과 채팅이 그 Agent를 여전히 선택 가능한 것으로 보여준 뒤 대화 시점에 원인이 드러나지 않는 오류로 실패했다.
   - **기록해 둔 두 선택지 중 어느 쪽도 택하지 않았다.** 연쇄 해제는 조용히 사라지게 만들고("왜 목록에서 없어졌지"), 해석 시점 오류 보고는 사용자가 대화를 시도해야만 알게 된다. 대신 **이미 도는 재조정 경로**(`computeLocalAgentRegistrationReconcile`, 자산 화면 진입 시 실행)에 검사를 얹었다 — 새 트리거도 새 필드도 필요 없었다. 등록 레코드의 `promptLabel` 스냅샷이 정확히 이 목적으로 이미 저장돼 있었다.
   - 강등은 `reason="prompt_removed"`와 **사라진 Prompt를 이름으로 지목하는** 메시지를 갖는다. agent-runtime의 유령 등록도 best-effort로 해제하되 **그 호출이 실패해도 로컬 강등은 성립**한다. **자동 재등록은 하지 않는다**(Prompt가 다시 설치돼도 ACTIVE로 되돌리지 않는다 — 짝을 고른 것은 사용자의 결정이다).
