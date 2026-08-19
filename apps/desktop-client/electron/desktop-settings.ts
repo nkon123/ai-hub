@@ -66,6 +66,22 @@ export const MAX_CONCURRENT_RUNS_VALUE = 1;
 export const MAX_CONCURRENT_RUNS_REASON =
   "현재 Desktop은 창 하나에서 한 번에 하나의 대화만 실행할 수 있고, Local Agent Runtime에도 동시 실행 수를 제한하는 기능이 없습니다. 값을 바꿔도 실제 동작은 달라지지 않으므로 편집을 제공하지 않습니다 (open-decisions.md D-074).";
 
+// 실사용 제보(2026-08-19) — "채팅에서 로컬 Tool을 직접 실행하니 30초에서
+// 끊긴다"(`local-tool-runner.ts`의 옛 `LOCAL_TOOL_TIMEOUT_MS` 고정값). 값만
+// 올리는 것은 취소 수단(`DesktopBridge.cancelLocalToolInvocation`)이 함께
+// 있을 때만 안전하다 — 멈춘 Tool을 빠져나올 방법이 없으면 긴 타임아웃은
+// 지금보다 나쁘다. 기본 5분: 실제 작업을 하는 Tool(파일 처리, 외부 조회
+// 등)에는 30초가 너무 짧다는 것이 실사용으로 드러났고, 이제 실행 중 취소가
+// 가능하므로 감당 가능하다. 상한 60분: 스케줄 경로의 상한(360분,
+// `schedule-store.ts`)보다 훨씬 낮다 — 대화형은 사람이 화면 앞에서 기다리는
+// 경로이므로, 무인 스케줄과 같은 긴 상한을 둘 이유가 없고 오히려 사람이
+// 잊고 방치한 대화창이 오래 프로세스를 붙잡는 것을 제한한다. 하한 1분:
+// "0분"처럼 사실상 즉시 타임아웃되는 무의미한 설정을 막는다(스케줄
+// 하한과 동일한 근거).
+export const DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES = 5;
+export const MIN_LOCAL_TOOL_TIMEOUT_MINUTES = 1;
+export const MAX_LOCAL_TOOL_TIMEOUT_MINUTES = 60;
+
 interface DesktopSettingsFile {
   clientDisplayName: string | null;
   siteId: string | null;
@@ -77,6 +93,7 @@ interface DesktopSettingsFile {
   searchRuntimeBaseUrl: string;
   agentRuntimeBaseUrl: string;
   pythonInterpreterPath: string | null;
+  localToolTimeoutMinutes: number;
   setupCompletedAt: string | null;
   updatedAt: string | null;
 }
@@ -94,6 +111,7 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   // D-084: 절대 `python`/`python3` PATH 기본값으로 대체하지 않는다 — 값이
   // 없으면 로컬 Tool 실행 자체가 막힌다(구현 원칙 7).
   pythonInterpreterPath: null,
+  localToolTimeoutMinutes: DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
   setupCompletedAt: null,
   updatedAt: null,
 };
@@ -123,6 +141,14 @@ export class DesktopSettingsStore {
         agentRuntimeBaseUrl:
           typeof parsed.agentRuntimeBaseUrl === "string" ? parsed.agentRuntimeBaseUrl : DEFAULT_RUNTIME_BASE_URL,
         pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
+        // 레거시 정규화 — 이 필드 도입 이전 설정 파일에는 없다. `schedule-store.ts`의
+        // `timeoutMinutes ?? DEFAULT_SCHEDULE_TIMEOUT_MINUTES`와 동일한 스타일:
+        // 필드가 없거나 숫자가 아니면 기본값(5분)으로 채운다 — "필드 없음"을
+        // "0분"이나 "무제한"으로 오해하지 않는다.
+        localToolTimeoutMinutes:
+          typeof parsed.localToolTimeoutMinutes === "number" && Number.isFinite(parsed.localToolTimeoutMinutes)
+            ? parsed.localToolTimeoutMinutes
+            : DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       };
@@ -150,6 +176,7 @@ export class DesktopSettingsStore {
       searchRuntimeBaseUrl: current.searchRuntimeBaseUrl,
       agentRuntimeBaseUrl: current.agentRuntimeBaseUrl,
       pythonInterpreterPath: current.pythonInterpreterPath,
+      localToolTimeoutMinutes: current.localToolTimeoutMinutes,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
       updatedAt: current.updatedAt,
@@ -217,6 +244,21 @@ export class DesktopSettingsStore {
       // 문자열은 "미설정"(null)으로 되돌린다 — 다른 선택형 문자열 필드
       // (clientDisplayName 등)와 동일한 trim -> empty-to-null 관례.
       next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
+    }
+    if (patch.localToolTimeoutMinutes !== undefined) {
+      const minutes = patch.localToolTimeoutMinutes;
+      if (
+        !Number.isFinite(minutes) ||
+        minutes < MIN_LOCAL_TOOL_TIMEOUT_MINUTES ||
+        minutes > MAX_LOCAL_TOOL_TIMEOUT_MINUTES
+      ) {
+        return {
+          ok: false,
+          error: `대화형 로컬 Tool 실행 상한은 ${MIN_LOCAL_TOOL_TIMEOUT_MINUTES}분에서 ${MAX_LOCAL_TOOL_TIMEOUT_MINUTES}분 사이여야 합니다.`,
+          settings: this.getPublic(),
+        };
+      }
+      next.localToolTimeoutMinutes = minutes;
     }
 
     next.updatedAt = new Date().toISOString();

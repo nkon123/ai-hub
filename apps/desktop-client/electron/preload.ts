@@ -271,8 +271,11 @@ const bridge: DesktopBridge = {
   invokeLocalTool: (
     id: string,
     args: Record<string, unknown>,
-    options?: { aiSelected?: boolean },
+    options?: { aiSelected?: boolean; invocationId?: string },
   ): Promise<LocalToolInvocationResult> => ipcRenderer.invoke("localTool:invoke", id, args, options),
+
+  cancelLocalToolInvocation: (invocationId: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("localTool:cancelInvocation", invocationId),
 
   approveLocalToolExecution: (id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
     ipcRenderer.invoke("localTool:approveExecution", id),

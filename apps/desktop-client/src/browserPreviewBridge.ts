@@ -31,6 +31,14 @@ const CONVERSATIONS_STORAGE_KEY = "desktop-client:browser-preview-conversations:
 const DEFAULT_EMBEDDING_MODEL_ALIAS = "default-embedding";
 const MAX_CONCURRENT_RUNS_REASON =
   "브라우저 개발 모드와 Desktop 모두 한 번에 하나의 대화만 실행합니다. 현재 이 값은 편집할 수 없습니다.";
+// 실사용 제보(2026-08-19) — `electron/desktop-settings.ts`의 값과 동일하게
+// 다시 선언한다. 그 모듈은 `node:fs`를 import하는 Main 전용 모듈이라 이
+// 렌더러 파일이 직접 import할 수 없다(이 파일 상단 import 목록이 pure
+// module만 담는 것과 같은 이유 — `SettingsScreen.tsx`도 같은 값을 다시
+// 선언해 둔다).
+const DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES = 5;
+const MIN_LOCAL_TOOL_TIMEOUT_MINUTES = 1;
+const MAX_LOCAL_TOOL_TIMEOUT_MINUTES = 60;
 
 // 브라우저 개발 모드는 파일시스템/Electron IPC가 전혀 없어 실제로 수행할 수
 // 없는 동작에 공통으로 쓰는 안내 문구 — 항상 이 문구로 명시적으로 거부하고,
@@ -69,6 +77,7 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     // 실행할 방법 자체가 없다 — 값이 있어도 의미가 없으므로 항상 미설정으로
     // 시작한다.
     pythonInterpreterPath: null,
+    localToolTimeoutMinutes: DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
     maxConcurrentRuns: { value: 1, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
     setupCompletedAt: null,
     updatedAt: null,
@@ -127,6 +136,22 @@ export function applyBrowserPreviewSettingsPatch(
     next.pythonInterpreterPath = patch.pythonInterpreterPath.trim() || null;
   }
 
+  if (patch.localToolTimeoutMinutes !== undefined) {
+    const minutes = patch.localToolTimeoutMinutes;
+    if (
+      !Number.isFinite(minutes) ||
+      minutes < MIN_LOCAL_TOOL_TIMEOUT_MINUTES ||
+      minutes > MAX_LOCAL_TOOL_TIMEOUT_MINUTES
+    ) {
+      return {
+        ok: false,
+        error: `대화형 로컬 Tool 실행 상한은 ${MIN_LOCAL_TOOL_TIMEOUT_MINUTES}분에서 ${MAX_LOCAL_TOOL_TIMEOUT_MINUTES}분 사이여야 합니다.`,
+        settings: current,
+      };
+    }
+    next.localToolTimeoutMinutes = minutes;
+  }
+
   next.updatedAt = new Date().toISOString();
   return { ok: true, error: null, settings: next };
 }
@@ -150,6 +175,10 @@ function readSettings(): DesktopSettingsPublic {
       agentRuntimeBaseUrl:
         typeof parsed.agentRuntimeBaseUrl === "string" ? parsed.agentRuntimeBaseUrl : defaults.agentRuntimeBaseUrl,
       pythonInterpreterPath: typeof parsed.pythonInterpreterPath === "string" ? parsed.pythonInterpreterPath : null,
+      localToolTimeoutMinutes:
+        typeof parsed.localToolTimeoutMinutes === "number" && Number.isFinite(parsed.localToolTimeoutMinutes)
+          ? parsed.localToolTimeoutMinutes
+          : defaults.localToolTimeoutMinutes,
       setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
     };
@@ -590,6 +619,11 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       // 모드에서는 인터프리터 설정 여부와 무관하게 애초에 실행 경로 자체가
       // 없다(별도 이유가 필요하다는 Task Brief 지침).
       return { outcome: "spawn_error", message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async cancelLocalToolInvocation() {
+      // 위 이유로 취소할 진행 중인 실행이 이 경로에는 존재하지 않는다 —
+      // 조용히 성공한 척하지 않는다.
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
     async approveLocalToolExecution() {
       return { ok: false, tool: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };

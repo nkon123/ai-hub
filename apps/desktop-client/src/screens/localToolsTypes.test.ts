@@ -96,7 +96,7 @@ describe("formatArgsForConfirm", () => {
 });
 
 describe("formatInvocationOutcome", () => {
-  it("distinguishes all six outcomes", () => {
+  it("distinguishes all nine outcomes", () => {
     const cases: LocalToolInvocationResult[] = [
       { outcome: "success", result: { ok: true } },
       { outcome: "function_error", errorType: "ValueError", errorMessage: "bad" },
@@ -105,6 +105,8 @@ describe("formatInvocationOutcome", () => {
       { outcome: "oversized_output", limitBytes: 262_144 },
       { outcome: "spawn_error", message: "ENOENT" },
       { outcome: "interpreter_not_configured" },
+      { outcome: "user_denied" },
+      { outcome: "cancelled" },
     ];
     const titles = cases.map((c) => formatInvocationOutcome(c).title);
     expect(new Set(titles).size).toBe(titles.length); // all distinct
@@ -119,6 +121,31 @@ describe("formatInvocationOutcome", () => {
   it("interpreter_not_configured points at Settings", () => {
     const display = formatInvocationOutcome({ outcome: "interpreter_not_configured" });
     expect(display.detail).toContain("설정");
+  });
+
+  // 실사용 제보(2026-08-19) — 취소는 실패가 아니라 정상 결과다. user_denied와
+  // 같은 muted 톤이어야 하고, danger/warning으로 보이면 안 된다.
+  it("cancelled is shown as a normal (muted) result, not a failure", () => {
+    const display = formatInvocationOutcome({ outcome: "cancelled" });
+    expect(display.tone).toBe("muted");
+    expect(display.tone).not.toBe("danger");
+    expect(display.tone).not.toBe("warning");
+    expect(display.title).not.toContain("실패");
+    expect(display.title).not.toContain("오류");
+  });
+
+  // 실사용 제보(2026-08-19) — 타임아웃 메시지는 "무엇의 상한인지"와 그 값을
+  // 사람이 읽는 단위(분/초)로 담아야 한다. 원시 밀리초를 그대로 보여주지
+  // 않는다.
+  it("timeout names which cap was hit and shows the value in a human-readable unit", () => {
+    const fiveMinutes = formatInvocationOutcome({ outcome: "timeout", timeoutMs: 5 * 60_000 });
+    expect(fiveMinutes.detail).toContain("로컬 Tool 1회 호출 상한");
+    expect(fiveMinutes.detail).toContain("5분");
+    expect(fiveMinutes.detail).not.toContain("300000ms");
+    expect(fiveMinutes.detail).not.toContain("300000");
+
+    const thirtySeconds = formatInvocationOutcome({ outcome: "timeout", timeoutMs: 30_000 });
+    expect(thirtySeconds.detail).toContain("30초");
   });
 });
 

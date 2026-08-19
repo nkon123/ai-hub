@@ -10,6 +10,16 @@ export function formatBytes(bytes: number): string {
   return `${value.toFixed(1)}${units[unitIndex]}`;
 }
 
+/** 밀리초를 사람이 읽는 분/초 단위 문구로 바꾼다 — 원시 밀리초를 그대로
+ * 노출하지 않는다(실사용 제보 2026-08-19, `schedule-local-tool-runner.ts`의
+ * `describeTimeoutMs`와 같은 취지 — Main-only 모듈이라 렌더러에서 직접
+ * import할 수 없어 이 파일에 별도로 둔다). */
+export function formatDurationMs(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000}분`;
+  const totalSeconds = Math.round(ms / 1000);
+  return `${totalSeconds}초`;
+}
+
 export function formatDateTime(iso: string): string {
   try {
     return new Date(iso).toLocaleString("ko-KR");

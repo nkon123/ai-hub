@@ -5,7 +5,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DesktopSettingsStore, MAX_CONCURRENT_RUNS_VALUE } from "../desktop-settings";
+import {
+  DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
+  DesktopSettingsStore,
+  MAX_CONCURRENT_RUNS_VALUE,
+  MAX_LOCAL_TOOL_TIMEOUT_MINUTES,
+  MIN_LOCAL_TOOL_TIMEOUT_MINUTES,
+} from "../desktop-settings";
 
 let tmpDir: string;
 
@@ -30,6 +36,59 @@ describe("DesktopSettingsStore", () => {
     expect(settings.mcpServerUrl).toBe("http://127.0.0.1:8500");
     expect(settings.searchRuntimeBaseUrl).toBe("http://127.0.0.1:8300");
     expect(settings.setupCompletedAt).toBeNull();
+    expect(settings.localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+  });
+
+  describe("실사용 제보(2026-08-19) — 대화형 로컬 Tool 실행 타임아웃", () => {
+    it(`defaults to ${DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES} minutes`, () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      expect(store.getPublic().localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    });
+
+    it("normalizes a legacy settings file written before this field existed to the default", () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "desktop-settings.json"),
+        JSON.stringify({ chatModelAlias: "my-chat" }),
+        "utf-8",
+      );
+      const settings = new DesktopSettingsStore(tmpDir).getPublic();
+      expect(settings.localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    });
+
+    it("persists a valid value within bounds", () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      const result = store.update({ localToolTimeoutMinutes: 15 });
+      expect(result.ok).toBe(true);
+      expect(result.settings.localToolTimeoutMinutes).toBe(15);
+      expect(new DesktopSettingsStore(tmpDir).getPublic().localToolTimeoutMinutes).toBe(15);
+    });
+
+    it(`rejects a value below the minimum (${MIN_LOCAL_TOOL_TIMEOUT_MINUTES})`, () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      const result = store.update({ localToolTimeoutMinutes: MIN_LOCAL_TOOL_TIMEOUT_MINUTES - 1 });
+      expect(result.ok).toBe(false);
+      expect(store.getPublic().localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    });
+
+    it(`rejects a value above the maximum (${MAX_LOCAL_TOOL_TIMEOUT_MINUTES})`, () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      const result = store.update({ localToolTimeoutMinutes: MAX_LOCAL_TOOL_TIMEOUT_MINUTES + 1 });
+      expect(result.ok).toBe(false);
+      expect(store.getPublic().localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    });
+
+    it("rejects a non-finite value (NaN) without saving", () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      const result = store.update({ localToolTimeoutMinutes: Number.NaN });
+      expect(result.ok).toBe(false);
+      expect(store.getPublic().localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    });
+
+    it("accepts the boundary values themselves", () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      expect(store.update({ localToolTimeoutMinutes: MIN_LOCAL_TOOL_TIMEOUT_MINUTES }).ok).toBe(true);
+      expect(store.update({ localToolTimeoutMinutes: MAX_LOCAL_TOOL_TIMEOUT_MINUTES }).ok).toBe(true);
+    });
   });
 
   it("D-079: rejects a non-loopback search-runtime URL — no override exists for this field", () => {

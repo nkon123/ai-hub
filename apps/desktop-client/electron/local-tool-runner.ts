@@ -26,6 +26,12 @@ import os from "node:os";
 import path from "node:path";
 import type { LocalToolInvocationResult } from "./types";
 
+// 실사용 제보(2026-08-19) — 대화형(채팅) 경로는 더 이상 이 상수를 암묵적
+// 기본값으로 쓰지 않는다. `electron/main.ts`의 `localTool:invoke` 핸들러가
+// 항상 D10 설정의 `localToolTimeoutMinutes`(기본 5분)에서 계산한 명시적
+// `timeoutMs`를 넘긴다 — 이 상수는 그 값이 어떤 이유로든 전달되지 않은
+// 호출부(테스트, 또는 향후 새 호출부가 실수로 생략한 경우)를 위한 최종
+// fallback으로만 남는다.
 export const LOCAL_TOOL_TIMEOUT_MS = 30_000;
 export const LOCAL_TOOL_MAX_OUTPUT_BYTES = 262_144; // 256 KiB
 
@@ -148,6 +154,12 @@ export interface LocalToolSpawnRequest {
    * with a small throwaway script instead of requiring a real Python
    * install. Production call sites never pass this. */
   scriptOverride?: string;
+  /** 실사용 제보(2026-08-19) — 사용자가 실행 중 중단할 수 있게 한다. Abort시
+   * spawn된 프로세스를 실제로 `SIGKILL`로 종료하고(기존 `killSignal`
+   * 메커니즘을 그대로 재사용 — 새 종료 수단을 만들지 않는다) `{ outcome:
+   * "cancelled" }`로 해결한다. 이미 종료된 뒤 abort가 오면 아무 효과가
+   * 없다(늦게 도착한 취소는 조용히 무시된다 — 이미 결과가 정해졌으므로). */
+  signal?: AbortSignal;
 }
 
 /** The testable core: spawns `interpreterPath -c <script>`, writes the
@@ -190,13 +202,27 @@ export function runLocalToolProcess(request: LocalToolSpawnRequest): Promise<Loc
     let stderr = "";
     let oversized = false;
     let settled = false;
+    let cancelledByUser = false;
 
     const finish = (result: LocalToolInvocationResult) => {
       if (settled) return;
       settled = true;
+      request.signal?.removeEventListener("abort", onAbort);
       cleanup();
       resolve(result);
     };
+
+    // 실사용 제보(2026-08-19) — 취소는 렌더러가 "취소했다"고 표시만 하는
+    // 것이 아니라 Main Process가 실제로 이 프로세스를 죽여야 한다(Electron의
+    // 신뢰 경계는 Main Process). 기존 timeout 경로와 동일한 `killSignal`
+    // 메커니즘(SIGKILL)을 그대로 재사용한다 — 새 종료 수단을 만들지 않는다.
+    const onAbort = () => {
+      if (settled) return;
+      cancelledByUser = true;
+      child.kill("SIGKILL");
+    };
+    request.signal?.addEventListener("abort", onAbort);
+    if (request.signal?.aborted) onAbort();
 
     child.on("error", (err) => {
       // ENOENT (interpreter path doesn't exist) surfaces here.
@@ -217,6 +243,13 @@ export function runLocalToolProcess(request: LocalToolSpawnRequest): Promise<Loc
     });
 
     child.on("close", (code, signal) => {
+      // 취소를 가장 먼저 검사한다 — SIGKILL로 죽였다는 신호(`child.killed`
+      // + 시그널 "SIGKILL" + `code === null`)는 타임아웃과 동일한 모양이라
+      // `cancelledByUser` 플래그가 없으면 취소가 timeout으로 오분류된다.
+      if (cancelledByUser) {
+        finish({ outcome: "cancelled" });
+        return;
+      }
       if (oversized) {
         finish({ outcome: "oversized_output", limitBytes: maxOutputBytes });
         return;
@@ -269,12 +302,18 @@ export interface InvokeLocalToolTarget {
   modulePath: string;
   functionName: string;
   args: Record<string, unknown>;
-  /** 생략하면 `LOCAL_TOOL_TIMEOUT_MS`(대화형 기본 30초)가 적용된다 — 실사용
-   * 제보(2026-08-19) D14 후속: 스케줄 실행 경로(`schedule-local-tool-runner.ts`)만
-   * 스케줄에 설정된 값을 넘긴다. 대화형(채팅) 경로는 이 필드를 절대 넘기지
-   * 않는다 — 대화형 기본값을 바꾸지 않는다는 판단(자세한 이유는
-   * `electron/__tests__/local-tool-runner.test.ts`의 회귀 테스트 참고). */
+  /** 생략하면 `LOCAL_TOOL_TIMEOUT_MS`(30초) fallback이 적용된다 — 하지만
+   * 실사용 제보(2026-08-19) 이후 프로덕션 호출부는 둘 다 이 값을 항상
+   * 명시적으로 넘긴다: 스케줄 실행 경로(`schedule-local-tool-runner.ts`)는
+   * `schedule.timeoutMinutes`에서, 대화형(채팅) 경로(`electron/main.ts`의
+   * `localTool:invoke` 핸들러)는 D10 설정의 `localToolTimeoutMinutes`
+   * (기본 5분)에서 계산한 값을 넘긴다 — 두 값은 서로 독립이다(한쪽을 바꿔도
+   * 다른 쪽에 영향을 주지 않는다). 생략은 그 자체로 의미 있는 선택이 아니라
+   * 방어적 fallback일 뿐이다. */
   timeoutMs?: number;
+  /** 실사용 제보(2026-08-19) — 실행 중 취소. `runLocalToolProcess`로 그대로
+   * 전달된다. */
+  signal?: AbortSignal;
 }
 
 /** Production entry point — checks `interpreterPath` before spawning
@@ -290,5 +329,6 @@ export async function invokeLocalTool(target: InvokeLocalToolTarget): Promise<Lo
     functionName: target.functionName,
     args: target.args,
     timeoutMs: target.timeoutMs,
+    signal: target.signal,
   });
 }

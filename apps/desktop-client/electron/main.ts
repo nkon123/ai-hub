@@ -134,6 +134,12 @@ let agentDraftUploadAbortController: AbortController | null = null;
 // 버튼은 이 토큰을 통해 진행 중인 폴링/다운로드 루프에 협조적으로 신호를
 // 보낸다(`store-install.ts`의 `CancelToken` 문서 참고).
 let currentStoreInstallCancelToken: CancelToken | null = null;
+// 실사용 제보(2026-08-19) — 대화형 로컬 Tool 실행 취소. 스케줄 실행 취소
+// (`ScheduleScheduler`의 `runningScheduleId`/`runningAbort`, 단일 슬롯)와는
+// 완전히 별개다 — 대화형은 여러 실행이 동시에 진행될 수 있다는 가정 없이도
+// (오늘 UI는 한 번에 하나만 열지만) `invocationId`로 키를 잡는 Map으로
+// 두어, 렌더러가 만든 id와 취소 대상이 항상 정확히 대응하게 한다.
+const runningLocalToolInvocations = new Map<string, AbortController>();
 
 function getLayout(): InstallRootLayout {
   if (!installLayout) {
@@ -1339,7 +1345,7 @@ function registerIpcHandlers(): void {
       _event,
       id: string,
       args: Record<string, unknown>,
-      options?: { aiSelected?: boolean },
+      options?: { aiSelected?: boolean; invocationId?: string },
     ): Promise<LocalToolInvocationResult> => {
       const tool = getLocalToolStore().find(id);
       if (!tool) {
@@ -1414,19 +1420,61 @@ function registerIpcHandlers(): void {
         getLogger().info("local-tool", `사전 허용됨(대화상자 생략): ${tool.toolName} (${id})`);
       }
 
-      const interpreterPath = getDesktopSettingsStore().getPublic().pythonInterpreterPath;
-      const result = await runInvokeLocalTool({
-        interpreterPath,
-        modulePath: tool.filePath,
-        functionName: tool.functionName,
-        args: args ?? {},
-      });
+      const settingsPublic = getDesktopSettingsStore().getPublic();
+      const interpreterPath = settingsPublic.pythonInterpreterPath;
+      // 실사용 제보(2026-08-19) — 대화형 1회 호출 상한은 더 이상 30초
+      // 고정값이 아니라 D10 설정(`localToolTimeoutMinutes`, 기본 5분)에서
+      // 매번 읽는다. 취소 지원: `options.invocationId`가 있으면 이 실행의
+      // AbortController를 Map에 등록해 `localTool:cancelInvocation`이 찾을
+      // 수 있게 하고, 끝나면(성공/실패/취소 무관) 반드시 제거한다.
+      const timeoutMs = settingsPublic.localToolTimeoutMinutes * 60_000;
+      const invocationId = options?.invocationId;
+      const abortController = new AbortController();
+      if (invocationId) runningLocalToolInvocations.set(invocationId, abortController);
+      let result: LocalToolInvocationResult;
+      try {
+        result = await runInvokeLocalTool({
+          interpreterPath,
+          modulePath: tool.filePath,
+          functionName: tool.functionName,
+          args: args ?? {},
+          timeoutMs,
+          signal: abortController.signal,
+        });
+      } finally {
+        if (invocationId) runningLocalToolInvocations.delete(invocationId);
+      }
       // 실행 결과에는 인자 값(사용자 입력)도, 반환값 원문도 기록하지 않는다
       // — outcome만 남긴다(CLAUDE.md: Log에 Prompt 원문/문서 전체를 기본
-      // 저장하지 않는다는 원칙과 같은 정신).
-      const logFn = result.outcome === "success" ? "info" : result.outcome === "interpreter_not_configured" ? "warn" : "error";
+      // 저장하지 않는다는 원칙과 같은 정신). user_denied/cancelled는 오류가
+      // 아니라 사용자의 정상적인 선택이므로 "error"로 남기지 않는다.
+      const logFn =
+        result.outcome === "success" || result.outcome === "user_denied" || result.outcome === "cancelled"
+          ? "info"
+          : result.outcome === "interpreter_not_configured"
+            ? "warn"
+            : "error";
       getLogger()[logFn]("local-tool", `로컬 Tool 실행 ${result.outcome}: ${tool.toolName} (${id})`);
       return result;
+    },
+  );
+
+  // 실사용 제보(2026-08-19) — 대화형 로컬 Tool 실행 취소. Main Process가
+  // 실제로 spawn된 프로세스를 SIGKILL로 종료한다(`local-tool-runner.ts`의
+  // `runLocalToolProcess` `signal` 처리) — 렌더러는 이 IPC 호출 하나만
+  // 하고, 프로세스가 실제로 죽었는지는 이 취소로 인해 `localTool:invoke`가
+  // `{ outcome: "cancelled" }`로 resolve되는 것으로 확인된다. 알 수 없거나
+  // 이미 끝난 invocationId는 조용히 성공한 척하지 않고 `ok: false`를
+  // 돌려준다.
+  ipcMain.handle(
+    "localTool:cancelInvocation",
+    async (_event, invocationId: string): Promise<{ ok: boolean; error: string | null }> => {
+      const controller = runningLocalToolInvocations.get(invocationId);
+      if (!controller) {
+        return { ok: false, error: "지금 실행 중인 로컬 Tool이 아닙니다." };
+      }
+      controller.abort();
+      return { ok: true, error: null };
     },
   );
 

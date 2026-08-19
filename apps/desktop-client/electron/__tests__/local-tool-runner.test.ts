@@ -125,6 +125,124 @@ describe("runLocalToolProcess", () => {
     });
     expect(result.outcome).toBe("spawn_error");
   });
+
+  // 실사용 제보(2026-08-19) — 이 작업의 합격 기준: 취소가 렌더러에 "취소했다"고
+  // 표시만 하는 것이 아니라 Main Process가 실제로 spawn된 프로세스를 죽여야
+  // 한다(D-084의 "Electron의 신뢰 경계는 Main Process" 규율 반복 위반 방지).
+  // 가짜 인터프리터가 자기 pid를 파일에 쓰고 무한정 도는 동안, 취소 후 그
+  // pid로 신호를 보내 실제로 죽었는지(`process.kill(pid, 0)`이 ESRCH로
+  // throw하는지) 직접 확인한다 — resolve 값만 보고 "취소됐다"고 믿지 않는다.
+  describe("cancellation via AbortSignal", () => {
+    function isProcessAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function waitUntil(predicate: () => boolean, timeoutMs = 5000): Promise<void> {
+      const start = Date.now();
+      while (!predicate()) {
+        if (Date.now() - start > timeoutMs) throw new Error("waitUntil timed out");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+    }
+
+    it("actually terminates the spawned process when the signal aborts — not just resolving the promise", async () => {
+      const pidFile = path.join(tmpDir, "pid.txt");
+      const interpreterPath = writeFakeInterpreter(
+        "fake-hang-cancel.js",
+        `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);`,
+      );
+      const controller = new AbortController();
+
+      const resultPromise = runLocalToolProcess({
+        interpreterPath,
+        modulePath: "/tmp/whatever.py",
+        functionName: "f",
+        args: {},
+        timeoutMs: 60_000, // 취소가 먼저 일어나야 한다 — 타임아웃이 먼저 개입하면 안 된다.
+        maxOutputBytes: 65536,
+        signal: controller.signal,
+      });
+
+      await waitUntil(() => fs.existsSync(pidFile));
+      const pid = Number(fs.readFileSync(pidFile, "utf-8"));
+      expect(isProcessAlive(pid)).toBe(true); // 취소 전에는 실제로 살아있다.
+
+      controller.abort();
+      const result = await resultPromise;
+
+      expect(result).toEqual({ outcome: "cancelled" });
+      // 핵심 검증 — resolve됐다는 사실이 아니라, OS 프로세스 테이블에서
+      // 실제로 사라졌는지를 직접 확인한다.
+      await waitUntil(() => !isProcessAlive(pid));
+      expect(isProcessAlive(pid)).toBe(false);
+    }, 10_000);
+
+    it("reports cancelled as the result even when abort races a near-simultaneous timeout window", async () => {
+      const interpreterPath = writeFakeInterpreter("fake-hang-cancel2.js", "setInterval(() => {}, 1000);");
+      const controller = new AbortController();
+      const resultPromise = runLocalToolProcess({
+        interpreterPath,
+        modulePath: "/tmp/whatever.py",
+        functionName: "f",
+        args: {},
+        timeoutMs: 60_000,
+        maxOutputBytes: 65536,
+        signal: controller.signal,
+      });
+      controller.abort();
+      const result = await resultPromise;
+      expect(result).toEqual({ outcome: "cancelled" });
+    }, 10_000);
+
+    it("ignores an abort that arrives after the process already finished normally", async () => {
+      const interpreterPath = writeFakeInterpreter(
+        "fake-quick-success.js",
+        'console.log(JSON.stringify({ ok: true, result: "done" }));',
+      );
+      const controller = new AbortController();
+      const result = await runLocalToolProcess({
+        interpreterPath,
+        modulePath: "/tmp/whatever.py",
+        functionName: "f",
+        args: {},
+        timeoutMs: 5000,
+        maxOutputBytes: 65536,
+        signal: controller.signal,
+      });
+      expect(result).toEqual({ outcome: "success", result: "done" });
+      // Aborting after settlement must not throw or change anything.
+      expect(() => controller.abort()).not.toThrow();
+    });
+
+    it("invokeLocalTool passes the signal through so callers can cancel the production entry point too", async () => {
+      const pidFile = path.join(tmpDir, "pid2.txt");
+      const interpreterPath = writeFakeInterpreter(
+        "fake-hang-invoke.js",
+        `require("fs").writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));\nsetInterval(() => {}, 1000);`,
+      );
+      const controller = new AbortController();
+      const resultPromise = invokeLocalTool({
+        interpreterPath,
+        modulePath: "/tmp/whatever.py",
+        functionName: "f",
+        args: {},
+        timeoutMs: 60_000,
+        signal: controller.signal,
+      });
+      await waitUntil(() => fs.existsSync(pidFile));
+      const pid = Number(fs.readFileSync(pidFile, "utf-8"));
+      controller.abort();
+      const result = await resultPromise;
+      expect(result).toEqual({ outcome: "cancelled" });
+      await waitUntil(() => !isProcessAlive(pid));
+      expect(isProcessAlive(pid)).toBe(false);
+    }, 10_000);
+  });
 });
 
 describe("invokeLocalTool", () => {

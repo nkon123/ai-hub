@@ -19,6 +19,7 @@ const SETTINGS: DesktopSettingsPublic = {
   searchRuntimeBaseUrl: "http://127.0.0.1:8300",
   agentRuntimeBaseUrl: "http://127.0.0.1:8100",
   pythonInterpreterPath: null,
+  localToolTimeoutMinutes: 5,
   maxConcurrentRuns: { value: 1, enforced: false, reason: "" },
   setupCompletedAt: null,
   updatedAt: null,
@@ -270,6 +271,9 @@ function createCompleteBridge(): DesktopBridge {
     },
     async invokeLocalTool() {
       return { outcome: "interpreter_not_configured" };
+    },
+    async cancelLocalToolInvocation() {
+      return { ok: false, error: null };
     },
     async approveLocalToolExecution() {
       return { ok: false, tool: null, error: null };

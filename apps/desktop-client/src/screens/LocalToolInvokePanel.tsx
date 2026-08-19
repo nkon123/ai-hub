@@ -295,6 +295,12 @@ export function LocalToolInvokePanel({
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
   const [invokeError, setInvokeError] = useState<string | null>(null);
   const [lastOutcome, setLastOutcome] = useState<InvocationOutcomeDisplay | null>(null);
+  // 실사용 제보(2026-08-19) — 실행 중 취소. `execute()`가 생성한 id를
+  // `bridge.invokeLocalTool(..., { invocationId })`로 넘기고, 취소 버튼은
+  // 같은 id로 `bridge.cancelLocalToolInvocation`을 부른다. `null`이면(취소
+  // 대상이 아직 없거나 이미 끝남) 취소 버튼을 보이지 않는다.
+  const [invokingId, setInvokingId] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
 
   const load = useCallback(async () => {
     if (!bridge) return;
@@ -324,6 +330,8 @@ export function LocalToolInvokePanel({
     setFieldErrors({});
     setInvokeError(null);
     setLastOutcome(null);
+    setInvokingId(null);
+    setCancelling(false);
   }
 
   function selectTool(tool: LocalTool) {
@@ -356,9 +364,15 @@ export function LocalToolInvokePanel({
     }
     const args = built.args ?? {};
     const entryId = crypto.randomUUID();
+    // 취소 대상 id — `entryId`(대화창 카드 식별자)와 별개로 둔다: Main
+    // Process가 이 id로 실행 중인 프로세스를 추적한다
+    // (`electron/main.ts`의 `runningLocalToolInvocations`).
+    const invocationId = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     setStep("invoking");
     setInvokeError(null);
+    setInvokingId(invocationId);
+    setCancelling(false);
     onEntryStart({
       id: entryId,
       toolId: selectedTool.id,
@@ -373,7 +387,7 @@ export function LocalToolInvokePanel({
       // 실제 승인 대화상자와 subprocess spawn은 전부 Main Process
       // (`electron/main.ts`의 `localTool:invoke` 핸들러)가 맡는다 — 여기서는
       // 결과를 기다렸다가 그대로 옮겨 적을 뿐이다.
-      const result = await bridge.invokeLocalTool(selectedTool.id, args);
+      const result = await bridge.invokeLocalTool(selectedTool.id, args, { invocationId });
       const outcome = formatInvocationOutcome(result);
       const completedAt = new Date().toISOString();
       setLastOutcome(outcome);
@@ -390,6 +404,31 @@ export function LocalToolInvokePanel({
       setLastOutcome(outcome);
       onEntryFinish(entryId, completedAt, outcome);
       setStep("done");
+    } finally {
+      setInvokingId(null);
+      setCancelling(false);
+    }
+  }
+
+  // 실사용 제보(2026-08-19) — 실행 중 중단. Main Process가 실제로 spawn된
+  // 프로세스를 SIGKILL로 종료한다(`electron/local-tool-runner.ts`) — 이
+  // 호출이 끝난 뒤에도 위 `execute()`의 `await bridge.invokeLocalTool(...)`가
+  // `{ outcome: "cancelled" }`로 정상 해결되며, 그 결과가 이 실행의 최종
+  // 결과로 그대로 기록된다(오류가 아니다).
+  async function requestCancel() {
+    if (!bridge || !invokingId) return;
+    setCancelling(true);
+    try {
+      const result = await bridge.cancelLocalToolInvocation(invokingId);
+      if (!result.ok) {
+        // 이미 끝났거나 알 수 없는 실행 — 조용히 무시하지 않고 그대로
+        // 알린다. `execute()`가 곧 실제 최종 결과로 화면을 갱신한다.
+        setInvokeError(result.error ?? "취소 요청이 실패했습니다.");
+        setCancelling(false);
+      }
+    } catch (err) {
+      setInvokeError(err instanceof Error ? err.message : "취소 요청 중 오류가 발생했습니다.");
+      setCancelling(false);
     }
   }
 
@@ -558,7 +597,15 @@ export function LocalToolInvokePanel({
         )}
 
         {step === "invoking" && (
-          <LoadingState label="승인 대화상자가 뜨면 확인하고 실행하는 중... (Desktop 앱 창을 확인하세요)" />
+          <div className="space-y-3">
+            <LoadingState label="승인 대화상자가 뜨면 확인하고 실행하는 중... (Desktop 앱 창을 확인하세요)" />
+            {invokeError && <ErrorBanner message={invokeError} />}
+            <div className="flex justify-end">
+              <Button variant="danger" onClick={() => void requestCancel()} disabled={!invokingId || cancelling}>
+                {cancelling ? "중단하는 중..." : "실행 중단"}
+              </Button>
+            </div>
+          </div>
         )}
 
         {step === "done" && (

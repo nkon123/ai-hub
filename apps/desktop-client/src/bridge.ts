@@ -92,6 +92,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   listLocalTools: true,
   removeLocalTool: true,
   invokeLocalTool: true,
+  cancelLocalToolInvocation: true,
   approveLocalToolExecution: true,
   revokeLocalToolExecution: true,
   listSchedules: true,

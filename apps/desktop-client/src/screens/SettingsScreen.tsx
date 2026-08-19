@@ -25,6 +25,16 @@ function SectionHeader({ title }: { title: string }) {
   return <h2 className="mb-3 text-card-title font-semibold text-text-primary">{title}</h2>;
 }
 
+// 실사용 제보(2026-08-19) — `electron/desktop-settings.ts`의
+// `DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES`/`MIN_LOCAL_TOOL_TIMEOUT_MINUTES`/
+// `MAX_LOCAL_TOOL_TIMEOUT_MINUTES`와 같은 값을 이 파일에 다시 선언한다 —
+// 그 모듈은 `node:fs`를 import하는 Main 전용 모듈이라 렌더러가 직접
+// import할 수 없다(`ScheduleScreen.tsx`가 `schedule-store.ts`의 상한/하한을
+// 그대로 다시 선언해 두는 것과 같은, 이 저장소에서 이미 자리잡은 관례).
+const DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES = 5;
+const MIN_LOCAL_TOOL_TIMEOUT_MINUTES = 1;
+const MAX_LOCAL_TOOL_TIMEOUT_MINUTES = 60;
+
 export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => void }) {
   const bridge = getDesktopBridge() ?? getBrowserSettingsBridge();
   const browserPreview = isBrowserDesktopPreviewEnabled();
@@ -45,6 +55,9 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
   const [searchRuntimeBaseUrl, setSearchRuntimeBaseUrl] = useState("");
   const [agentRuntimeBaseUrl, setAgentRuntimeBaseUrlValue] = useState("");
   const [pythonInterpreterPath, setPythonInterpreterPath] = useState("");
+  const [localToolTimeoutMinutesText, setLocalToolTimeoutMinutesText] = useState(
+    String(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES),
+  );
 
   const [savingSection, setSavingSection] = useState<string | null>(null);
   const [sectionError, setSectionError] = useState<Record<string, string | null>>({});
@@ -67,6 +80,7 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     setSearchRuntimeBaseUrl(s.searchRuntimeBaseUrl);
     setAgentRuntimeBaseUrlValue(s.agentRuntimeBaseUrl);
     setPythonInterpreterPath(s.pythonInterpreterPath ?? "");
+    setLocalToolTimeoutMinutesText(String(s.localToolTimeoutMinutes));
   }, []);
 
   // 편집값이 아니라 사실 조회라 설정 저장/복원 흐름과 분리한다 — bridge 가
@@ -147,6 +161,25 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
     } finally {
       setSavingSection(null);
     }
+  }
+
+  // 실사용 제보(2026-08-19) — "채팅에서 직접 실행" 상한을 저장하기 전에
+  // 렌더러에서도 먼저 검증한다(Main Process의 `desktop-settings.ts` 검증이
+  // 최종 권위지만, 잘못된 값을 왕복 없이 바로 알려준다).
+  async function saveLocalToolTimeout() {
+    const minutes = Number.parseInt(localToolTimeoutMinutesText, 10);
+    if (
+      !Number.isFinite(minutes) ||
+      minutes < MIN_LOCAL_TOOL_TIMEOUT_MINUTES ||
+      minutes > MAX_LOCAL_TOOL_TIMEOUT_MINUTES
+    ) {
+      setSectionError((prev) => ({
+        ...prev,
+        localToolTimeout: `대화형 로컬 Tool 실행 상한은 ${MIN_LOCAL_TOOL_TIMEOUT_MINUTES}분에서 ${MAX_LOCAL_TOOL_TIMEOUT_MINUTES}분 사이의 정수여야 합니다.`,
+      }));
+      return;
+    }
+    await saveSection("localToolTimeout", { localToolTimeoutMinutes: minutes });
   }
 
   async function runConnectionsCheck() {
@@ -503,6 +536,50 @@ export function SettingsScreen({ onRunSetupWizard }: { onRunSetupWizard: () => v
             <ErrorBanner message={sectionError.pythonInterpreter} />
           </div>
         )}
+
+        <div className="mt-6 border-t border-border pt-4">
+          <label
+            className="mb-1 block text-caption font-semibold text-text-muted"
+            htmlFor="settings-local-tool-timeout"
+          >
+            대화(채팅)에서 직접 실행하는 로컬 Tool 1회 호출 상한(분)
+          </label>
+          <p className="mb-2 text-body text-text-secondary">
+            대화창에서 로컬 Tool을 실행할 때 이 시간을 넘기면 자동으로 중단됩니다. 실행 중에는 언제든 대화창의
+            "실행 중단" 버튼으로 직접 멈출 수도 있습니다 — 상한을 넉넉히 잡아도 멈춘 Tool을 붙잡고 기다릴 필요가
+            없습니다. 스케줄(무인 실행)의 타임아웃과는 별개이며 서로 영향을 주지 않습니다.
+          </p>
+          <input
+            id="settings-local-tool-timeout"
+            type="number"
+            min={MIN_LOCAL_TOOL_TIMEOUT_MINUTES}
+            max={MAX_LOCAL_TOOL_TIMEOUT_MINUTES}
+            value={localToolTimeoutMinutesText}
+            onChange={(e) => setLocalToolTimeoutMinutesText(e.target.value)}
+            className="h-10 w-32 rounded-lg border border-border px-3 text-sm"
+          />
+          <p className="mt-1 text-caption text-text-muted">
+            기본 {DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES}분, {MIN_LOCAL_TOOL_TIMEOUT_MINUTES}~
+            {MAX_LOCAL_TOOL_TIMEOUT_MINUTES}분 사이로 설정할 수 있습니다.
+          </p>
+          <div className="mt-3 flex items-center gap-3">
+            <Button
+              variant="secondary"
+              onClick={() => void saveLocalToolTimeout()}
+              disabled={savingSection === "localToolTimeout"}
+            >
+              <Save size={14} /> 저장
+            </Button>
+            {sectionSavedAt.localToolTimeout && (
+              <span className="text-caption text-text-muted">{formatDateTime(sectionSavedAt.localToolTimeout)} 저장됨</span>
+            )}
+          </div>
+          {sectionError.localToolTimeout && (
+            <div className="mt-2">
+              <ErrorBanner message={sectionError.localToolTimeout} />
+            </div>
+          )}
+        </div>
       </Card>
 
       <Card className="p-6">

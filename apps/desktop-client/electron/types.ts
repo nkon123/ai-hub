@@ -719,7 +719,15 @@ export type LocalToolInvocationResult =
    * 추가 시점의 위험 고지(`riskAcknowledgedAt`)는 여전히 이 승인을 대신하지
    * 않는다 — 파일 내용에 묶여 있지 않아 이후 어떤 코드가 실행될지 보장하지
    * 못한다. */
-  | { outcome: "user_denied" };
+  | { outcome: "user_denied" }
+  /** 실사용 제보(2026-08-19) — 대화형 실행 중 사용자가 명시적으로 중단했다.
+   * `user_denied`와 마찬가지로 오류가 아니라 정상 결과다: 사용자가 원해서
+   * 멈춘 것이지 무언가 실패한 것이 아니다. Main Process가 spawn된 프로세스를
+   * 실제로 SIGKILL로 종료한 뒤에만 이 outcome을 반환한다(`local-tool-runner.ts`
+   * `runLocalToolProcess`의 `signal` 처리, `electron/__tests__/local-tool-runner.test.ts`의
+   * "실제로 프로세스가 죽는지" 회귀 테스트 참고) — 렌더러가 "취소했다"고
+   * 표시만 하고 프로세스가 살아있는 상태는 이 outcome이 의미하는 바가 아니다. */
+  | { outcome: "cancelled" };
 
 // ---------------------------------------------------------------------------
 // D11 로그/진단
@@ -870,6 +878,19 @@ export interface DesktopSettingsPublic {
    * `invokeLocalTool`은 프로세스를 아예 띄우지 않고
    * `interpreter_not_configured`를 반환한다. */
   pythonInterpreterPath: string | null;
+  /** 실사용 제보(2026-08-19) — 대화(채팅)에서 직접 로컬 Tool을 실행할 때
+   * 1회 호출을 기다리는 상한(분). 기존에는 `local-tool-runner.ts`의
+   * `LOCAL_TOOL_TIMEOUT_MS`(30초) 고정값이었다 — 실제 작업을 하는 Tool에는
+   * 너무 짧아 중간에 끊겼다. 기본값 5분, 1~60분 사이로만 저장할 수 있다
+   * (`desktop-settings.ts`의 `DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES`/
+   * `MIN_LOCAL_TOOL_TIMEOUT_MINUTES`/`MAX_LOCAL_TOOL_TIMEOUT_MINUTES`).
+   * 스케줄별 `ScheduleRecord.timeoutMinutes`와는 완전히 독립적이다 — 한쪽을
+   * 바꿔도 다른 쪽에는 전혀 영향을 주지 않는다(대화형 대 스케줄 실행은
+   * 별개의 실행 경로다). 값만 올리는 대신, 실행 중 사용자가 중단할 수
+   * 있는 수단(`DesktopBridge.cancelLocalToolInvocation`)이 함께 있어야만
+   * 이 값을 늘리는 것이 안전하다 — 취소 수단 없이 값만 올리면 멈춘 Tool을
+   * 이 시간 내내 붙잡고 빠져나올 방법이 없어진다. */
+  localToolTimeoutMinutes: number;
   maxConcurrentRuns: MaxConcurrentRunsInfo;
   setupCompletedAt: string | null;
   updatedAt: string | null;
@@ -888,6 +909,7 @@ export interface DesktopSettingsInput {
   searchRuntimeBaseUrl?: string;
   agentRuntimeBaseUrl?: string;
   pythonInterpreterPath?: string;
+  localToolTimeoutMinutes?: number;
 }
 
 export interface DesktopSettingsUpdateResult {
@@ -1686,12 +1708,26 @@ export interface DesktopBridge {
    * 밝힌다 — `aiSelected`가 승인 정책을 낮추지는 않는다(구현 원칙 7).
    * 다만 그 대화상자가 뜨는지 자체는 `approval`이 정한다(D-084 후속 3):
    * 미리 허용해 둔 Tool은 AI가 정한 인자여도 대화상자 없이 실행된다(D-089).
-   * 생략하면(수동 경로) 기존 문구 그대로다. */
+   * 생략하면(수동 경로) 기존 문구 그대로다.
+   * `options.invocationId`(실사용 제보 2026-08-19, 취소 추가) — 렌더러가
+   * `crypto.randomUUID()`로 미리 만들어 넘기면, Main Process가 이 실행의
+   * spawn된 프로세스를 이 id로 추적해 `cancelLocalToolInvocation(invocationId)`로
+   * 취소할 수 있게 한다. 생략하면(자동 라우팅 등 취소 UI가 없는 호출부) 취소
+   * 불가능한 실행으로 취급된다 — 실행 자체는 그대로 진행된다. */
   invokeLocalTool(
     id: string,
     args: Record<string, unknown>,
-    options?: { aiSelected?: boolean },
+    options?: { aiSelected?: boolean; invocationId?: string },
   ): Promise<LocalToolInvocationResult>;
+  /** 실사용 제보(2026-08-19) — 대화형 로컬 Tool 실행 중 사용자가 중단한다.
+   * `invocationId`가 `invokeLocalTool(..., { invocationId })`에 넘긴 값과
+   * 일치하고 그 실행이 아직 진행 중일 때만 실제로 spawn된 프로세스를
+   * SIGKILL로 종료한다(Main Process가 유일한 신뢰 경계 — 렌더러는 종료
+   * 여부를 스스로 판단하지 않는다). 이미 끝났거나 알 수 없는 id면
+   * `ok: false`를 돌려준다(조용히 성공한 척하지 않는다). 스케줄 실행 취소
+   * (`cancelSchedule`)와는 완전히 별개의 경로다 — 서로 다른 실행을
+   * 죽이거나 서로에게 영향을 주지 않는다. */
+  cancelLocalToolInvocation(invocationId: string): Promise<{ ok: boolean; error: string | null }>;
   /** D-084 후속 3 ("최초 한번만 승인") — 자산 > 로컬 Tool 화면의 "실행 허용"
    * 액션 전용. Main Process가 승인 시점에 `filePath`를 다시 읽어 sha256을
    * 계산해 저장한다(렌더러가 계산한 해시를 신뢰하지 않는다) — 그 사이 파일이

@@ -7,7 +7,7 @@ import type {
   LocalToolInvocationResult,
   LocalToolParameterInfo,
 } from "../../electron/types";
-import { formatBytes } from "../format";
+import { formatBytes, formatDurationMs } from "../format";
 
 export const NOT_A_SANDBOX_NOTICE =
   "이 Tool은 격리되지 않은 상태로 실행됩니다 — 사용자의 권한으로, 마치 직접 실행한 것과 동일하게 동작합니다. 시간제한과 출력 크기 제한은 멈추지 않는 프로세스를 막기 위한 것일 뿐, 악의적인 코드로부터 보호하지 않습니다.";
@@ -112,10 +112,14 @@ export function formatInvocationOutcome(result: LocalToolInvocationResult): Invo
         detail: result.stderrSnippet.trim() || "표준 오류 출력이 없습니다.",
       };
     case "timeout":
+      // 실사용 제보(2026-08-19) — "무엇의 상한인지" 모르면 30초든 5분이든
+      // 사용자는 왜 끊겼는지 알 수 없다. 대화형 경로는 항상 설정
+      // (`localToolTimeoutMinutes`)에서 계산한 값을 그대로 넘기므로, 여기
+      // 보이는 값이 곧 그 설정값이다.
       return {
         tone: "warning",
         title: "시간 초과",
-        detail: `${Math.round(result.timeoutMs / 1000)}초 안에 끝나지 않아 프로세스를 종료했습니다.`,
+        detail: `로컬 Tool 1회 호출 상한(${formatDurationMs(result.timeoutMs)})을 넘겨 프로세스를 종료했습니다. 설정 > Python 인터프리터 경로에서 상한을 늘릴 수 있습니다.`,
       };
     case "oversized_output":
       return {
@@ -138,6 +142,16 @@ export function formatInvocationOutcome(result: LocalToolInvocationResult): Invo
         tone: "muted",
         title: "실행하지 않았습니다",
         detail: "실행 승인을 취소하셔서 이 Tool을 실행하지 않았습니다.",
+      };
+    case "cancelled":
+      // 오류가 아니다 — 실행 중 사용자가 명시적으로 중단을 눌러 Main
+      // Process가 실제로 프로세스를 종료한 정상 결과다(실사용 제보
+      // 2026-08-19). `user_denied`와 같은 톤으로 실패처럼 보이게 하지
+      // 않는다.
+      return {
+        tone: "muted",
+        title: "실행을 중단했습니다",
+        detail: "사용자가 실행 중 중단해 이 Tool의 프로세스를 종료했습니다.",
       };
   }
 }
