@@ -13,20 +13,33 @@ Desktop → 자산 허브 → 로컬 Tool → 파일 추가 → 이 폴더의 `.
 
 ## 파일
 
-| 파일 | 함수 | 하는 일 |
+| 파일 | 등록되는 Tool | 하는 일 |
 |---|---|---|
-| `business_days_between.py` | `business_days_between(start_date, end_date, include_end=True)` | 두 날짜 사이 영업일 수 (주말 제외) |
-| `format_korean_amount.py` | `format_korean_amount(amount, unit="원")` | 금액을 쉼표 표기와 억/만 단위 표기로 |
-| `text_stats.py` | `text_stats(text, chars_per_page=1800)` | 글자·단어·줄·문단 수와 예상 쪽수 |
-| `percent_change.py` | `percent_change(before, after, decimals=2)` | 증감폭과 증감률(%) |
+| `add_numbers.py` | `add_numbers` | 두 수 더하기 — **채팅 자동 Tool 선택 데모**("1 + 3333") |
+| `extract_error_lines.py` | `extract_error_lines` | 로그 텍스트에서 ERROR/WARN/FATAL 줄 추출·집계 |
+| `markdown_table.py` | `markdown_table` | 행 데이터를 Markdown 표로 — **스케줄 이력 팝업 데모** |
+| `disk_space_report.py` | `disk_space_report` | 디스크 여유 공간 Markdown 보고서 — **스케줄 데모**(매일 9시) |
+| `text_toolkit.py` | `slugify_title`, `count_words`, `mask_digits` | **한 파일 = 여러 Tool** (`@tool` 다중 등록 데모) |
+| `business_days_between.py` | `business_days_between` | 두 날짜 사이 영업일 수 (주말 제외) |
+| `format_korean_amount.py` | `format_korean_amount` | 금액을 쉼표·억/만 단위 표기로 |
+| `text_stats.py` | `text_stats` | 글자·단어·줄·문단 수와 예상 쪽수 |
+| `percent_change.py` | `percent_change` | 증감폭과 증감률(%) |
+
+## `@tool` 다중 등록 (`text_toolkit.py`)
+
+파일에 함수가 여럿이면 무엇을 등록할지 알 수 없어 거절된다. `@tool`(또는 `@mcp.tool`)을 붙이면 붙은 것들만 골라 **각각 별개 Tool 로** 등록된다. `text_toolkit.py`는 3개가 등록되고 도우미 함수 `_slugify`는 데코레이터가 없어 제외된다.
+
+그 파일의 `tool` 데코레이터는 **샘플이 외부 의존성 없이 돌게 하려고 직접 정의한 최소 구현**이다. 실제로는 LangChain(`from langchain_core.tools import tool`)이나 MCP SDK 의 `@mcp.tool` 을 쓴다. 원본 함수를 `.func` 에 보관하는 것까지 같은 모양으로 맞췄다 — Desktop 실행기가 래핑된 Tool 을 언랩할 때 보는 곳이 거기다.
+
+**외부 라이브러리를 쓰는 Tool** 은 그 라이브러리가 **설정에 지정한 Python 인터프리터**에 설치돼 있어야 한다(설정 > 일반 > Python 인터프리터 경로). venv 를 쓴다면 그 venv 의 `python.exe` 를 직접 가리켜야 한다 — Desktop 은 셸을 거치지 않고 그 실행 파일을 spawn 하므로 `activate` 는 소용없다.
 
 ## 이 샘플들이 지키는 것
 
 - **표준 라이브러리만** 쓴다. 폐쇄망에서 추가 설치 없이 동작한다(루트 코드 규칙: 새 의존성은 폐쇄망 설치 방법을 문서화해야 한다 — 아예 만들지 않는 쪽을 택했다).
-- **파일·네트워크에 접근하지 않는다.** 읽기 전용 계산만 한다.
-- **파일당 함수 하나**, 모든 매개변수에 타입 어노테이션. D-084 정적 분석기의 요구사항이다
-  (`apps/desktop-client/electron/local-tool-signature.ts` — 함수가 여러 개면
-  `multiple_functions_found`로, 어노테이션이 없으면 `parameter_annotation_missing`으로 거절된다).
+- **네트워크에 접근하지 않는다.** 파일시스템도 `disk_space_report.py` 하나만 읽고(용량 조회, 읽기 전용) 나머지는 넘겨받은 인자만 계산한다. 로그 분석 Tool 이 파일 경로가 아니라 **로그 텍스트**를 받는 것도 같은 이유다 — 사용자가 준 경로로 파일을 여는 Tool 을 샘플로 두지 않는다.
+- **모든 매개변수에 타입 어노테이션.** 없으면 `parameter_annotation_missing`으로 거절된다.
+- **함수가 여럿이면 `@tool` 로 명시**한다(`text_toolkit.py`). 데코레이터 없이 함수가 여럿이면 무엇을 등록할지 알 수 없어 `multiple_functions_found`로 거절된다 — 분석기가 추측하지 않는다.
+  (`apps/desktop-client/electron/local-tool-signature.ts`)
 - **신원 매개변수를 받지 않는다.** `user`/`role`/`roles`/`org`/`organization_id`는 분석기가
   `identity_parameter_forbidden`으로 거절한다 — 호출자가 자기 신원을 주장하게 두지 않는다.
 - **모르는 것을 아는 척하지 않는다.** `business_days_between`은 공휴일을 반영하지 않으며 그
