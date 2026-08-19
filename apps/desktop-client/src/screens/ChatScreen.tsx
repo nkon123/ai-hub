@@ -43,6 +43,12 @@ import { AgentDraftDialog } from "./AgentDraftDialog";
 import { AnswerMarkdown } from "./AnswerMarkdown";
 import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
 import {
+  SCHEDULE_HISTORY_OUTCOME_LABELS,
+  SCHEDULE_HISTORY_OUTCOME_TONE,
+  ScheduleHistoryDetailModal,
+  summarizeForList,
+} from "./scheduleHistoryDetail";
+import {
   type Citation,
   type RunEventLogItem,
   getAgentRuntimeBaseUrl,
@@ -2434,18 +2440,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   );
 }
 
-const SCHEDULE_OUTCOME_LABELS: Record<ScheduleHistoryRecord["outcome"], string> = {
-  success: "성공",
-  failure: "실패",
-  missed: "놓침",
-  cancelled: "중단됨",
-};
-const SCHEDULE_OUTCOME_TONE: Record<ScheduleHistoryRecord["outcome"], string> = {
-  success: "text-success",
-  failure: "text-danger",
-  missed: "text-warning",
-  cancelled: "text-text-muted",
-};
+// outcome 표시는 `scheduleHistoryDetail.tsx`(`ScheduleScreen.tsx`의 "실행
+// 이력" 탭과 공유)의 SCHEDULE_HISTORY_OUTCOME_*를 그대로 쓴다.
+const SCHEDULE_OUTCOME_LABELS = SCHEDULE_HISTORY_OUTCOME_LABELS;
+const SCHEDULE_OUTCOME_TONE = SCHEDULE_HISTORY_OUTCOME_TONE;
 
 /** 실사용 제보(2026-08-19) 요구 2 — 스케줄봇 읽기 전용 패널. 저장을
  * 이중화하지 않는다: 여기서 그리는 값은 모두 `bridge.listScheduleHistory()`
@@ -2465,13 +2463,19 @@ function ScheduleBotPanel({
   schedules: ScheduleRecord[];
 }) {
   const nameById = new Map(schedules.map((s) => [s.id, s.name] as const));
+  // 실사용 제보(2026-08-19) — "출력을 보기 불편하다": 목록에는 한 줄 요약만
+  // 두고, 항목을 클릭하면 전문을 마크다운으로 보여주는 팝업을 연다(Task
+  // Brief B). 사람이 지켜보지 않는 사이 실행됐으므로 이 팝업이 유일한
+  // 감시 수단이다 — 언제·어떤 스케줄이·성공/실패/놓침·수동/예약·어떤
+  // Tool을 어떤 인자로 호출했는지를 모두 보여준다.
+  const [selected, setSelected] = useState<ScheduleHistoryRecord | null>(null);
   return (
     <div className="flex flex-1 flex-col overflow-hidden">
       <div className="mb-3 flex shrink-0 items-start gap-2 rounded-lg border border-border bg-slate-50 px-3 py-2 text-caption text-text-secondary">
         <CalendarClock size={14} className="mt-0.5 shrink-0 text-text-muted" aria-hidden="true" />
         <span>
-          스케줄봇은 등록된 스케줄의 실행 결과만 보여주는 읽기 전용 화면입니다 — 질문을 입력할 수 없습니다. 새 대화나
-          왼쪽의 다른 대화를 선택하면 다시 일반 대화로 돌아갑니다.
+          스케줄봇은 등록된 스케줄의 실행 결과만 보여주는 읽기 전용 화면입니다 — 질문을 입력할 수 없습니다. 항목을
+          클릭하면 실행 결과 전문을 볼 수 있습니다. 새 대화나 왼쪽의 다른 대화를 선택하면 다시 일반 대화로 돌아갑니다.
         </span>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto pr-1">
@@ -2489,7 +2493,12 @@ function ScheduleBotPanel({
         {!error &&
           !loading &&
           history.map((h) => (
-            <div key={h.id} className="rounded-lg border border-border bg-white px-3 py-2.5 text-caption">
+            <button
+              key={h.id}
+              type="button"
+              onClick={() => setSelected(h)}
+              className="block w-full rounded-lg border border-border bg-white px-3 py-2.5 text-left text-caption transition-colors hover:bg-slate-50"
+            >
               <div className="flex flex-wrap items-center gap-1.5">
                 <span className="font-medium text-text-primary">{nameById.get(h.scheduleId) ?? h.scheduleId}</span>
                 <span className={`font-semibold ${SCHEDULE_OUTCOME_TONE[h.outcome]}`}>
@@ -2500,17 +2509,28 @@ function ScheduleBotPanel({
                 </span>
               </div>
               <p className="mt-1 text-[11px] text-text-muted">{formatDateTime(h.timestamp)}</p>
-              {h.resultSummary && <p className="mt-1 text-text-secondary">{h.resultSummary}</p>}
-              {h.failureReason && <p className="mt-1 text-danger">{h.failureReason}</p>}
+              {h.resultSummary && (
+                <p className="mt-1 truncate text-text-secondary">
+                  {summarizeForList(h.resultSummary)}
+                  {h.resultTruncated && <span className="ml-1 text-warning">(잘림)</span>}
+                </p>
+              )}
+              {h.failureReason && <p className="mt-1 truncate text-danger">{h.failureReason}</p>}
               {h.localToolInvocations.length > 0 && (
                 <p className="mt-1 flex items-center gap-1 text-[11px] text-text-muted">
                   <Terminal size={11} className="shrink-0" aria-hidden="true" />
                   호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
                 </p>
               )}
-            </div>
+            </button>
           ))}
       </div>
+      <ScheduleHistoryDetailModal
+        open={selected !== null}
+        record={selected}
+        scheduleName={selected ? (nameById.get(selected.scheduleId) ?? selected.scheduleId) : ""}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }

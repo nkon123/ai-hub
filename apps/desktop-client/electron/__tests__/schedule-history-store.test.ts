@@ -31,6 +31,7 @@ describe("ScheduleHistoryStore", () => {
         trigger: "manual",
         localToolInvocations: [],
         resultSummary: "완료",
+        resultTruncated: false,
         failureReason: null,
       });
       const reopened = new ScheduleHistoryStore(tmpDir);
@@ -57,10 +58,75 @@ describe("ScheduleHistoryStore", () => {
     });
   });
 
-  it("truncateResultSummary caps overly long text", () => {
-    const long = "x".repeat(500);
-    const truncated = truncateResultSummary(long);
-    expect(truncated.length).toBeLessThanOrEqual(241);
-    expect(truncated.endsWith("…")).toBe(true);
+  describe("truncateResultSummary (실사용 제보 2026-08-19 — 240자 → 20,000자)", () => {
+    it("does not truncate text within the new cap and reports truncated: false", () => {
+      const text = "x".repeat(20_000);
+      const result = truncateResultSummary(text);
+      expect(result.text).toBe(text);
+      expect(result.truncated).toBe(false);
+    });
+
+    it("truncates text beyond the new cap and reports truncated: true", () => {
+      const long = "x".repeat(25_000);
+      const result = truncateResultSummary(long);
+      expect(result.text.length).toBeLessThanOrEqual(20_001);
+      expect(result.text.endsWith("…")).toBe(true);
+      expect(result.truncated).toBe(true);
+    });
+
+    it("a result well over the old 240-char cap round-trips in full through the store (not silently re-truncated)", () => {
+      const store = new ScheduleHistoryStore(tmpDir);
+      const longAnswer = "이메일 요약: ".concat("본문 내용 ".repeat(1000)); // far over 240 chars
+      const { text, truncated } = truncateResultSummary(longAnswer);
+      store.append({
+        scheduleId: "s1",
+        timestamp: "2026-08-19T00:00:00.000Z",
+        outcome: "success",
+        trigger: "scheduled",
+        localToolInvocations: [],
+        resultSummary: text,
+        resultTruncated: truncated,
+        failureReason: null,
+      });
+      const reopened = new ScheduleHistoryStore(tmpDir);
+      const stored = reopened.listAll()[0];
+      expect(stored.resultSummary?.length).toBeGreaterThan(240);
+      expect(stored.resultSummary).toBe(text);
+    });
+  });
+
+  describe("resultTruncated legacy normalization", () => {
+    it("normalizes a legacy record written before this field existed using the '…' suffix as a best-effort signal", () => {
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const legacy = [
+        {
+          id: "h1",
+          scheduleId: "s1",
+          timestamp: "2026-08-01T00:00:00.000Z",
+          outcome: "success",
+          trigger: "scheduled",
+          localToolInvocations: [],
+          resultSummary: "잘려서 저장된 옛 요약…",
+          failureReason: null,
+          // resultTruncated 필드 자체가 없다(이 필드 도입 이전 기록, 옛 240자
+          // 상한에 걸려 "…"가 붙어 있다).
+        },
+        {
+          id: "h2",
+          scheduleId: "s1",
+          timestamp: "2026-08-02T00:00:00.000Z",
+          outcome: "success",
+          trigger: "scheduled",
+          localToolInvocations: [],
+          resultSummary: "잘리지 않은 짧은 답변",
+          failureReason: null,
+        },
+      ];
+      fs.writeFileSync(path.join(tmpDir, "schedule-history.json"), JSON.stringify(legacy));
+      const store = new ScheduleHistoryStore(tmpDir);
+      const [newer, older] = store.listAll();
+      expect(older.resultTruncated).toBe(true);
+      expect(newer.resultTruncated).toBe(false);
+    });
   });
 });

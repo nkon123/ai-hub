@@ -55,16 +55,20 @@ describe("schedule history diagnostic-bundle isolation (behavioral)", () => {
       scheduleId: "sched-1",
       timestamp: new Date().toISOString(),
       outcome: "success",
+      trigger: "scheduled",
       localToolInvocations: [{ toolName: "salary_lookup", args: { employeeId: "10293" } }],
       resultSummary: RAW_RESULT,
+      resultTruncated: false,
       failureReason: null,
     });
     historyStore.append({
       scheduleId: "sched-1",
       timestamp: new Date().toISOString(),
       outcome: "failure",
+      trigger: "scheduled",
       localToolInvocations: [],
       resultSummary: null,
+      resultTruncated: false,
       failureReason: RAW_FAILURE,
     });
 

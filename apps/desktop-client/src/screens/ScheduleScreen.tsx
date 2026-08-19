@@ -15,7 +15,6 @@ import type {
   ScheduleHistoryRecord,
   ScheduleRecipe,
   ScheduleRecord,
-  ScheduleRunOutcome,
 } from "../../electron/types";
 import { describeScheduleExpression, nextRunAt } from "../../electron/schedule-time";
 import { getDesktopBridge } from "../bridge";
@@ -30,24 +29,23 @@ import {
   ReasonConfirmDialog,
   Tabs,
 } from "../ui";
+import {
+  SCHEDULE_HISTORY_OUTCOME_LABELS,
+  SCHEDULE_HISTORY_OUTCOME_TONE,
+  ScheduleHistoryDetailModal,
+  summarizeForList,
+} from "./scheduleHistoryDetail";
 
 type ScreenTab = "list" | "history";
 type Kind = ScheduleExpression["kind"];
 
 const KIND_LABELS: Record<Kind, string> = { hourly: "매시", daily: "매일", weekly: "매주", monthly: "매월" };
 const WEEKDAY_OPTIONS = ["일", "월", "화", "수", "목", "금", "토"];
-const OUTCOME_LABELS: Record<ScheduleRunOutcome, string> = {
-  success: "성공",
-  failure: "실패",
-  missed: "놓침",
-  cancelled: "중단됨",
-};
-const OUTCOME_TONE: Record<ScheduleRunOutcome, string> = {
-  success: "text-success",
-  failure: "text-danger",
-  missed: "text-warning",
-  cancelled: "text-text-muted",
-};
+// 실행 이력의 outcome 표시는 `scheduleHistoryDetail.tsx`(스케줄봇 패널과
+// 공유)의 SCHEDULE_HISTORY_OUTCOME_* 를 그대로 쓴다 — 스케줄 목록의
+// `lastRunOutcome` 표시에만 별도 별칭으로 남긴다(같은 값, 같은 출처).
+const OUTCOME_LABELS = SCHEDULE_HISTORY_OUTCOME_LABELS;
+const OUTCOME_TONE = SCHEDULE_HISTORY_OUTCOME_TONE;
 
 // 실사용 제보(2026-08-19) — `electron/schedule-store.ts`의 같은 이름 상수를
 // 그대로 미러링한다. 그 파일은 fs/crypto/path를 import하는 Main 전용
@@ -577,7 +575,12 @@ function ScheduleListView({
   );
 }
 
+// 실사용 제보(2026-08-19) — "출력을 보기 불편하다"는 제보 대응: 목록에는
+// 한 줄 요약만 두고, 항목을 클릭하면 전문을 마크다운으로 보여주는 팝업이
+// 뜬다(Task Brief B). 저장 형식이나 IPC는 바뀌지 않는다 — 이미 로드된
+// `ScheduleHistoryRecord`를 다르게 보여줄 뿐이다.
 function HistoryView({ history, schedules }: { history: ScheduleHistoryRecord[]; schedules: ScheduleRecord[] }) {
+  const [selected, setSelected] = useState<ScheduleHistoryRecord | null>(null);
   if (history.length === 0) {
     return <EmptyState title="실행 이력이 없습니다" description="스케줄이 한 번 이상 실행되면 여기에 기록됩니다." />;
   }
@@ -585,29 +588,47 @@ function HistoryView({ history, schedules }: { history: ScheduleHistoryRecord[];
   return (
     <div className="space-y-2">
       {history.map((h) => (
-        <Card key={h.id} className="flex items-start justify-between gap-4">
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <span className="font-medium text-text-primary">{nameById.get(h.scheduleId) ?? h.scheduleId}</span>
-              <span className={`text-caption font-semibold ${OUTCOME_TONE[h.outcome]}`}>{OUTCOME_LABELS[h.outcome]}</span>
-              {/* 실사용 제보 요구 3 — 예약 실행과 수동 실행을 절대 섞어
-                  보이지 않는다("왜 이 시각에 돌았지"를 설명할 수 있어야
-                  한다). */}
-              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-text-muted">
-                {h.trigger === "manual" ? "수동 실행" : "예약 실행"}
-              </span>
+        <button
+          key={h.id}
+          type="button"
+          onClick={() => setSelected(h)}
+          className="block w-full text-left"
+        >
+          <Card className="flex items-start justify-between gap-4 transition-colors hover:bg-slate-50">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-medium text-text-primary">{nameById.get(h.scheduleId) ?? h.scheduleId}</span>
+                <span className={`text-caption font-semibold ${OUTCOME_TONE[h.outcome]}`}>{OUTCOME_LABELS[h.outcome]}</span>
+                {/* 실사용 제보 요구 3 — 예약 실행과 수동 실행을 절대 섞어
+                    보이지 않는다("왜 이 시각에 돌았지"를 설명할 수 있어야
+                    한다). */}
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-text-muted">
+                  {h.trigger === "manual" ? "수동 실행" : "예약 실행"}
+                </span>
+              </div>
+              <p className="mt-1 text-caption text-text-muted">{formatDateTime(h.timestamp)}</p>
+              {h.resultSummary && (
+                <p className="mt-1 truncate text-caption text-text-secondary">
+                  {summarizeForList(h.resultSummary)}
+                  {h.resultTruncated && <span className="ml-1 text-warning">(잘림)</span>}
+                </p>
+              )}
+              {h.failureReason && <p className="mt-1 truncate text-caption text-danger">{h.failureReason}</p>}
+              {h.localToolInvocations.length > 0 && (
+                <p className="mt-1 text-caption text-text-muted">
+                  호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
+                </p>
+              )}
             </div>
-            <p className="mt-1 text-caption text-text-muted">{formatDateTime(h.timestamp)}</p>
-            {h.resultSummary && <p className="mt-1 text-caption text-text-secondary">{h.resultSummary}</p>}
-            {h.failureReason && <p className="mt-1 text-caption text-danger">{h.failureReason}</p>}
-            {h.localToolInvocations.length > 0 && (
-              <p className="mt-1 text-caption text-text-muted">
-                호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
-              </p>
-            )}
-          </div>
-        </Card>
+          </Card>
+        </button>
       ))}
+      <ScheduleHistoryDetailModal
+        open={selected !== null}
+        record={selected}
+        scheduleName={selected ? (nameById.get(selected.scheduleId) ?? selected.scheduleId) : ""}
+        onClose={() => setSelected(null)}
+      />
     </div>
   );
 }

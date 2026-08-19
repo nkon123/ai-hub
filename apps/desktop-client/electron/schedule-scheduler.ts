@@ -101,6 +101,7 @@ export class ScheduleScheduler {
         trigger: "scheduled",
         localToolInvocations: [],
         resultSummary: null,
+        resultTruncated: false,
         failureReason: `앱이 실행되지 않는 동안 ${schedule.nextRunAt}에 예정된 실행을 건너뛰었습니다.`,
       });
       this.deps.logger.warn("schedule", `스케줄 놓침 감지: ${schedule.id}`);
@@ -201,6 +202,8 @@ export class ScheduleScheduler {
 
       const wasCancelled = abort.signal.aborted;
       const outcome: ScheduleRunOutcome = wasCancelled ? "cancelled" : ok ? "success" : "failure";
+      const truncated =
+        outcome === "success" && resultSummary ? truncateResultSummary(resultSummary) : null;
 
       this.deps.historyStore.append({
         scheduleId: schedule.id,
@@ -208,7 +211,8 @@ export class ScheduleScheduler {
         outcome,
         trigger,
         localToolInvocations,
-        resultSummary: outcome === "success" && resultSummary ? truncateResultSummary(resultSummary) : null,
+        resultSummary: truncated ? truncated.text : null,
+        resultTruncated: truncated ? truncated.truncated : false,
         failureReason:
           outcome === "success"
             ? null

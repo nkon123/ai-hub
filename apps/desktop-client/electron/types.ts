@@ -1441,9 +1441,18 @@ export interface ScheduleHistoryRecord {
    * 꺼져 있었거나, 켜져 있었지만 이번 질문에는 아무 Tool도 고르지 않았으면
    * 빈 배열). */
   localToolInvocations: ScheduleLocalToolInvocationRecord[];
-  /** 성공 시에만 채워지는 짧은 요약(길면 잘라낸다) — 답변 원문 저장 금지
-   * 원칙에 따라 전체 답변이 아니다. */
+  /** 성공 시에만 채워지는 요약(길면 잘라낸다, 상한은
+   * `schedule-history-store.ts`의 `RESULT_SUMMARY_MAX_CHARS` — 20,000자) —
+   * 답변 원문 저장 금지 원칙에 따라 무제한 원문은 아니지만, 스케줄 실행은
+   * 사람이 지켜보지 않는 사이 돌므로 이 요약이 곧 유일한 산출물이라는
+   * 전제로 대화 요약(`ConversationTurnRecord.toolExecutions`, 240자)보다
+   * 훨씬 크게 잡았다. */
   resultSummary: string | null;
+  /** `resultSummary`가 20,000자 상한에 걸려 실제로 잘렸는지 — 목록/팝업이
+   * "이 결과는 잘렸습니다"를 정확히 보여주기 위한 사실 플래그(끝의 "…"
+   * 접미사에 의존하지 않는다, `truncateResultSummary` 참고). `resultSummary`
+   * 가 `null`이면 항상 `false`. */
+  resultTruncated: boolean;
   /** 실패/누락 시에만 채워지는 사유. */
   failureReason: string | null;
 }
