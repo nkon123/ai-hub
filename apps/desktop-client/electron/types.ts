@@ -12,6 +12,7 @@ import type { VersionDiffResult } from "./version-diff";
 // 모듈이므로(코드 배치 규칙) 여기서 그 타입을 재사용해도 렌더러 번들에
 // 런타임 비용이 붙지 않는다(`import type`은 컴파일 시 완전히 지워진다).
 import type { ScheduleExpression } from "./schedule-time";
+import type { LocalToolRouteStatus } from "./local-tool-router";
 export type { ScheduleExpression } from "./schedule-time";
 
 export type CheckStatus = "PASS" | "WARN" | "FAIL" | "SKIP";
@@ -1425,6 +1426,21 @@ export interface ScheduleLocalToolInvocationRecord {
   args: Record<string, unknown>;
 }
 
+/** 실사용 제보(2026-08-19) — "스케줄 수행 시 어떤 툴이 수행됐는지 모르겠어":
+ * `localToolInvocations`가 비어 있을 때 그 이유를 침묵으로 남기지 않는다.
+ * `"route_inactive"`는 이 레시피가 애초에 로컬 Tool 자동선택을 켜지 않은
+ * 경우(`recipe.localToolRouteActive === false`) — `schedule-scheduler.ts`가
+ * 직접 채운다, `invokeLocalToolForScheduledRun`을 아예 부르지 않으므로 그
+ * 함수가 알 수 있는 사실이 아니다. 나머지 값은 `local-tool-router.ts`의
+ * `LocalToolRouteStatus`를 그대로 재사용한다(라우팅을 시도했지만 후보가
+ * 없었거나/모델이 거절했거나/응답을 해석할 수 없었거나/모르는 이름을
+ * 골랐거나/요청 자체가 실패·시간초과했거나/검증에 실패한 경우) —
+ * `"ran"`이면 Tool이 실제로 선택되어 `localToolInvocations`가 채워진다
+ * (성공/실패는 `outcome`/`failureReason`으로 이미 구분됨). "레시피가
+ * 자동선택을 안 켰다"와 "켰지만 이번엔 안 돌았다"는 서로 다른 사실이므로
+ * 하나로 뭉치지 않는다. */
+export type ScheduleToolRouteOutcome = "route_inactive" | LocalToolRouteStatus;
+
 /** 실행 1건의 이력(E) — 성공/실패/누락(missed) 모두 이 형태로 남는다. 질문/
  * 답변 원문은 절대 저장하지 않는다(`resultSummary`/`failureReason`은 사람이
  * 읽을 짧은 요약이지 원문이 아니다) — `electron/diagnostic-bundle.ts`가
@@ -1441,6 +1457,13 @@ export interface ScheduleHistoryRecord {
    * 꺼져 있었거나, 켜져 있었지만 이번 질문에는 아무 Tool도 고르지 않았으면
    * 빈 배열). */
   localToolInvocations: ScheduleLocalToolInvocationRecord[];
+  /** `localToolInvocations`가 비어 있는 이유(또는 채워진 이유 `"ran"`) —
+   * 위 `ScheduleToolRouteOutcome` 참고. 이 필드 도입 이전 기록은 `null`로
+   * 정규화된다(`schedule-history-store.ts`) — 그 시점에는 자동선택이 켜져
+   * 있었는지조차 기록되지 않았으므로 추측하지 않는다. `"missed"` outcome
+   * 기록도 `null`이다 — 애초에 실행 자체가 없었으므로 라우팅을 시도한 적도
+   * 없다. */
+  toolRouteOutcome: ScheduleToolRouteOutcome | null;
   /** 성공 시에만 채워지는 요약(길면 잘라낸다, 상한은
    * `schedule-history-store.ts`의 `RESULT_SUMMARY_MAX_CHARS` — 20,000자) —
    * 답변 원문 저장 금지 원칙에 따라 무제한 원문은 아니지만, 스케줄 실행은

@@ -46,6 +46,7 @@ import {
   SCHEDULE_HISTORY_OUTCOME_LABELS,
   SCHEDULE_HISTORY_OUTCOME_TONE,
   ScheduleHistoryDetailModal,
+  describeToolRouteForList,
   summarizeForList,
 } from "./scheduleHistoryDetail";
 import {
@@ -2509,6 +2510,14 @@ function ScheduleBotPanel({
                 </span>
               </div>
               <p className="mt-1 text-[11px] text-text-muted">{formatDateTime(h.timestamp)}</p>
+              {/* 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다":
+                  이전에는 이 줄이 `localToolInvocations.length > 0`일 때만
+                  보였다. 이제는 항상 보이고, Tool이 안 돌았으면 그 이유를
+                  명시한다(침묵 없음) — 매번 팝업을 열지 않아도 알 수 있다. */}
+              <p className="mt-1 flex items-center gap-1 text-[11px] text-text-muted">
+                <Terminal size={11} className="shrink-0" aria-hidden="true" />
+                {describeToolRouteForList(h.localToolInvocations, h.toolRouteOutcome)}
+              </p>
               {h.resultSummary && (
                 <p className="mt-1 truncate text-text-secondary">
                   {summarizeForList(h.resultSummary)}
@@ -2516,12 +2525,6 @@ function ScheduleBotPanel({
                 </p>
               )}
               {h.failureReason && <p className="mt-1 truncate text-danger">{h.failureReason}</p>}
-              {h.localToolInvocations.length > 0 && (
-                <p className="mt-1 flex items-center gap-1 text-[11px] text-text-muted">
-                  <Terminal size={11} className="shrink-0" aria-hidden="true" />
-                  호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
-                </p>
-              )}
             </button>
           ))}
       </div>

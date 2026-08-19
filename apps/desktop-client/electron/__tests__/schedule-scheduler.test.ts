@@ -79,6 +79,9 @@ describe("ScheduleScheduler — missed-run detection (D)", () => {
     expect(history).toHaveLength(1);
     expect(history[0].outcome).toBe("missed");
     expect(history[0].failureReason).toBeTruthy();
+    // 실행 자체가 없었으므로 라우팅을 시도한 적도 없다 — "route_inactive"로
+    // 단정하지 않고 null이어야 한다.
+    expect(history[0].toolRouteOutcome).toBeNull();
 
     const updated = scheduleStore.get(schedule.id)!;
     expect(updated.lastRunOutcome).toBe("missed");
@@ -254,4 +257,56 @@ describe("ScheduleScheduler — runNow() (D14 후속, 실사용 제보 3)", () =
     expect(history[0].outcome).toBe("failure");
     expect(history[0].failureReason).toContain("실행 시간 상한");
   }, 10_000);
+});
+
+// 실사용 제보(2026-08-19) — "스케줄 수행 시 어떤 툴이 수행됐는지 모르겠어":
+// `toolRouteOutcome`이 실행 경로에 따라 올바르게 채워지는지.
+describe("ScheduleScheduler — toolRouteOutcome (실사용 제보 2026-08-19)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("records toolRouteOutcome:'route_inactive' for a recipe that never enabled local-tool auto-routing", async () => {
+    const schedule = saveActiveSchedule(); // knowledgeOnlyRecipe: localToolRouteActive === false
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: "run-1" }))
+      .mockResolvedValueOnce(jsonResponse({ status: "SUCCEEDED", output: { answer: "완료", citations: [] } }));
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const scheduler = makeScheduler(() => new Date());
+    await scheduler.runNow(schedule.id);
+
+    const history = historyStore.listForSchedule(schedule.id);
+    expect(history[0].toolRouteOutcome).toBe("route_inactive");
+    expect(history[0].localToolInvocations).toEqual([]);
+  });
+
+  it("records the router's actual reason (e.g. 'no_candidates') for a Tool-capable recipe that didn't call one this run — distinct from 'route_inactive'", async () => {
+    const saved = scheduleStore.saveWithToolRiskAck(
+      {
+        name: "Tool 스케줄",
+        expression: { kind: "daily", hour: 9, minute: 0 },
+        recipe: { ...knowledgeOnlyRecipe(), localToolRouteActive: true },
+        active: true,
+      },
+      { acknowledgedToolRisk: true },
+    );
+    if (!saved.ok) throw new Error("setup failed");
+    // localToolStore에 등록된 Tool이 하나도 없으므로 라우팅은 Ollama를
+    // 부르지도 않고 no_candidates로 귀결된다 — fetch가 전혀 호출되지 않아야
+    // 한다는 것 자체가 "라우팅을 아예 시도하지 않았다"의 증거다.
+    const fetchImpl = vi.fn();
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const scheduler = makeScheduler(() => new Date());
+    const result = await scheduler.runNow(saved.schedule.id);
+    expect(result.ok).toBe(true);
+
+    const history = historyStore.listForSchedule(saved.schedule.id);
+    expect(history[0].outcome).toBe("success"); // "Tool 없음"은 실패가 아니다
+    expect(history[0].toolRouteOutcome).toBe("no_candidates");
+    expect(history[0].toolRouteOutcome).not.toBe("route_inactive");
+    expect(history[0].localToolInvocations).toEqual([]);
+  });
 });

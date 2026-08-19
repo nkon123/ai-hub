@@ -15,7 +15,7 @@
 // module the chat auto-route path uses) — a scheduled recipe with
 // `localToolRouteActive: true` proposes at most one tool call per fire,
 // exactly like a live chat turn's auto-route branch, never a batch of calls.
-import { routeLocalToolCall, type LocalToolRouteCandidate } from "./local-tool-router";
+import { routeLocalToolCall, type LocalToolRouteCandidate, type LocalToolRouteStatus } from "./local-tool-router";
 import { invokeLocalTool, type InvokeLocalToolTarget } from "./local-tool-runner";
 import type { LocalTool, LocalToolInvocationResult, ScheduleLocalToolInvocationRecord } from "./types";
 
@@ -29,6 +29,22 @@ export interface ScheduledLocalToolOutcome {
   invocation: ScheduleLocalToolInvocationRecord | null;
   resultSummary: string | null;
   failureReason: string | null;
+  /** 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다": 이전에는 이
+   * 함수가 `routeLocalToolCall`의 라우팅 결과(`no_candidates` /
+   * `declined_by_model` / `unparseable` / `unknown_tool_name` /
+   * `error_or_timeout` / `schema_invalid` / `ran`)를 호출부에 전달하지 않고
+   * 버렸다 — 그 결과 이력에는 "Tool을 안 돌았다"는 침묵만 남고, 사용자는 네
+   * 가지 서로 다른 사실(후보 없음 / 모델이 불필요 판단 / 응답 해석 실패 /
+   * 검증 실패)을 구분할 수 없었다. 이 필드가 그 사유를 그대로 돌려준다 —
+   * `"ran"`은 Tool이 실제로 선택되어 실행까지 시도됐다는 뜻이고(성공/실패는
+   * `ok`/`failureReason`으로 이미 구분됨), 그 외 값은 전부 "이번 실행은
+   * Tool을 호출하지 않았다"의 구체적 사유다. 이 필드 자체는 항상 채워진다
+   * (호출자가 `routed.status`를 놓칠 수 없게 타입으로 강제) — "레시피가
+   * Tool 자동선택을 아예 안 켰다"는 사실은 이 함수의 관할이 아니다(호출자인
+   * `schedule-scheduler.ts`가 이 함수를 부르기 전에 이미 알고 있는 사실이므로
+   * 별도 코드값 `"route_inactive"`로 그쪽에서 채운다, `types.ts`의
+   * `ScheduleToolRouteOutcome` 참고). */
+  toolRouteStatus: LocalToolRouteStatus;
 }
 
 /** ms를 사람이 읽는 분/초 단위 문구로 바꾼다 — 실행 이력에 원시 밀리초
@@ -110,12 +126,18 @@ export async function invokeLocalToolForScheduledRun(
     // 결과가 나올 거절을 실패로 취급하지 않는다) — Knowledge/일반 대화 결과가
     // 이 실행의 실제 답을 이미 담고 있을 수 있으므로 여기서는 그저 "Tool
     // 없음"만 보고한다.
-    return { ok: true, invocation: null, resultSummary: null, failureReason: null };
+    return { ok: true, invocation: null, resultSummary: null, failureReason: null, toolRouteStatus: routed.status };
   }
 
   const target = registeredTools.find((t) => t.id === routed.toolId);
   if (!target) {
-    return { ok: false, invocation: null, resultSummary: null, failureReason: "라우팅된 Tool을 더 이상 찾을 수 없습니다." };
+    return {
+      ok: false,
+      invocation: null,
+      resultSummary: null,
+      failureReason: "라우팅된 Tool을 더 이상 찾을 수 없습니다.",
+      toolRouteStatus: "ran",
+    };
   }
 
   const invokeTarget: InvokeLocalToolTarget = {
@@ -139,5 +161,6 @@ export async function invokeLocalToolForScheduledRun(
     invocation: { toolName: routed.toolName, args: routed.args },
     resultSummary: summary,
     failureReason: failure,
+    toolRouteStatus: "ran",
   };
 }

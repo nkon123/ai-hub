@@ -28,7 +28,13 @@ import type { ScheduleHistoryStore } from "./schedule-history-store";
 import { truncateResultSummary } from "./schedule-history-store";
 import type { ScheduleStore } from "./schedule-store";
 import type { LocalToolStore } from "./local-tool-store";
-import type { ScheduleLocalToolInvocationRecord, ScheduleRecord, ScheduleRunOutcome, ScheduleTrigger } from "./types";
+import type {
+  ScheduleLocalToolInvocationRecord,
+  ScheduleRecord,
+  ScheduleRunOutcome,
+  ScheduleToolRouteOutcome,
+  ScheduleTrigger,
+} from "./types";
 
 const TICK_INTERVAL_MS = 20_000;
 
@@ -100,6 +106,9 @@ export class ScheduleScheduler {
         // 즉시 실행되므로 놓칠 수 없다.
         trigger: "scheduled",
         localToolInvocations: [],
+        // 실행 자체가 없었으므로 로컬 Tool 라우팅을 시도한 적도 없다 —
+        // "route_inactive"(레시피가 껐다)로 단정하지 않는다.
+        toolRouteOutcome: null,
         resultSummary: null,
         resultTruncated: false,
         failureReason: `앱이 실행되지 않는 동안 ${schedule.nextRunAt}에 예정된 실행을 건너뛰었습니다.`,
@@ -167,6 +176,11 @@ export class ScheduleScheduler {
       let resultSummary: string | null = null;
       let failureReason: string | null = null;
       let localToolInvocations: ScheduleLocalToolInvocationRecord[] = [];
+      // 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다": Tool
+      // 자동선택이 아예 꺼진 레시피와, 켜져 있었지만 이번엔 라우팅이 아무
+      // 것도 고르지 못한 레시피는 서로 다른 사실이다(`types.ts`의
+      // `ScheduleToolRouteOutcome` 참고) — 여기서 그 둘을 구분해 채운다.
+      let toolRouteOutcome: ScheduleToolRouteOutcome = "route_inactive";
       // 실사용 제보(2026-08-19) — 이 스케줄에 설정된 하나의 상한(분)을
       // agent-runtime 폴링 상한과 로컬 Tool 1회 호출 상한 양쪽에 그대로
       // 적용한다(별도 하위 상한을 만들지 않는다 — schedule-store.ts의
@@ -188,6 +202,7 @@ export class ScheduleScheduler {
         ok = outcome.ok;
         resultSummary = outcome.resultSummary;
         failureReason = outcome.failureReason;
+        toolRouteOutcome = outcome.toolRouteStatus;
         if (outcome.invocation) localToolInvocations = [outcome.invocation];
       } else {
         const result = await runScheduledRecipeAgainstAgentRuntime(
@@ -211,6 +226,7 @@ export class ScheduleScheduler {
         outcome,
         trigger,
         localToolInvocations,
+        toolRouteOutcome,
         resultSummary: truncated ? truncated.text : null,
         resultTruncated: truncated ? truncated.truncated : false,
         failureReason:

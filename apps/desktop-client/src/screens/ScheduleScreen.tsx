@@ -25,6 +25,7 @@ import {
   Card,
   EmptyState,
   ErrorBanner,
+  LabeledInput,
   LoadingState,
   ReasonConfirmDialog,
   Tabs,
@@ -33,6 +34,7 @@ import {
   SCHEDULE_HISTORY_OUTCOME_LABELS,
   SCHEDULE_HISTORY_OUTCOME_TONE,
   ScheduleHistoryDetailModal,
+  describeToolRouteForList,
   summarizeForList,
 } from "./scheduleHistoryDetail";
 
@@ -607,6 +609,13 @@ function HistoryView({ history, schedules }: { history: ScheduleHistoryRecord[];
                 </span>
               </div>
               <p className="mt-1 text-caption text-text-muted">{formatDateTime(h.timestamp)}</p>
+              {/* 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다":
+                  이전에는 이 줄이 `localToolInvocations.length > 0`일 때만
+                  보였다. 이제는 항상 보이고, Tool이 안 돌았으면 그 이유를
+                  명시한다(침묵 없음) — 매번 팝업을 열지 않아도 알 수 있다. */}
+              <p className="mt-1 truncate text-caption text-text-secondary">
+                {describeToolRouteForList(h.localToolInvocations, h.toolRouteOutcome)}
+              </p>
               {h.resultSummary && (
                 <p className="mt-1 truncate text-caption text-text-secondary">
                   {summarizeForList(h.resultSummary)}
@@ -614,11 +623,6 @@ function HistoryView({ history, schedules }: { history: ScheduleHistoryRecord[];
                 </p>
               )}
               {h.failureReason && <p className="mt-1 truncate text-caption text-danger">{h.failureReason}</p>}
-              {h.localToolInvocations.length > 0 && (
-                <p className="mt-1 text-caption text-text-muted">
-                  호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
-                </p>
-              )}
             </div>
           </Card>
         </button>
@@ -654,36 +658,42 @@ function ScheduleFormPanel({
   onCancel: () => void;
   onSave: () => void;
 }) {
+  // 이 오버레이 컨테이너는 `Card`(§7.2 — border 상시 노출, shadow-card)가
+  // 아니라 이 화면의 `Modal`(`src/ui.tsx`)이 이미 쓰는 전체 화면 오버레이
+  // 관례(rounded-card bg-surface p-5 shadow-xl, border 없음)를 그대로
+  // 따른다 — 딤 처리된 배경 위에서 도드라져 보여야 하는 모달과, 목록 안에서
+  // 옆 카드와 구분돼야 하는 인라인 Card는 의도적으로 다른 스타일이다(`Modal`
+  // 자체도 border를 쓰지 않는다). 새 스타일을 만든 것이 아니라 기존 Modal
+  // 관례를 재사용한 것이라 손대지 않았다.
   return (
     <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/40 px-4">
       <div className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-card bg-surface p-5 shadow-xl">
         <h3 className="text-card-title font-semibold text-text-primary">{form.id ? "스케줄 수정" : "새 스케줄"}</h3>
 
         <div className="mt-4 space-y-4">
-          <div>
-            <label className="mb-1 block text-caption font-semibold text-text-muted" htmlFor="schedule-name">
-              스케줄 이름
-            </label>
-            <input
-              id="schedule-name"
-              value={form.name}
-              onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-              placeholder="예: 매일 아침 정책 요약"
-              className="h-10 w-full rounded-lg border border-border px-3 text-sm"
-            />
-          </div>
+          <LabeledInput
+            id="schedule-name"
+            label="스케줄 이름"
+            value={form.name}
+            onChange={(v) => setForm((prev) => ({ ...prev, name: v }))}
+            placeholder="예: 매일 아침 정책 요약"
+          />
 
           <div>
             <label className="mb-1 block text-caption font-semibold text-text-muted" htmlFor="schedule-question">
               실행할 질문
             </label>
+            {/* `LabeledInput`은 단일 행 `<input>`만 지원한다(멀티라인 질문에는
+                `<textarea>`가 필요) — 높이는 `rows`로 결정되므로 h-10 통일
+                대상이 아니지만, 테두리/패딩/글자 크기는 `LabeledInput`과
+                동일한 값을 그대로 맞춘다. */}
             <textarea
               id="schedule-question"
               value={form.recipe.question}
               onChange={(e) => setForm((prev) => ({ ...prev, recipe: { ...prev.recipe, question: e.target.value } }))}
               rows={2}
               placeholder="예: 이번 주 공지사항을 요약해줘"
-              className="w-full rounded-lg border border-border px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-border px-3 py-2 text-sm text-text-primary"
             />
           </div>
 
@@ -691,6 +701,9 @@ function ScheduleFormPanel({
             <label className="mb-1 block text-caption font-semibold text-text-muted" htmlFor="schedule-timeout">
               실행 타임아웃(분)
             </label>
+            {/* `LabeledInput`은 min/max를 지원하지 않아(숫자 범위 검증이
+                필요한 필드) 직접 구성한다 — 높이/테두리/글자 크기 클래스는
+                `LabeledInput`과 동일하게 맞춘다. */}
             <input
               id="schedule-timeout"
               type="number"
@@ -698,7 +711,7 @@ function ScheduleFormPanel({
               max={MAX_SCHEDULE_TIMEOUT_MINUTES}
               value={form.timeoutMinutesText}
               onChange={(e) => setForm((prev) => ({ ...prev, timeoutMinutesText: e.target.value }))}
-              className="h-10 w-32 rounded-lg border border-border px-3 text-sm"
+              className="h-10 w-32 rounded-lg border border-border px-3 text-sm text-text-primary"
             />
             <p className="mt-1 text-caption text-text-muted">
               이 스케줄이 실행될 때 응답(또는 호출한 로컬 Tool 1회 호출)을 기다리는 최대 시간입니다. 기본{" "}
@@ -730,11 +743,14 @@ function ScheduleFormPanel({
                   <label className="mb-1 block text-caption text-text-muted" htmlFor="schedule-weekday">
                     요일
                   </label>
+                  {/* 이 화면에 `<select>`용 라벨 primitive가 없어 직접
+                      구성한다 — 높이/테두리/글자 크기는 `LabeledInput`과
+                      동일하게(h-10) 맞춘다. */}
                   <select
                     id="schedule-weekday"
                     value={form.dayOfWeek}
                     onChange={(e) => setForm((prev) => ({ ...prev, dayOfWeek: Number(e.target.value) }))}
-                    className="h-9 rounded-lg border border-border px-2 text-sm"
+                    className="h-10 rounded-lg border border-border px-2 text-sm text-text-primary"
                   >
                     {WEEKDAY_OPTIONS.map((label, idx) => (
                       <option key={label} value={idx}>
@@ -749,12 +765,15 @@ function ScheduleFormPanel({
                   <label className="mb-1 block text-caption text-text-muted" htmlFor="schedule-days">
                     날짜(쉼표로 여러 개, 1-31)
                   </label>
+                  {/* `LabeledInput`은 폭을 w-full로 고정해 이렇게 좁은
+                      입력에는 쓸 수 없다 — 높이/테두리/글자 크기는 동일하게
+                      (h-10) 맞춘다. */}
                   <input
                     id="schedule-days"
                     value={form.daysOfMonth}
                     onChange={(e) => setForm((prev) => ({ ...prev, daysOfMonth: e.target.value }))}
                     placeholder="1, 15"
-                    className="h-9 w-32 rounded-lg border border-border px-2 text-sm"
+                    className="h-10 w-32 rounded-lg border border-border px-2 text-sm text-text-primary"
                   />
                   <p className="mt-1 text-caption text-text-muted">존재하지 않는 날짜(예: 2월 31일)는 그 달에 건너뜁니다.</p>
                 </div>
@@ -764,6 +783,8 @@ function ScheduleFormPanel({
                   <label className="mb-1 block text-caption text-text-muted" htmlFor="schedule-hour">
                     시
                   </label>
+                  {/* `LabeledInput`은 min/max와 좁은 폭을 지원하지 않는다 —
+                      높이/테두리/글자 크기는 동일하게(h-10) 맞춘다. */}
                   <input
                     id="schedule-hour"
                     type="number"
@@ -771,7 +792,7 @@ function ScheduleFormPanel({
                     max={23}
                     value={form.hour}
                     onChange={(e) => setForm((prev) => ({ ...prev, hour: Number(e.target.value) }))}
-                    className="h-9 w-20 rounded-lg border border-border px-2 text-sm"
+                    className="h-10 w-20 rounded-lg border border-border px-2 text-sm text-text-primary"
                   />
                 </div>
               )}
@@ -779,6 +800,8 @@ function ScheduleFormPanel({
                 <label className="mb-1 block text-caption text-text-muted" htmlFor="schedule-minute">
                   분
                 </label>
+                {/* `LabeledInput`은 min/max와 좁은 폭을 지원하지 않는다 —
+                    높이/테두리/글자 크기는 동일하게(h-10) 맞춘다. */}
                 <input
                   id="schedule-minute"
                   type="number"
@@ -786,7 +809,7 @@ function ScheduleFormPanel({
                   max={59}
                   value={form.minute}
                   onChange={(e) => setForm((prev) => ({ ...prev, minute: Number(e.target.value) }))}
-                  className="h-9 w-20 rounded-lg border border-border px-2 text-sm"
+                  className="h-10 w-20 rounded-lg border border-border px-2 text-sm text-text-primary"
                 />
               </div>
             </div>
@@ -850,13 +873,16 @@ function ScheduleFormPanel({
               <label className="mb-1 block text-caption text-text-muted" htmlFor="schedule-agent">
                 Local Agent (선택)
               </label>
+              {/* 이 화면에 `<select>`용 라벨 primitive가 없어 직접
+                  구성한다 — 높이/테두리/글자 크기는 `LabeledInput`과
+                  동일하게(h-10) 맞춘다. */}
               <select
                 id="schedule-agent"
                 value={form.recipe.localAgentId ?? ""}
                 onChange={(e) =>
                   setForm((prev) => ({ ...prev, recipe: { ...prev.recipe, localAgentId: e.target.value || null } }))
                 }
-                className="h-9 w-full rounded-lg border border-border px-2 text-sm"
+                className="h-10 w-full rounded-lg border border-border px-2 text-sm text-text-primary"
               >
                 <option value="">표준 Agent</option>
                 {agentOptions.map((a) => (
@@ -909,6 +935,8 @@ function ToolRiskConfirmDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  // ScheduleFormPanel과 같은 이유로 `Card`가 아니라 `Modal` 오버레이 관례를
+  // 그대로 따른다(위 주석 참고).
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 px-4">
       <div className="w-full max-w-md rounded-card bg-surface p-5 shadow-xl">

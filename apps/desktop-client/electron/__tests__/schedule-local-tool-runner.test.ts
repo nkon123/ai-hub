@@ -33,6 +33,29 @@ function ollamaResponse(body: unknown): Response {
 }
 
 describe("invokeLocalToolForScheduledRun", () => {
+  // 실사용 제보(2026-08-19) — "등록된 Tool이 없다"와 "모델이 불필요 판단했다"는
+  // 둘 다 "Tool을 호출하지 않았다"로 귀결되지만 서로 다른 사실이다 —
+  // toolRouteStatus로 구분되어야 한다(no_candidates는 라우팅 호출조차 하지
+  // 않으므로 fetch가 필요 없다).
+  it("reports toolRouteStatus:'no_candidates' when no local tools are registered — never calls Ollama", async () => {
+    const fetchImpl = vi.fn();
+    const original = global.fetch;
+    global.fetch = fetchImpl as unknown as typeof fetch;
+    try {
+      const result = await invokeLocalToolForScheduledRun("이번 달 매출 알려줘", [], {
+        ollamaBaseUrl: "http://127.0.0.1:11434",
+        chatModelAlias: "llama3",
+        interpreterPath: null,
+      });
+      expect(result.ok).toBe(true);
+      expect(result.invocation).toBeNull();
+      expect(result.toolRouteStatus).toBe("no_candidates");
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      global.fetch = original;
+    }
+  });
+
   it("reports 'no tool called' (ok:true, invocation:null) when the model declines — never a failure", async () => {
     const fetchImpl = vi
       .fn()
@@ -50,6 +73,9 @@ describe("invokeLocalToolForScheduledRun", () => {
       });
       expect(result.ok).toBe(true);
       expect(result.invocation).toBeNull();
+      // 실사용 제보(2026-08-19) — "모델이 불필요 판단"과 다른 미실행 사유를
+      // 구분할 수 있어야 한다: 라우팅 결과 그대로 돌려준다, 뭉개지 않는다.
+      expect(result.toolRouteStatus).toBe("declined_by_model");
     } finally {
       global.fetch = original;
     }
@@ -73,6 +99,9 @@ describe("invokeLocalToolForScheduledRun", () => {
       expect(result.ok).toBe(false);
       expect(result.invocation).toEqual({ toolName: "lookup_sales", args: { month: "2026-08" } });
       expect(result.failureReason).toContain("인터프리터");
+      // Tool은 선택됐다(라우팅은 성공) — 실행 자체가 실패했을 뿐이므로
+      // toolRouteStatus는 "ran"이다, "no_candidates" 등으로 뭉개지지 않는다.
+      expect(result.toolRouteStatus).toBe("ran");
     } finally {
       global.fetch = original;
     }

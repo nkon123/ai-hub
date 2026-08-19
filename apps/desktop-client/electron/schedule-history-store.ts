@@ -71,11 +71,18 @@ export class ScheduleHistoryStore {
       // 쓴다(진짜 답변이 "…"로 끝났을 극히 드문 경우 오탐 가능성은 있지만,
       // 반대로 잘린 기록을 "안 잘렸다"고 잘못 단정하는 것보다 안전하다 —
       // 불확실하면 닫는 방향, 루트 CLAUDE.md).
+      // 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다": `toolRouteOutcome`이
+      // 없는(이 필드 도입 이전) 기록은 `null`로 정규화한다. 그 시점에는
+      // 로컬 Tool 자동선택이 켜져 있었는지조차 기록되지 않았으므로,
+      // `"route_inactive"`로 단정하면 실제로는 켜져 있었지만 안 돌았던
+      // 기록을 거짓으로 "자동선택 꺼짐"이라고 보여주게 된다 — 불확실하면
+      // 닫는(추측하지 않는) 방향을 택한다.
       return (parsed as ScheduleHistoryRecord[]).map((r) => ({
         ...r,
         trigger: r.trigger ?? "scheduled",
         resultTruncated:
           r.resultTruncated ?? (typeof r.resultSummary === "string" && r.resultSummary.endsWith("…")),
+        toolRouteOutcome: r.toolRouteOutcome ?? null,
       }));
     } catch {
       return [];

@@ -30,6 +30,7 @@ describe("ScheduleHistoryStore", () => {
         outcome: "success",
         trigger: "manual",
         localToolInvocations: [],
+        toolRouteOutcome: "route_inactive",
         resultSummary: "완료",
         resultTruncated: false,
         failureReason: null,
@@ -84,6 +85,7 @@ describe("ScheduleHistoryStore", () => {
         outcome: "success",
         trigger: "scheduled",
         localToolInvocations: [],
+        toolRouteOutcome: "route_inactive",
         resultSummary: text,
         resultTruncated: truncated,
         failureReason: null,
@@ -127,6 +129,49 @@ describe("ScheduleHistoryStore", () => {
       const [newer, older] = store.listAll();
       expect(older.resultTruncated).toBe(true);
       expect(newer.resultTruncated).toBe(false);
+    });
+  });
+
+  // 실사용 제보(2026-08-19) — "어떤 툴이 수행됐는지 모르겠다".
+  describe("toolRouteOutcome", () => {
+    it("persists the value it was given and round-trips through a fresh instance", () => {
+      const store = new ScheduleHistoryStore(tmpDir);
+      store.append({
+        scheduleId: "s1",
+        timestamp: "2026-08-19T00:00:00.000Z",
+        outcome: "success",
+        trigger: "scheduled",
+        localToolInvocations: [{ toolName: "add_numbers", args: { a: 1, b: 2 } }],
+        toolRouteOutcome: "ran",
+        resultSummary: "3",
+        resultTruncated: false,
+        failureReason: null,
+      });
+      const reopened = new ScheduleHistoryStore(tmpDir);
+      expect(reopened.listAll()[0].toolRouteOutcome).toBe("ran");
+    });
+
+    it("normalizes a legacy record written before this field existed to null (does not guess route_inactive)", () => {
+      fs.mkdirSync(tmpDir, { recursive: true });
+      const legacy = [
+        {
+          id: "h1",
+          scheduleId: "s1",
+          timestamp: "2026-08-01T00:00:00.000Z",
+          outcome: "success",
+          trigger: "scheduled",
+          localToolInvocations: [],
+          resultSummary: "완료",
+          resultTruncated: false,
+          failureReason: null,
+          // toolRouteOutcome 필드 자체가 없다(이 필드 도입 이전 기록) — 그
+          // 시점엔 자동선택이 켜져 있었는지조차 기록되지 않았으므로
+          // "route_inactive"로 단정하지 않고 null로 정규화한다.
+        },
+      ];
+      fs.writeFileSync(path.join(tmpDir, "schedule-history.json"), JSON.stringify(legacy));
+      const store = new ScheduleHistoryStore(tmpDir);
+      expect(store.listAll()[0].toolRouteOutcome).toBeNull();
     });
   });
 });
