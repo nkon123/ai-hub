@@ -102,6 +102,17 @@ def _main() -> None:
         if spec is None or spec.loader is None:
             raise ImportError(f"module could not be loaded from {module_path!r}")
         module = importlib.util.module_from_spec(spec)
+        # 실행 전에 sys.modules 에 등록한다(importlib 공식 권고). 등록하지
+        # 않으면 모듈은 정상적으로 실행되지만, 나중에 그 모듈의 객체에서
+        # 타입 힌트를 해석하려는 코드가 전부 실패한다 — pydantic /
+        # dataclasses / typing.get_type_hints 는 sys.modules[obj.__module__]
+        # 를 찾아 그 globals 로 어노테이션을 평가하기 때문이다.
+        # 실사용 버그(사내 Windows): LangGraph/LangChain 의 @tool 이 타입
+        # 힌트로 pydantic 스키마를 만들면서, Dict 가 파일 안에 분명히
+        # import 되어 있는데도 "'Dict' is not defined" 로 죽었다. 원인은
+        # import 누락이 아니라 이 등록 누락이었다.
+        # 프로세스는 호출 1회당 새로 뜨고 곧 끝나므로 정리하지 않는다.
+        sys.modules[spec.name] = module
         spec.loader.exec_module(module)
 
         target = getattr(module, function_name)

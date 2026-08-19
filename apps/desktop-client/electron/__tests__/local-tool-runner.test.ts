@@ -169,6 +169,43 @@ describe("real BOOTSTRAP_SCRIPT contract against python3/python (skips if unavai
     expect(result).toEqual({ outcome: "success", result: "hi!hi!" });
   });
 
+  // 실사용 버그(사내 Windows): 파일에 `from typing import Dict` 가 분명히
+  // 있는데도 LangGraph/LangChain 의 @tool 이 "'Dict' is not defined" 로
+  // 죽었다. 원인은 import 누락이 아니라 BOOTSTRAP_SCRIPT 가 모듈을
+  // sys.modules 에 등록하지 않은 것이었다 — pydantic /
+  // typing.get_type_hints 는 sys.modules[obj.__module__] 의 globals 로
+  // 어노테이션을 평가한다. 여기서는 langchain 을 설치하지 않고(폐쇄망 전제,
+  // 새 의존성 금지) 같은 해석 경로인 get_type_hints 로 재현한다.
+  maybeIt("resolves a class's type hints via sys.modules (registers the module before exec)", async () => {
+    const modulePath = path.join(tmpDir, "hinted.py");
+    fs.writeFileSync(
+      modulePath,
+      [
+        "from __future__ import annotations",
+        "from typing import Dict, get_type_hints",
+        "",
+        "class Payload:",
+        "    data: Dict[str, int]",
+        "",
+        "def probe() -> str:",
+        "    # 모듈이 sys.modules 에 없으면 여기서",
+        "    # NameError: name 'Dict' is not defined",
+        "    return sorted(get_type_hints(Payload).keys())[0]",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+    const result = await runLocalToolProcess({
+      interpreterPath: python as string,
+      modulePath,
+      functionName: "probe",
+      args: {},
+      timeoutMs: 15_000,
+      maxOutputBytes: 65536,
+    });
+    expect(result).toEqual({ outcome: "success", result: "data" });
+  });
+
   maybeIt("turns a raised exception into function_error, not a raw traceback", async () => {
     const modulePath = path.join(tmpDir, "raiser.py");
     fs.writeFileSync(modulePath, "def boom():\n    raise ValueError('nope')\n", "utf-8");
