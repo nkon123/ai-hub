@@ -8,7 +8,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { invokeLocalToolForScheduledRun } from "../schedule-local-tool-runner";
+import { describeTimeoutMs, invokeLocalToolForScheduledRun } from "../schedule-local-tool-runner";
 import type { LocalTool } from "../types";
 
 function makeTool(overrides: Partial<LocalTool> = {}): LocalTool {
@@ -123,4 +123,52 @@ describe("invokeLocalToolForScheduledRun — actually runs the tool end-to-end w
       global.fetch = original;
     }
   }, 15_000);
+
+  // 실사용 제보(2026-08-19) — 스케줄에 설정된 짧은 타임아웃이 실제로
+  // 로컬 Tool 1회 호출에 적용되고, 실패 사유가 사람이 읽는 단위로 남는다.
+  it("times out at the schedule-configured timeoutMs (not the interactive 30s default) and reports it in human units", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(ollamaResponse({ models: [{ name: "llama3" }] }))
+      .mockResolvedValueOnce(
+        ollamaResponse({ message: { content: '{"tool_name": "lookup_sales", "input": {"month": "2026-08"}}' } }),
+      );
+    const original = global.fetch;
+    global.fetch = fetchImpl as unknown as typeof fetch;
+
+    // A "Python interpreter" that never returns — spawn's `timeout` option
+    // kills it, exactly like local-tool-runner.test.ts's own hanging-process
+    // test.
+    const hangingInterpreter = path.join(tmpDir, "hang.js");
+    fs.writeFileSync(hangingInterpreter, "#!/usr/bin/env node\nsetInterval(() => {}, 1000);\n", "utf-8");
+    fs.chmodSync(hangingInterpreter, 0o755);
+
+    try {
+      const result = await invokeLocalToolForScheduledRun(
+        "이번 달 매출 알려줘",
+        [makeTool({ filePath: "/tmp/whatever.py" })],
+        {
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          chatModelAlias: "llama3",
+          interpreterPath: hangingInterpreter,
+          timeoutMs: 200,
+        },
+      );
+      expect(result.ok).toBe(false);
+      expect(result.failureReason).toContain("Tool 실행 상한");
+      expect(result.failureReason).not.toContain("30000ms"); // 원시 ms를 찍지 않는다
+    } finally {
+      global.fetch = original;
+    }
+  }, 10_000);
+});
+
+describe("describeTimeoutMs", () => {
+  it("renders whole minutes without seconds", () => {
+    expect(describeTimeoutMs(30 * 60_000)).toBe("30분");
+  });
+  it("renders sub-minute durations in seconds", () => {
+    expect(describeTimeoutMs(200)).toBe("0초"); // rounds to nearest second
+    expect(describeTimeoutMs(30_000)).toBe("30초");
+  });
 });

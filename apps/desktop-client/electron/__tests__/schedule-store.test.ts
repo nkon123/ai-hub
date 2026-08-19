@@ -179,3 +179,58 @@ describe("ScheduleStore — CRUD and reason-required actions", () => {
     expect(freshStore.list()).toEqual([]);
   });
 });
+
+// 실사용 제보(2026-08-19) — "스케줄 등록한 에이전트에 타임아웃이 설정되어
+// 있는 것 같은데, 설정할 수 있도록 해주고 기본 30분 정도로 해줘".
+describe("ScheduleStore — timeoutMinutes", () => {
+  it("defaults to 30 minutes when not provided", () => {
+    const result = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe()), { acknowledgedToolRisk: false });
+    if (!result.ok) throw new Error("setup failed");
+    expect(result.schedule.timeoutMinutes).toBe(30);
+  });
+
+  it("accepts an explicit value within bounds", () => {
+    const result = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe(), { timeoutMinutes: 90 }), {
+      acknowledgedToolRisk: false,
+    });
+    if (!result.ok) throw new Error("setup failed");
+    expect(result.schedule.timeoutMinutes).toBe(90);
+  });
+
+  it("rejects a value below the minimum", () => {
+    const result = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe(), { timeoutMinutes: 0 }), {
+      acknowledgedToolRisk: false,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("rejects a value above the maximum", () => {
+    const result = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe(), { timeoutMinutes: 361 }), {
+      acknowledgedToolRisk: false,
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  it("normalizes a legacy record written before this field existed to 30 minutes", () => {
+    fs.mkdirSync(tmpDir, { recursive: true });
+    const legacy = [
+      {
+        id: "s1",
+        name: "레거시",
+        expression: { kind: "daily", hour: 9, minute: 0 },
+        recipe: knowledgeOnlyRecipe(),
+        active: true,
+        toolRiskAcknowledgedAt: null,
+        createdAt: "2026-08-01T00:00:00.000Z",
+        updatedAt: "2026-08-01T00:00:00.000Z",
+        nextRunAt: "2026-08-02T09:00:00.000Z",
+        lastRunAt: null,
+        lastRunOutcome: null,
+        // timeoutMinutes 필드 자체가 없다(이 필드 도입 이전 레코드).
+      },
+    ];
+    fs.writeFileSync(path.join(tmpDir, "schedules.json"), JSON.stringify(legacy));
+    const freshStore = new ScheduleStore(tmpDir);
+    expect(freshStore.get("s1")?.timeoutMinutes).toBe(30);
+  });
+});

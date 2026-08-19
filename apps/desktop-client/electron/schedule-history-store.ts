@@ -41,7 +41,12 @@ export class ScheduleHistoryStore {
     if (!fs.existsSync(this.filePath)) return [];
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
-      return Array.isArray(parsed) ? (parsed as ScheduleHistoryRecord[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // D14 후속("지금 실행") — `trigger`가 없는(이 필드 도입 이전) 기록은
+      // `"scheduled"`로 정규화한다. 그 시점에는 수동 실행 경로 자체가 없었기
+      // 때문에 정확한 사실이다(`local-tool-store.ts`의 `approval` 레거시
+      // 정규화와 같은 스타일).
+      return (parsed as ScheduleHistoryRecord[]).map((r) => ({ ...r, trigger: r.trigger ?? "scheduled" }));
     } catch {
       return [];
     }

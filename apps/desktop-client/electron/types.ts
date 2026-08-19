@@ -1173,12 +1173,43 @@ export interface StoreInstallResult {
 // 진단 Bundle에는 절대 포함하지 않는다.
 export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled";
 
+// 실사용 제보(2026-08-19) — "채팅에서 툴 수행시 기록이 안 남는다" 대응.
+// 이 턴이 실제로 호출한 Tool(들)의 사실 기록 — 이름/인자/결과 요약(또는
+// 실패 사유)/경로. 3가지 route:
+//  - "user_selected": 사용자가 로컬 Tool 화면에서 직접 Tool과 인자를 골라
+//    실행(`LocalToolInvokePanel.tsx`의 수동 경로).
+//  - "ai_auto_selected": AI가 이번 질문만 보고 Tool과(또는) 인자를 스스로
+//    골랐다 — D-083 TOOL_ROUTE(ran)이거나 D-084 후속 2 로컬 Tool 자동
+//    라우팅.
+//  - "mcp_tool": 사용자가 명시적으로 지정한 설치된 MCP Tool 호출(개발 확인용
+//    Tool 트리거).
+// `args`는 Tool의 짧은 구조적 입력 파라미터이지 문서/Prompt 원문이 아니므로
+// 그대로 저장한다(`conversation-store.ts` 모듈 docstring의 "원문 저장 금지"
+// 원칙은 질문/답변 자유 텍스트 대상이다) — `resultSummary`/`failureReason`만
+// 길이 상한을 둔다(`conversation-store.ts`의 `truncateToolResultText` 참고).
+export type ToolExecutionRoute = "user_selected" | "ai_auto_selected" | "mcp_tool";
+
+export interface ToolExecutionRecord {
+  toolName: string;
+  args: Record<string, unknown> | null;
+  /** 성공/실행됨일 때만 채워지는 짧은 요약 — 실패 시 `null`. */
+  resultSummary: string | null;
+  /** 실패/거절/오류일 때만 채워지는 사유 — 성공 시 `null`. */
+  failureReason: string | null;
+  route: ToolExecutionRoute;
+}
+
 export interface ConversationTurnRecord {
   id: string;
   question: string;
   answer: string;
   status: ConversationTurnStatus;
   citationCount: number;
+  /** 이 턴이 실제로 수행한 Tool 호출들 — 없으면 빈 배열(이 필드가 없는
+   * 과거 대화 파일도 `conversation-store.ts`가 읽을 때 빈 배열로
+   * 정규화한다, `local-tool-store.ts`의 `approval` 레거시 정규화와 동일한
+   * 스타일). */
+  toolExecutions: ToolExecutionRecord[];
   createdAt: string;
 }
 
@@ -1317,6 +1348,13 @@ export interface ScheduleRecipe {
 
 export type ScheduleRunOutcome = "success" | "failure" | "missed" | "cancelled";
 
+/** D14 후속("지금 실행" 트리거, 실사용 제보 3) — 이력 한 건이 정기 Tick으로
+ * 실행됐는지, 사용자가 "지금 실행" 버튼으로 수동 트리거했는지. 섞어 보이면
+ * "왜 이 시각에 돌았지"를 설명할 수 없다(Task Brief). `"scheduled"`가 이
+ * 필드 도입 이전 모든 기록의 정규화 기본값이다 — 그 시점에는 수동 실행
+ * 경로 자체가 없었으므로 전부 정기 실행이었다는 사실과 일치한다. */
+export type ScheduleTrigger = "scheduled" | "manual";
+
 export interface ScheduleRecord {
   id: string;
   name: string;
@@ -1326,6 +1364,15 @@ export interface ScheduleRecord {
   /** `recipe.localToolRouteActive`가 true인 레시피에서만 채워진다(F) — 그
    * 외에는 항상 `null`(확인이 필요한 적이 없었으므로 확인한 적도 없다). */
   toolRiskAcknowledgedAt: string | null;
+  /** 실사용 제보(2026-08-19) — 이 스케줄 실행 1회의 전체 상한(분 단위).
+   * agent-runtime Run의 폴링 상한(`maxPollMs`)과, `localToolRouteActive`인
+   * 레시피의 로컬 Tool 1회 호출 상한(`timeoutMs`) 양쪽에 그대로 쓰인다 —
+   * 스케줄 전체가 이 시간 안에 끝나야 한다는 하나의 사용자 기대를 두
+   * 하위 상한으로 나눠 강제하지 않는다(`schedule-store.ts`의
+   * `DEFAULT_SCHEDULE_TIMEOUT_MINUTES` 등 참고 — 기본 30분, 상/하한 있음).
+   * 대화형(채팅) 로컬 Tool 실행의 기본 30초 타임아웃과는 완전히 무관하다 —
+   * 그쪽은 절대 이 값의 영향을 받지 않는다. */
+  timeoutMinutes: number;
   createdAt: string;
   updatedAt: string;
   /** 항상 "지금부터의 다음 실행"을 가리킨다 — 저장/실행/앱 시작 시 놓친
@@ -1342,6 +1389,9 @@ export interface ScheduleSaveInput {
   expression: ScheduleExpression;
   recipe: ScheduleRecipe;
   active: boolean;
+  /** 생략하면 기본값(30분)이 적용된다 — `ScheduleStore.saveWithToolRiskAck`가
+   * 상/하한을 검증한다. */
+  timeoutMinutes?: number;
 }
 
 export type ScheduleSaveResult =
@@ -1363,6 +1413,8 @@ export interface ScheduleHistoryRecord {
   scheduleId: string;
   timestamp: string;
   outcome: ScheduleRunOutcome;
+  /** 정기 Tick(`"scheduled"`) vs 사용자가 누른 "지금 실행"(`"manual"`). */
+  trigger: ScheduleTrigger;
   /** 이번 실행이 실제로 로컬 Tool을 호출했을 때만 채워진다(`localToolRouteActive`가
    * 꺼져 있었거나, 켜져 있었지만 이번 질문에는 아무 Tool도 고르지 않았으면
    * 빈 배열). */
@@ -1555,7 +1607,14 @@ export interface DesktopBridge {
   createConversation(knowledgeId: string, knowledgeLabel: string): Promise<ConversationRecord>;
   appendConversationTurn(
     conversationId: string,
-    turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+    turn: {
+      question: string;
+      answer: string;
+      status: ConversationTurnStatus;
+      citationCount: number;
+      /** 생략하면 빈 배열로 저장된다(Tool을 전혀 쓰지 않은 턴). */
+      toolExecutions?: ToolExecutionRecord[];
+    },
   ): Promise<ConversationRecord | null>;
   /** CLAUDE.md: 삭제는 확인과 사유를 요구한다 — `reason`이 비어 있으면
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
@@ -1669,4 +1728,12 @@ export interface DesktopBridge {
   /** 지금 실제로 실행 중인 스케줄의 id, 없으면 `null` — 화면은 이 값을 보고
    * "지금 실행 중단" 버튼을 어떤 스케줄에 붙일지 정한다(추측하지 않는다). */
   getRunningScheduleId(): Promise<string | null>;
+  /** 실사용 제보 3 — 방금 만들거나 수정한 스케줄을 기다리지 않고 바로
+   * 테스트한다. 정기 실행과 완전히 같은 실행기/이력 경로를 그대로 재사용하며
+   * (`ScheduleScheduler.execute`), 이력에는 `trigger: "manual"`로 구분되어
+   * 남는다. 이미 다른 스케줄이 실행 중이면 거부한다(`getRunningScheduleId()`가
+   * `null`이 아닌 경우). Tool을 호출할 수 있는 스케줄인데
+   * `toolRiskAcknowledgedAt`이 없으면(정식 저장 경로를 우회해 만들어졌거나
+   * 예전 기록이거나) 승인 우회 없이 거부한다 — 정기 실행과 동일한 게이트. */
+  runNowSchedule(id: string): Promise<{ ok: boolean; error: string | null }>;
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { runScheduledRecipeAgainstAgentRuntime } from "../schedule-agent-runtime";
+import { describeMaxPollTimeoutMinutes, runScheduledRecipeAgainstAgentRuntime } from "../schedule-agent-runtime";
 import type { ScheduleRecipe } from "../types";
 
 function recipe(overrides: Partial<ScheduleRecipe> = {}): ScheduleRecipe {
@@ -79,5 +79,28 @@ describe("runScheduledRecipeAgainstAgentRuntime", () => {
     });
     expect(result.ok).toBe(false);
     expect(result.errorMessage).toContain("중단");
+  });
+
+  // 실사용 제보(2026-08-19) — "이 스케줄에 설정된 시간을 넘겼다"는 사실과
+  // 그 값(분 단위)이 실행 이력에 남아야 한다.
+  it("reports the configured maxPollMs (as minutes) when the deadline elapses without a terminal status", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(jsonResponse({ id: "run-1" }))
+      .mockResolvedValue(jsonResponse({ status: "RUNNING" }));
+    const result = await runScheduledRecipeAgainstAgentRuntime("http://127.0.0.1:8100", recipe(), {
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+      pollIntervalMs: 5,
+      maxPollMs: 20,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.errorMessage).toContain("실행 시간 상한");
+  });
+});
+
+describe("describeMaxPollTimeoutMinutes", () => {
+  it("converts ms to a human-readable minute count", () => {
+    expect(describeMaxPollTimeoutMinutes(30 * 60_000)).toBe("30분");
+    expect(describeMaxPollTimeoutMinutes(120_000)).toBe("2분");
   });
 });

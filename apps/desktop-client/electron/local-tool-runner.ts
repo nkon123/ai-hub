@@ -269,6 +269,12 @@ export interface InvokeLocalToolTarget {
   modulePath: string;
   functionName: string;
   args: Record<string, unknown>;
+  /** 생략하면 `LOCAL_TOOL_TIMEOUT_MS`(대화형 기본 30초)가 적용된다 — 실사용
+   * 제보(2026-08-19) D14 후속: 스케줄 실행 경로(`schedule-local-tool-runner.ts`)만
+   * 스케줄에 설정된 값을 넘긴다. 대화형(채팅) 경로는 이 필드를 절대 넘기지
+   * 않는다 — 대화형 기본값을 바꾸지 않는다는 판단(자세한 이유는
+   * `electron/__tests__/local-tool-runner.test.ts`의 회귀 테스트 참고). */
+  timeoutMs?: number;
 }
 
 /** Production entry point — checks `interpreterPath` before spawning
@@ -283,5 +289,6 @@ export async function invokeLocalTool(target: InvokeLocalToolTarget): Promise<Lo
     modulePath: target.modulePath,
     functionName: target.functionName,
     args: target.args,
+    timeoutMs: target.timeoutMs,
   });
 }

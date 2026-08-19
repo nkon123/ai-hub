@@ -28,7 +28,7 @@ import type { ScheduleHistoryStore } from "./schedule-history-store";
 import { truncateResultSummary } from "./schedule-history-store";
 import type { ScheduleStore } from "./schedule-store";
 import type { LocalToolStore } from "./local-tool-store";
-import type { ScheduleLocalToolInvocationRecord, ScheduleRecord, ScheduleRunOutcome } from "./types";
+import type { ScheduleLocalToolInvocationRecord, ScheduleRecord, ScheduleRunOutcome, ScheduleTrigger } from "./types";
 
 const TICK_INTERVAL_MS = 20_000;
 
@@ -96,6 +96,9 @@ export class ScheduleScheduler {
         scheduleId: schedule.id,
         timestamp: now.toISOString(),
         outcome: "missed",
+        // "놓침"은 정의상 정기 Tick이 발견한 사실이다 — 수동 트리거는
+        // 즉시 실행되므로 놓칠 수 없다.
+        trigger: "scheduled",
         localToolInvocations: [],
         resultSummary: null,
         failureReason: `앱이 실행되지 않는 동안 ${schedule.nextRunAt}에 예정된 실행을 건너뛰었습니다.`,
@@ -124,10 +127,35 @@ export class ScheduleScheduler {
       .list()
       .find((s) => s.active && new Date(s.nextRunAt).getTime() <= now.getTime());
     if (!due) return;
-    await this.execute(due);
+    await this.execute(due, "scheduled");
   }
 
-  private async execute(schedule: ScheduleRecord): Promise<void> {
+  /** 실사용 제보 3 — "지금 실행" 버튼이 호출하는 유일한 진입점. 정기 Tick과
+   * 완전히 같은 실행 경로(`execute`)를 재사용한다(별도 경로를 새로 만들지
+   * 않는다는 Task Brief 제약) — 차이는 `trigger: "manual"` 하나뿐이다.
+   * F의 Tool 위험 확인 게이트를 우회하지 않는다: `toolRiskAcknowledgedAt`이
+   * 없는 Tool-capable 스케줄은 정기 실행에서도 있을 수 없는 상태이지만(저장
+   * 시점에 항상 강제되므로), 정식 저장 경로를 우회해 만들어졌거나 이 필드
+   * 도입 이전 레코드일 가능성에 대비해 여기서도 다시 방어적으로 검사한다. */
+  async runNow(scheduleId: string): Promise<{ ok: boolean; error: string | null }> {
+    if (this.runningScheduleId) {
+      return { ok: false, error: "다른 스케줄이 이미 실행 중입니다 — 완료된 뒤 다시 시도하세요." };
+    }
+    const schedule = this.deps.scheduleStore.get(scheduleId);
+    if (!schedule) {
+      return { ok: false, error: "스케줄을 찾을 수 없습니다." };
+    }
+    if (schedule.recipe.localToolRouteActive && !schedule.toolRiskAcknowledgedAt) {
+      return {
+        ok: false,
+        error: "이 스케줄은 등록된 로컬 Tool을 호출할 수 있지만 실행 위험을 확인한 적이 없어 지금 실행할 수 없습니다 — 스케줄을 다시 저장하며 확인하세요.",
+      };
+    }
+    await this.execute(schedule, "manual");
+    return { ok: true, error: null };
+  }
+
+  private async execute(schedule: ScheduleRecord, trigger: ScheduleTrigger): Promise<void> {
     this.runningScheduleId = schedule.id;
     const abort = new AbortController();
     this.runningAbort = abort;
@@ -138,6 +166,11 @@ export class ScheduleScheduler {
       let resultSummary: string | null = null;
       let failureReason: string | null = null;
       let localToolInvocations: ScheduleLocalToolInvocationRecord[] = [];
+      // 실사용 제보(2026-08-19) — 이 스케줄에 설정된 하나의 상한(분)을
+      // agent-runtime 폴링 상한과 로컬 Tool 1회 호출 상한 양쪽에 그대로
+      // 적용한다(별도 하위 상한을 만들지 않는다 — schedule-store.ts의
+      // `timeoutMinutes` 필드 docstring 참고).
+      const timeoutMs = schedule.timeoutMinutes * 60_000;
 
       if (schedule.recipe.localToolRouteActive) {
         const outcome = await invokeLocalToolForScheduledRun(
@@ -148,6 +181,7 @@ export class ScheduleScheduler {
             chatModelAlias: schedule.recipe.chatModelAlias,
             interpreterPath: this.deps.getInterpreterPath(),
             signal: abort.signal,
+            timeoutMs,
           },
         );
         ok = outcome.ok;
@@ -158,7 +192,7 @@ export class ScheduleScheduler {
         const result = await runScheduledRecipeAgainstAgentRuntime(
           this.deps.getAgentRuntimeBaseUrl(),
           schedule.recipe,
-          { signal: abort.signal },
+          { signal: abort.signal, maxPollMs: timeoutMs },
         );
         ok = result.ok;
         resultSummary = result.answer;
@@ -172,6 +206,7 @@ export class ScheduleScheduler {
         scheduleId: schedule.id,
         timestamp: startedAt.toISOString(),
         outcome,
+        trigger,
         localToolInvocations,
         resultSummary: outcome === "success" && resultSummary ? truncateResultSummary(resultSummary) : null,
         failureReason:

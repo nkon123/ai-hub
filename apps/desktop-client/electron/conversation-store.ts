@@ -24,11 +24,35 @@
 // agent-runtime에 넘길 후속 질문용 `history`(질문+답변 쌍)를 제공하는 것
 // 두 가지뿐이며, 둘 다 citation 원문 저장을 요구하지 않는다 — 저장 표면을
 // 필요한 만큼만 유지한다.
+//
+// 실사용 제보(2026-08-19) — "채팅에서 툴 수행시 기록이 안 남는다": 턴에
+// `toolExecutions`를 추가한다(이름/인자/결과 요약 또는 실패 사유/경로).
+// 인자(`args`)는 Tool의 짧은 구조적 파라미터이지 문서/Prompt 원문이 아니므로
+// 위 "원문 저장 금지" 원칙의 대상이 아니다 — 그대로 저장한다. 다만
+// `resultSummary`/`failureReason`은 여전히 사람이 쓴 자유 텍스트일 수 있어
+// `truncateToolResultText`로 길이를 잘라 저장한다(`schedule-history-store.ts`의
+// `truncateResultSummary`와 같은 상한 240자 — 카드 한두 줄에 들어가는 "요약"
+// 이상을 저장하지 않는다는 같은 판단을 여기서도 따른다. 두 파일이 별도
+// 모듈이라 함수를 공유하지 않고 각자 상수를 갖는다). Tool을 전혀 쓰지 않은
+// 턴은 `toolExecutions: []`다 — 이 필드가 없는 과거 대화 파일은
+// `readAll()`이 읽을 때 빈 배열로 정규화한다(`local-tool-store.ts`가
+// 레거시 `approval` 필드를 정규화하는 것과 같은 스타일).
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import type { ToolExecutionRecord } from "./types";
 
 export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled";
+
+const TOOL_RESULT_MAX_CHARS = 240;
+
+/** `resultSummary`/`failureReason` 문자열을 짧게 자른다 — 절대 Tool 실행
+ * 결과 원문 전체를 저장하지 않는다(위 모듈 docstring). */
+export function truncateToolResultText(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed.length <= TOOL_RESULT_MAX_CHARS) return trimmed;
+  return `${trimmed.slice(0, TOOL_RESULT_MAX_CHARS)}…`;
+}
 
 export interface ConversationTurnRecord {
   id: string;
@@ -36,6 +60,7 @@ export interface ConversationTurnRecord {
   answer: string;
   status: ConversationTurnStatus;
   citationCount: number;
+  toolExecutions: ToolExecutionRecord[];
   createdAt: string;
 }
 
@@ -95,7 +120,15 @@ export class ConversationStore {
     if (!fs.existsSync(this.filePath)) return [];
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
-      return Array.isArray(parsed) ? (parsed as ConversationRecord[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // 레거시 정규화: `toolExecutions`가 없는(이 필드 도입 이전) 턴은 빈
+      // 배열로 채운다 — `undefined`로 남기면 호출부마다 매번 `?? []`를
+      // 반복해야 하고, 그중 하나라도 빠뜨리면 "Tool 기록 없음"과 "필드
+      // 자체가 없음"을 구분하지 못하게 된다.
+      return (parsed as ConversationRecord[]).map((record) => ({
+        ...record,
+        turns: record.turns.map((turn) => ({ ...turn, toolExecutions: turn.toolExecutions ?? [] })),
+      }));
     } catch {
       // 손상된 파일은 "대화 없음"으로 취급한다 — Desktop은 상태 파일 손상
       // 시에도 종료되지 않는다(CLAUDE.md). 손상 자체를 자동으로 덮어써
@@ -156,7 +189,13 @@ export class ConversationStore {
    * 예외를 던질 오류가 아니다. */
   appendTurn(
     id: string,
-    turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+    turn: {
+      question: string;
+      answer: string;
+      status: ConversationTurnStatus;
+      citationCount: number;
+      toolExecutions?: ToolExecutionRecord[];
+    },
   ): ConversationRecord | null {
     const all = this.readAll();
     const index = all.findIndex((r) => r.id === id);
@@ -170,6 +209,11 @@ export class ConversationStore {
       answer: turn.answer,
       status: turn.status,
       citationCount: turn.citationCount,
+      toolExecutions: (turn.toolExecutions ?? []).map((t) => ({
+        ...t,
+        resultSummary: t.resultSummary ? truncateToolResultText(t.resultSummary) : null,
+        failureReason: t.failureReason ? truncateToolResultText(t.failureReason) : null,
+      })),
       createdAt: now,
     };
     const updated: ConversationRecord = {

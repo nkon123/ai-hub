@@ -16,6 +16,17 @@ import path from "node:path";
 import { nextRunAt } from "./schedule-time";
 import type { ScheduleRecipe, ScheduleRecord, ScheduleRunOutcome, ScheduleSaveInput, ScheduleSaveResult } from "./types";
 
+// 실사용 제보(2026-08-19) — "스케줄 등록한 에이전트에 타임아웃이 설정되어
+// 있는 것 같은데, 설정할 수 있도록 해주고 기본 30분 정도로 해줘". 상한을
+// 완전히 없애지 않는다(무제한 대기는 죽은 실행을 영원히 "실행 중"으로
+// 붙잡아 두어 `runningScheduleId`가 다른 모든 스케줄을 영구히 막을 수
+// 있다) — 6시간이면 이 앱의 실사용 시나리오(야간 배치성 질의/Tool 호출)를
+// 넉넉히 덮으면서도 그 위험을 제한한다. 최소 1분은 "0분"처럼 사실상
+// 즉시-타임아웃되는 무의미한 설정을 막는다.
+export const DEFAULT_SCHEDULE_TIMEOUT_MINUTES = 30;
+export const MIN_SCHEDULE_TIMEOUT_MINUTES = 1;
+export const MAX_SCHEDULE_TIMEOUT_MINUTES = 360;
+
 /** 이 레시피가 실행 시 로컬 Tool을 호출할 수 있는지 — F의 위험 확인 게이트가
  * 검사하는 유일한 신호. `localToolRouteActive`만 본다: `localAgentId`나
  * Knowledge 검색은 로컬에서 임의 코드를 실행하지 않는다(전자는 agent-runtime이
@@ -47,7 +58,14 @@ export class ScheduleStore {
     if (!fs.existsSync(this.filePath)) return [];
     try {
       const parsed = JSON.parse(fs.readFileSync(this.filePath, "utf-8"));
-      return Array.isArray(parsed) ? (parsed as ScheduleRecord[]) : [];
+      if (!Array.isArray(parsed)) return [];
+      // 레거시 정규화 — `timeoutMinutes`가 없는(이 필드 도입 이전) 레코드는
+      // 기본값으로 채운다(`local-tool-store.ts`의 `approval` 레거시 정규화와
+      // 같은 스타일).
+      return (parsed as ScheduleRecord[]).map((r) => ({
+        ...r,
+        timeoutMinutes: r.timeoutMinutes ?? DEFAULT_SCHEDULE_TIMEOUT_MINUTES,
+      }));
     } catch {
       return [];
     }
@@ -75,6 +93,19 @@ export class ScheduleStore {
     }
     if (!input.recipe.question.trim()) {
       return { ok: false, schedule: null, error: "실행할 질문을 입력하세요.", requiresToolRiskAck: false };
+    }
+    const timeoutMinutes = input.timeoutMinutes ?? DEFAULT_SCHEDULE_TIMEOUT_MINUTES;
+    if (
+      !Number.isFinite(timeoutMinutes) ||
+      timeoutMinutes < MIN_SCHEDULE_TIMEOUT_MINUTES ||
+      timeoutMinutes > MAX_SCHEDULE_TIMEOUT_MINUTES
+    ) {
+      return {
+        ok: false,
+        schedule: null,
+        error: `실행 타임아웃은 ${MIN_SCHEDULE_TIMEOUT_MINUTES}분에서 ${MAX_SCHEDULE_TIMEOUT_MINUTES}분 사이여야 합니다.`,
+        requiresToolRiskAck: false,
+      };
     }
 
     const all = this.readAll();
@@ -125,6 +156,7 @@ export class ScheduleStore {
           recipe: input.recipe,
           active: input.active,
           toolRiskAcknowledgedAt,
+          timeoutMinutes,
           updatedAt: now,
           nextRunAt: nextRun,
         }
@@ -135,6 +167,7 @@ export class ScheduleStore {
           recipe: input.recipe,
           active: input.active,
           toolRiskAcknowledgedAt,
+          timeoutMinutes,
           createdAt: now,
           updatedAt: now,
           nextRunAt: nextRun,

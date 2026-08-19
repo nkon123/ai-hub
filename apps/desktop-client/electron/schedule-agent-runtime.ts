@@ -159,5 +159,19 @@ export async function runScheduledRecipeAgainstAgentRuntime(
     // MAX_POLL_MS에서 타임아웃으로 귀결된다(아래) — 추측으로 승인/거부하지
     // 않는다.
   }
-  return { ok: false, answer: null, citationCount: 0, errorMessage: "실행이 시간 내에 끝나지 않았습니다.", runId: created.id };
+  // 실사용 제보(2026-08-19) — 어느 상한을 넘겼는지와 그 값을 사람이 읽는
+  // 단위로 함께 알린다(원시 ms를 찍지 않는다).
+  return {
+    ok: false,
+    answer: null,
+    citationCount: 0,
+    errorMessage: `이 스케줄에 설정된 실행 시간 상한(${describeMaxPollTimeoutMinutes(maxPollMs)})을 넘겨 중단되었습니다.`,
+    runId: created.id,
+  };
+}
+
+/** ms를 분 단위 문구로 바꾼다 — 실시간 폴링 루프를 기다리지 않고도
+ * 단위 테스트할 수 있도록 순수 함수로 분리한다. */
+export function describeMaxPollTimeoutMinutes(maxPollMs: number): string {
+  return `${Math.round(maxPollMs / 60_000)}분`;
 }

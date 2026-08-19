@@ -20,7 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpenCheck, Bot, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -29,6 +29,10 @@ import type {
   KnowledgeCandidate,
   LocalTool,
   OllamaModelsResult,
+  ScheduleHistoryRecord,
+  ScheduleRecord,
+  ToolExecutionRecord,
+  ToolExecutionRoute,
 } from "../../electron/types";
 import { assessChatConnections, checkAllConnections, DEFAULT_OLLAMA_BASE_URL } from "../../electron/connections";
 import { chatWithOllama, DEFAULT_CHAT_MODEL_ALIAS } from "../../electron/ollama-chat";
@@ -62,6 +66,7 @@ import {
   buildHistoryFromMessages,
   buildHubQueryPreview,
   buildMarkdown,
+  buildToolExecutionsForPersist,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
   describeToolRouteMcpToolsHint,
@@ -94,6 +99,10 @@ import {
   type LocalToolAutoRouteEntry,
   type LocalToolChatEntry,
 } from "./LocalToolInvokePanel";
+// `InvocationOutcomeDisplay`는 이 화면이 결과 톤(success/danger/warning/muted)을
+// 저장할 대화 턴 상태로 옮길 때만 필요하다(persistToolOnlyTurn) — Run/agent-runtime
+// 경로와는 무관하므로 위 로컬 Tool 격리 원칙을 어기지 않는다(타입만 공유).
+import type { InvocationOutcomeDisplay } from "./localToolsTypes";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -354,6 +363,46 @@ function ToolRoutePanel({ route }: { route: ToolRouteDisplay }) {
         <Wrench size={12} className="mt-0.5 shrink-0" />
         {route.headline}
       </p>
+    </div>
+  );
+}
+
+const TOOL_EXECUTION_ROUTE_LABELS: Record<ToolExecutionRoute, string> = {
+  user_selected: "사용자가 직접 고름",
+  ai_auto_selected: "AI 자동 선택",
+  mcp_tool: "MCP Tool",
+};
+
+/** 실사용 제보(2026-08-19) 요구 1 — 복원된 턴의 Tool 실행 기록을 보여준다.
+ * `LocalToolChatEntryCard`(라이브 세션 전용, `LocalToolInvokePanel.tsx`)와
+ * 의도적으로 다른 컴포넌트다 — 이쪽은 저장된 요약 텍스트만 있고 라이브
+ * 인자 입력 폼/승인 대기 상태가 없다. */
+function ToolExecutionsPanel({ executions }: { executions: ToolExecutionRecord[] }) {
+  return (
+    <div className="space-y-1.5">
+      {executions.map((exec, idx) => (
+        <div
+          key={idx}
+          className={`max-w-full rounded-lg border px-3 py-2 text-[11px] ${
+            exec.failureReason ? "border-danger/30 bg-danger/5 text-danger" : "border-border bg-slate-50 text-text-secondary"
+          }`}
+        >
+          <div className="flex flex-wrap items-center gap-1.5 font-medium">
+            <Terminal size={12} className="shrink-0" />
+            <span className="truncate">{exec.toolName}</span>
+            <span className="rounded-full bg-slate-200 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+              {TOOL_EXECUTION_ROUTE_LABELS[exec.route]}
+            </span>
+          </div>
+          {exec.args && (
+            <pre className="mt-1 overflow-x-auto whitespace-pre-wrap rounded border border-border bg-white px-2 py-1 text-[10px] text-text-secondary">
+              {JSON.stringify(exec.args)}
+            </pre>
+          )}
+          {exec.resultSummary && <p className="mt-1">{exec.resultSummary}</p>}
+          {exec.failureReason && <p className="mt-1">{exec.failureReason}</p>}
+        </div>
+      ))}
     </div>
   );
 }
@@ -797,6 +846,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     outcome: LocalToolChatEntry["outcome"],
   ): void {
     setLocalToolEntries((prev) => prev.map((e) => (e.id === id ? { ...e, completedAt, outcome } : e)));
+    // 실사용 제보(2026-08-19) — 라이브 카드(위 setState)와 별개로, 이
+    // 수동 실행 사실을 대화 저장소에도 남긴다(요구 1).
+    const entry = localToolEntries.find((e) => e.id === id);
+    if (entry && outcome) {
+      void persistToolOnlyTurn({
+        question: `로컬 Tool 실행: ${entry.functionName}`,
+        toolName: entry.functionName,
+        args: entry.args,
+        route: "user_selected",
+        outcome,
+      });
+    }
   }
 
   // D-084 후속 2 — 채팅 질문으로 로컬 Tool을 자동 선택/실행하는 기능
@@ -867,6 +928,34 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   useEffect(() => {
     void loadConversations();
   }, [loadConversations]);
+
+  // 실사용 제보(2026-08-19) 요구 2 — "스케줄봇" 고정 항목. 스케줄 실행
+  // 이력의 유일한 진실 공급원은 `schedule-history-store.ts`다(Main
+  // Process) — 여기서는 그것을 읽어 보여줄 뿐, `conversation-store`로
+  // 복사하지 않는다(전자문서 이중화 금지). Electron 브릿지가 있을 때만
+  // 노출한다 — 스케줄러 자체가 Main Process 전용이라, 브라우저 개발
+  // 모드에서는 항상 빈 이력만 볼 수 있어 노출해 봐야 오해만 준다.
+  const [scheduleBotSelected, setScheduleBotSelected] = useState(false);
+  const [scheduleBotHistory, setScheduleBotHistory] = useState<ScheduleHistoryRecord[] | null>(null);
+  const [scheduleBotError, setScheduleBotError] = useState<string | null>(null);
+  const [scheduleBotSchedules, setScheduleBotSchedules] = useState<ScheduleRecord[]>([]);
+
+  const loadScheduleBot = useCallback(async () => {
+    if (!bridge) return;
+    setScheduleBotError(null);
+    try {
+      const [history, schedules] = await Promise.all([bridge.listScheduleHistory(), bridge.listSchedules()]);
+      setScheduleBotHistory(history);
+      setScheduleBotSchedules(schedules);
+    } catch (err) {
+      setScheduleBotError(err instanceof Error ? err.message : "스케줄 실행 이력을 불러오지 못했습니다.");
+      setScheduleBotHistory([]);
+    }
+  }, [bridge]);
+
+  useEffect(() => {
+    void loadScheduleBot();
+  }, [loadScheduleBot]);
 
   const closeStreamRef = useRef<(() => void) | null>(null);
   const runIdRef = useRef<string | null>(null);
@@ -1104,6 +1193,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         answer: m.answer,
         status: m.status as ConversationTurnStatus,
         citationCount: m.citations.length,
+        toolExecutions: buildToolExecutionsForPersist(m),
       });
       await loadConversations();
     } catch {
@@ -1115,9 +1205,64 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     }
   }
 
+  // 실사용 제보(2026-08-19) — 로컬 Tool 수동 실행(`LocalToolInvokePanel`)과
+  // 자동 라우팅(`runLocalToolAutoRoute`)은 `startRun`을 거치지 않아
+  // `ChatMessage`/정상 턴이 아예 만들어지지 않는다(위 handleLocalToolAutoRoute
+  // 모듈 주석) — 그래서 `persistTurn`(터미널 상태가 된 `messages` 항목을
+  // 지켜보는 effect)이 이 실행들을 볼 방법이 없다. 이 함수가 그 간극을
+  // 메운다: Tool 실행 자체를 "질문 없는 턴"으로 저장해, 대화를 다시 열었을
+  // 때도 실행 사실이 남는다. "아무 Tool도 실행되지 않음"(muted, 예:
+  // 후보 없음/AI가 불필요 판단)은 `null` 상태를 반환해 저장을 건너뛴다 —
+  // 실행된 적이 없으므로 남길 기록도 없다(honest empty, 지어내지 않는다).
+  function outcomeToTurnStatus(tone: InvocationOutcomeDisplay["tone"]): ConversationTurnStatus | null {
+    if (tone === "success") return "succeeded";
+    if (tone === "danger" || tone === "warning") return "failed";
+    return null;
+  }
+
+  async function persistToolOnlyTurn(params: {
+    question: string;
+    toolName: string;
+    args: Record<string, unknown> | null;
+    route: ToolExecutionRoute;
+    outcome: InvocationOutcomeDisplay;
+  }): Promise<void> {
+    if (!conversationBridge) return;
+    const status = outcomeToTurnStatus(params.outcome.tone);
+    if (!status) return;
+    const toolExecution: ToolExecutionRecord = {
+      toolName: params.toolName,
+      args: params.args,
+      resultSummary: status === "succeeded" ? params.outcome.detail : null,
+      failureReason: status === "failed" ? params.outcome.detail : null,
+      route: params.route,
+    };
+    try {
+      let conversationId = currentConversationId;
+      if (!conversationId) {
+        const created = await conversationBridge.createConversation(knowledgeId, knowledgeLabel);
+        conversationId = created.id;
+        setCurrentConversationId(created.id);
+      }
+      await conversationBridge.appendConversationTurn(conversationId, {
+        question: params.question,
+        answer: "",
+        status,
+        citationCount: 0,
+        toolExecutions: [toolExecution],
+      });
+      await loadConversations();
+    } catch {
+      // 정상 턴 저장 실패와 동일한 원칙 — 조용히 무시하지 않고 알리되,
+      // 이번 세션의 사용을 막지 않는다.
+      setConversationsError("Tool 실행 기록을 저장하지 못했습니다 — 이 세션 안에서는 계속 사용할 수 있습니다.");
+    }
+  }
+
   async function handleSelectConversation(id: string): Promise<void> {
     if (!conversationBridge) return;
     setSendError(null);
+    setScheduleBotSelected(false);
     try {
       const record = await conversationBridge.getConversation(id);
       if (!record) {
@@ -1137,6 +1282,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setCurrentConversationId(null);
     setMessages([]);
     setSendError(null);
+    setScheduleBotSelected(false);
+  }
+
+  function handleSelectScheduleBot(): void {
+    setScheduleBotSelected(true);
+    void loadScheduleBot();
   }
 
   function requestDeleteConversation(c: ConversationSummary): void {
@@ -1184,10 +1335,24 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         ollamaBaseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
         preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
         onStart: (entry) => setLocalToolRouteEntries((prev) => [...prev, entry]),
-        onFinish: (entryId, completedAt, toolName, args, display) =>
+        onFinish: (entryId, completedAt, toolName, args, display) => {
           setLocalToolRouteEntries((prev) =>
             prev.map((e) => (e.id === entryId ? { ...e, completedAt, toolName, args, display } : e)),
-          ),
+          );
+          // 실사용 제보(2026-08-19) — AI가 실제로 Tool을 골라 실행한
+          // 경우에만 기록한다(toolName === null이면 "필요 없음"/"후보 중
+          // 못 고름" — 실행 사실이 없다, persistToolOnlyTurn이 muted도
+          // 다시 한 번 걸러낸다).
+          if (toolName) {
+            void persistToolOnlyTurn({
+              question: q,
+              toolName,
+              args,
+              route: "ai_auto_selected",
+              outcome: display,
+            });
+          }
+        },
       });
     } finally {
       setIsRunning(false);
@@ -1250,6 +1415,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // agent-runtime의 기능이라 브릿지 없는 개발용 Browser 검증 경로에서도
     // 그대로 작동해야 한다.
     const history = buildHistoryFromMessages(messages);
+    // 실사용 제보(2026-08-19) — 이번 턴이 명시적 MCP Tool 호출이면 전송
+    // 시점의 Tool 이름+인자를 캡처해 둔다(다른 `*Used` 필드와 같은 이유,
+    // startRun 호출 시 실제로 보내는 값과 동일한 계산). ollamaOnly/
+    // toolRouteActive/localAgentActive 턴은 명시적 호출이 아니므로 `null`.
+    const mcpToolCallUsed = mcpDevActive
+      ? {
+          toolName: bridge ? "calculator.add" : mcpDevTool,
+          args: bridge
+            ? { a: Number(calculatorA), b: Number(calculatorB) }
+            : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
+        }
+      : null;
     const newMessage: ChatMessage = {
       id,
       question: q,
@@ -1284,6 +1461,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       knowledgeCandidateNameById,
       knowledgeRoute: null,
       toolRoute: null,
+      mcpToolCallUsed,
+      toolExecutions: [],
     };
     setMessages((prev) => [...prev, newMessage]);
     setIsRunning(true);
@@ -1583,6 +1762,36 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               <MessageSquarePlus size={14} /> 새 대화
             </Button>
             <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+              {/* 실사용 제보(2026-08-19) 요구 2 — 스케줄봇은 항상 최상단에
+                  고정한다(이력이 0건이어도). 스케줄 화면 자체가 아직 "이
+                  기능이 있다"는 사실을 발견하기 어려운 자리에 있어, 이력이
+                  없을 때 통째로 숨기면 사용자가 "확인할 곳이 아예 없다"고
+                  오해할 수 있다 — 대신 클릭 시 명확한 빈 상태 문구를
+                  보여준다(둘 중 선택, 최종 보고에 판단 이유 기록). Electron
+                  브릿지가 있을 때만 노출한다(스케줄러는 Main Process
+                  전용). */}
+              {bridge && (
+                <button
+                  type="button"
+                  onClick={handleSelectScheduleBot}
+                  disabled={isRunning}
+                  className={`mb-2 w-full rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                    scheduleBotSelected
+                      ? "border-brand-500 bg-brand-50 text-brand-700"
+                      : "border-border bg-white text-text-secondary hover:bg-slate-50"
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 font-medium">
+                    <CalendarClock size={13} className="shrink-0" aria-hidden="true" />
+                    스케줄봇
+                  </span>
+                  <span className="block truncate text-[11px] text-text-muted">
+                    {scheduleBotHistory === null
+                      ? "실행 이력을 불러오는 중..."
+                      : `실행 이력 ${scheduleBotHistory.length}건 · 읽기 전용`}
+                  </span>
+                </button>
+              )}
               {conversationsError && <ErrorBanner message={conversationsError} />}
               {conversations === null && !conversationsError && <LoadingState label="대화 목록을 불러오는 중..." />}
               {conversations !== null && conversations.length === 0 && !conversationsError && (
@@ -1933,8 +2142,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             </details>
           )}
 
-          {/* 대화 — 메시지 스레드와 입력창이 화면의 주인공이다. */}
+          {/* 대화 — 메시지 스레드와 입력창이 화면의 주인공이다. 스케줄봇이
+              선택된 동안에는 이 블록 전체를 읽기 전용 실행 이력 패널로
+              바꿔치기한다(요구 2) — 일반 대화 입력/전송 경로와 절대 섞이지
+              않는다. */}
           <div className="flex flex-1 flex-col overflow-hidden">
+            {scheduleBotSelected ? (
+              <ScheduleBotPanel
+                loading={scheduleBotHistory === null}
+                error={scheduleBotError}
+                history={scheduleBotHistory ?? []}
+                schedules={scheduleBotSchedules}
+              />
+            ) : (
+              <>
             {sendError && (
               <div className="mb-3 shrink-0">
                 <ErrorBanner message={sendError} />
@@ -2182,6 +2403,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 </p>
               )}
             </div>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -2207,6 +2430,87 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           setDeleteConversationError(null);
         }}
       />
+    </div>
+  );
+}
+
+const SCHEDULE_OUTCOME_LABELS: Record<ScheduleHistoryRecord["outcome"], string> = {
+  success: "성공",
+  failure: "실패",
+  missed: "놓침",
+  cancelled: "중단됨",
+};
+const SCHEDULE_OUTCOME_TONE: Record<ScheduleHistoryRecord["outcome"], string> = {
+  success: "text-success",
+  failure: "text-danger",
+  missed: "text-warning",
+  cancelled: "text-text-muted",
+};
+
+/** 실사용 제보(2026-08-19) 요구 2 — 스케줄봇 읽기 전용 패널. 저장을
+ * 이중화하지 않는다: 여기서 그리는 값은 모두 `bridge.listScheduleHistory()`
+ * (Main Process의 `schedule-history-store.ts`, 단일 진실 공급원)에서 받은
+ * 그대로다. 입력창을 아예 렌더링하지 않는 것으로 "읽기 전용"을 구조적으로
+ * 강제한다(disabled 속성에 기대지 않는다 — 렌더링되지 않으면 우회할 방법
+ * 자체가 없다). */
+function ScheduleBotPanel({
+  loading,
+  error,
+  history,
+  schedules,
+}: {
+  loading: boolean;
+  error: string | null;
+  history: ScheduleHistoryRecord[];
+  schedules: ScheduleRecord[];
+}) {
+  const nameById = new Map(schedules.map((s) => [s.id, s.name] as const));
+  return (
+    <div className="flex flex-1 flex-col overflow-hidden">
+      <div className="mb-3 flex shrink-0 items-start gap-2 rounded-lg border border-border bg-slate-50 px-3 py-2 text-caption text-text-secondary">
+        <CalendarClock size={14} className="mt-0.5 shrink-0 text-text-muted" aria-hidden="true" />
+        <span>
+          스케줄봇은 등록된 스케줄의 실행 결과만 보여주는 읽기 전용 화면입니다 — 질문을 입력할 수 없습니다. 새 대화나
+          왼쪽의 다른 대화를 선택하면 다시 일반 대화로 돌아갑니다.
+        </span>
+      </div>
+      <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+        {error && <ErrorBanner message={error} />}
+        {!error && loading && <LoadingState label="스케줄 실행 이력을 불러오는 중..." />}
+        {!error && !loading && history.length === 0 && (
+          <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
+            <CalendarClock size={22} className="text-text-muted" aria-hidden="true" />
+            <p className="text-card-title font-semibold text-text-primary">아직 스케줄 실행 결과가 없습니다</p>
+            <p className="text-caption text-text-muted">
+              스케줄 화면에서 새 스케줄을 등록하면, 실행될 때마다 결과가 여기에 쌓입니다.
+            </p>
+          </div>
+        )}
+        {!error &&
+          !loading &&
+          history.map((h) => (
+            <div key={h.id} className="rounded-lg border border-border bg-white px-3 py-2.5 text-caption">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="font-medium text-text-primary">{nameById.get(h.scheduleId) ?? h.scheduleId}</span>
+                <span className={`font-semibold ${SCHEDULE_OUTCOME_TONE[h.outcome]}`}>
+                  {SCHEDULE_OUTCOME_LABELS[h.outcome]}
+                </span>
+                <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-text-muted">
+                  {h.trigger === "manual" ? "수동 실행" : "예약 실행"}
+                </span>
+              </div>
+              <p className="mt-1 text-[11px] text-text-muted">{formatDateTime(h.timestamp)}</p>
+              {h.resultSummary && <p className="mt-1 text-text-secondary">{h.resultSummary}</p>}
+              {h.failureReason && <p className="mt-1 text-danger">{h.failureReason}</p>}
+              {h.localToolInvocations.length > 0 && (
+                <p className="mt-1 flex items-center gap-1 text-[11px] text-text-muted">
+                  <Terminal size={11} className="shrink-0" aria-hidden="true" />
+                  호출된 로컬 Tool: {h.localToolInvocations.map((i) => i.toolName).join(", ")}
+                </p>
+              )}
+            </div>
+          ))}
+      </div>
     </div>
   );
 }
@@ -2295,6 +2599,15 @@ function ChatTurn({
         {/* TOOL_ROUTE(D-083, agentic MCP Tool 선택) 결과 — 이 턴이 실제로
             `tool_route: true`를 보냈고 라우팅이 돌았을 때만 나타난다. */}
         {message.toolRoute && <ToolRoutePanel route={message.toolRoute} />}
+
+        {/* 실사용 제보(2026-08-19) 요구 1 — 저장소에서 복원된 턴의 Tool
+            실행 기록. 라이브 세션 중에는 위 toolRoute Panel/로컬 Tool
+            카드가 이미 같은 사실을 보여주므로 중복 표시하지 않는다
+            (`message.toolExecutions`는 복원된 턴에서만 채워진다,
+            `chatMessageFromStoredTurn` 참고). */}
+        {message.restored && message.toolExecutions.length > 0 && (
+          <ToolExecutionsPanel executions={message.toolExecutions} />
+        )}
 
         {/* 허브 조회 사후 가시성 — "hub.query_sent" 이벤트가 도착할 때마다
             실제로 허브에 전송된 질의를 그대로 보여준다(agent-runtime의 강제

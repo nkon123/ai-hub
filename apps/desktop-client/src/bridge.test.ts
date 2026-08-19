@@ -301,6 +301,9 @@ function createCompleteBridge(): DesktopBridge {
     async getRunningScheduleId() {
       return null;
     },
+    async runNowSchedule() {
+      return { ok: false, error: null };
+    },
   };
 }
 

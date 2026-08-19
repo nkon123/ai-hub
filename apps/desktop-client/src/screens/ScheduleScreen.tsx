@@ -7,7 +7,7 @@
 // 있으면 전혀 실행되지 않는다.** 이 제약은 상시 배너가 아니라(루트
 // CLAUDE.md: "정상일 때는 배너를 띄우지 않는다") 빈 목록 안내문에만 적는다.
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CalendarClock, Plus, Square, Trash2 } from "lucide-react";
+import { AlertTriangle, CalendarClock, Play, Plus, Square, Trash2 } from "lucide-react";
 import type {
   InstalledAssetWithStatus,
   LocalTool,
@@ -49,6 +49,16 @@ const OUTCOME_TONE: Record<ScheduleRunOutcome, string> = {
   cancelled: "text-text-muted",
 };
 
+// 실사용 제보(2026-08-19) — `electron/schedule-store.ts`의 같은 이름 상수를
+// 그대로 미러링한다. 그 파일은 fs/crypto/path를 import하는 Main 전용
+// 모듈이라 렌더러가 직접 import할 수 없다(이 모듈 CLAUDE.md 코드 배치
+// 규칙) — 그래서 여기 값을 복제해 둔다. 두 값이 갈라지면 화면의 min/max
+// 힌트와 실제 저장 게이트가 어긋나므로, `schedule-store.ts`를 바꿀 때는
+// 반드시 이 상수도 함께 바꾼다(테스트가 이 동기화를 고정한다).
+const DEFAULT_SCHEDULE_TIMEOUT_MINUTES = 30;
+const MIN_SCHEDULE_TIMEOUT_MINUTES = 1;
+const MAX_SCHEDULE_TIMEOUT_MINUTES = 360;
+
 function defaultRecipe(): ScheduleRecipe {
   return {
     question: "",
@@ -74,6 +84,11 @@ interface FormState {
   dayOfWeek: number;
   daysOfMonth: string; // comma-separated, edited as free text
   recipe: ScheduleRecipe;
+  /** 실사용 제보(2026-08-19) — 이 스케줄 실행 1회의 전체 상한(분). 문자열로
+   * 들고 있는 이유는 다른 숫자 입력(daysOfMonth)과 같다 — 사용자가 지우고
+   * 다시 입력하는 중간 상태(빈 문자열)를 그대로 허용해야 저장 시점에만
+   * 검증할 수 있다. */
+  timeoutMinutesText: string;
 }
 
 function formFromSchedule(schedule: ScheduleRecord | null): FormState {
@@ -88,6 +103,7 @@ function formFromSchedule(schedule: ScheduleRecord | null): FormState {
     dayOfWeek: expr.kind === "weekly" ? expr.dayOfWeek : 1,
     daysOfMonth: expr.kind === "monthly" ? expr.daysOfMonth.join(", ") : "1",
     recipe: schedule?.recipe ?? defaultRecipe(),
+    timeoutMinutesText: String(schedule?.timeoutMinutes ?? DEFAULT_SCHEDULE_TIMEOUT_MINUTES),
   };
 }
 
@@ -140,6 +156,10 @@ export function ScheduleScreen() {
 
   const [cancelling, setCancelling] = useState<string | null>(null);
   const [cancelError, setCancelError] = useState<string | null>(null);
+
+  // 실사용 제보(2026-08-19) 요구 3 — "지금 실행".
+  const [runningNow, setRunningNow] = useState<string | null>(null);
+  const [runNowError, setRunNowError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!bridge) {
@@ -215,6 +235,15 @@ export function ScheduleScreen() {
       setSaveError("스케줄 이름과 질문을 모두 입력하세요.");
       return;
     }
+    const timeoutMinutes = Number.parseInt(form.timeoutMinutesText, 10);
+    if (
+      !Number.isFinite(timeoutMinutes) ||
+      timeoutMinutes < MIN_SCHEDULE_TIMEOUT_MINUTES ||
+      timeoutMinutes > MAX_SCHEDULE_TIMEOUT_MINUTES
+    ) {
+      setSaveError(`실행 타임아웃은 ${MIN_SCHEDULE_TIMEOUT_MINUTES}분에서 ${MAX_SCHEDULE_TIMEOUT_MINUTES}분 사이의 정수여야 합니다.`);
+      return;
+    }
     setSaving(true);
     setSaveError(null);
     try {
@@ -225,6 +254,7 @@ export function ScheduleScreen() {
           expression: buildExpression(form),
           recipe: form.recipe,
           active: form.active,
+          timeoutMinutes,
         },
         { acknowledgedToolRisk },
       );
@@ -301,6 +331,27 @@ export function ScheduleScreen() {
     }
   }
 
+  // 실사용 제보(2026-08-19) 요구 3 — 방금 만들거나 수정한 스케줄을 기다리지
+  // 않고 바로 테스트한다. 실행/이력 경로는 `ScheduleScheduler.runNow()`가
+  // 정기 실행과 완전히 동일하게 재사용한다(여기서는 트리거만 한다) —
+  // Tool 위험 확인 게이트도 그쪽에서 다시 강제된다(승인 우회 없음).
+  async function handleRunNow(scheduleId: string) {
+    if (!bridge) return;
+    setRunningNow(scheduleId);
+    setRunNowError(null);
+    try {
+      const result = await bridge.runNowSchedule(scheduleId);
+      if (!result.ok) {
+        setRunNowError(result.error ?? "지금 실행하지 못했습니다.");
+      }
+      await load();
+    } catch (err) {
+      setRunNowError(err instanceof Error ? err.message : "지금 실행하지 못했습니다.");
+    } finally {
+      setRunningNow(null);
+    }
+  }
+
   const missedSinceLastVisit = history.filter((h) => h.outcome === "missed").length;
 
   return (
@@ -325,6 +376,7 @@ export function ScheduleScreen() {
         </div>
       )}
       {cancelError && <div className="mb-4"><ErrorBanner message={cancelError} /></div>}
+      {runNowError && <div className="mb-4"><ErrorBanner message={runNowError} /></div>}
 
       <Tabs
         tabs={[
@@ -344,10 +396,12 @@ export function ScheduleScreen() {
             schedules={schedules}
             runningScheduleId={runningScheduleId}
             cancelling={cancelling}
+            runningNow={runningNow}
             onEdit={openEdit}
             onDelete={setDeleteTarget}
             onToggleActive={setDeactivateTarget}
             onCancelRunning={handleCancelRunning}
+            onRunNow={handleRunNow}
           />
         )}
 
@@ -424,18 +478,22 @@ function ScheduleListView({
   schedules,
   runningScheduleId,
   cancelling,
+  runningNow,
   onEdit,
   onDelete,
   onToggleActive,
   onCancelRunning,
+  onRunNow,
 }: {
   schedules: ScheduleRecord[];
   runningScheduleId: string | null;
   cancelling: string | null;
+  runningNow: string | null;
   onEdit: (s: ScheduleRecord) => void;
   onDelete: (s: ScheduleRecord) => void;
   onToggleActive: (s: ScheduleRecord) => void;
   onCancelRunning: (id: string) => void;
+  onRunNow: (id: string) => void;
 }) {
   if (schedules.length === 0) {
     return (
@@ -449,6 +507,19 @@ function ScheduleListView({
     <div className="space-y-3">
       {schedules.map((s) => {
         const isRunning = runningScheduleId === s.id;
+        // 실사용 제보 요구 3 — Tool 위험 확인이 없는 Tool 스케줄은 "지금
+        // 실행"도 거부한다(승인 우회 없음, `ScheduleScheduler.runNow()`가
+        // 실제로 다시 강제한다 — 이 disabled는 사용자에게 이유를 미리
+        // 보여주는 안내일 뿐, 유일한 강제 지점이 아니다).
+        const toolRiskMissing = s.recipe.localToolRouteActive && !s.toolRiskAcknowledgedAt;
+        const anyRunning = runningScheduleId !== null;
+        const runNowDisabledReason = !s.active
+          ? "비활성 스케줄입니다 — 먼저 활성화하세요."
+          : toolRiskMissing
+            ? "이 스케줄은 로컬 Tool을 호출할 수 있지만 실행 위험을 확인한 적이 없습니다 — '수정'에서 다시 저장하며 확인하세요."
+            : anyRunning
+              ? "다른 스케줄이 이미 실행 중입니다."
+              : null;
         return (
           <Card key={s.id} className="flex items-center justify-between gap-4">
             <div className="min-w-0 flex-1">
@@ -459,15 +530,34 @@ function ScheduleListView({
                 {isRunning && <span className="rounded bg-brand-50 px-1.5 py-0.5 text-caption text-brand-700">실행 중</span>}
               </div>
               <p className="mt-1 truncate text-caption text-text-secondary">{describeScheduleExpression(s.expression)}</p>
+              {/* 실사용 제보 요구 3 — 다음 실행 예정을 더 분명히 보여준다
+                  (굵게) + 저장 직후에는 최대 20초(Tick 주기) 안에 반영된다는
+                  점을 알린다. */}
+              <p className="mt-1 text-caption text-text-secondary">
+                다음 실행:{" "}
+                <span className="font-semibold text-text-primary">
+                  {s.active ? formatDateTime(nextRunAt(s.expression, new Date()).toISOString()) : "비활성"}
+                </span>
+                {s.active && <span className="text-text-muted"> · 방금 저장했다면 최대 20초 안에 반영됩니다</span>}
+              </p>
               <p className="mt-1 text-caption text-text-muted">
-                다음 실행: {s.active ? formatDateTime(nextRunAt(s.expression, new Date()).toISOString()) : "비활성"} · 마지막 결과:{" "}
+                마지막 결과:{" "}
                 {s.lastRunOutcome ? <span className={OUTCOME_TONE[s.lastRunOutcome]}>{OUTCOME_LABELS[s.lastRunOutcome]}</span> : "없음"}
               </p>
             </div>
             <div className="flex shrink-0 items-center gap-2">
-              {isRunning && (
+              {isRunning ? (
                 <Button variant="secondary" onClick={() => onCancelRunning(s.id)} disabled={cancelling === s.id}>
                   <Square size={14} /> 지금 실행 중단
+                </Button>
+              ) : (
+                <Button
+                  variant="secondary"
+                  onClick={() => onRunNow(s.id)}
+                  disabled={runningNow === s.id || runNowDisabledReason !== null}
+                  title={runNowDisabledReason ?? "저장된 레시피를 지금 바로 한 번 실행합니다."}
+                >
+                  <Play size={14} /> {runningNow === s.id ? "실행 중..." : "지금 실행"}
                 </Button>
               )}
               <Button variant="secondary" onClick={() => onToggleActive(s)}>
@@ -497,9 +587,15 @@ function HistoryView({ history, schedules }: { history: ScheduleHistoryRecord[];
       {history.map((h) => (
         <Card key={h.id} className="flex items-start justify-between gap-4">
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <span className="font-medium text-text-primary">{nameById.get(h.scheduleId) ?? h.scheduleId}</span>
               <span className={`text-caption font-semibold ${OUTCOME_TONE[h.outcome]}`}>{OUTCOME_LABELS[h.outcome]}</span>
+              {/* 실사용 제보 요구 3 — 예약 실행과 수동 실행을 절대 섞어
+                  보이지 않는다("왜 이 시각에 돌았지"를 설명할 수 있어야
+                  한다). */}
+              <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] text-text-muted">
+                {h.trigger === "manual" ? "수동 실행" : "예약 실행"}
+              </span>
             </div>
             <p className="mt-1 text-caption text-text-muted">{formatDateTime(h.timestamp)}</p>
             {h.resultSummary && <p className="mt-1 text-caption text-text-secondary">{h.resultSummary}</p>}
@@ -568,6 +664,26 @@ function ScheduleFormPanel({
               placeholder="예: 이번 주 공지사항을 요약해줘"
               className="w-full rounded-lg border border-border px-3 py-2 text-sm"
             />
+          </div>
+
+          <div>
+            <label className="mb-1 block text-caption font-semibold text-text-muted" htmlFor="schedule-timeout">
+              실행 타임아웃(분)
+            </label>
+            <input
+              id="schedule-timeout"
+              type="number"
+              min={MIN_SCHEDULE_TIMEOUT_MINUTES}
+              max={MAX_SCHEDULE_TIMEOUT_MINUTES}
+              value={form.timeoutMinutesText}
+              onChange={(e) => setForm((prev) => ({ ...prev, timeoutMinutesText: e.target.value }))}
+              className="h-10 w-32 rounded-lg border border-border px-3 text-sm"
+            />
+            <p className="mt-1 text-caption text-text-muted">
+              이 스케줄이 실행될 때 응답(또는 호출한 로컬 Tool 1회 호출)을 기다리는 최대 시간입니다. 기본{" "}
+              {DEFAULT_SCHEDULE_TIMEOUT_MINUTES}분, {MIN_SCHEDULE_TIMEOUT_MINUTES}~{MAX_SCHEDULE_TIMEOUT_MINUTES}분
+              사이로 설정할 수 있습니다.
+            </p>
           </div>
 
           <fieldset className="rounded-lg border border-border p-3">

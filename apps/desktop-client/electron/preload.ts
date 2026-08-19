@@ -55,6 +55,7 @@ import type {
   StoreInstallProgressEvent,
   StoreInstallResult,
   SystemInfoView,
+  ToolExecutionRecord,
 } from "./types";
 
 // `contextIsolation: true` + `nodeIntegration: false` (set in main.ts) mean
@@ -219,7 +220,13 @@ const bridge: DesktopBridge = {
 
   appendConversationTurn: (
     conversationId: string,
-    turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+    turn: {
+      question: string;
+      answer: string;
+      status: ConversationTurnStatus;
+      citationCount: number;
+      toolExecutions?: ToolExecutionRecord[];
+    },
   ): Promise<ConversationRecord | null> => ipcRenderer.invoke("conversations:appendTurn", conversationId, turn),
 
   deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
@@ -294,6 +301,9 @@ const bridge: DesktopBridge = {
     ipcRenderer.invoke("schedule:cancelRunning", scheduleId),
 
   getRunningScheduleId: (): Promise<string | null> => ipcRenderer.invoke("schedule:runningId"),
+
+  runNowSchedule: (id: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("schedule:runNow", id),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

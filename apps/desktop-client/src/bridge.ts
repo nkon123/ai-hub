@@ -102,6 +102,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   listScheduleHistory: true,
   cancelRunningSchedule: true,
   getRunningScheduleId: true,
+  runNowSchedule: true,
 };
 
 const ALL_BRIDGE_METHOD_NAMES = Object.keys(BRIDGE_METHOD_PRESENCE) as Array<keyof DesktopBridge>;

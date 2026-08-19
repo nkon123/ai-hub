@@ -66,6 +66,7 @@ import type {
   ConversationRecord,
   ConversationSummary,
   ConversationTurnStatus,
+  ToolExecutionRecord,
   DeactivateKnowledgeResult,
   DesktopSettingsInput,
   DesktopSettingsPublic,
@@ -1149,12 +1150,18 @@ function registerIpcHandlers(): void {
     async (
       _event,
       conversationId: string,
-      turn: { question: string; answer: string; status: ConversationTurnStatus; citationCount: number },
+      turn: {
+        question: string;
+        answer: string;
+        status: ConversationTurnStatus;
+        citationCount: number;
+        toolExecutions?: ToolExecutionRecord[];
+      },
     ): Promise<ConversationRecord | null> => {
       const updated = getConversationStore().appendTurn(conversationId, turn);
       getLogger().info(
         "conversation-store",
-        `대화 턴 추가됨: ${conversationId} (status=${turn.status}, citation_count=${turn.citationCount})`,
+        `대화 턴 추가됨: ${conversationId} (status=${turn.status}, citation_count=${turn.citationCount}, tool_count=${(turn.toolExecutions ?? []).length})`,
       );
       return updated;
     },
@@ -1480,6 +1487,17 @@ function registerIpcHandlers(): void {
   ipcMain.handle("schedule:runningId", async (): Promise<string | null> => {
     return getScheduleScheduler().getRunningScheduleId();
   });
+
+  ipcMain.handle(
+    "schedule:runNow",
+    async (_event, id: string): Promise<{ ok: boolean; error: string | null }> => {
+      const result = await getScheduleScheduler().runNow(id);
+      if (result.ok) {
+        getLogger().info("schedule", `스케줄 수동 실행됨: ${id}`);
+      }
+      return result;
+    },
+  );
 }
 
 app.whenReady().then(() => {

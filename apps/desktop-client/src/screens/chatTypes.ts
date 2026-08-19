@@ -5,7 +5,7 @@
 // to record the server's authoritative `completed_at`).
 import type { Citation, ConversationTurnInput, PendingConfirmation, RunEventLogItem, RunResponse } from "../agentRuntime";
 import type { StageMap } from "../runStages";
-import type { ConversationRecord, InstalledAsset } from "../../electron/types";
+import type { ConversationRecord, InstalledAsset, ToolExecutionRecord } from "../../electron/types";
 
 export type ChatMessageStatus =
   | "running"
@@ -101,6 +101,19 @@ export interface ChatMessage {
    * proposal) overwrites this to the `"rejected"` display — see
    * `describeToolRouteSelected`/`describeToolRouteRejected`. */
   toolRoute: ToolRouteDisplay | null;
+  /** 실사용 제보(2026-08-19) — 이 턴이 실제로 지정한 명시적 MCP Tool 호출
+   * (개발 확인용 Tool 트리거, `mcpDevActive`). Tool 이름+인자는 전송
+   * 시점에 캡처된다(다른 `*Used` 필드와 같은 이유 — 화면 상태가 바뀌어도
+   * 지난 턴 표시가 바뀌지 않도록) — 결과는 이 턴이 종료된 뒤 상태/citation
+   * 개수로부터 만들어진다(`buildToolExecutionsForPersist`). `null`이면 이
+   * 턴은 명시적 MCP Tool 호출이 아니다. */
+  mcpToolCallUsed: { toolName: string; args: Record<string, unknown> } | null;
+  /** 저장소에 실제로 기록된(또는 복원된) Tool 실행 목록 — 라이브 세션 중에는
+   * `persistTurn`이 계산해 Main Process로 보낼 뿐 이 필드 자체를 채우지
+   * 않는다(라이브 화면은 `toolRoute`/로컬 Tool 카드로 이미 보여준다). 복원된
+   * 턴(`restored === true`)에서는 저장된 값 그대로 채워져, `ChatTurn`이
+   * "Tool 실행 기록"을 다시 그릴 수 있게 한다. */
+  toolExecutions: ToolExecutionRecord[];
 }
 
 // D-060: an installed Knowledge from a Bundle built before the fix has no
@@ -727,7 +740,50 @@ export function chatMessageFromStoredTurn(
     knowledgeCandidateNameById: {},
     knowledgeRoute: null,
     toolRoute: null,
+    mcpToolCallUsed: null,
+    // 저장된 그대로 복원한다 — 이 필드가 없는 과거 대화 파일은
+    // `conversation-store.ts`의 `readAll()`이 이미 빈 배열로 정규화해
+    // 넘겨주므로 여기서 다시 `?? []`할 필요가 없다(정규화는 한 곳에서만).
+    toolExecutions: turn.toolExecutions,
   };
+}
+
+/** 라이브 턴이 실제로 수행한 Tool 실행을 저장용 레코드로 만든다 —
+ * `persistTurn`(ChatScreen.tsx)이 턴이 터미널 상태가 된 시점에 호출한다.
+ * "실행되지 않음"(아무 Tool도 선택되지 않음/거절됨)은 기록하지 않는다 —
+ * 실행 사실이 없으므로 남길 기록도 없다(빈 배열을 그대로 반환).
+ *  - TOOL_ROUTE(`toolRoute`)는 `status === "ran"`일 때만 기록한다 —
+ *    `"skipped"`/`"no_tool"`은 애초에 아무것도 고르지 않았고, `"rejected"`는
+ *    고른 것이 스키마 검증에서 막혀 실제로는 실행되지 않았다. 서버 계약이
+ *    호출 인자를 렌더러에 넘기지 않으므로(`ToolRouteSelectedEventData`에
+ *    `tool_name`만 있다) `args`는 `null`이다 — 모르는 것을 지어내지 않는다.
+ *  - 명시적 MCP Tool 호출(`mcpToolCallUsed`)은 턴이 취소된 경우를 제외하고
+ *    항상 기록한다(성공/실패 모두 "무슨 일이 있었는지"가 유용한 사실이다).
+ *    거절/취소는 별도 결과 표현이 없어 상태의 errorMessage를 그대로 쓴다. */
+export function buildToolExecutionsForPersist(m: ChatMessage): ToolExecutionRecord[] {
+  const records: ToolExecutionRecord[] = [];
+  if (m.toolRoute?.status === "ran" && m.toolRoute.toolName) {
+    records.push({
+      toolName: m.toolRoute.toolName,
+      args: null,
+      resultSummary: m.status === "succeeded" || m.status === "insufficient_evidence" ? m.toolRoute.headline : null,
+      failureReason: m.status === "failed" ? (m.errorMessage ?? m.toolRoute.headline) : null,
+      route: "ai_auto_selected",
+    });
+  }
+  if (m.mcpToolCallUsed && m.status !== "cancelled") {
+    const succeeded = m.status === "succeeded" || m.status === "insufficient_evidence";
+    records.push({
+      toolName: m.mcpToolCallUsed.toolName,
+      args: m.mcpToolCallUsed.args,
+      resultSummary: succeeded
+        ? `Citation ${m.citations.length}건을 포함해 응답이 완료됨`
+        : null,
+      failureReason: succeeded ? null : (m.errorMessage ?? "Tool 호출이 실패했습니다."),
+      route: "mcp_tool",
+    });
+  }
+  return records;
 }
 
 export function mergeCitations(existing: Citation[], incoming: Citation[]): Citation[] {

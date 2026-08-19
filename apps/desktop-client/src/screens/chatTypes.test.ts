@@ -51,6 +51,8 @@ function chatMessage(overrides: Partial<ChatMessage> = {}): ChatMessage {
     knowledgeCandidateNameById: {},
     knowledgeRoute: null,
     toolRoute: null,
+    mcpToolCallUsed: null,
+    toolExecutions: [],
     ...overrides,
   };
 }
@@ -143,6 +145,7 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
         answer: "주 최대 2일까지 가능합니다.",
         status: "succeeded",
         citationCount: 2,
+        toolExecutions: [],
         createdAt: "2026-08-10T00:00:00.000Z",
       },
       conversation,
@@ -169,11 +172,38 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
         answer: "a",
         status: "succeeded",
         citationCount: 0,
+        toolExecutions: [],
         createdAt: "2026-08-10T00:00:00.000Z",
       },
       conversation,
     );
     expect(buildHistoryFromMessages([message])).toEqual([{ question: "q", answer: "a" }]);
+  });
+
+  it("rehydrates toolExecutions verbatim from the stored turn (실사용 제보 요구 1)", () => {
+    const toolExecutions = [
+      {
+        toolName: "list_files",
+        args: { path: "/tmp" },
+        resultSummary: "파일 3개를 찾았습니다.",
+        failureReason: null,
+        route: "user_selected" as const,
+      },
+    ];
+    const message = chatMessageFromStoredTurn(
+      {
+        id: "turn-1",
+        question: "q",
+        answer: "a",
+        status: "succeeded",
+        citationCount: 0,
+        toolExecutions,
+        createdAt: "2026-08-10T00:00:00.000Z",
+      },
+      conversation,
+    );
+    expect(message.toolExecutions).toEqual(toolExecutions);
+    expect(message.mcpToolCallUsed).toBeNull();
   });
 });
 

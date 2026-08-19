@@ -31,6 +31,14 @@ export interface ScheduledLocalToolOutcome {
   failureReason: string | null;
 }
 
+/** ms를 사람이 읽는 분/초 단위 문구로 바꾼다 — 실행 이력에 원시 밀리초
+ * (`30000ms`)를 그대로 찍지 않는다(실사용 제보 2026-08-19). */
+export function describeTimeoutMs(ms: number): string {
+  if (ms % 60_000 === 0) return `${ms / 60_000}분`;
+  const totalSeconds = Math.round(ms / 1000);
+  return `${totalSeconds}초`;
+}
+
 function summarizeInvocationResult(result: LocalToolInvocationResult): { ok: boolean; summary: string | null; failure: string | null } {
   switch (result.outcome) {
     case "success":
@@ -40,7 +48,13 @@ function summarizeInvocationResult(result: LocalToolInvocationResult): { ok: boo
     case "nonzero_exit":
       return { ok: false, summary: null, failure: `Tool 프로세스가 비정상 종료했습니다 (exit ${result.exitCode}).` };
     case "timeout":
-      return { ok: false, summary: null, failure: `Tool 실행이 ${result.timeoutMs}ms 안에 끝나지 않았습니다.` };
+      // 실사용 제보(2026-08-19) — 밀리초 원값 대신 사람이 읽는 분/초 단위로
+      // 보여준다("어느 상한에 걸렸는지"가 이력 문구만으로 분명해야 한다).
+      return {
+        ok: false,
+        summary: null,
+        failure: `이 스케줄에 설정된 Tool 실행 상한(${describeTimeoutMs(result.timeoutMs)})을 넘겨 중단되었습니다.`,
+      };
     case "oversized_output":
       return { ok: false, summary: null, failure: `Tool 출력이 허용 크기(${result.limitBytes} bytes)를 넘었습니다.` };
     case "spawn_error":
@@ -65,7 +79,17 @@ function summarizeInvocationResult(result: LocalToolInvocationResult): { ok: boo
 export async function invokeLocalToolForScheduledRun(
   question: string,
   registeredTools: LocalTool[],
-  options: { ollamaBaseUrl: string; chatModelAlias: string; interpreterPath: string | null; signal?: AbortSignal },
+  options: {
+    ollamaBaseUrl: string;
+    chatModelAlias: string;
+    interpreterPath: string | null;
+    signal?: AbortSignal;
+    /** 실사용 제보(2026-08-19) — 이 스케줄에 설정된 Tool 1회 호출 상한(ms).
+     * 생략하면 `invokeLocalTool`의 기본값(대화형과 동일한 30초)이 적용된다
+     * — 호출부(`schedule-scheduler.ts`)는 항상 `schedule.timeoutMinutes`에서
+     * 계산한 값을 넘긴다. */
+    timeoutMs?: number;
+  },
 ): Promise<ScheduledLocalToolOutcome> {
   const candidates: LocalToolRouteCandidate[] = registeredTools.map((tool) => ({
     id: tool.id,
@@ -99,6 +123,7 @@ export async function invokeLocalToolForScheduledRun(
     modulePath: target.filePath,
     functionName: target.functionName,
     args: routed.args,
+    timeoutMs: options.timeoutMs,
   };
   const result = await invokeLocalTool(invokeTarget);
   const { ok, summary, failure } = summarizeInvocationResult(result);

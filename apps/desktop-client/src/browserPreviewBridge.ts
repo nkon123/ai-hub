@@ -507,6 +507,7 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
             answer: turn.answer,
             status: turn.status as ConversationTurnStatus,
             citationCount: turn.citationCount,
+            toolExecutions: turn.toolExecutions ?? [],
             createdAt: now,
           },
         ],
@@ -625,6 +626,9 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     },
     async getRunningScheduleId() {
       return null;
+    },
+    async runNowSchedule() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
   };
   return previewBridge;

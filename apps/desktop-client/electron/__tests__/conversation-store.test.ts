@@ -134,4 +134,86 @@ describe("ConversationStore", () => {
     expect(store.get(a.id)?.turns).toHaveLength(1);
     expect(store.get(b.id)?.turns).toHaveLength(0);
   });
+
+  // 실사용 제보(2026-08-19) 요구 1 — Tool 실행 기록.
+  describe("toolExecutions (실사용 제보 요구 1)", () => {
+    it("a turn with no toolExecutions argument persists as an empty array", () => {
+      const store = new ConversationStore(stateDir);
+      const created = store.create("know-1", "label");
+      store.appendTurn(created.id, { question: "q", answer: "a", status: "succeeded", citationCount: 0 });
+      expect(store.get(created.id)?.turns[0].toolExecutions).toEqual([]);
+    });
+
+    it("persists Tool name/args/result and route, and restores them from a fresh instance", () => {
+      const store = new ConversationStore(stateDir);
+      const created = store.create("know-1", "label");
+      store.appendTurn(created.id, {
+        question: "q",
+        answer: "a",
+        status: "succeeded",
+        citationCount: 0,
+        toolExecutions: [
+          {
+            toolName: "list_files",
+            args: { path: "/tmp" },
+            resultSummary: "파일 3개",
+            failureReason: null,
+            route: "user_selected",
+          },
+        ],
+      });
+      const reopened = new ConversationStore(stateDir);
+      const turn = reopened.get(created.id)?.turns[0];
+      expect(turn?.toolExecutions).toEqual([
+        { toolName: "list_files", args: { path: "/tmp" }, resultSummary: "파일 3개", failureReason: null, route: "user_selected" },
+      ]);
+    });
+
+    it("truncates an overly long resultSummary/failureReason rather than storing the full text", () => {
+      const store = new ConversationStore(stateDir);
+      const created = store.create("know-1", "label");
+      const longText = "x".repeat(500);
+      store.appendTurn(created.id, {
+        question: "q",
+        answer: "a",
+        status: "failed",
+        citationCount: 0,
+        toolExecutions: [
+          { toolName: "t", args: null, resultSummary: null, failureReason: longText, route: "mcp_tool" },
+        ],
+      });
+      const stored = store.get(created.id)!.turns[0].toolExecutions[0];
+      expect(stored.failureReason!.length).toBeLessThanOrEqual(241); // 240 chars + ellipsis
+      expect(stored.failureReason!.endsWith("…")).toBe(true);
+    });
+
+    it("a legacy conversation file written before this field existed normalizes to an empty array, not a crash", () => {
+      fs.mkdirSync(stateDir, { recursive: true });
+      const legacy = [
+        {
+          id: "conv-1",
+          knowledgeId: "know-1",
+          knowledgeLabel: "label",
+          title: "새 대화",
+          createdAt: "2026-08-01T00:00:00.000Z",
+          updatedAt: "2026-08-01T00:00:00.000Z",
+          turns: [
+            {
+              id: "turn-1",
+              question: "q",
+              answer: "a",
+              status: "succeeded",
+              citationCount: 0,
+              createdAt: "2026-08-01T00:00:00.000Z",
+              // toolExecutions 필드 자체가 없다(이 필드 도입 이전 파일).
+            },
+          ],
+        },
+      ];
+      fs.writeFileSync(path.join(stateDir, "conversations.json"), JSON.stringify(legacy));
+      const store = new ConversationStore(stateDir);
+      expect(store.get("conv-1")?.turns[0].toolExecutions).toEqual([]);
+      expect(store.list()).toHaveLength(1);
+    });
+  });
 });
