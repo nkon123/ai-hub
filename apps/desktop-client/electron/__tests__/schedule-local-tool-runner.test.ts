@@ -95,6 +95,70 @@ describe("invokeLocalToolForScheduledRun — actually runs the tool end-to-end w
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  // 회귀: options.signal 이 타입에만 선언돼 있고 invokeLocalTool 로
+  // 전달되지 않아, 스케줄이 로컬 Tool 을 돌리는 중 "지금 실행 중단" 을
+  // 눌러도 하위 Python 프로세스가 죽지 않았다. 프로미스 반환값이 아니라
+  // 실제 프로세스가 종료됐는지를 본다.
+  it("forwards the abort signal so cancelling actually kills the Python subprocess", async () => {
+    if (!pythonPath) return; // python3 없는 환경 — 조용히 건너뛴다.
+
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(ollamaResponse({ models: [{ name: "llama3" }] }))
+      .mockResolvedValueOnce(
+        ollamaResponse({ message: { content: '{"tool_name": "lookup_sales", "input": {"month": "2026-08"}}' } }),
+      );
+    const original = global.fetch;
+    global.fetch = fetchImpl as unknown as typeof fetch;
+
+    const pidPath = path.join(tmpDir, "pid.txt");
+    const scriptPath = path.join(tmpDir, "spinner.py");
+    fs.writeFileSync(
+      scriptPath,
+      [
+        "import os, time",
+        "def run(month):",
+        `    open(${JSON.stringify(pidPath)}, 'w').write(str(os.getpid()))`,
+        "    time.sleep(600)",
+        "    return {}",
+        "",
+      ].join("\n"),
+      "utf-8",
+    );
+
+    const controller = new AbortController();
+    try {
+      const pending = invokeLocalToolForScheduledRun(
+        "이번 달 매출 알려줘",
+        [makeTool({ filePath: scriptPath })],
+        {
+          ollamaBaseUrl: "http://127.0.0.1:11434",
+          chatModelAlias: "llama3",
+          interpreterPath: pythonPath,
+          signal: controller.signal,
+        },
+      );
+
+      // 자식이 실제로 뜰 때까지 기다린다(PID 파일이 생길 때까지).
+      const deadline = Date.now() + 20_000;
+      while (!fs.existsSync(pidPath) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(fs.existsSync(pidPath)).toBe(true);
+      const pid = Number(fs.readFileSync(pidPath, "utf-8").trim());
+      expect(() => process.kill(pid, 0)).not.toThrow(); // 살아 있다
+
+      controller.abort();
+      await pending;
+
+      // OS 프로세스 테이블을 본다 — 반환값이 아니라.
+      await new Promise((r) => setTimeout(r, 200));
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      global.fetch = original;
+    }
+  }, 30_000);
+
   it("runs the selected tool without any approval dialog and reports success", async () => {
     if (!pythonPath) return; // environment has no python3 — skip, do not fail the suite.
 

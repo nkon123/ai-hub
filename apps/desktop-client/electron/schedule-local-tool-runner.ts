@@ -124,6 +124,13 @@ export async function invokeLocalToolForScheduledRun(
     functionName: target.functionName,
     args: routed.args,
     timeoutMs: options.timeoutMs,
+    // 실사용 버그(2026-08-19): 이 `signal`이 옵션 타입에는 선언돼 있었지만
+    // 여기로 전달되지 않아, 스케줄이 로컬 Tool 을 돌리는 중 "지금 실행
+    // 중단"을 눌러도 하위 Python 프로세스가 죽지 않았다 — 스케줄러는
+    // 중단됐다고 보고하는데 프로세스는 살아 있는 상태. 렌더러만 취소를
+    // 표시하고 실제 종료가 안 되는 것은 D-084 에서 한 번 겪은 실수와 같은
+    // 부류다.
+    signal: options.signal,
   };
   const result = await invokeLocalTool(invokeTarget);
   const { ok, summary, failure } = summarizeInvocationResult(result);
