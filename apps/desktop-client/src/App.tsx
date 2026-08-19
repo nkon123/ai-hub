@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Database, MessageSquare, Settings as SettingsIcon } from "lucide-react";
+import { CalendarClock, Database, MessageSquare, Settings as SettingsIcon } from "lucide-react";
 import { ImportScreen } from "./screens/ImportScreen";
 import { StoreScreen } from "./screens/StoreScreen";
 import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ChatScreen } from "./screens/ChatScreen";
 import { AssetsScreen } from "./screens/AssetsScreen";
 import { LocalToolsScreen } from "./screens/LocalToolsScreen";
+import { ScheduleScreen } from "./screens/ScheduleScreen";
 import { UpdateScreen } from "./screens/UpdateScreen";
 import { LogsScreen } from "./screens/LogsScreen";
 import { SetupWizardScreen } from "./screens/SetupWizardScreen";
@@ -15,15 +16,19 @@ import { ServiceDetailScreen, type ServiceDetailTarget } from "./screens/Service
 import { Tabs, StaleBridgeBuildBanner } from "./ui";
 import { getDesktopBridge, getMissingBridgeMethods } from "./bridge";
 
-// IA 재편(11개 사이드바 탭 -> 3개): 채팅 / 자산 허브 / 설정. "detail"(D03)과
-// "setup"(D01)은 사이드바에 없는 Drill-down 화면이다 — 진입 시 어디서
-// 왔는지를 함께 기억해 "뒤로"가 항상 올바른 화면으로 되돌아간다.
-type MainTab = "chat" | "hub" | "settings" | "detail" | "setup";
+// IA 재편(11개 사이드바 탭 -> 3개, D14에서 스케줄 추가로 4개): 채팅 / 스케줄 /
+// 자산 허브 / 설정. "detail"(D03)과 "setup"(D01)은 사이드바에 없는
+// Drill-down 화면이다 — 진입 시 어디서 왔는지를 함께 기억해 "뒤로"가 항상
+// 올바른 화면으로 되돌아간다. 스케줄은 채팅 레시피를 그대로 실행하므로
+// 채팅과 인접한 자리(자산 허브 앞)에 둔다 — 자산 허브의 하위 탭이나 설정
+// 아래에 넣지 않는다(별도 최상위 화면으로 요청됨).
+type MainTab = "chat" | "schedule" | "hub" | "settings" | "detail" | "setup";
 type HubSubTab = "store" | "import" | "assets" | "localTools" | "update";
 type SettingsSubTab = "general" | "connections" | "logs" | "info";
 
 const MAIN_TABS: Array<{ id: MainTab; label: string; icon: typeof MessageSquare }> = [
   { id: "chat", label: "채팅", icon: MessageSquare },
+  { id: "schedule", label: "스케줄", icon: CalendarClock },
   { id: "hub", label: "자산 허브", icon: Database },
   { id: "settings", label: "설정", icon: SettingsIcon },
 ];
@@ -165,6 +170,8 @@ export default function App() {
               }}
             />
           )}
+
+          {tab === "schedule" && <ScheduleScreen />}
 
           {tab === "hub" && (
             <div>

@@ -596,6 +596,36 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async revokeLocalToolExecution() {
       return { ok: false, tool: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
+
+    // --- D14 "등록된 에이전트를 스케줄에 따라 수행" ---------------------------
+    // 스케줄러는 Main Process의 타이머 루프다(Task Brief A) — 브라우저 개발
+    // 모드에는 Main Process가 없으므로 스케줄을 저장/조회/실행할 방법 자체가
+    // 없다. 조용히 빈 목록/성공을 지어내지 않고 모든 메서드가 정직하게
+    // "Desktop 앱에서 실행하세요"를 돌려준다.
+    async listSchedules() {
+      return [];
+    },
+    async getSchedule() {
+      return null;
+    },
+    async saveSchedule() {
+      return { ok: false, schedule: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE, requiresToolRiskAck: false };
+    },
+    async removeSchedule() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async setScheduleActive() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async listScheduleHistory() {
+      return [];
+    },
+    async cancelRunningSchedule() {
+      return { ok: false, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async getRunningScheduleId() {
+      return null;
+    },
   };
   return previewBridge;
 }

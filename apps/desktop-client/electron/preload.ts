@@ -47,6 +47,10 @@ import type {
   RegisterLocalAgentResult,
   UnregisterLocalAgentResult,
   RemoveAssetResult,
+  ScheduleHistoryRecord,
+  ScheduleRecord,
+  ScheduleSaveInput,
+  ScheduleSaveResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
   StoreInstallResult,
@@ -268,6 +272,28 @@ const bridge: DesktopBridge = {
 
   revokeLocalToolExecution: (id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
     ipcRenderer.invoke("localTool:revokeExecution", id),
+
+  // --- D14 "등록된 에이전트를 스케줄에 따라 수행" -----------------------------
+  listSchedules: (): Promise<ScheduleRecord[]> => ipcRenderer.invoke("schedule:list"),
+
+  getSchedule: (id: string): Promise<ScheduleRecord | null> => ipcRenderer.invoke("schedule:get", id),
+
+  saveSchedule: (input: ScheduleSaveInput, ack: { acknowledgedToolRisk: boolean }): Promise<ScheduleSaveResult> =>
+    ipcRenderer.invoke("schedule:save", input, ack),
+
+  removeSchedule: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("schedule:remove", id, reason),
+
+  setScheduleActive: (id: string, active: boolean, reason: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("schedule:setActive", id, active, reason),
+
+  listScheduleHistory: (scheduleId?: string): Promise<ScheduleHistoryRecord[]> =>
+    ipcRenderer.invoke("schedule:history", scheduleId),
+
+  cancelRunningSchedule: (scheduleId: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("schedule:cancelRunning", scheduleId),
+
+  getRunningScheduleId: (): Promise<string | null> => ipcRenderer.invoke("schedule:runningId"),
 };
 
 contextBridge.exposeInMainWorld("desktop", bridge);

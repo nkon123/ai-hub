@@ -8,6 +8,11 @@
 // file do for historical reasons) cannot pull any runtime code into the
 // renderer bundle — `import type` is erased entirely at compile time.
 import type { VersionDiffResult } from "./version-diff";
+// D14 스케줄 실행 — `schedule-time.ts`도 fs/electron import가 없는 순수
+// 모듈이므로(코드 배치 규칙) 여기서 그 타입을 재사용해도 렌더러 번들에
+// 런타임 비용이 붙지 않는다(`import type`은 컴파일 시 완전히 지워진다).
+import type { ScheduleExpression } from "./schedule-time";
+export type { ScheduleExpression } from "./schedule-time";
 
 export type CheckStatus = "PASS" | "WARN" | "FAIL" | "SKIP";
 
@@ -1278,6 +1283,97 @@ export interface AgentDraftUploadResult {
   prompt: AgentDraftUploadAssetOutcome | null;
 }
 
+// --- D14 "등록된 에이전트를 스케줄에 따라 수행" -----------------------------
+//
+// 스케줄 대상("실행 레시피")은 새 실행 경로를 발명하지 않는다 — D06
+// `ChatScreen.tsx`의 `handleSend`가 non-ollama-only 턴에서 조립하는 것과
+// 정확히 같은 조합(질문 텍스트 + Knowledge 토글 + 로컬 Tool 자동 선택 토글 +
+// Local Agent 선택 + Chat Model)을 그대로 필드로 옮긴 것뿐이다. Main Process의
+// 스케줄 실행기가 이 레시피로 재구성하는 호출도 `src/agentRuntime.ts`의
+// `StartRunParams`가 요구하는 것과 같은 필드만 채운다(Main에서는 그 모듈을
+// 직접 쓰지 못하므로 — EventSource가 브라우저 전용이라 — 같은 HTTP 계약을
+// 향해 별도 Main 전용 클라이언트가 존재한다, `electron/schedule-agent-runtime.ts`).
+//
+// `localToolRouteActive`가 켜진 레시피는 D-084 후속 2(`electron/local-tool-router.ts`)와
+// 동일하게 agent-runtime을 아예 거치지 않고 로컬 Ollama에 직접 묻는다 — 이
+// 필드가 "Tool 위험 확인" 게이트(F, 아래 `ScheduleSaveResult` 참고)가 검사하는
+// 유일한 신호다.
+export interface ScheduleRecipe {
+  question: string;
+  knowledgeLookupActive: boolean;
+  /** `knowledgeLookupActive === true`일 때만 의미가 있다 — 검색에 쓸
+   * AssetVersion id 목록(`ChatScreen.tsx`의 `knowledgeIds`와 같은 값 종류). */
+  knowledgeIds: string[];
+  /** D-084 후속 2 — 로컬 Ollama가 로컬 Tool 후보 중 하나를 직접 고르고
+   * 실행한다(agent-runtime을 거치지 않는다). 이 값이 true인 레시피만 F의
+   * Tool 위험 확인 게이트 대상이다. */
+  localToolRouteActive: boolean;
+  /** D-034 해석 경로 4 — 채워지면 표준 Agent 대신 이 Local Agent로 실행한다. */
+  localAgentId: string | null;
+  /** Ollama 대화(Knowledge/Local Agent 둘 다 꺼진 경우)와 로컬 Tool 자동
+   * 라우팅 둘 다에서 사용하는 Chat Model alias. */
+  chatModelAlias: string;
+}
+
+export type ScheduleRunOutcome = "success" | "failure" | "missed" | "cancelled";
+
+export interface ScheduleRecord {
+  id: string;
+  name: string;
+  expression: ScheduleExpression;
+  recipe: ScheduleRecipe;
+  active: boolean;
+  /** `recipe.localToolRouteActive`가 true인 레시피에서만 채워진다(F) — 그
+   * 외에는 항상 `null`(확인이 필요한 적이 없었으므로 확인한 적도 없다). */
+  toolRiskAcknowledgedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+  /** 항상 "지금부터의 다음 실행"을 가리킨다 — 저장/실행/앱 시작 시 놓친
+   * 실행 감지 직후 매번 새로 계산된다(드리프트 누적 없음). */
+  nextRunAt: string;
+  lastRunAt: string | null;
+  lastRunOutcome: ScheduleRunOutcome | null;
+}
+
+export interface ScheduleSaveInput {
+  /** 있으면 수정, 없으면 새로 생성. */
+  id?: string;
+  name: string;
+  expression: ScheduleExpression;
+  recipe: ScheduleRecipe;
+  active: boolean;
+}
+
+export type ScheduleSaveResult =
+  | { ok: true; schedule: ScheduleRecord; error: null; requiresToolRiskAck: false }
+  | { ok: false; schedule: null; error: string; requiresToolRiskAck: boolean };
+
+export interface ScheduleLocalToolInvocationRecord {
+  toolName: string;
+  args: Record<string, unknown>;
+}
+
+/** 실행 1건의 이력(E) — 성공/실패/누락(missed) 모두 이 형태로 남는다. 질문/
+ * 답변 원문은 절대 저장하지 않는다(`resultSummary`/`failureReason`은 사람이
+ * 읽을 짧은 요약이지 원문이 아니다) — `electron/diagnostic-bundle.ts`가
+ * 이 저장소를 import조차 하지 않는다는 사실과 함께
+ * `electron/__tests__/schedule-diagnostic-leak.test.ts`가 이를 고정한다. */
+export interface ScheduleHistoryRecord {
+  id: string;
+  scheduleId: string;
+  timestamp: string;
+  outcome: ScheduleRunOutcome;
+  /** 이번 실행이 실제로 로컬 Tool을 호출했을 때만 채워진다(`localToolRouteActive`가
+   * 꺼져 있었거나, 켜져 있었지만 이번 질문에는 아무 Tool도 고르지 않았으면
+   * 빈 배열). */
+  localToolInvocations: ScheduleLocalToolInvocationRecord[];
+  /** 성공 시에만 채워지는 짧은 요약(길면 잘라낸다) — 답변 원문 저장 금지
+   * 원칙에 따라 전체 답변이 아니다. */
+  resultSummary: string | null;
+  /** 실패/누락 시에만 채워지는 사유. */
+  failureReason: string | null;
+}
+
 /** Renderer-facing surface exposed via `contextBridge` in `preload.ts`. */
 export interface DesktopBridge {
   pickBundleFile(): Promise<string | null>;
@@ -1548,4 +1644,29 @@ export interface DesktopBridge {
   /** 위 승인을 철회한다 — 되돌릴 수 없는 승인을 만들지 않는다(Task Brief
    * 제약). 철회 후에는 다음 실행부터 다시 매번 네이티브 대화상자로 묻는다. */
   revokeLocalToolExecution(id: string): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
+
+  // --- D14 "등록된 에이전트를 스케줄에 따라 수행" -------------------------------
+  listSchedules(): Promise<ScheduleRecord[]>;
+  getSchedule(id: string): Promise<ScheduleRecord | null>;
+  /** 구조적 위험 확인 게이트(F) — `recipe.localToolRouteActive`가 true이고
+   * 재확인이 필요한 변경(끄기->켜기 전환, 질문 텍스트 변경, 또는 신규 생성)
+   * 이면 `acknowledgedToolRisk !== true`일 때 저장 자체가 거부된다
+   * (`ScheduleStore.saveWithToolRiskAck`가 실제로 강제한다 — 렌더러 확인
+   * 화면은 이 게이트를 보조할 뿐, 유일한 강제 지점이 아니다). */
+  saveSchedule(input: ScheduleSaveInput, ack: { acknowledgedToolRisk: boolean }): Promise<ScheduleSaveResult>;
+  /** CLAUDE.md: 폐기는 확인과 사유를 요구한다 — `reason`이 비어 있으면
+   * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증). */
+  removeSchedule(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
+  /** 활성/비활성 전환도 CLAUDE.md의 "중단은 확인과 사유를 요구한다"를 따른다 —
+   * 비활성화는 예약된 실행을 중단시키는 조치이지 사소한 토글이 아니다. */
+  setScheduleActive(id: string, active: boolean, reason: string): Promise<{ ok: boolean; error: string | null }>;
+  /** `scheduleId`를 생략하면 전체 스케줄의 통합 이력(최신순)을 돌려준다. */
+  listScheduleHistory(scheduleId?: string): Promise<ScheduleHistoryRecord[]>;
+  /** 지금 실행 중인 스케줄(있다면)을 중단한다(Cancellation 상태) — Main
+   * Process가 들고 있는 AbortController에 신호를 보낸다. 실행 중이 아니면
+   * `ok:false`+사유. */
+  cancelRunningSchedule(scheduleId: string): Promise<{ ok: boolean; error: string | null }>;
+  /** 지금 실제로 실행 중인 스케줄의 id, 없으면 `null` — 화면은 이 값을 보고
+   * "지금 실행 중단" 버튼을 어떤 스케줄에 붙일지 정한다(추측하지 않는다). */
+  getRunningScheduleId(): Promise<string | null>;
 }

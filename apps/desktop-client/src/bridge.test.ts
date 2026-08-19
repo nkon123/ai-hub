@@ -277,6 +277,30 @@ function createCompleteBridge(): DesktopBridge {
     async revokeLocalToolExecution() {
       return { ok: false, tool: null, error: null };
     },
+    async listSchedules() {
+      return [];
+    },
+    async getSchedule() {
+      return null;
+    },
+    async saveSchedule() {
+      return { ok: false, schedule: null, error: "테스트", requiresToolRiskAck: false };
+    },
+    async removeSchedule() {
+      return { ok: false, error: null };
+    },
+    async setScheduleActive() {
+      return { ok: false, error: null };
+    },
+    async listScheduleHistory() {
+      return [];
+    },
+    async cancelRunningSchedule() {
+      return { ok: false, error: null };
+    },
+    async getRunningScheduleId() {
+      return null;
+    },
   };
 }
 

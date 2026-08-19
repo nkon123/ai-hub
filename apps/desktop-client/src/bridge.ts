@@ -94,6 +94,14 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   invokeLocalTool: true,
   approveLocalToolExecution: true,
   revokeLocalToolExecution: true,
+  listSchedules: true,
+  getSchedule: true,
+  saveSchedule: true,
+  removeSchedule: true,
+  setScheduleActive: true,
+  listScheduleHistory: true,
+  cancelRunningSchedule: true,
+  getRunningScheduleId: true,
 };
 
 const ALL_BRIDGE_METHOD_NAMES = Object.keys(BRIDGE_METHOD_PRESENCE) as Array<keyof DesktopBridge>;

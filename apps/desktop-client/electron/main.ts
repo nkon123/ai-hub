@@ -38,6 +38,9 @@ import {
 import { analyzeLocalToolFile, parseLocalToolSignature } from "./local-tool-signature";
 import { findToolNameConflict, hashLocalToolSource, LocalToolStore } from "./local-tool-store";
 import { invokeLocalTool as runInvokeLocalTool } from "./local-tool-runner";
+import { ScheduleStore } from "./schedule-store";
+import { ScheduleHistoryStore } from "./schedule-history-store";
+import { ScheduleScheduler } from "./schedule-scheduler";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
 import { buildDiagnosticBundle, saveDiagnosticBundle } from "./diagnostic-bundle";
@@ -92,6 +95,10 @@ import type {
   RegisterLocalAgentResult,
   UnregisterLocalAgentResult,
   RemoveAssetResult,
+  ScheduleHistoryRecord,
+  ScheduleRecord,
+  ScheduleSaveInput,
+  ScheduleSaveResult,
   ServiceDetailResult,
   StoreInstallProgressEvent,
   StoreInstallResult,
@@ -113,6 +120,9 @@ let portalSettingsStore: PortalSettingsStore | null = null;
 let desktopSettingsStore: DesktopSettingsStore | null = null;
 let conversationStore: ConversationStore | null = null;
 let localToolStore: LocalToolStore | null = null;
+let scheduleStore: ScheduleStore | null = null;
+let scheduleHistoryStore: ScheduleHistoryStore | null = null;
+let scheduleScheduler: ScheduleScheduler | null = null;
 let ollamaChatAbortController: AbortController | null = null;
 // D06 "대화로 Agent 초안 만들기"의 시스템 프롬프트 생성 취소 대상 — 위
 // `ollamaChatAbortController`(일반 대화 취소)와 별개다. 같은 변수를
@@ -171,6 +181,39 @@ function getLocalToolStore(): LocalToolStore {
     localToolStore = new LocalToolStore(getLayout().stateDir);
   }
   return localToolStore;
+}
+
+// D14 — 완전히 별도의 저장소 두 개(`schedules.json`/`schedule-history.json`).
+function getScheduleStore(): ScheduleStore {
+  if (!scheduleStore) {
+    scheduleStore = new ScheduleStore(getLayout().stateDir);
+  }
+  return scheduleStore;
+}
+
+function getScheduleHistoryStore(): ScheduleHistoryStore {
+  if (!scheduleHistoryStore) {
+    scheduleHistoryStore = new ScheduleHistoryStore(getLayout().stateDir);
+  }
+  return scheduleHistoryStore;
+}
+
+/** 앱이 실행되어 있는 동안에만 동작한다(Task Brief A) — 앱 준비 완료 시점에
+ * 한 번 만들어져 앱 수명 전체 동안 유지된다(화면 마운트/언마운트와 무관).
+ * 놓친 실행 감지(D)는 `start()` 안에서 생성 즉시 한 번 실행된다. */
+function getScheduleScheduler(): ScheduleScheduler {
+  if (!scheduleScheduler) {
+    scheduleScheduler = new ScheduleScheduler({
+      scheduleStore: getScheduleStore(),
+      historyStore: getScheduleHistoryStore(),
+      localToolStore: getLocalToolStore(),
+      getAgentRuntimeBaseUrl: agentRuntimeBaseUrl,
+      getOllamaBaseUrl: () => getDesktopSettingsStore().getPublic().ollamaBaseUrl,
+      getInterpreterPath: () => getDesktopSettingsStore().getPublic().pythonInterpreterPath,
+      logger: getLogger(),
+    });
+  }
+  return scheduleScheduler;
 }
 
 /** D11's only log source — see `app-logger.ts`'s module docstring for why
@@ -1379,11 +1422,72 @@ function registerIpcHandlers(): void {
       return result;
     },
   );
+
+  // --- D14 "등록된 에이전트를 스케줄에 따라 수행" -----------------------------
+  ipcMain.handle("schedule:list", async (): Promise<ScheduleRecord[]> => {
+    return getScheduleStore().list();
+  });
+
+  ipcMain.handle("schedule:get", async (_event, id: string): Promise<ScheduleRecord | null> => {
+    return getScheduleStore().get(id);
+  });
+
+  ipcMain.handle(
+    "schedule:save",
+    async (
+      _event,
+      input: ScheduleSaveInput,
+      ack: { acknowledgedToolRisk: boolean },
+    ): Promise<ScheduleSaveResult> => {
+      const result = getScheduleStore().saveWithToolRiskAck(input, ack);
+      if (result.ok) {
+        getLogger().info("schedule", `스케줄 저장됨: ${result.schedule.id}`);
+      }
+      return result;
+    },
+  );
+
+  ipcMain.handle("schedule:remove", async (_event, id: string, reason: string): Promise<{ ok: boolean; error: string | null }> => {
+    const result = getScheduleStore().remove(id, reason);
+    if (result.ok) {
+      getLogger().info("schedule", `스케줄 삭제됨: ${id}`);
+    }
+    return result;
+  });
+
+  ipcMain.handle(
+    "schedule:setActive",
+    async (_event, id: string, active: boolean, reason: string): Promise<{ ok: boolean; error: string | null }> => {
+      const result = getScheduleStore().setActive(id, active, reason);
+      if (result.ok) {
+        getLogger().info("schedule", `스케줄 ${active ? "활성화" : "비활성화"}됨: ${id}`);
+      }
+      return { ok: result.ok, error: result.error };
+    },
+  );
+
+  ipcMain.handle("schedule:history", async (_event, scheduleId?: string): Promise<ScheduleHistoryRecord[]> => {
+    return scheduleId ? getScheduleHistoryStore().listForSchedule(scheduleId) : getScheduleHistoryStore().listAll();
+  });
+
+  ipcMain.handle(
+    "schedule:cancelRunning",
+    async (_event, scheduleId: string): Promise<{ ok: boolean; error: string | null }> => {
+      return getScheduleScheduler().cancel(scheduleId);
+    },
+  );
+
+  ipcMain.handle("schedule:runningId", async (): Promise<string | null> => {
+    return getScheduleScheduler().getRunningScheduleId();
+  });
 }
 
 app.whenReady().then(() => {
   registerIpcHandlers();
   createWindow();
+  // D14 — 앱이 실행되는 동안에만 동작하는 Main-process 스케줄러. 놓친 실행
+  // 감지(D)가 시작 즉시 한 번 실행된 뒤 반복 tick이 시작된다.
+  getScheduleScheduler().start();
 });
 
 app.on("window-all-closed", () => {
