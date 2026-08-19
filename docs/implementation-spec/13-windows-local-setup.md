@@ -416,6 +416,25 @@ $env:ELECTRON_MIRROR = "https://<사내미러>/electron/"
 .\scripts\windows\install-node.ps1 -WithElectron -ReinstallElectron
 ```
 
+**미러도 없고 GitHub Releases 에도 닿지 않을 때 — zip 반입 (2026-08-19 추가, 사내 Windows 실측)**
+
+인터넷이 되는 PC 에서 아래 둘을 받아 사내 PC 로 옮긴다(버전은 `apps/desktop-client/package.json` 의 `devDependencies.electron` 과 **정확히** 같아야 한다 — 현재 43.3.0).
+
+```
+https://github.com/electron/electron/releases/download/v43.3.0/electron-v43.3.0-win32-x64.zip
+https://github.com/electron/electron/releases/download/v43.3.0/SHASUMS256.txt
+```
+
+```powershell
+# 무결성 확인 — SHASUMS256.txt 의 해당 줄과 대조
+(Get-FileHash "C:\반입\electron-v43.3.0-win32-x64.zip" -Algorithm SHA256).Hash.ToLower()
+
+# 설치 (네트워크 다운로드 없음)
+.\scripts\windows\install-node.ps1 -ElectronZip "C:\반입\electron-v43.3.0-win32-x64.zip"
+```
+
+이 옵션이 하는 일은 Electron 의 `install.js` 가 다운로드 후 하는 것과 같다 — zip 을 패키지의 `dist` 로 풀고 `path.txt` 에 `electron.exe` 를 쓴다. 그 **둘이 모두** 있어야 `isInstalled()` 가 참이 된다(`dist\version` 과 `path.txt`). pnpm 배치에 따라 패키지가 `apps\desktop-client\node_modules\electron` 또는 저장소 루트에 있고 junction 인 경우가 있어, 스크립트가 실제 대상 경로를 따라가 푼다.
+
 `start-desktop-client.ps1` 은 기동 전에 `_preflight.ps1` 의 `Assert-ElectronReady` 로 (1) 바이너리 존재와 (2) `package.json` 이 고정한 버전과의 일치를 확인하고, 어긋나면 해결 명령을 그대로 보여준다. **버전을 올리는 것이 해결이 아니다** — 저장소는 이미 43.3.0 을 고정하고 있고, 문제는 그 버전이 실제로 설치되지 않은 것이다.
 
 `package.json`의 `dev` 스크립트는 `tsc -p tsconfig.electron.json && concurrently -k -n vite,electron "vite" "electron ."`이다 — Vite 개발 서버(Renderer)와 Electron 앱(Main)을 동시에 띄운다. Electron 창이 처음 뜨면 왼쪽 메뉴의 **"최초 설정"**(D01 Wizard)에서 Client 표시명·사업장 ID·Ollama Endpoint·기본 Chat/Embedding Model Alias·Office MCP Server Alias/URL을 확인·저장한다 — 아무것도 입력하지 않아도 이 문서 5절의 기본 포트(Ollama `127.0.0.1:11434`, Office MCP Server `127.0.0.1:8500`)로 동작한다(설정 전 기존 동작과 동일). 이후에는 **"설정"**(D10) 메뉴에서 언제든 같은 값을 다시 바꿀 수 있다. 앱 내 연결 상태 화면(`connections.ts`)은 이 설정값(미설정 시 기본값)을 사용해 Ollama·Local Agent Runtime(`127.0.0.1:8100`, 이 값은 설정 화면에 없음)·Office MCP Server를 각각 Health-check한다 — 5절에서 agent-runtime과 office-mcp-server를 먼저 띄워 두어야 정상으로 표시된다.

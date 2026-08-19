@@ -41,7 +41,13 @@ param(
     # 이미 설치된 Electron 바이너리를 지우고 다시 받는다. 전역/구버전
     # Electron 이 섞여 앱이 뜨지 않을 때 쓴다(실제로 겪은 문제: 전역 31.x).
     # -WithElectron 을 함께 켠 것으로 간주한다.
-    [switch]$ReinstallElectron
+    [switch]$ReinstallElectron,
+    # 폐쇄망 반입용: 인터넷 되는 PC 에서 받아 온
+    # electron-v<버전>-win32-x64.zip 의 경로. 지정하면 네트워크 다운로드
+    # 없이 이 zip 을 electron 패키지의 dist 로 풀고 path.txt 를 쓴다
+    # (electron 의 install.js 가 isInstalled() 에서 확인하는 두 가지가
+    # 정확히 dist\version 과 path.txt 다).
+    [string]$ElectronZip
 )
 
 $RepoRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
@@ -109,4 +115,54 @@ if ((Test-Path $nextBin) -or (Test-Path "$nextBin.cmd")) {
     Write-Host ""
     Write-Host "설치는 끝났지만 next 를 찾을 수 없습니다." -ForegroundColor Yellow
     Write-Host "  .\scripts\windows\install-node.ps1 -PortalOnly 로 다시 시도해 보세요." -ForegroundColor DarkGray
+}
+
+
+# --- 폐쇄망 반입: 미리 받아 둔 Electron zip 을 직접 설치 -------------------
+# 사내망에서 GitHub Releases 에 닿지 않을 때 쓴다. 여기서 하는 일은
+# electron 의 install.js 가 다운로드 후 하는 것과 같다: zip 을 패키지의
+# dist 로 풀고, path.txt 에 실행 파일 상대경로(win32 는 electron.exe)를
+# 쓴다. 그 둘이 있어야 isInstalled() 가 참이 된다.
+if ($ElectronZip) {
+    if (-not (Test-Path $ElectronZip)) {
+        Write-Fix -Problem "지정한 Electron zip 을 찾을 수 없습니다: $ElectronZip" -Fixes @(
+            "인터넷이 되는 PC 에서 electron-v<버전>-win32-x64.zip 을 받아 이 PC 로 옮긴 뒤 경로를 다시 지정하세요."
+        )
+        exit 1
+    }
+
+    # pnpm 배치에 따라 위치가 다르다. 링크(junction)면 실제 대상에 풀어야 한다.
+    $link = $null
+    foreach ($rel in @("apps\desktop-client\node_modules\electron", "node_modules\electron")) {
+        $candidate = Join-Path $RepoRoot $rel
+        if (Test-Path $candidate) { $link = $candidate; break }
+    }
+    if (-not $link) {
+        Write-Fix -Problem "electron 패키지를 찾을 수 없습니다(pnpm install 이 끝나지 않았을 수 있습니다)." -Fixes @(
+            "먼저 .\scripts\windows\install-node.ps1 을 실행해 의존성을 설치하세요."
+        )
+        exit 1
+    }
+    $pkg = (Get-Item $link).Target
+    if (-not $pkg) { $pkg = (Resolve-Path $link).Path }
+
+    Write-Host "Electron zip 을 설치합니다: $ElectronZip" -ForegroundColor Cyan
+    Write-Host "  대상: $pkg" -ForegroundColor DarkGray
+    Remove-Item (Join-Path $pkg "dist") -Recurse -Force -ErrorAction SilentlyContinue
+    Expand-Archive -Path $ElectronZip -DestinationPath (Join-Path $pkg "dist") -Force
+    Set-Content -Path (Join-Path $pkg "path.txt") -Value "electron.exe" -NoNewline -Encoding ascii
+
+    $versionFile = Join-Path $pkg "dist\version"
+    $exe = Join-Path $pkg "dist\electron.exe"
+    if ((Test-Path $versionFile) -and (Test-Path $exe)) {
+        $installed = (Get-Content $versionFile -Raw).Trim()
+        Write-Host "Electron $installed 설치 완료." -ForegroundColor Green
+        Write-Host "  확인: .\scripts\windows\start-desktop-client.ps1" -ForegroundColor DarkGray
+    } else {
+        Write-Fix -Problem "zip 을 풀었지만 dist\version 또는 dist\electron.exe 가 없습니다 — zip 이 win32-x64 빌드가 맞는지 확인하세요." -Fixes @(
+            "electron-v<버전>-win32-x64.zip 인지 확인(다른 플랫폼/아키텍처 zip 은 쓸 수 없습니다).",
+            "받은 zip 의 SHA256 을 릴리스의 SHASUMS256.txt 와 대조하세요."
+        )
+        exit 1
+    }
 }
