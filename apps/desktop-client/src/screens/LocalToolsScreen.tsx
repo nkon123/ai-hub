@@ -9,7 +9,7 @@
 // TOOL_ROUTE/D-080 등록으로부터의 배제를 소스 텍스트 검사로 강제한다.
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, FileCode2, FolderOpen, Play, ShieldCheck, ShieldOff, Trash2 } from "lucide-react";
-import type { LocalTool, LocalToolSignatureResult } from "../../electron/types";
+import type { LocalTool, LocalToolFileAnalysisResult } from "../../electron/types";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, ConfirmDialog, EmptyState, ErrorBanner, LoadingState, Modal, PageHeader } from "../ui";
 import { formatDateTime } from "../format";
@@ -17,12 +17,15 @@ import {
   NOT_A_SANDBOX_NOTICE,
   buildExecutionApprovalNotice,
   buildLocalToolArgs,
+  defaultSelectedFunctionNames,
   describeExecutionApprovalStatus,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
   initialFieldText,
+  summarizeBulkAddResults,
   type InvocationOutcomeDisplay,
+  type LocalToolBulkAddOutcome,
 } from "./localToolsTypes";
 
 const OUTCOME_TONE_CLASS: Record<InvocationOutcomeDisplay["tone"], string> = {
@@ -41,7 +44,11 @@ function NotASandboxNotice() {
   );
 }
 
-type AddStep = "closed" | "picking" | "inspecting" | "review" | "adding";
+// "review" — 분석 결과(발견된 함수들 + 시그니처 + 등록 불가 사유)를 보여주고
+// 등록할 함수를 고르게 한다. "adding" — 선택된 함수들을 순서대로 등록하는
+// 중. "done" — 등록 결과 보고(일부만 성공했을 수 있으므로, 등록 직후
+// 조용히 닫지 않고 반드시 이 화면을 거친다).
+type AddStep = "closed" | "picking" | "inspecting" | "review" | "adding" | "done";
 
 export function LocalToolsScreen() {
   const bridge = getDesktopBridge();
@@ -52,9 +59,15 @@ export function LocalToolsScreen() {
 
   const [addStep, setAddStep] = useState<AddStep>("closed");
   const [pickedPath, setPickedPath] = useState<string | null>(null);
-  const [inspectResult, setInspectResult] = useState<LocalToolSignatureResult | null>(null);
+  const [inspectResult, setInspectResult] = useState<LocalToolFileAnalysisResult | null>(null);
+  // `@tool`/`@mcp.tool`로 여러 함수가 후보일 때 사용자가 실제로 등록할
+  // 함수를 고르는 선택 상태(functionName 집합) — analyzeLocalToolFile이
+  // 유효하다고 판정한 함수만 여기 들어올 수 있다(무효 후보는 체크박스
+  // 자체가 비활성화되어 있다).
+  const [selectedFunctions, setSelectedFunctions] = useState<Set<string>>(new Set());
   const [riskAcknowledged, setRiskAcknowledged] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
+  const [addReport, setAddReport] = useState<LocalToolBulkAddOutcome[] | null>(null);
 
   const [removeTarget, setRemoveTarget] = useState<LocalTool | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -104,8 +117,10 @@ export function LocalToolsScreen() {
     setAddStep("closed");
     setPickedPath(null);
     setInspectResult(null);
+    setSelectedFunctions(new Set());
     setRiskAcknowledged(false);
     setAddError(null);
+    setAddReport(null);
   }
 
   async function startAddFlow() {
@@ -131,6 +146,7 @@ export function LocalToolsScreen() {
     try {
       const result = await bridge.inspectLocalToolFile(filePath);
       setInspectResult(result);
+      if (result.ok) setSelectedFunctions(new Set(defaultSelectedFunctionNames(result.candidates)));
       setAddStep("review");
     } catch (err) {
       setInspectResult({
@@ -142,23 +158,50 @@ export function LocalToolsScreen() {
     }
   }
 
+  function toggleFunctionSelection(functionName: string) {
+    setSelectedFunctions((prev) => {
+      const next = new Set(prev);
+      if (next.has(functionName)) next.delete(functionName);
+      else next.add(functionName);
+      return next;
+    });
+  }
+
+  /** 선택된 함수들을 순서대로 하나씩 등록한다(함수 하나당 Tool 하나 —
+   * Task Brief C). 한 번에 여러 개를 등록하는 단일 IPC 호출은 없다 —
+   * `bridge.addLocalTool`이 매번 파일을 다시 읽어 그 함수 하나만 재검증·
+   * 저장하는 기존 계약을 그대로 재사용한다. 실패한 호출이 있어도 멈추지
+   * 않고 끝까지 진행해, 유효한 것은 등록되고 실패한 것은 함수명+사유로
+   * 보고된다(Task Brief: 전부 거절하지도, 조용히 일부만 등록하지도 않는다).
+   * 순서대로 호출하므로 같은 파일 안의 이름 충돌(예: 데코레이터가 같은
+   * 이름의 함수 두 개를 가리키는 드문 경우)도 두 번째 호출에서
+   * `findToolNameConflict`에 걸려 사유와 함께 보고된다. */
   async function confirmAdd() {
     if (!bridge || !pickedPath || !inspectResult?.ok || !riskAcknowledged) return;
+    const targets = inspectResult.candidates.filter((c) => c.ok && selectedFunctions.has(c.functionName));
+    if (targets.length === 0) return;
     setAddStep("adding");
     setAddError(null);
-    try {
-      const result = await bridge.addLocalTool(pickedPath, true);
-      if (!result.ok) {
-        setAddError(result.error ?? "로컬 Tool을 추가하지 못했습니다.");
-        setAddStep("review");
-        return;
+    const results: LocalToolBulkAddOutcome[] = [];
+    for (const target of targets) {
+      try {
+        const result = await bridge.addLocalTool(pickedPath, true, target.functionName);
+        results.push({
+          functionName: target.functionName,
+          ok: result.ok,
+          error: result.ok ? undefined : (result.error ?? "로컬 Tool을 추가하지 못했습니다."),
+        });
+      } catch (err) {
+        results.push({
+          functionName: target.functionName,
+          ok: false,
+          error: err instanceof Error ? err.message : "로컬 Tool을 추가하지 못했습니다.",
+        });
       }
-      closeAddFlow();
-      await load();
-    } catch (err) {
-      setAddError(err instanceof Error ? err.message : "로컬 Tool을 추가하지 못했습니다.");
-      setAddStep("review");
     }
+    setAddReport(results);
+    setAddStep("done");
+    await load();
   }
 
   async function confirmRemove() {
@@ -384,8 +427,13 @@ export function LocalToolsScreen() {
         </div>
       )}
 
-      {/* --- 추가 흐름: 파일 선택 -> 정적 분석(투명성 패널) -> 확인 -> 추가 --- */}
-      <Modal open={addStep === "inspecting" || addStep === "review" || addStep === "adding"} title="로컬 Tool 추가" onClose={closeAddFlow}>
+      {/* --- 추가 흐름: 파일 선택 -> 정적 분석(투명성 패널, 발견된 함수 전부
+          미리보기) -> 등록할 함수 선택 + 확인 -> 순서대로 등록 -> 결과 보고 --- */}
+      <Modal
+        open={addStep === "inspecting" || addStep === "review" || addStep === "adding" || addStep === "done"}
+        title="로컬 Tool 추가"
+        onClose={closeAddFlow}
+      >
         {addStep === "inspecting" && <LoadingState label="Python 파일을 분석하는 중..." />}
 
         {(addStep === "review" || addStep === "adding") && inspectResult && (
@@ -393,39 +441,62 @@ export function LocalToolsScreen() {
             <p className="break-all text-caption text-text-muted">{pickedPath}</p>
             {inspectResult.ok ? (
               <>
-                <div>
-                  <p className="text-body font-semibold text-text-primary">추출된 함수: {inspectResult.functionName}</p>
-                  {inspectResult.parameters.length === 0 ? (
-                    <p className="mt-1 text-caption text-text-secondary">파라미터가 없습니다.</p>
-                  ) : (
-                    <ul className="mt-2 space-y-1">
-                      {inspectResult.parameters.map((p) => (
-                        <li key={p.name} className="rounded-md border border-border px-2 py-1 text-caption text-text-secondary">
-                          <span className="font-medium text-text-primary">{p.name}</span>: {p.schemaType}
-                          {" · "}
-                          {p.required ? "필수" : "선택"}
-                          {p.defaultIncluded && " · 기본값 있음"}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
+                <p className="text-body font-semibold text-text-primary">
+                  {inspectResult.selectedByDecorator
+                    ? `@tool/@mcp.tool이 붙은 함수 ${inspectResult.candidates.length}개를 찾았습니다. 등록할 함수를 고르세요.`
+                    : "이 파일의 유일한 최상위 함수입니다."}
+                </p>
+                <div className="space-y-2">
+                  {inspectResult.candidates.map((candidate) => (
+                    <div
+                      key={candidate.functionName}
+                      className={`rounded-lg border px-3 py-2 ${candidate.ok ? "border-border" : "border-danger/30 bg-danger/5"}`}
+                    >
+                      <label className="flex items-start gap-2">
+                        <input
+                          type="checkbox"
+                          className="mt-1"
+                          disabled={!candidate.ok}
+                          checked={candidate.ok && selectedFunctions.has(candidate.functionName)}
+                          onChange={() => candidate.ok && toggleFunctionSelection(candidate.functionName)}
+                        />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-body font-semibold text-text-primary">{candidate.functionName}</p>
+                          {candidate.ok ? (
+                            candidate.parameters.length === 0 ? (
+                              <p className="mt-1 text-caption text-text-secondary">파라미터가 없습니다.</p>
+                            ) : (
+                              <ul className="mt-1 space-y-0.5">
+                                {candidate.parameters.map((p) => (
+                                  <li key={p.name} className="text-caption text-text-secondary">
+                                    <span className="font-medium text-text-primary">{p.name}</span>: {p.schemaType}
+                                    {" · "}
+                                    {p.required ? "필수" : "선택"}
+                                    {p.defaultIncluded && " · 기본값 있음"}
+                                  </li>
+                                ))}
+                              </ul>
+                            )
+                          ) : (
+                            <p className="mt-1 text-caption text-danger">등록 불가: {candidate.message}</p>
+                          )}
+                          {candidate.ok && candidate.warnings.length > 0 && (
+                            <ul className="mt-1 list-disc space-y-0.5 pl-4 text-caption text-warning">
+                              {candidate.warnings.map((w) => (
+                                <li key={w}>{w}</li>
+                              ))}
+                            </ul>
+                          )}
+                        </div>
+                      </label>
+                    </div>
+                  ))}
                 </div>
-                <div>
-                  <p className="text-caption font-semibold text-text-muted">버려진 정보(실행되지 않음)</p>
-                  <p className="mt-1 text-caption text-text-secondary">
-                    Docstring: {inspectResult.discarded.docstringPresent ? "있음(내용은 저장하지 않음)" : "없음"} · 본문 문장
-                    수: {inspectResult.discarded.bodyStatementCount} · 소스 실행: 안 함 · 소스 저장: 안 함
-                  </p>
-                </div>
-                {inspectResult.warnings.length > 0 && (
-                  <div>
-                    <p className="text-caption font-semibold text-warning">경고</p>
-                    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-caption text-warning">
-                      {inspectResult.warnings.map((w) => (
-                        <li key={w}>{w}</li>
-                      ))}
-                    </ul>
-                  </div>
+                {inspectResult.candidates.every((c) => !c.ok) && (
+                  <EmptyState
+                    title="등록 가능한 함수가 없습니다"
+                    description="위 사유를 확인해 파일을 고친 뒤 다시 선택하세요."
+                  />
                 )}
                 <NotASandboxNotice />
                 <label className="flex items-start gap-2 text-body text-text-primary">
@@ -435,7 +506,7 @@ export function LocalToolsScreen() {
                     checked={riskAcknowledged}
                     onChange={(e) => setRiskAcknowledged(e.target.checked)}
                   />
-                  <span>위 내용을 확인했으며, 이 Tool이 격리 없이 제 권한으로 실행된다는 것을 이해했습니다.</span>
+                  <span>위 내용을 확인했으며, 선택한 Tool들이 격리 없이 제 권한으로 실행된다는 것을 이해했습니다.</span>
                 </label>
                 {addError && <ErrorBanner message={addError} />}
                 <div className="flex justify-end gap-2">
@@ -445,9 +516,13 @@ export function LocalToolsScreen() {
                   <Button
                     variant="primary"
                     onClick={() => void confirmAdd()}
-                    disabled={!riskAcknowledged || addStep === "adding"}
+                    disabled={!riskAcknowledged || addStep === "adding" || selectedFunctions.size === 0}
                   >
-                    {addStep === "adding" ? "추가하는 중..." : "추가"}
+                    {addStep === "adding"
+                      ? "추가하는 중..."
+                      : selectedFunctions.size > 1
+                        ? `${selectedFunctions.size}개 추가`
+                        : "추가"}
                   </Button>
                 </div>
               </>
@@ -466,6 +541,19 @@ export function LocalToolsScreen() {
                 </div>
               </>
             )}
+          </div>
+        )}
+
+        {addStep === "done" && addReport && (
+          <div className="space-y-3">
+            <pre className="whitespace-pre-wrap rounded-lg border border-border bg-slate-50 px-3 py-2 text-caption text-text-primary">
+              {summarizeBulkAddResults(addReport)}
+            </pre>
+            <div className="flex justify-end">
+              <Button variant="primary" onClick={closeAddFlow}>
+                닫기
+              </Button>
+            </div>
           </div>
         )}
       </Modal>

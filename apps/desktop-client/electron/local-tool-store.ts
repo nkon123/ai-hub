@@ -45,6 +45,20 @@ export function hashLocalToolSource(source: string): string {
   return crypto.createHash("sha256").update(source, "utf-8").digest("hex");
 }
 
+// D-084 후속("@tool 데코레이터로 여러 Tool 등록") — 이름 충돌은 조용히
+// 넘어가지 않는다(Task Brief C). 이 검사를 `LocalToolStore.add()` 안에
+// 넣지 않은 것은 판단이다: 기존 회귀 테스트
+// (`local-tool-store.test.ts`의 "generates a distinct random id per tool")가
+// 같은 `toolName`으로 두 번 `add()`해도 둘 다 성공하는 것을 이미 고정하고
+// 있어, 저장소 자체를 이름-유일성 계층으로 바꾸면 그 테스트를 깨야 한다.
+// 대신 정책은 호출부(`electron/main.ts`의 `localTool:add` 핸들러)가 이
+// 순수 함수로 `store.add()` 호출 *전에* 판단한다 — 같은 파일에서 고른 여러
+// 함수를 순서대로 등록할 때, 앞서 이번 배치에서 이미 저장된 Tool과의 충돌도
+// (store를 다시 `list()`하므로) 자연히 함께 잡힌다.
+export function findToolNameConflict(existingTools: LocalTool[], toolName: string): LocalTool | null {
+  return existingTools.find((tool) => tool.toolName === toolName) ?? null;
+}
+
 interface LocalToolFile {
   tools: LocalTool[];
 }

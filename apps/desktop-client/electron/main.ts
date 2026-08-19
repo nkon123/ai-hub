@@ -35,8 +35,8 @@ import {
   unregisterInstalledLocalAgent,
   reconcileInstalledLocalAgentRegistrations,
 } from "./local-agent-registration";
-import { parseLocalToolSignature } from "./local-tool-signature";
-import { hashLocalToolSource, LocalToolStore } from "./local-tool-store";
+import { analyzeLocalToolFile, parseLocalToolSignature } from "./local-tool-signature";
+import { findToolNameConflict, hashLocalToolSource, LocalToolStore } from "./local-tool-store";
 import { invokeLocalTool as runInvokeLocalTool } from "./local-tool-runner";
 import { AppLogger } from "./app-logger";
 import { filterLogEntries } from "./log-filter";
@@ -77,8 +77,8 @@ import type {
   KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
   LocalTool,
+  LocalToolFileAnalysisResult,
   LocalToolInvocationResult,
-  LocalToolSignatureResult,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -1151,7 +1151,7 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "localTool:inspectFile",
-    async (_event, filePath: string): Promise<LocalToolSignatureResult> => {
+    async (_event, filePath: string): Promise<LocalToolFileAnalysisResult> => {
       let source: string;
       try {
         source = fs.readFileSync(filePath, "utf-8");
@@ -1162,7 +1162,11 @@ function registerIpcHandlers(): void {
           message: `파일을 읽을 수 없습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
         };
       }
-      return parseLocalToolSignature(source);
+      // `@tool`/`@mcp.tool`이 붙은 함수가 있으면 그 함수들 전부를, 없고
+      // 최상위 함수가 하나뿐이면 그 함수 하나를(기존 동작, 회귀 없음)
+      // 후보로 돌려준다. 데코레이터 없이 함수가 여럿이면 여기서 그대로
+      // `multiple_functions_found`로 거절된다.
+      return analyzeLocalToolFile(source);
     },
   );
 
@@ -1172,11 +1176,14 @@ function registerIpcHandlers(): void {
       _event,
       filePath: string,
       acknowledgedRisk: boolean,
+      functionName?: string,
     ): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> => {
       // 렌더러가 왕복시킨 Schema를 신뢰하지 않고 서버 측에서 파일을 다시
       // 읽어 다시 분석한다(Task Brief) — 그 사이 파일이 바뀌었거나 렌더러가
       // 조작된 값을 보냈더라도 실제로 저장되는 Schema는 항상 지금 이 순간의
-      // 파일 내용을 반영한다.
+      // 파일 내용을 반영한다. `functionName`을 생략하면 기존 단일-함수
+      // 동작 그대로다(회귀 없음) — `@tool`로 여러 함수를 등록할 때는
+      // 렌더러가 이 IPC를 함수마다 한 번씩, `functionName`을 채워서 호출한다.
       let source: string;
       try {
         source = fs.readFileSync(filePath, "utf-8");
@@ -1187,9 +1194,20 @@ function registerIpcHandlers(): void {
           error: `파일을 읽을 수 없습니다: ${err instanceof Error ? err.message : "알 수 없는 오류"}`,
         };
       }
-      const parsed = parseLocalToolSignature(source);
+      const parsed = parseLocalToolSignature(source, functionName);
       if (!parsed.ok) {
         return { ok: false, tool: null, error: parsed.message };
+      }
+      // 이름 충돌은 조용히 넘어가지 않는다(Task Brief C) — 같은 파일 내부의
+      // 다른 함수(이 배치에서 앞서 등록됨)든, 완전히 다른 파일에서 이미
+      // 등록된 Tool이든 상관없이 `toolName`이 겹치면 저장을 거부한다.
+      const conflict = findToolNameConflict(getLocalToolStore().list(), parsed.toolName);
+      if (conflict) {
+        return {
+          ok: false,
+          tool: null,
+          error: `이미 등록된 로컬 Tool 이름과 같습니다: '${parsed.toolName}' (파일: ${conflict.filePath}). 함수 이름을 바꾸거나 기존 Tool을 먼저 제거하세요.`,
+        };
       }
       const result = getLocalToolStore().add(
         {

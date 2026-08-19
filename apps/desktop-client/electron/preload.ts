@@ -31,8 +31,8 @@ import type {
   KnowledgeEmbedModelInfo,
   KnowledgeCandidate,
   LocalTool,
+  LocalToolFileAnalysisResult,
   LocalToolInvocationResult,
-  LocalToolSignatureResult,
   LogEntry,
   LogFilters,
   OllamaChatInput,
@@ -242,11 +242,15 @@ const bridge: DesktopBridge = {
   // --- D-084 "Desktop 로컬 Tool" ------------------------------------------------
   pickLocalToolFile: (): Promise<string | null> => ipcRenderer.invoke("localTool:pickFile"),
 
-  inspectLocalToolFile: (filePath: string): Promise<LocalToolSignatureResult> =>
+  inspectLocalToolFile: (filePath: string): Promise<LocalToolFileAnalysisResult> =>
     ipcRenderer.invoke("localTool:inspectFile", filePath),
 
-  addLocalTool: (filePath: string, acknowledgedRisk: boolean): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
-    ipcRenderer.invoke("localTool:add", filePath, acknowledgedRisk),
+  addLocalTool: (
+    filePath: string,
+    acknowledgedRisk: boolean,
+    functionName?: string,
+  ): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }> =>
+    ipcRenderer.invoke("localTool:add", filePath, acknowledgedRisk, functionName),
 
   listLocalTools: (): Promise<LocalTool[]> => ipcRenderer.invoke("localTool:list"),
 

@@ -13,7 +13,13 @@ import re
 from dataclasses import dataclass
 from typing import Any
 
-MAX_SOURCE_CHARS = 20_000
+# 20만 자(약 5천 줄). 실사용에서 `@tool` 여러 개가 든 파일이 옛 상한
+# 20,000자(약 500줄)에 걸렸다. 상한 자체는 유지한다 — 이 모듈은 `ast`
+# 파싱을 동기로 하므로 무제한이면 병적인 입력에 요청 스레드가 묶인다.
+# `apps/desktop-client/electron/local-tool-signature.ts`가 이 모듈의
+# 동작을 mirror 하므로 두 값은 같이 움직여야 한다(한쪽만 바꾸면
+# 같은 파일이 Portal 에서는 되고 Desktop 에서는 안 되는 식으로 갈린다).
+MAX_SOURCE_CHARS = 200_000
 MAX_PARAMETERS = 64
 _TOOL_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _IDENTITY_FIELDS = frozenset({"user", "role", "roles", "org", "organization_id"})

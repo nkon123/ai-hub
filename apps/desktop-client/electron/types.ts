@@ -591,6 +591,10 @@ export type LocalToolSignatureRefusalReason =
   | "unsupported_annotation"
   | "identity_parameter_forbidden"
   | "too_many_parameters"
+  /** `@tool`/`@mcp.tool`로 선택된 여러 함수 중 이름이 같은 것이 또 있을 때만
+   * 쓰인다(`LocalToolCandidateResult`) — 아래 단일 결과 타입에서는 절대
+   * 나오지 않는다. */
+  | "duplicate_function_name_in_file"
   /** fs 읽기 자체가 실패한 경우(파일이 이동/삭제/권한 문제) — 순수 파서
    * (`local-tool-signature.ts`)에는 없는, main process 전용 실패 사유. */
   | "file_unreadable";
@@ -613,6 +617,44 @@ export interface LocalToolSignatureSuccess {
 }
 
 export type LocalToolSignatureResult = LocalToolSignatureSuccess | LocalToolSignatureFailure;
+
+/** D-084 후속("@tool 데코레이터로 여러 Tool 등록") — 파일 하나에서 발견된
+ * 함수 하나에 대한 미리보기 결과. 성공/실패 모두 `functionName`을 담아
+ * 여러 후보를 화면에서 나란히 보여줄 수 있게 한다(`LocalToolSignatureFailure`
+ * 와 달리 이건 파일 전체가 아니라 함수 하나짜리 결과다). */
+export interface LocalToolCandidateSuccess {
+  ok: true;
+  functionName: string;
+  toolName: string;
+  inputSchema: Record<string, unknown>;
+  parameters: LocalToolParameterInfo[];
+  discarded: LocalToolDiscardedInfo;
+  warnings: string[];
+}
+
+export interface LocalToolCandidateFailure {
+  ok: false;
+  functionName: string;
+  reason: LocalToolSignatureRefusalReason;
+  message: string;
+}
+
+export type LocalToolCandidateResult = LocalToolCandidateSuccess | LocalToolCandidateFailure;
+
+/** `inspectLocalToolFile`의 반환 타입. `@tool`/`@mcp.tool`이 붙은 함수가
+ * 하나 이상 있으면 그 함수들 각각이 `candidates`에 담기고
+ * `selectedByDecorator: true`다. 데코레이터가 전혀 없고 최상위 함수가
+ * 정확히 하나면(기존 동작, 회귀 없음) 그 함수 하나만 담기고
+ * `selectedByDecorator: false`다. 데코레이터 없이 함수가 여럿이면 여전히
+ * `LocalToolSignatureFailure`(`reason: "multiple_functions_found"`)로 파일
+ * 전체가 거절된다 — 화면은 이 경우 후보 목록 없이 안내 문구만 보여준다. */
+export interface LocalToolFileAnalysisSuccess {
+  ok: true;
+  selectedByDecorator: boolean;
+  candidates: LocalToolCandidateResult[];
+}
+
+export type LocalToolFileAnalysisResult = LocalToolFileAnalysisSuccess | LocalToolSignatureFailure;
 
 /** D-084 후속 3 ("최초 한번만 승인") — a standing "skip the per-run dialog"
  * approval for one local tool, bound to the exact file CONTENT at approval
@@ -1458,13 +1500,25 @@ export interface DesktopBridge {
   pickLocalToolFile(): Promise<string | null>;
   /** 이미 고른 파일을 main process가 직접 읽어(fs) 정적 분석한다 — 실행하지
    * 않는다. 파일을 옮기거나 지운 경우 등 읽기 자체가 실패하면
-   * `reason: "file_unreadable"`을 돌려준다. */
-  inspectLocalToolFile(filePath: string): Promise<LocalToolSignatureResult>;
+   * `reason: "file_unreadable"`을 돌려준다. `@tool`/`@mcp.tool`이 붙은
+   * 함수가 하나 이상 있으면 그 함수들 전부를, 없고 최상위 함수가 하나뿐이면
+   * 그 함수 하나를(기존 동작, 회귀 없음) 후보로 돌려준다 — 데코레이터 없이
+   * 함수가 여럿이면 파일 전체가 `multiple_functions_found`로 거절된다. */
+  inspectLocalToolFile(filePath: string): Promise<LocalToolFileAnalysisResult>;
   /** 렌더러가 왕복시킨 Schema를 신뢰하지 않고 파일을 서버 측에서 다시
    * 분석한 뒤 저장한다. `acknowledgedRisk: true`가 아니면 저장 자체를
    * 거부한다(Task Brief 요구사항 3 — "격리되지 않음" 고지에 대한 구조적
-   * 강제, 체크박스만으로 우회할 수 없다). */
-  addLocalTool(filePath: string, acknowledgedRisk: boolean): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
+   * 강제, 체크박스만으로 우회할 수 없다). `functionName`을 생략하면 기존
+   * 동작 그대로(파일 안에 함수가 하나뿐일 때만 성공) 그 함수를 등록한다.
+   * `@tool` 등으로 여러 함수를 등록할 때는 `inspectLocalToolFile`이 돌려준
+   * 후보 각각의 `functionName`으로 이 메서드를 함수마다 한 번씩 호출한다 —
+   * 이름이 이미 등록된 다른 Tool(같은 파일의 앞선 호출 포함)과 겹치면
+   * 저장을 거부하고 `error`에 사유를 담는다(조용히 넘어가지 않는다). */
+  addLocalTool(
+    filePath: string,
+    acknowledgedRisk: boolean,
+    functionName?: string,
+  ): Promise<{ ok: boolean; tool: LocalTool | null; error: string | null }>;
   listLocalTools(): Promise<LocalTool[]>;
   removeLocalTool(id: string): Promise<{ ok: boolean; error: string | null }>;
   /** 매 호출은 렌더러의 명시적 확인 단계(파일 경로+인자 표시) 뒤에만

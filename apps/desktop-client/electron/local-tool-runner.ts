@@ -36,11 +36,58 @@ export const LOCAL_TOOL_MAX_OUTPUT_BYTES = 262_144; // 256 KiB
  * exactly one line of JSON to stdout describing the outcome. Every failure
  * mode (import error, missing function, bad args, non-serializable result)
  * is caught and turned into the `{"ok": false, ...}` shape instead of a raw
- * traceback on stderr. */
+ * traceback on stderr.
+ *
+ * Callable unwrapping (실사용 버그 — 'StructuredTool' object is not
+ * callable): a Tool/agent framework decorator (e.g. LangChain's `@tool`,
+ * which our `@tool`/`@mcp.tool` recognition in `local-tool-signature.ts`
+ * also accepts) commonly REPLACES the function object in the module
+ * namespace with a wrapper object (a `StructuredTool`, etc.) that isn't
+ * directly callable. `getattr(module, function_name)` then returns that
+ * wrapper, not the function our static analyzer parsed the signature of.
+ * `_resolve_callable` finds the thing to actually call, in order of
+ * preference:
+ *   1. `target` itself, if it's already callable — no change for the
+ *      common case of an undecorated function.
+ *   2. `target.func` — LangChain's `StructuredTool` stores the original
+ *      plain function here. Preferred over anything else because it is
+ *      EXACTLY the function `local-tool-signature.ts` parsed the
+ *      `def`/parameter list of, so what we validated and what actually
+ *      runs stay the same thing.
+ *   3. `target.__wrapped__` (the `functools.wraps` chain) or `target.fn`
+ *      (used by a couple of other lightweight tool-decorator libraries) —
+ *      same reasoning as `.func`, just a different attribute name.
+ *   4. `target.invoke` as an absolute last resort — called (not just
+ *      looked up) only in the actual execution step below. This is NOT
+ *      preferred because the framework's own `invoke()` does its own
+ *      validation/coercion of `args`, which can behave differently from
+ *      the exact signature our analyzer verified.
+ * Every step here is attribute lookup (`getattr` with a default) and a
+ * `callable()`/`hasattr()` check — no user code runs during resolution
+ * itself, only when the resolved callable (or `.invoke`) is finally
+ * invoked with `args`, exactly as before. If nothing usable is found, this
+ * raises `TypeError` naming the actual wrapper type instead of leaving the
+ * original opaque "'X' object is not callable" for the caller to puzzle
+ * out. */
 const BOOTSTRAP_SCRIPT = `
 import importlib.util
 import json
 import sys
+
+
+def _resolve_callable(target):
+    if callable(target):
+        return target, None
+    for attr in ("func", "__wrapped__", "fn"):
+        candidate = getattr(target, attr, None)
+        if candidate is not None and callable(candidate):
+            return candidate, None
+    if hasattr(target, "invoke"):
+        return None, "invoke"
+    raise TypeError(
+        "'" + type(target).__name__ + "' 객체를 호출할 수 없고 "
+        ".func/.__wrapped__/.fn/.invoke 도 찾지 못했습니다"
+    )
 
 
 def _main() -> None:
@@ -58,7 +105,11 @@ def _main() -> None:
         spec.loader.exec_module(module)
 
         target = getattr(module, function_name)
-        result = target(**args)
+        callable_target, fallback = _resolve_callable(target)
+        if fallback == "invoke":
+            result = target.invoke(args)
+        else:
+            result = callable_target(**args)
         try:
             json.dumps(result)
             payload = result

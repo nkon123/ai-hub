@@ -18,7 +18,17 @@
 // that scanner can't confidently classify is refused (`unsupported_annotation`
 // or similar), never guessed.
 
-export const MAX_SOURCE_CHARS = 20_000;
+// 20_000(~500줄)은 사내 실사용에서 너무 낮았다 — 실제 Tool 파일 하나에
+// `@tool` 함수 여러 개(각각 docstring/도우미 코드 포함)를 담기에 충분치
+// 않았다는 실사용 제보(Windows). 200_000자로 올린다: 이 스캐너는 동기
+// 텍스트 스캔(정규식/괄호 추적)이라 상한을 아예 없애면 병적인 입력이 UI를
+// 멈출 수 있으므로 상한 자체는 유지하되, 20만 자는 이 스캐너로도 여전히
+// 수십 ms 안에 끝나면서(정규식 스캔은 입력 길이에 선형) 현실적인 다중-Tool
+// 파일은 넉넉히 담는 값이다. `apps/portal-api/src/portal_api/python_signature.py`
+// 의 동일 상수(현재 20_000)도 이 값을 mirror해야 한다 — 그쪽은 M02 소유라
+// 이 모듈(M04)에서 바꾸지 않는다. 두 값이 갈라지면 이 저장소가 반복해서
+// 겪은 "mirror" drift(파일 상단 주석 참고)가 재현된다.
+export const MAX_SOURCE_CHARS = 200_000;
 export const MAX_PARAMETERS = 64;
 
 const TOOL_NAME_PATTERN = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -34,7 +44,11 @@ export type LocalToolSignatureRefusalReason =
   | "parameter_annotation_missing"
   | "unsupported_annotation"
   | "identity_parameter_forbidden"
-  | "too_many_parameters";
+  | "too_many_parameters"
+  /** `@tool`/`@mcp.tool`로 선택된 여러 함수 중 이름이 같은 것이 또 있을 때만
+   * 쓰인다(`analyzeLocalToolFile`) — `parseLocalToolSignature`의 단일 결과
+   * 경로에서는 절대 나오지 않는다. */
+  | "duplicate_function_name_in_file";
 
 export interface LocalToolSignatureFailure {
   ok: false;
@@ -367,6 +381,79 @@ function findTopLevelFunctions(source: string): RawFunctionDef[] {
   return results;
 }
 
+// ---------------------------------------------------------------------------
+// `@tool`/`@mcp.tool` decorator recognition (multi-function registration).
+//
+// Scope decision (Task Brief A/범위 밖 "데코레이터 인자 해석"): a decorator
+// is recognized by NAME only — bare `tool` (covers `from ... import tool as
+// tool`-style aliasing that leaves a simple name at the call site) or any
+// dotted path whose LAST segment is `tool` (covers `@mcp.tool`, `@server.tool`,
+// `@app.tool`, ... — the object before `.tool` is an arbitrary instance the
+// user's own code created, e.g. `mcp = FastMCP(...)`, so there is no single
+// fixed prefix to match on; matching the suffix is the confident, general
+// form of "dot notation" the Task Brief asks for). Call arguments
+// (`@mcp.tool(name="x")`) are scanned only to find where the decorator ENDS
+// (balanced-paren skip) — their contents are never parsed or evaluated, so
+// `name=...` never changes the registered tool name (always the function
+// name). Anything else — a decorator whose name doesn't end in `tool`, or
+// one whose call-parens don't balance (malformed/truncated source) — is not
+// treated as a tool decorator. Never guessed.
+// ---------------------------------------------------------------------------
+
+interface DecoratorMatch {
+  name: string;
+  startIndex: number;
+  endIndex: number;
+}
+
+function findTopLevelDecorators(source: string): DecoratorMatch[] {
+  const results: DecoratorMatch[] = [];
+  const decoratorRe = /^@\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)/gm;
+  let match: RegExpExecArray | null;
+  // eslint-disable-next-line no-cond-assign
+  while ((match = decoratorRe.exec(source)) !== null) {
+    const name = match[1];
+    let endIndex = match.index + match[0].length;
+    let i = endIndex;
+    while (i < source.length && (source[i] === " " || source[i] === "\t")) i += 1;
+    if (source[i] === "(") {
+      const balanced = extractBalancedParens(source, i);
+      // Unbalanced call parens: leave endIndex at the bare name so the gap
+      // before the next token is non-whitespace and this decorator fails
+      // the contiguity check below rather than being guessed at.
+      if (balanced) endIndex = balanced.endIndex + 1;
+    }
+    results.push({ name, startIndex: match.index, endIndex });
+  }
+  return results;
+}
+
+function isToolDecoratorName(name: string): boolean {
+  const parts = name.split(".");
+  return parts[parts.length - 1] === "tool";
+}
+
+/** Walks backward from `defStartIndex` collecting the contiguous run of
+ * decorators immediately above it (only whitespace/newlines between them —
+ * any other text breaks the chain). Order preserved top-to-bottom. */
+function collectDecoratorChain(source: string, decorators: DecoratorMatch[], defStartIndex: number): DecoratorMatch[] {
+  const before = decorators.filter((d) => d.endIndex <= defStartIndex);
+  const chain: DecoratorMatch[] = [];
+  let cursor = defStartIndex;
+  for (let i = before.length - 1; i >= 0; i -= 1) {
+    const d = before[i];
+    const gap = source.slice(d.endIndex, cursor);
+    if (!/^\s*$/.test(gap)) break;
+    chain.unshift(d);
+    cursor = d.startIndex;
+  }
+  return chain;
+}
+
+function isFunctionToolDecorated(source: string, decorators: DecoratorMatch[], defStartIndex: number): boolean {
+  return collectDecoratorChain(source, decorators, defStartIndex).some((d) => isToolDecoratorName(d.name));
+}
+
 function countDecorators(source: string, defStartIndex: number): number {
   const before = source.slice(0, defStartIndex);
   const lines = before.split("\n");
@@ -460,61 +547,37 @@ function parseParamList(paramsText: string): { ok: true; params: RawParam[] } | 
   return { ok: true, params };
 }
 
-/** Converts already-read Python source text into an MCP-Tool-shaped input
- * schema, or an explicit refusal. Never executes/imports/evals the source —
- * text/regex-based structural analysis only. */
-export function parseLocalToolSignature(source: string, requestedFunctionName?: string): LocalToolSignatureResult {
-  if (!source.trim()) {
-    return { ok: false, reason: "source_empty", message: "Python 함수 시그니처를 입력하세요." };
-  }
-  if (source.length > MAX_SOURCE_CHARS) {
-    return { ok: false, reason: "source_too_large", message: `입력은 ${MAX_SOURCE_CHARS.toLocaleString()}자 이하여야 합니다.` };
-  }
-
-  const functions = findTopLevelFunctions(source);
-  const candidates = functions.map((f) => f.name);
-  if (functions.length === 0) {
-    return { ok: false, reason: "function_not_found", message: "최상위 Python 함수(def 또는 async def)를 찾지 못했습니다." };
-  }
-
-  let selected: RawFunctionDef;
-  if (requestedFunctionName) {
-    const matches = functions.filter((f) => f.name === requestedFunctionName);
-    if (matches.length !== 1) {
-      return {
-        ok: false,
-        reason: "function_not_found",
-        message: `'${requestedFunctionName}' 함수를 찾지 못했습니다.`,
-        candidates,
-      };
-    }
-    selected = matches[0];
-  } else if (functions.length === 1) {
-    selected = functions[0];
-  } else {
+/** Per-function validation shared by `parseLocalToolSignature` (single,
+ * legacy-shaped result) and `analyzeLocalToolFile` (multi-candidate preview).
+ * Never returns `candidates` — that field only makes sense at the
+ * whole-file selection step, not per-function. */
+function buildFunctionCandidate(source: string, fn: RawFunctionDef): LocalToolCandidateResult {
+  if (!TOOL_NAME_PATTERN.test(fn.name)) {
     return {
       ok: false,
-      reason: "multiple_functions_found",
-      message: "최상위 함수가 여러 개입니다. 변환할 함수 하나만 남겨 다시 시도하세요.",
-      candidates,
+      functionName: fn.name,
+      reason: "function_name_invalid",
+      message: "함수 이름을 로컬 Tool 식별자로 사용할 수 없습니다.",
     };
   }
 
-  if (!TOOL_NAME_PATTERN.test(selected.name)) {
-    return { ok: false, reason: "function_name_invalid", message: "함수 이름을 로컬 Tool 식별자로 사용할 수 없습니다." };
-  }
-
-  const parsedParams = parseParamList(selected.paramsText);
+  const parsedParams = parseParamList(fn.paramsText);
   if (!parsedParams.ok) {
     return {
       ok: false,
+      functionName: fn.name,
       reason: "variadic_parameters_unsupported",
       message: "*args와 **kwargs는 입력 Schema로 변환할 수 없습니다.",
     };
   }
 
   if (parsedParams.params.length > MAX_PARAMETERS) {
-    return { ok: false, reason: "too_many_parameters", message: `파라미터는 최대 ${MAX_PARAMETERS}개까지 지원합니다.` };
+    return {
+      ok: false,
+      functionName: fn.name,
+      reason: "too_many_parameters",
+      message: `파라미터는 최대 ${MAX_PARAMETERS}개까지 지원합니다.`,
+    };
   }
 
   const properties: Record<string, unknown> = {};
@@ -526,6 +589,7 @@ export function parseLocalToolSignature(source: string, requestedFunctionName?: 
     if (IDENTITY_FIELDS.has(param.name.toLowerCase())) {
       return {
         ok: false,
+        functionName: fn.name,
         reason: "identity_parameter_forbidden",
         message: `'${param.name}'은 신원·권한 필드이므로 Tool 입력으로 선언할 수 없습니다. 신원은 이 Tool 실행 흐름에 주입되지 않습니다.`,
       };
@@ -533,6 +597,7 @@ export function parseLocalToolSignature(source: string, requestedFunctionName?: 
     if (param.annotationText === undefined) {
       return {
         ok: false,
+        functionName: fn.name,
         reason: "parameter_annotation_missing",
         message: "모든 파라미터에 타입 표기를 추가하세요. 타입을 추측해 Schema를 만들지 않습니다.",
       };
@@ -541,6 +606,7 @@ export function parseLocalToolSignature(source: string, requestedFunctionName?: 
     if (!annotation) {
       return {
         ok: false,
+        functionName: fn.name,
         reason: "unsupported_annotation",
         message: "지원하지 않는 타입 표기입니다. str/int/float/bool/list/dict/Optional/Union/Literal만 사용하세요.",
       };
@@ -569,13 +635,13 @@ export function parseLocalToolSignature(source: string, requestedFunctionName?: 
     });
   }
 
-  const { bodyStatementCount, docstringPresent } = analyzeBody(source, selected.colonIndex);
-  const decoratorCount = countDecorators(source, selected.defStartIndex);
+  const { bodyStatementCount, docstringPresent } = analyzeBody(source, fn.colonIndex);
+  const decoratorCount = countDecorators(source, fn.defStartIndex);
 
   return {
     ok: true,
-    functionName: selected.name,
-    toolName: selected.name,
+    functionName: fn.name,
+    toolName: fn.name,
     inputSchema: { type: "object", properties, required, additionalProperties: false },
     parameters,
     discarded: {
@@ -587,4 +653,167 @@ export function parseLocalToolSignature(source: string, requestedFunctionName?: 
     },
     warnings,
   };
+}
+
+/** Converts already-read Python source text into an MCP-Tool-shaped input
+ * schema, or an explicit refusal. Never executes/imports/evals the source —
+ * text/regex-based structural analysis only.
+ *
+ * Selects exactly one top-level function (by `requestedFunctionName`, or the
+ * sole function when there's only one) — unaware of `@tool`/`@mcp.tool`
+ * decorators, unchanged from before multi-function support existed. This is
+ * intentional: `electron/main.ts`'s `localTool:add` handler always knows
+ * which single function it's (re-)registering (either the caller picked one
+ * from `analyzeLocalToolFile`'s candidates, or there's exactly one function
+ * in the file), so it re-verifies with this single-function entry point
+ * rather than re-running decorator selection. */
+export function parseLocalToolSignature(source: string, requestedFunctionName?: string): LocalToolSignatureResult {
+  if (!source.trim()) {
+    return { ok: false, reason: "source_empty", message: "Python 함수 시그니처를 입력하세요." };
+  }
+  if (source.length > MAX_SOURCE_CHARS) {
+    return { ok: false, reason: "source_too_large", message: `입력은 ${MAX_SOURCE_CHARS.toLocaleString()}자 이하여야 합니다.` };
+  }
+
+  const functions = findTopLevelFunctions(source);
+  const candidateNames = functions.map((f) => f.name);
+  if (functions.length === 0) {
+    return { ok: false, reason: "function_not_found", message: "최상위 Python 함수(def 또는 async def)를 찾지 못했습니다." };
+  }
+
+  let selected: RawFunctionDef;
+  if (requestedFunctionName) {
+    const matches = functions.filter((f) => f.name === requestedFunctionName);
+    if (matches.length !== 1) {
+      return {
+        ok: false,
+        reason: "function_not_found",
+        message: `'${requestedFunctionName}' 함수를 찾지 못했습니다.`,
+        candidates: candidateNames,
+      };
+    }
+    selected = matches[0];
+  } else if (functions.length === 1) {
+    selected = functions[0];
+  } else {
+    return {
+      ok: false,
+      reason: "multiple_functions_found",
+      message:
+        "최상위 함수가 여러 개입니다. 각 함수 위에 @tool 또는 @mcp.tool을 붙이면 여러 개를 한 번에 등록할 수 있습니다. " +
+        "그렇지 않다면 변환할 함수 하나만 남겨 다시 시도하세요.",
+      candidates: candidateNames,
+    };
+  }
+
+  const result = buildFunctionCandidate(source, selected);
+  if (!result.ok) {
+    return { ok: false, reason: result.reason, message: result.message };
+  }
+  return {
+    ok: true,
+    functionName: result.functionName,
+    toolName: result.toolName,
+    inputSchema: result.inputSchema,
+    parameters: result.parameters,
+    discarded: result.discarded,
+    warnings: result.warnings,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-function preview/selection (Task Brief A/C/E) — the analysis the
+// LocalToolsScreen "review" step shows before any registration happens.
+// ---------------------------------------------------------------------------
+
+export interface LocalToolCandidateSuccess {
+  ok: true;
+  functionName: string;
+  toolName: string;
+  inputSchema: Record<string, unknown>;
+  parameters: LocalToolParameterInfo[];
+  discarded: LocalToolDiscardedInfo;
+  warnings: string[];
+}
+
+export interface LocalToolCandidateFailure {
+  ok: false;
+  functionName: string;
+  reason: LocalToolSignatureRefusalReason;
+  message: string;
+}
+
+export type LocalToolCandidateResult = LocalToolCandidateSuccess | LocalToolCandidateFailure;
+
+export interface LocalToolFileAnalysisSuccess {
+  ok: true;
+  /** `true`면 `@tool`/`@mcp.tool`로 선정된 후보(들)다(1개 이상). `false`면
+   * 데코레이터가 없고 최상위 함수가 정확히 하나뿐이라 그 함수 하나를
+   * (기존과 동일하게, 회귀 없이) 유일한 후보로 삼은 것이다. */
+  selectedByDecorator: boolean;
+  candidates: LocalToolCandidateResult[];
+}
+
+export type LocalToolFileAnalysisResult = LocalToolFileAnalysisSuccess | LocalToolSignatureFailure;
+
+/** Analyzes a whole file and returns every function that should be shown to
+ * the user for registration — one candidate per `@tool`/`@mcp.tool`-decorated
+ * function if any exist, or the single top-level function when there are no
+ * decorators and only one function (unchanged legacy behavior). Never
+ * executes the source. Duplicate function names among the selected
+ * candidates (rare, but two `def`s can share a name in the same file) are
+ * flagged individually as `duplicate_function_name_in_file` rather than
+ * silently validating both — see `local-tool-store.ts`'s `findToolNameConflict`
+ * for the complementary check against tools already registered from other
+ * files/earlier in this same batch. */
+export function analyzeLocalToolFile(source: string): LocalToolFileAnalysisResult {
+  if (!source.trim()) {
+    return { ok: false, reason: "source_empty", message: "Python 함수 시그니처를 입력하세요." };
+  }
+  if (source.length > MAX_SOURCE_CHARS) {
+    return { ok: false, reason: "source_too_large", message: `입력은 ${MAX_SOURCE_CHARS.toLocaleString()}자 이하여야 합니다.` };
+  }
+
+  const functions = findTopLevelFunctions(source);
+  if (functions.length === 0) {
+    return { ok: false, reason: "function_not_found", message: "최상위 Python 함수(def 또는 async def)를 찾지 못했습니다." };
+  }
+
+  const decorators = findTopLevelDecorators(source);
+  const decorated = functions.filter((f) => isFunctionToolDecorated(source, decorators, f.defStartIndex));
+
+  let selected: RawFunctionDef[];
+  let selectedByDecorator: boolean;
+  if (decorated.length > 0) {
+    selected = decorated;
+    selectedByDecorator = true;
+  } else if (functions.length === 1) {
+    selected = functions;
+    selectedByDecorator = false;
+  } else {
+    return {
+      ok: false,
+      reason: "multiple_functions_found",
+      message:
+        "최상위 함수가 여러 개입니다. 각 함수 위에 @tool 또는 @mcp.tool을 붙이면 여러 개를 한 번에 등록할 수 있습니다. " +
+        "그렇지 않다면 변환할 함수 하나만 남겨 다시 시도하세요.",
+      candidates: functions.map((f) => f.name),
+    };
+  }
+
+  const seenNames = new Set<string>();
+  const candidates: LocalToolCandidateResult[] = selected.map((fn) => {
+    if (seenNames.has(fn.name)) {
+      return {
+        ok: false,
+        functionName: fn.name,
+        reason: "duplicate_function_name_in_file",
+        message: `같은 이름의 함수가 이 파일에 여러 개 있습니다: '${fn.name}'. 각 함수가 서로 다른 이름이어야 각각 등록할 수 있습니다.`,
+      };
+    }
+    seenNames.add(fn.name);
+    return buildFunctionCandidate(source, fn);
+  });
+
+  return { ok: true, selectedByDecorator, candidates };
 }

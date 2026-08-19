@@ -1,7 +1,12 @@
 // D-084 "Desktop 로컬 Tool" — pure helpers for LocalToolsScreen.tsx (no
 // fs/electron/node imports), mirroring how chatTypes.ts/assetsTypes.ts keep
 // branching logic out of JSX so it can be unit-tested directly.
-import type { LocalTool, LocalToolInvocationResult, LocalToolParameterInfo } from "../../electron/types";
+import type {
+  LocalTool,
+  LocalToolCandidateResult,
+  LocalToolInvocationResult,
+  LocalToolParameterInfo,
+} from "../../electron/types";
 import { formatBytes } from "../format";
 
 export const NOT_A_SANDBOX_NOTICE =
@@ -223,4 +228,47 @@ export function formatArgsForConfirm(args: Record<string, unknown>): string {
   } catch {
     return String(args);
   }
+}
+
+// --- D-084 후속("@tool 데코레이터로 여러 Tool 등록") -------------------------
+// `analyzeLocalToolFile`(electron/local-tool-signature.ts)이 돌려준 후보
+// 목록을 화면의 "미리보기 -> 선택 -> 등록" 단계에서 다루기 위한 순수
+// 헬퍼들. 실제 IPC 왕복(`bridge.addLocalTool`을 함수마다 한 번씩 호출)은
+// 화면(LocalToolsScreen.tsx)이 하고, 여기서는 그 결과를 사람이 읽을 수
+// 있는 선택 기본값/요약으로만 바꾼다.
+
+/** 미리보기에서 기본으로 체크되는 함수 이름들 — 유효한(등록 가능한) 후보
+ * 전부다. 유효하지 않은 후보는 화면이 사유와 함께 보여주되 체크박스 자체를
+ * 비활성화한다(선택할 수 없는 것을 선택된 것처럼 보이게 하지 않는다). */
+export function defaultSelectedFunctionNames(candidates: LocalToolCandidateResult[]): string[] {
+  return candidates.filter((c): c is LocalToolCandidateResult & { ok: true } => c.ok).map((c) => c.functionName);
+}
+
+export interface LocalToolBulkAddOutcome {
+  functionName: string;
+  ok: boolean;
+  error?: string;
+}
+
+/** 여러 함수를 순서대로 `addLocalTool` 호출한 뒤의 결과를 사람이 읽을 수
+ * 있는 한 문단으로 요약한다 — 성공/실패를 하나로 뭉개지 않는다(Task Brief:
+ * 일부만 유효할 때 유효한 것은 등록하고 실패한 것은 함수명+사유로 보고). */
+export function summarizeBulkAddResults(results: LocalToolBulkAddOutcome[]): string {
+  const succeeded = results.filter((r) => r.ok);
+  const failed = results.filter((r) => !r.ok);
+  if (results.length === 0) return "선택된 함수가 없습니다.";
+  if (failed.length === 0) {
+    return results.length === 1
+      ? `'${results[0].functionName}'을(를) 로컬 Tool로 추가했습니다.`
+      : `${succeeded.length}개 함수를 각각 로컬 Tool로 추가했습니다: ${succeeded.map((r) => r.functionName).join(", ")}`;
+  }
+  const parts: string[] = [];
+  if (succeeded.length > 0) {
+    parts.push(`추가됨(${succeeded.length}개): ${succeeded.map((r) => r.functionName).join(", ")}`);
+  }
+  parts.push(
+    `추가 실패(${failed.length}개): ` +
+      failed.map((r) => `${r.functionName} — ${r.error ?? "알 수 없는 오류"}`).join(" / "),
+  );
+  return parts.join("\n");
 }

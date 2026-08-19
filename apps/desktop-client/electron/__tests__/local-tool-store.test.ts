@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { hashLocalToolSource, LocalToolStore, type AddLocalToolInput } from "../local-tool-store";
+import { findToolNameConflict, hashLocalToolSource, LocalToolStore, type AddLocalToolInput } from "../local-tool-store";
 
 let tmpDir: string;
 
@@ -168,6 +168,41 @@ describe("LocalToolStore", () => {
       expect(store.find("legacy-1")?.approval).toBeNull();
       expect(store.list()[0].approval).toBeNull();
     });
+  });
+});
+
+describe("findToolNameConflict", () => {
+  it("returns null when no existing tool has the given toolName", () => {
+    const store = new LocalToolStore(tmpDir);
+    const added = store.add(sampleInput({ toolName: "lookup" }), true);
+    expect(added.ok).toBe(true);
+    expect(findToolNameConflict(store.list(), "other")).toBeNull();
+  });
+
+  it("returns the conflicting tool when an existing tool already has the same toolName (cross-file conflict)", () => {
+    const store = new LocalToolStore(tmpDir);
+    const added = store.add(
+      sampleInput({ filePath: "/a.py", functionName: "lookup", toolName: "lookup" }),
+      true,
+    );
+    expect(added.ok).toBe(true);
+    const conflict = findToolNameConflict(store.list(), "lookup");
+    expect(conflict).not.toBeNull();
+    expect(conflict?.filePath).toBe("/a.py");
+  });
+
+  it("also catches a same-file conflict once the first function from a batch has been added", () => {
+    // Mirrors how `electron/main.ts`'s `localTool:add` handler registers
+    // several @tool-decorated functions from one file sequentially: after
+    // the first succeeds, a second candidate with the same functionName
+    // must be reported as a conflict against the store's current list()
+    // (which now includes the first), not silently accepted.
+    const store = new LocalToolStore(tmpDir);
+    const first = store.add(sampleInput({ filePath: "/dup.py", functionName: "dup", toolName: "dup" }), true);
+    expect(first.ok).toBe(true);
+    const conflict = findToolNameConflict(store.list(), "dup");
+    expect(conflict).not.toBeNull();
+    expect(conflict?.filePath).toBe("/dup.py");
   });
 });
 

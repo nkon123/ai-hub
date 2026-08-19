@@ -193,4 +193,134 @@ describe("real BOOTSTRAP_SCRIPT contract against python3/python (skips if unavai
     // findable via execFileSync too (defensive — same binary resolution).
     expect(() => execFileSync(python, ["--version"])).not.toThrow();
   });
+
+  // 실사용 버그 — 'StructuredTool' object is not callable: a `@tool`/
+  // `@mcp.tool` decorator commonly replaces the function object in the
+  // module namespace with an uncallable wrapper. These fixtures fake the
+  // SHAPE of that wrapper (a plain class with a `.func`/`.__wrapped__`/
+  // `.invoke` attribute) without installing LangChain itself (this repo is
+  // offline-first and doesn't add new Python dependencies for a test).
+  describe("callable unwrapping — decorator-wrapped targets", () => {
+    maybeIt("(a) an undecorated plain function still calls directly, unchanged (regression)", async () => {
+      const modulePath = path.join(tmpDir, "plain.py");
+      fs.writeFileSync(modulePath, "def add(a: int, b: int) -> int:\n    return a + b\n", "utf-8");
+      const result = await runLocalToolProcess({
+        interpreterPath: python as string,
+        modulePath,
+        functionName: "add",
+        args: { a: 1, b: 2 },
+        timeoutMs: 15_000,
+        maxOutputBytes: 65536,
+      });
+      expect(result).toEqual({ outcome: "success", result: 3 });
+    });
+
+    maybeIt("(b) unwraps a StructuredTool-shaped object via .func and calls the original function", async () => {
+      const modulePath = path.join(tmpDir, "structured_tool_like.py");
+      fs.writeFileSync(
+        modulePath,
+        [
+          "class FakeStructuredTool:",
+          "    def __init__(self, func):",
+          "        self.func = func",
+          "",
+          "def _add_impl(a: int, b: int) -> int:",
+          "    return a + b",
+          "",
+          "add = FakeStructuredTool(_add_impl)",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      const result = await runLocalToolProcess({
+        interpreterPath: python as string,
+        modulePath,
+        functionName: "add",
+        args: { a: 3, b: 4 },
+        timeoutMs: 15_000,
+        maxOutputBytes: 65536,
+      });
+      expect(result).toEqual({ outcome: "success", result: 7 });
+    });
+
+    maybeIt("unwraps via __wrapped__ when .func is absent (functools.wraps-style chain)", async () => {
+      const modulePath = path.join(tmpDir, "wrapped_like.py");
+      fs.writeFileSync(
+        modulePath,
+        [
+          "class FakeWrapped:",
+          "    def __init__(self, fn):",
+          "        self.__wrapped__ = fn",
+          "",
+          "def _mul_impl(a: int, b: int) -> int:",
+          "    return a * b",
+          "",
+          "mul = FakeWrapped(_mul_impl)",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      const result = await runLocalToolProcess({
+        interpreterPath: python as string,
+        modulePath,
+        functionName: "mul",
+        args: { a: 3, b: 4 },
+        timeoutMs: 15_000,
+        maxOutputBytes: 65536,
+      });
+      expect(result).toEqual({ outcome: "success", result: 12 });
+    });
+
+    maybeIt("falls back to .invoke(args) as a last resort when no plain function is found underneath", async () => {
+      const modulePath = path.join(tmpDir, "invoke_only.py");
+      fs.writeFileSync(
+        modulePath,
+        [
+          "class FakeInvokeOnlyTool:",
+          "    def invoke(self, args):",
+          "        return args['a'] + args['b']",
+          "",
+          "add = FakeInvokeOnlyTool()",
+          "",
+        ].join("\n"),
+        "utf-8",
+      );
+      const result = await runLocalToolProcess({
+        interpreterPath: python as string,
+        modulePath,
+        functionName: "add",
+        args: { a: 5, b: 6 },
+        timeoutMs: 15_000,
+        maxOutputBytes: 65536,
+      });
+      expect(result).toEqual({ outcome: "success", result: 11 });
+    });
+
+    maybeIt(
+      "(c) fails clearly with the actual type name when nothing callable/.func/.__wrapped__/.fn/.invoke is found",
+      async () => {
+        const modulePath = path.join(tmpDir, "opaque.py");
+        fs.writeFileSync(
+          modulePath,
+          ["class OpaqueThing:", "    pass", "", "add = OpaqueThing()", ""].join("\n"),
+          "utf-8",
+        );
+        const result = await runLocalToolProcess({
+          interpreterPath: python as string,
+          modulePath,
+          functionName: "add",
+          args: {},
+          timeoutMs: 15_000,
+          maxOutputBytes: 65536,
+        });
+        expect(result.outcome).toBe("function_error");
+        if (result.outcome === "function_error") {
+          expect(result.errorType).toBe("TypeError");
+          expect(result.errorMessage).toContain("OpaqueThing");
+          expect(result.errorMessage).toContain(".func");
+          expect(result.errorMessage).toContain(".invoke");
+        }
+      },
+    );
+  });
 });

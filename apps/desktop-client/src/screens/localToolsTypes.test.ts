@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
-import type { LocalTool, LocalToolInvocationResult } from "../../electron/types";
+import type { LocalTool, LocalToolCandidateResult, LocalToolInvocationResult } from "../../electron/types";
 import {
   buildLocalToolArgs,
+  defaultSelectedFunctionNames,
   describeMcpToolsNoticeForEmptyState,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
   parseLocalToolFieldValue,
+  summarizeBulkAddResults,
+  type LocalToolBulkAddOutcome,
 } from "./localToolsTypes";
 
 function tool(overrides: Partial<LocalTool> = {}): LocalTool {
@@ -155,5 +158,70 @@ describe("describeMcpToolsNoticeForEmptyState (D-080/D-084 혼동 정정)", () =
       installedNotConnectedCount: 1,
     });
     expect(notice).toContain("숫자 더하기");
+  });
+});
+
+function candidate(overrides: Partial<LocalToolCandidateResult> = {}): LocalToolCandidateResult {
+  const base = {
+    functionName: "f",
+    toolName: "f",
+    inputSchema: { type: "object", properties: {}, required: [], additionalProperties: false },
+    parameters: [],
+    discarded: { bodyStatementCount: 1, decoratorCount: 1, docstringPresent: false, sourceExecuted: false, sourcePersisted: false },
+    warnings: [],
+  };
+  return { ok: true, ...base, ...overrides } as LocalToolCandidateResult;
+}
+
+describe("defaultSelectedFunctionNames", () => {
+  it("selects every ok:true candidate and excludes failed ones", () => {
+    const candidates: LocalToolCandidateResult[] = [
+      candidate({ functionName: "a" }),
+      { ok: false, functionName: "b", reason: "parameter_annotation_missing", message: "..." },
+      candidate({ functionName: "c" }),
+    ];
+    expect(defaultSelectedFunctionNames(candidates)).toEqual(["a", "c"]);
+  });
+
+  it("returns an empty array when no candidate is valid", () => {
+    const candidates: LocalToolCandidateResult[] = [
+      { ok: false, functionName: "b", reason: "parameter_annotation_missing", message: "..." },
+    ];
+    expect(defaultSelectedFunctionNames(candidates)).toEqual([]);
+  });
+});
+
+describe("summarizeBulkAddResults", () => {
+  it("reports a single success without failure language", () => {
+    const results: LocalToolBulkAddOutcome[] = [{ functionName: "add", ok: true }];
+    const summary = summarizeBulkAddResults(results);
+    expect(summary).toContain("add");
+    expect(summary).not.toContain("실패");
+  });
+
+  it("reports all successes when every function registered", () => {
+    const results: LocalToolBulkAddOutcome[] = [
+      { functionName: "add", ok: true },
+      { functionName: "sub", ok: true },
+    ];
+    const summary = summarizeBulkAddResults(results);
+    expect(summary).toContain("add");
+    expect(summary).toContain("sub");
+    expect(summary).not.toContain("실패");
+  });
+
+  it("reports both succeeded and failed functions by name+reason when partial (never silently drops the failures)", () => {
+    const results: LocalToolBulkAddOutcome[] = [
+      { functionName: "add", ok: true },
+      { functionName: "dup", ok: false, error: "이미 등록된 로컬 Tool 이름과 같습니다: 'dup'" },
+    ];
+    const summary = summarizeBulkAddResults(results);
+    expect(summary).toContain("add");
+    expect(summary).toContain("dup");
+    expect(summary).toContain("이미 등록된");
+  });
+
+  it("returns a distinct message when nothing was selected", () => {
+    expect(summarizeBulkAddResults([])).not.toBe("");
   });
 });
