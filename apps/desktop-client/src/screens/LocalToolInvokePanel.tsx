@@ -195,13 +195,21 @@ export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRou
 /** 이미 확정된 로컬 Tool 선택(id/이름/검증된 args)을 실행한다. 승인은
  * 여전히 Main Process가 맡는다(위 모듈 docstring 2번) — 이 함수는 그 결과를
  * `onStart`/`onFinish` 콜백으로 부모에 알리기만 한다. 절대 throw하지
- * 않는다 — 실패는 `onFinish`로 전달되는 `display` 값으로 귀결된다. */
+ * 않는다 — 실패는 `onFinish`로 전달되는 `display` 값으로 귀결된다.
+ *
+ * 실사용 제보(2026-08-20) 후속 — `id`/`startedAt`을 생략하면(기존 동작)
+ * 새로 만든다. `ChatScreen.tsx`는 이제 라우팅을 시작하기 전에 이미 만든
+ * placeholder의 id/전송 시각을 넘겨, 이 항목이 그 placeholder와 정확히
+ * 같은 위치에서 이어지게 한다(질문이 두 번 그려지지 않게 하는 핵심 —
+ * `chatThreadMerge.ts` 참고). */
 export async function runResolvedLocalTool(params: {
   bridge: DesktopBridge;
   question: string;
   toolId: string;
   toolName: string;
   args: Record<string, unknown>;
+  id?: string;
+  startedAt?: string;
   onStart: (entry: LocalToolAutoRouteEntry) => void;
   onFinish: (
     id: string,
@@ -212,8 +220,8 @@ export async function runResolvedLocalTool(params: {
   ) => void;
 }): Promise<void> {
   const { bridge, question, toolId, toolName, args, onStart, onFinish } = params;
-  const id = crypto.randomUUID();
-  const startedAt = new Date().toISOString();
+  const id = params.id ?? crypto.randomUUID();
+  const startedAt = params.startedAt ?? new Date().toISOString();
   onStart({ id, question, toolName, args, startedAt, completedAt: null, display: null });
   const finish = (display: InvocationOutcomeDisplay) => onFinish(id, new Date().toISOString(), toolName, args, display);
 

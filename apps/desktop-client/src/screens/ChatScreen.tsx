@@ -20,7 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpenCheck, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, BookOpenCheck, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -93,6 +93,11 @@ import {
 import { RunDetailPanel } from "./RunDetailPanel";
 import { ConfirmationPanel } from "./ConfirmationPanel";
 import { getInstalledChatModels } from "./settingsTypes";
+// 실사용 제보(2026-08-20) — 전송 즉시 질문 말풍선을 스레드에 올리기 위한
+// placeholder 병합 순수 로직. `chatTypes.ts`/local-tool 어느 쪽 타입도
+// 모르는 제네릭 모듈이라(위 격리 원칙과 무관) 여기서 자유롭게 쓸 수 있다 —
+// `chatThreadMerge.ts` 모듈 docstring 참고.
+import { shouldShowPendingItem, type PendingThreadItem } from "./chatThreadMerge";
 // D-084 후속(로컬 Tool을 대화에서 실행) — 이 화면은 여기서만 로컬 Tool을
 // 다룬다. `../agentRuntime`/`./chatTypes`(Run을 시작하고 agent-runtime에
 // 보낼 Payload를 만드는 코드)는 로컬 Tool을 절대 참조하지 않는다 —
@@ -980,6 +985,16 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 때문이다.
   const [localToolRouteEntries, setLocalToolRouteEntries] = useState<LocalToolAutoRouteEntry[]>([]);
 
+  // 실사용 제보(2026-08-20) — "엔터를 눌러도 질문이 바로 안 올라간다".
+  // `handleSend`가 로컬/MCP Tool 통합 자동 라우팅을 먼저 기다린 뒤에야
+  // 질문을 스레드에 넣었기 때문이다(라우팅 상한 20초). 이제 `handleSend`는
+  // 라우팅을 시작하기 전에 이 placeholder부터 만든다 — 이번 턴이 결국
+  // "local"(localToolRouteEntries)/"mcp"·"none"(messages) 중 어디로 끝나든
+  // **같은 id**로 최종 항목이 만들어지고, 그 순간 이 placeholder는
+  // `shouldShowPendingItem`(chatThreadMerge.ts)에 의해 자동으로 가려진다 —
+  // 그래서 질문 말풍선이 두 번 그려지지 않는다(위 모듈 docstring 참고).
+  const [pendingSend, setPendingSend] = useState<(PendingThreadItem & { question: string }) | null>(null);
+
   // --- D06 대화 보존(Desktop 대화 고도화/멀티턴) — Electron에서는 Main
   // Process 저장소, browser-preview에서는 해당 브라우저의 localStorage를
   // 사용한다. 일반 브라우저 모드에서는 저장 브릿지가 없으므로 세션 내에서만
@@ -1063,17 +1078,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 요구 B — 내가 보낸 질문(messages에 즉시 push), 응답/스트리밍 델타
   // (`answer.delta`도 setMessages로 새 배열을 만든다), 로컬 Tool 실행
   // 결과(localToolEntries), 로컬 Tool 자동 라우팅 결과(localToolRouteEntries)
-  // 네 가지 모두 여기 의존성 배열에 있는 세 상태 중 하나를 갱신한다 — 즉
-  // 스레드에 그려지는 항목 종류(kind: "chat"/"localTool"/"localToolRoute")를
-  // 만드는 상태를 전부 구독하므로, 어느 한 종류만 갱신돼도 이 effect가
-  // 돈다. 다만 사용자가 위로 스크롤해 읽는 중이면(threadNearBottomRef가
+  // 네 가지 모두 여기 의존성 배열에 있는 상태 중 하나를 갱신한다 — 즉
+  // 스레드에 그려지는 항목 종류(kind: "chat"/"localTool"/"localToolRoute"/
+  // "pending")를 만드는 상태를 전부 구독하므로, 어느 한 종류만 갱신돼도 이
+  // effect가 돈다. 다만 사용자가 위로 스크롤해 읽는 중이면(threadNearBottomRef가
   // false) 절대 끌어내리지 않는다 — 이게 이 기능의 핵심 요구다.
+  // 실사용 제보(2026-08-20) 후속 — `pendingSend`도 여기 추가했다: 전송 즉시
+  // 질문이 올라가는 placeholder 항목 자체가 이 effect를 놓치면 "질문은
+  // 스레드 배열에 있지만 화면은 스크롤되지 않는" 상태가 된다.
   useEffect(() => {
     const el = threadScrollRef.current;
     if (!el) return;
     if (!threadNearBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [messages, localToolEntries, localToolRouteEntries]);
+  }, [messages, localToolEntries, localToolRouteEntries, pendingSend]);
 
   // 요구 C — 저장된 대화를 열거나("복원") 새 대화를 시작하면 항상 맨
   // 아래(가장 최근)에서 시작한다. 위 "바닥 근처일 때만" 규칙과 별개로 매번
@@ -1448,7 +1466,13 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   //     재발 방지는 여기서 "정상 답변으로 이어짐"으로 지켜진다 — 로컬
   //     Tool만 다루던 예전 구현처럼 별도의 "실행 안 함" 턴을 새로 만들지
   //     않는다(그 질문은 실제로 knowledge/ollama 답변을 받는다).
-  async function handleLocalToolAutoRoute(q: string): Promise<"local" | "mcp" | "none"> {
+  // 실사용 제보(2026-08-20) — `turn`은 handleSend가 라우팅을 시작하기 전에
+  // 이미 만들어 스레드에 올린 placeholder(id/startedAt/질문)다. "local"로
+  // 끝나면 그 id를 그대로 `LocalToolAutoRouteEntry`에 재사용해 placeholder가
+  // 정확히 그 최종 항목으로 이어지게 한다(같은 id -> `shouldShowPendingItem`이
+  // placeholder를 내린다, chatThreadMerge.ts) — 위치가 바뀌거나 질문이 두 번
+  // 그려지는 일이 없다.
+  async function handleLocalToolAutoRoute(q: string, turn: PendingThreadItem): Promise<"local" | "mcp" | "none"> {
     if (!bridge || !unifiedToolRouteActive) return "none";
     const candidates = buildUnifiedToolCandidates(
       registeredLocalTools.map((t) => ({
@@ -1470,10 +1494,9 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 
     // route.status === "ran_local" — 실제 로컬 실행(승인 대화상자 포함)은
     // `runResolvedLocalTool`이 맡는다(라우팅을 다시 하지 않는다 — 이미
-    // 위에서 검증된 toolId/args를 그대로 넘긴다).
-    setSendError(null);
-    setQuestion("");
-    setIsRunning(true);
+    // 위에서 검증된 toolId/args를 그대로 넘긴다). 질문/isRunning은 이미
+    // handleSend가 라우팅 시작 전에 처리했으므로 여기서 다시 건드리지
+    // 않는다 — placeholder -> 최종 항목 전환만 한다.
     try {
       await runResolvedLocalTool({
         bridge,
@@ -1481,7 +1504,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         toolId: route.toolId!,
         toolName: route.toolName!,
         args: route.args ?? {},
-        onStart: (entry) => setLocalToolRouteEntries((prev) => [...prev, entry]),
+        id: turn.id,
+        startedAt: turn.ts,
+        onStart: (entry) => {
+          setPendingSend(null);
+          setLocalToolRouteEntries((prev) => [...prev, entry]);
+        },
         onFinish: (entryId, completedAt, toolName, args, display) => {
           setLocalToolRouteEntries((prev) =>
             prev.map((e) => (e.id === entryId ? { ...e, completedAt, toolName, args, display } : e)),
@@ -1499,24 +1527,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     const q = (text ?? question).trim();
     if (!q || isRunning) return;
 
-    // D-089 후속(통합 Tool 라우팅) — 이 토글이 켜져 있으면 이번 턴 먼저
-    // 로컬 Tool + 연결된 MCP Tool 후보를 하나로 합쳐 라우팅을 한 번
-    // 시도한다(위 브리프 제약 A). "local"로 끝나면 agent-runtime을 전혀
-    // 거치지 않고 여기서 완결된다 — 아래 agent-runtime Run 생성 Payload와는
-    // 물리적으로 분리된 함수에서 끝난다(`electron/__tests__/local-tool-isolation.test.ts`의
-    // "the local-tool auto-route branch in handleSend returns before
-    // reaching startRun's payload" 검사가 이 return을 직접 고정한다).
-    // "mcp"로 끝나면 이번 턴만 아래 agent-runtime 경로를 강제한다(Task
-    // Brief D — 정적 토글이 아니라 이 턴의 판정 결과 하나로 결정).
-    let turnMcpToolRouteForced = false;
-    if (unifiedToolRouteActive) {
-      const outcome = await handleLocalToolAutoRoute(q);
-      if (outcome === "local") return;
-      if (outcome === "mcp") turnMcpToolRouteForced = true;
-      // outcome === "none" — 아무것도 선택되지 않았다. 아래로 그대로
-      // 흘러가 평소 대화(Knowledge/Ollama)로 이어진다.
-    }
-
+    // mcpDevActive/unifiedToolRouteActive는 서로 배타적이다(위
+    // unifiedToolRouteApplicable 계산 참고) — 이 검증은 라우팅과 무관한
+    // 순수 입력 검증이므로, 아래에서 질문을 스레드에 올리기 전에 먼저
+    // 끝낸다. 여기서 실패하면 placeholder를 만들지 않고 그대로 돌아간다 —
+    // "보냈다는 착각"을 주지 않는다.
     if (
       bridge &&
       mcpDevActive &&
@@ -1529,9 +1544,41 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       return;
     }
 
+    // 실사용 제보(2026-08-20) 요구 A — 질문은 전송 즉시(어떤 비동기 작업보다
+    // 먼저) 화면에 올라간다. 이 턴이 결국 로컬 Tool 자동 실행/MCP 라우팅/
+    // 일반 대화 중 어디로 끝날지는 아직 모르지만, 최종 항목이 무엇이 되든
+    // 아래에서 이 **같은 id/startedAt**을 그대로 재사용한다 — 그래야
+    // placeholder가 정확히 그 최종 항목으로 이어지고 두 번 그려지지 않는다
+    // (`chatThreadMerge.ts`, 요구 B).
     setSendError(null);
     setQuestion("");
     const id = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    setPendingSend({ id, ts: startedAt, question: q });
+    setIsRunning(true);
+
+    // D-089 후속(통합 Tool 라우팅) — 이 토글이 켜져 있으면 이번 턴 먼저
+    // 로컬 Tool + 연결된 MCP Tool 후보를 하나로 합쳐 라우팅을 한 번
+    // 시도한다(위 브리프 제약 A). "local"로 끝나면 agent-runtime을 전혀
+    // 거치지 않고 여기서 완결된다 — 아래 agent-runtime Run 생성 Payload와는
+    // 물리적으로 분리된 함수에서 끝난다(`electron/__tests__/local-tool-isolation.test.ts`의
+    // "the local-tool auto-route branch in handleSend returns before
+    // reaching startRun's payload" 검사가 이 return을 직접 고정한다).
+    // "mcp"로 끝나면 이번 턴만 아래 agent-runtime 경로를 강제한다(Task
+    // Brief D — 정적 토글이 아니라 이 턴의 판정 결과 하나로 결정). 라우팅
+    // 자체가 최대 20초 걸릴 수 있으므로(요구 C) `isRunning`이 이미 켜져
+    // 있어 입력창이 잠기고, placeholder 카드가 "확인 중" 표시를 보여준다.
+    let turnMcpToolRouteForced = false;
+    if (unifiedToolRouteActive) {
+      const outcome = await handleLocalToolAutoRoute(q, { id, ts: startedAt });
+      if (outcome === "local") return;
+      if (outcome === "mcp") turnMcpToolRouteForced = true;
+      // outcome === "none" — 아무것도 선택되지 않았다. 아래로 그대로
+      // 흘러가 평소 대화(Knowledge/Ollama)로 이어진다. placeholder는 아직
+      // 그대로 떠 있다 — 바로 아래에서 같은 id로 ChatMessage를 만들 때
+      // 내려간다.
+    }
+
     // D-083: turnMcpToolRouteForced는 명시적 Tool 요청 없이도(agentRuntime.ts에
     // `mcpTool`을 전혀 넘기지 않는다) agent-runtime을 거쳐야 한다 — Ollama
     // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다. D-034 해석 경로
@@ -1595,7 +1642,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       pendingConfirmation: null,
       runId: null,
       traceId: null,
-      startedAt: new Date().toISOString(),
+      // placeholder(pendingSend)가 만들어질 때 쓴 것과 같은 시각 — 아래
+      // setMessages와 setPendingSend(null)이 같은 렌더 배치 안에서 일어나
+      // placeholder가 정확히 이 항목으로 이어지게 한다(요구 B).
+      startedAt,
       completedAt: null,
       serverRun: null,
       hubQueriesSent: [],
@@ -1608,8 +1658,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       mcpToolCallUsed,
       toolExecutions: [],
     };
+    // placeholder를 내리고 최종 항목을 올린다 — 같은 id라 이 시점부터
+    // `shouldShowPendingItem`이 placeholder를 자동으로 감춘다(요구 B).
+    // `isRunning`은 handleSend 시작부에서 이미 켜 뒀다(요구 C).
+    setPendingSend(null);
     setMessages((prev) => [...prev, newMessage]);
-    setIsRunning(true);
 
     try {
       if (ollamaOnly) {
@@ -2314,7 +2367,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               onScroll={handleThreadScroll}
               className="flex-1 space-y-5 overflow-y-auto pr-1"
             >
-              {messages.length === 0 && localToolEntries.length === 0 && localToolRouteEntries.length === 0 && (
+              {messages.length === 0 &&
+                localToolEntries.length === 0 &&
+                localToolRouteEntries.length === 0 &&
+                !pendingSend && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                   <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">
                     <Bot size={22} aria-hidden="true" />
@@ -2332,20 +2388,44 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   순서로 섞어 그린다(둘 다 "대화창에서 일어난 일"이지만, 카드
                   자체는 아래에서 절대 같은 모양으로 그리지 않는다).
                   `showContextLabel` 계산은 로컬 Tool 항목과 무관하게 기존과
-                  동일한 `messages` 배열 순서를 그대로 쓴다. */}
+                  동일한 `messages` 배열 순서를 그대로 쓴다.
+                  실사용 제보(2026-08-20) 후속 — "pending" 종류가 추가됐다:
+                  전송 직후 아직 로컬/MCP/일반 대화 중 무엇으로 끝날지 모르는
+                  질문의 placeholder다. `shouldShowPendingItem`(chatThreadMerge.ts)이
+                  이번 턴의 최종 항목(같은 id의 message 또는
+                  localToolRouteEntry)이 이미 있으면 이 목록에서 제외해,
+                  질문이 두 번 그려지지 않게 한다. */}
               {(
                 [
                   ...messages.map((m) => ({ kind: "chat" as const, ts: m.startedAt, message: m })),
                   ...localToolEntries.map((e) => ({ kind: "localTool" as const, ts: e.startedAt, entry: e })),
                   ...localToolRouteEntries.map((e) => ({ kind: "localToolRoute" as const, ts: e.startedAt, entry: e })),
+                  ...(shouldShowPendingItem(pendingSend, [...messages, ...localToolRouteEntries])
+                    ? [{ kind: "pending" as const, ts: pendingSend.ts, id: pendingSend.id, question: pendingSend.question }]
+                    : []),
                 ] as Array<
                   | { kind: "chat"; ts: string; message: ChatMessage }
                   | { kind: "localTool"; ts: string; entry: LocalToolChatEntry }
                   | { kind: "localToolRoute"; ts: string; entry: LocalToolAutoRouteEntry }
+                  | { kind: "pending"; ts: string; id: string; question: string }
                 >
               )
                 .sort((a, b) => a.ts.localeCompare(b.ts))
                 .map((item) => {
+                  if (item.kind === "pending") {
+                    // 요구 A/C — 라우팅 결과를 기다리는 동안 질문 말풍선만
+                    // 먼저 보이고, 그 아래 "확인 중" 표시로 진행 중임을
+                    // 알린다(정상 상태 상시 배너가 아니라 이번 턴에 한해서만
+                    // 보이는 표시 — 2026-08-14 D06 정리 원칙).
+                    return (
+                      <div key={item.id} className="space-y-2">
+                        <QuestionBubble text={item.question} />
+                        <p className="flex items-center gap-1.5 text-caption text-text-muted">
+                          <Loader2 size={13} className="animate-spin" /> 어떤 방식으로 답할지 확인하는 중...
+                        </p>
+                      </div>
+                    );
+                  }
                   if (item.kind === "localTool") {
                     return <LocalToolChatEntryCard key={item.entry.id} entry={item.entry} />;
                   }
@@ -2353,19 +2433,17 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     // 실사용 제보(2026-08-20) — 자동 라우팅도 대화의 일부다:
                     // "Tool을 자동으로 골랐다"는 실행 방식의 차이일 뿐, 사용자가
                     // 입력한 질문 자체가 대화가 아닌 것은 아니다. 일반 턴과
-                    // 동일한 질문 말풍선(`ChatTurn`의 것과 같은 스타일)을 이
-                    // 카드 바로 위에 붙여, 질문과 결과가 시간순으로 붙어
-                    // 보이게 한다 — `ChatMessage`로 승격하지 않고 카드는
-                    // 그대로 둔 이유는 이 항목이 "Tool 검토 대상"이라는 시각적
-                    // 신호(대시 테두리 + AI 자동 선택 배지)를 잃으면 안 되기
-                    // 때문이다(위 LocalToolAutoRouteEntryCard 문서 참고) —
-                    // 정상 대화 답변과 같은 모양으로 보이면 검토되지 않은
-                    // 실행 결과를 검증된 답변처럼 오해할 수 있다.
+                    // 동일한 질문 말풍선(`QuestionBubble`)을 이 카드 바로
+                    // 위에 붙여, 질문과 결과가 시간순으로 붙어 보이게 한다 —
+                    // `ChatMessage`로 승격하지 않고 카드는 그대로 둔 이유는
+                    // 이 항목이 "Tool 검토 대상"이라는 시각적 신호(대시
+                    // 테두리 + AI 자동 선택 배지)를 잃으면 안 되기 때문이다
+                    // (위 LocalToolAutoRouteEntryCard 문서 참고) — 정상 대화
+                    // 답변과 같은 모양으로 보이면 검토되지 않은 실행 결과를
+                    // 검증된 답변처럼 오해할 수 있다.
                     return (
                       <div key={item.entry.id} className="space-y-2">
-                        <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
-                          {item.entry.question}
-                        </div>
+                        <QuestionBubble text={item.entry.question} />
                         <LocalToolAutoRouteEntryCard entry={item.entry} />
                       </div>
                     );
@@ -2704,6 +2782,19 @@ function turnContextTitle(message: ChatMessage): string | undefined {
   return parts.length > 0 ? parts.join(" · ") : undefined;
 }
 
+// 실사용 제보(2026-08-20) 후속 — 질문 말풍선을 그리는 자리가 이제 셋이다
+// (일반 대화 턴/자동 라우팅 카드/전송 직후 placeholder). 소유자는 여전히
+// 셋으로 나뉘어 있지만(D-084 구조적 격리 때문에 하나의 상태로 합칠 수
+// 없다 — 이 화면 상단 import 주석 참고), 적어도 "어떻게 그리는지"는 이
+// 컴포넌트 하나로 통일해 셋이 서로 다른 모양으로 갈라지지 않게 한다.
+function QuestionBubble({ text }: { text: string }) {
+  return (
+    <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
+      {text}
+    </div>
+  );
+}
+
 function ChatTurn({
   message,
   showContextLabel,
@@ -2747,10 +2838,7 @@ function ChatTurn({
         </p>
       )}
 
-      {/* 짧은 질문이 가로로 늘어나지 않도록 내용 너비(w-fit)로 둔다. */}
-      <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
-        {message.question}
-      </div>
+      <QuestionBubble text={message.question} />
 
       <div className="max-w-[90%] space-y-2">
         {/* 단계 표시는 실행 중일 때만 — 끝난 턴에서 5개 배지가 계속 남아 있을
