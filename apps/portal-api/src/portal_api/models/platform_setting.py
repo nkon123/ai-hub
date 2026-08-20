@@ -1,14 +1,15 @@
-"""PlatformSetting model — M02, P15 관리자 설정의 유일한 편집 가능 하위 영역
-(open-decisions.md D-065 UPDATE).
+"""PlatformSetting model — M02, P15 관리자 설정의 편집 가능 하위 영역들
+(open-decisions.md D-065 UPDATE, D-092).
 
 A small generic key/value table, not a dedicated single-purpose table like
 `AssetVersionRevocation` — deliberately, because P15's storage gap (D-065)
-is not specific to this one setting: it is any small admin-configurable
+is not specific to any one setting: it is any small admin-configurable
 scalar that doesn't warrant its own migration + model + router wiring on its
-own. The first (and today, only) key stored here is
-`portal_api.platform_settings.INDEXING_EMBED_MODEL_KEY` — see that module
-for the read/write helpers and `routers/admin.py` for the endpoints. Adding
-a second setting later means adding a new key constant, not a new table.
+own. Keys stored here today are `portal_api.platform_settings.
+INDEXING_EMBED_MODEL_KEY`(D-065 UPDATE/D-075) and `CHAT_MODEL_KEY`(D-092) —
+see that module for the read/write helpers and `routers/admin.py` for the
+endpoints. Adding another setting later means adding a new key constant, not
+a new table.
 
 Every write is attributed (`updated_by_user_id`) and trace-correlated
 (`trace_id`, CLAUDE.md 원칙 9) — this is a real operational knob (D-075: the

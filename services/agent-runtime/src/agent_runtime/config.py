@@ -200,7 +200,45 @@ class AgentRuntimeSettings(BaseSettings):
     # `/api/tags`로 설치된 모델 중 자동 선택하는 것과 달리, 여기서 조용히
     # 다른 모델로 바뀌면 답변 품질/성격이 말없이 달라진다(이 저장소 원칙:
     # 모르면 추측하지 말고 정직하게 실패한다). open-decisions.md 참고.
+    #
+    # D-092 (2026-08-20): 이 값은 더 이상 채팅 모델을 바꾸는 "유일한" 수단이
+    # 아니다 — Portal 관리자 화면(P15)에서 저장한 설정
+    # (`chat_model_setting_cache.get_chat_model_setting_cache`, portal-api의
+    # `GET /api/v1/admin/chat-model-setting`)이 이 값보다 우선한다. 최종
+    # 우선순위: Portal 설정 > 이 값(`AGENT_RUNTIME_CHAT_MODEL_ID`) >
+    # office-profile.json. Portal 설정이 비어 있으면(`configured_model:
+    # null`) 이 값이 여전히 그대로 적용된다 — 이 필드 자체의 동작은 바뀌지
+    # 않았다.
     chat_model_id_override: str | None = None
+
+    # D-092: portal-api가 소유한 Ollama 엔드포인트가 아니라 이 서비스가
+    # 직접 Ollama와 통신하는 모든 경로(채팅 완성 `adapters/ollama.py`,
+    # `GET /local/v1/models` 모델 목록 조회 `ollama_models.py`)가 공유하는
+    # 기본 엔드포인트. office-profile.json의 각 model_alias에도 자체
+    # `endpoint` 필드가 있지만(현재는 둘 다 동일한 값), `/local/v1/models`는
+    # 특정 alias에 종속되지 않은 "이 배포에서 Ollama가 어디 있는가"라는
+    # 별도 질문이라 자체 설정값을 둔다 — indexing-runtime의
+    # `embedders.OLLAMA_ENDPOINT`(모듈 상수)와 같은 역할이지만, 이 파일의
+    # 기존 규율(CORS 하드코딩 사고, 위 참고)에 따라 상수가 아니라 설정으로
+    # 둔다.
+    ollama_endpoint: str = "http://127.0.0.1:11434"
+
+    # D-092: Portal 관리자 화면(P15)의 채팅 모델 설정을 이 런타임이 매 LLM
+    # 호출/모델 목록 조회마다 portal-api에 물어보면 portal-api 지연이 모든
+    # 채팅 응답의 임계 경로에 들어가고, portal-api 장애가 곧 채팅 장애가
+    # 된다 — D-092가 명시적으로 금지한 결합이다. 이 TTL(초) 동안은
+    # `chat_model_setting_cache.ChatModelSettingCache`가 portal-api를 다시
+    # 부르지 않고 마지막으로 알려진 값을 그대로 쓴다. 설정을 Portal에서
+    # 바꿔도 이 TTL이 지나기 전까지는(그리고 이미 시작된 Run에는, TTL과
+    # 무관하게) 반영되지 않는다 — open-decisions.md D-092의 남은 결정
+    # 항목.
+    chat_model_setting_cache_ttl_seconds: float = 30.0
+    # `HttpChatModelSettingResolver`가 portal-api를 호출할 때 쓰는 타임아웃
+    # — `query_rewrite_timeout_seconds`와 같은 역할: portal-api가 느리게
+    # 응답해도 이 런타임의 요청이 무한정 걸리지 않게 한다. 타임아웃이든
+    # 다른 어떤 실패든 `ChatModelSettingCache`가 잡아 마지막으로 알려진
+    # 값으로 계속 돈다(예외를 절대 호출자에게 흘리지 않는다).
+    chat_model_setting_timeout_seconds: float = 5.0
 
     # D-034 해석 경로 4 (`local_agent_registry.py`): registration table that
     # turns a Desktop-installed Agent Package into a runnable local

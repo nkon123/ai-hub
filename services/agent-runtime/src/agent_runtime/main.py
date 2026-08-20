@@ -18,7 +18,14 @@ from observability import configure_logging
 
 from agent_runtime import manifests
 from agent_runtime.config import settings
-from agent_runtime.routers import chat, knowledge_metadata_suggest, local_agents, mcp_tools, runs
+from agent_runtime.routers import (
+    chat,
+    knowledge_metadata_suggest,
+    local_agents,
+    mcp_tools,
+    models,
+    runs,
+)
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
 # for why a plain logging.basicConfig() call is not sufficient under uvicorn
@@ -93,6 +100,7 @@ app.include_router(runs.router, prefix="/local/v1")
 app.include_router(mcp_tools.router, prefix="/local/v1")
 app.include_router(local_agents.router, prefix="/local/v1")
 app.include_router(knowledge_metadata_suggest.router, prefix="/local/v1")
+app.include_router(models.router, prefix="/local/v1")
 app.include_router(chat.router, prefix="/chat-api/v1")
 
 # `/local/v1/services*` is out of scope for this phase — M02 Registry (Agent/

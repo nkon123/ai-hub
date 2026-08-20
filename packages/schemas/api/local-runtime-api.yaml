@@ -261,6 +261,34 @@ paths:
             override — this is distinguishable only via `message` text, not
             a separate error code.
 
+  /local/v1/models:
+    get:
+      summary: >
+        List installed Ollama chat models, and report which model_id
+        `default-chat` actually resolves to right now (D-092,
+        open-decisions.md). Mirrors indexing-runtime's
+        `GET /indexing/v1/models` response shape (embedding models) exactly,
+        with chat-specific field names — portal-api's admin screen (P15)
+        calls this endpoint over HTTP rather than talking to Ollama itself
+        (root CLAUDE.md: "Portal API는 모델을 직접 호출하지 않는다"), since
+        this service already owns the Ollama relationship for chat
+        completions.
+      operationId: list_chat_models
+      responses:
+        "200":
+          description: >
+            OK. `models: []` means Ollama answered but has zero models
+            installed — a real, different state from the 503 below, and
+            callers must not collapse the two.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatModelsResponse"
+        "503":
+          description: >
+            MODEL_UNAVAILABLE — Ollama itself could not be reached (distinct
+            from "reached it, zero models installed", the 200 case above).
+
 components:
   parameters:
     ServiceId:
@@ -713,5 +741,57 @@ components:
             instruction.
         suggested_description:
           type: string
+        trace_id:
+          type: string
+
+    ChatModelInfo:
+      type: object
+      required: [name, chat_capable]
+      properties:
+        name:
+          type: string
+          description: Ollama model name/tag as returned by `/api/tags` (e.g. `exaone3.5:7.8b`).
+        chat_capable:
+          type: boolean
+          description: >
+            Best-effort naming-convention heuristic (see
+            `agent_runtime.ollama_models.is_chat_capable`'s docstring for the
+            exact rule and its known false-positive/negative shape) —
+            `false` only for models that look like a well-known
+            embedding-only naming convention (e.g. `qwen3-embedding:0.6b`).
+            A display hint to steer an operator away from an obviously-wrong
+            pick; NEVER used to filter `models` — an uncertain model is
+            still listed.
+        size:
+          type: integer
+          nullable: true
+        modified_at:
+          type: string
+          nullable: true
+
+    ChatModelsResponse:
+      type: object
+      required: [models, default_chat_model, source, trace_id]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatModelInfo"
+          description: >
+            May be an empty array — Ollama reachable but zero models
+            installed, a real and different state from the 503
+            MODEL_UNAVAILABLE response (Ollama unreachable). Callers must
+            not render these two states identically.
+        default_chat_model:
+          type: string
+          nullable: true
+          description: >
+            The `model_id` `default-chat` actually resolves to right now
+            (D-092 priority: Portal admin setting >
+            `AGENT_RUNTIME_CHAT_MODEL_ID` > office-profile.json) — never a
+            value that isn't really in effect.
+        source:
+          type: string
+          description: The Ollama endpoint URL this list came from (e.g. `http://127.0.0.1:11434/api/tags`).
         trace_id:
           type: string

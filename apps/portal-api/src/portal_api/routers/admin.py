@@ -19,17 +19,36 @@ indexing embedding model (`_build_indexing_embedding_model`,
 storage (`portal_api.platform_settings`, a `platform_settings` table added
 specifically for this) and portal-api's own `_trigger_indexing`
 (`routers/assets.py`) actually reads the value back and forwards it to
-indexing-runtime. Every other section in this file remains read-only for
-the same reason as before — this is not a general precedent for adding more
-editable forms without storage.
+indexing-runtime.
 
-ADMIN only. Reads use `Permission.ADMIN_SETTINGS_READ`; the one write uses
-a separate `Permission.ADMIN_SETTINGS_WRITE` so its denial audit event name
-is distinguishable. A denial is recorded as a DENIED `AuditEvent` by
+**UPDATE (D-092): a second sub-area is now editable** — the chat model
+(`_build_chat_model_section`, `list_chat_models`, `set_chat_model` below),
+built by cloning this exact structure: model list comes from the service
+that actually owns the Ollama relationship (agent-runtime's
+`GET /local/v1/models`, portal-api never calls Ollama directly per root
+CLAUDE.md), storage is the same `platform_settings` table under a different
+key (`CHAT_MODEL_KEY`), and a model not reported as `chat_capable` is
+rejected outright — the same D-091-shaped incident (a model configured but
+not installed, discovered only when a run fails) is what this closes for
+chat. `GET /chat-model-setting` is the one endpoint in this pair that is
+NOT for the admin screen — agent-runtime calls it server-to-server to
+resolve which model to use, so it intentionally does not require
+`Permission.ADMIN_SETTINGS_READ` (agent-runtime authenticates with its own
+`portal_api_token`, default `dev-user-token` = role CREATOR, which does not
+carry that permission — see that endpoint's docstring). Every other section
+in this file remains read-only for the same reason as before — this is not
+a general precedent for adding more editable forms without storage.
+
+ADMIN only for the admin-screen endpoints. Reads use
+`Permission.ADMIN_SETTINGS_READ`; each write uses a separate
+`Permission.ADMIN_SETTINGS_WRITE` so its denial audit event name is
+distinguishable. A denial is recorded as a DENIED `AuditEvent` by
 `rbac.require_permission`, same as every other endpoint. A *successful*
 read is not separately audited (mirrors `list_audit_events`), but a
-*successful write* to the embedding model setting is (a real state change,
-unlike every read-only section here).
+*successful write* to the embedding model or chat model setting is (a real
+state change, unlike every read-only section here). The one exception is
+`GET /chat-model-setting`, which is not ADMIN-gated at all — see its own
+docstring.
 """
 
 from __future__ import annotations
@@ -64,12 +83,22 @@ from portal_api.config import settings
 from portal_api.database import get_db
 from portal_api.errors import error_response
 from portal_api.models import PlatformSetting
-from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting, set_setting
+from portal_api.platform_settings import (
+    CHAT_MODEL_KEY,
+    INDEXING_EMBED_MODEL_KEY,
+    get_setting,
+    set_setting,
+)
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AdminSettingsOut,
     ApprovalWorkflowSectionOut,
     AssetSizeExtensionPolicySectionOut,
+    ChatModelInfoOut,
+    ChatModelSectionOut,
+    ChatModelSettingOut,
+    ChatModelsOut,
+    ChatModelUpdateIn,
     EmbeddingModelInfoOut,
     EmbeddingModelsOut,
     IndexingEmbeddingModelSectionOut,
@@ -611,6 +640,215 @@ async def set_indexing_embedding_model(
     return await _build_indexing_embedding_model(db)
 
 
+async def _build_chat_model_section(db: AsyncSession) -> ChatModelSectionOut:
+    """D-092: the chat-model counterpart of `_build_indexing_embedding_model`
+    — same table (`platform_settings`), different key (`CHAT_MODEL_KEY`). A
+    `None` `configured_model` means agent-runtime's own two-tier default
+    applies (`AGENT_RUNTIME_CHAT_MODEL_ID` env override, else
+    office-profile.json's `model_aliases["default-chat"].model_id`) — this
+    never guesses a value here."""
+    row = (
+        await db.execute(select(PlatformSetting).where(PlatformSetting.key == CHAT_MODEL_KEY))
+    ).scalar_one_or_none()
+
+    return ChatModelSectionOut(
+        source="portal.db platform_settings + services/agent-runtime (GET /local/v1/models)",
+        configured_model=row.value if row is not None else None,
+        updated_at=row.updated_at if row is not None else None,
+        updated_by=row.updated_by_user_id if row is not None else None,
+        note=(
+            "값이 비어 있으면 agent-runtime 자체 기본값(AGENT_RUNTIME_CHAT_MODEL_ID 환경변수, "
+            "미설정 시 office-profile.json의 model_aliases[\"default-chat\"].model_id)이 "
+            "적용됩니다(D-091/D-092). 이 설정을 바꿔도 이미 실행 중인 Run에는 즉시 적용되지 "
+            "않습니다 — agent-runtime이 다음 조회 주기(TTL 캐시)에 반영하므로 새 Run부터 "
+            "적용됩니다. 게시된 Hosted Chat도 실행 시점의 값을 그대로 따릅니다(게시 시점 고정 "
+            "아님)."
+        ),
+    )
+
+
+async def _call_agent_runtime_chat_models_http() -> tuple[list[dict], str | None, str | None]:
+    """Proxies agent-runtime's `GET /local/v1/models` (the service that
+    actually owns the Ollama relationship — portal-api never calls Ollama
+    directly per root CLAUDE.md UI 구현 규칙).
+
+    Returns `(models, default_chat_model, error_message)`. Never raises —
+    `error_message` set (models empty) distinguishes "couldn't ask" from a
+    genuinely empty install (`error_message is None`, `models == []`)."""
+    url = f"{settings.agent_runtime_url}/local/v1/models"
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(url)
+    except httpx.HTTPError as exc:
+        return [], None, f"agent-runtime({url})에 연결할 수 없습니다: {exc}"
+
+    if resp.status_code >= 400:
+        try:
+            body = resp.json()
+            message = (body.get("error") or {}).get("message") or f"HTTP {resp.status_code}"
+        except ValueError:
+            message = f"HTTP {resp.status_code}"
+        return [], None, message
+
+    data = resp.json()
+    return list(data.get("models") or []), data.get("default_chat_model"), None
+
+
+ChatModelsCaller = Callable[[], Awaitable[tuple[list[dict], str | None, str | None]]]
+
+
+def get_chat_models_caller() -> ChatModelsCaller:
+    """FastAPI dependency seam — overridden in integration tests
+    (`app.dependency_overrides[get_chat_models_caller]`) so the suite never
+    needs a live agent-runtime process running. Mirrors
+    `get_embedding_models_caller` exactly."""
+    return _call_agent_runtime_chat_models_http
+
+
+@router.get("/chat-models", response_model=None)
+async def list_chat_models(
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+    chat_models_caller: ChatModelsCaller = Depends(get_chat_models_caller),
+) -> ChatModelsOut | JSONResponse:
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ADMIN_SETTINGS_READ, trace_id=trace_id, resource_type="ADMIN_SETTINGS"
+    )
+    if denial:
+        return denial
+
+    models, default_model, error = await chat_models_caller()
+    if error:
+        return error_response(
+            503,
+            "MODEL_UNAVAILABLE",
+            f"사용 가능한 채팅 모델 목록을 가져오지 못했습니다: {error}",
+            trace_id,
+        )
+
+    return ChatModelsOut(
+        models=[
+            ChatModelInfoOut(
+                name=m.get("name", ""),
+                chat_capable=bool(m.get("chat_capable")),
+                size=m.get("size"),
+                modified_at=m.get("modified_at"),
+            )
+            for m in models
+        ],
+        default_chat_model=default_model or "",
+        source=f"{settings.agent_runtime_url}/local/v1/models",
+        trace_id=trace_id,
+    )
+
+
+@router.put("/chat-model", response_model=None)
+async def set_chat_model(
+    body: ChatModelUpdateIn,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+    chat_models_caller: ChatModelsCaller = Depends(get_chat_models_caller),
+) -> ChatModelSectionOut | JSONResponse:
+    """ADMIN only (`Permission.ADMIN_SETTINGS_WRITE`). A model that
+    agent-runtime doesn't report as `chat_capable` (embedding-only model) is
+    rejected outright — same rationale as `set_indexing_embedding_model`'s
+    `embedding_capable` check, mirrored for chat: this is the fix for D-091
+    (a chat model configured but not installed, discovered only when a run
+    fails)."""
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ADMIN_SETTINGS_WRITE, trace_id=trace_id, resource_type="ADMIN_SETTINGS"
+    )
+    if denial:
+        return denial
+
+    model_name = body.model.strip()
+    if not model_name:
+        return error_response(400, "VALIDATION_ERROR", "모델명을 입력하세요.", trace_id)
+
+    models, _default_model, error = await chat_models_caller()
+    if error:
+        return error_response(
+            503,
+            "MODEL_UNAVAILABLE",
+            f"사용 가능한 채팅 모델 목록을 가져오지 못해 저장할 수 없습니다: {error}",
+            trace_id,
+        )
+
+    usable = sorted({m.get("name", "") for m in models if m.get("chat_capable")})
+    if model_name not in usable:
+        await record_audit(
+            db,
+            event_type="CHAT_MODEL_UPDATE_REJECTED",
+            actor=user,
+            resource_type="ADMIN_SETTINGS",
+            resource_id="chat_model",
+            result="FAILED",
+            trace_id=trace_id,
+            metadata={"requested_model": model_name, "available_chat_models": usable},
+        )
+        return error_response(
+            400,
+            "VALIDATION_ERROR",
+            f"'{model_name}'은(는) 설치된 채팅 가능 모델로 확인되지 않습니다.",
+            trace_id,
+            details={"requested_model": model_name, "available_chat_models": usable},
+        )
+
+    previous_model = await get_setting(db, CHAT_MODEL_KEY)
+    await set_setting(
+        db,
+        CHAT_MODEL_KEY,
+        model_name,
+        updated_by_user_id=user.user_id,
+        trace_id=trace_id,
+    )
+    await record_audit(
+        db,
+        event_type="CHAT_MODEL_UPDATED",
+        actor=user,
+        resource_type="ADMIN_SETTINGS",
+        resource_id="chat_model",
+        result="SUCCESS",
+        trace_id=trace_id,
+        metadata={"previous_model": previous_model, "new_model": model_name},
+    )
+
+    return await _build_chat_model_section(db)
+
+
+@router.get("/chat-model-setting", response_model=None)
+async def get_chat_model_setting(
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> ChatModelSettingOut:
+    """D-092: called by agent-runtime, server-to-server — NOT the admin
+    screen (that's `GET /settings`'s `chat_model` section, which reuses
+    `_build_chat_model_section` too but is ADMIN-gated).
+
+    Deliberately requires only `get_current_user` (a valid Bearer token,
+    any role) and NOT `Permission.ADMIN_SETTINGS_READ`: agent-runtime
+    authenticates to portal-api with its own fixed `portal_api_token`
+    (`AgentRuntimeSettings.portal_api_token`, default `dev-user-token` =
+    role CREATOR, D-034 precedent — see `get_asset_version` above which the
+    same token already calls). CREATOR does not carry
+    `ADMIN_SETTINGS_READ` (ADMIN only) — gating this read behind that
+    permission would make agent-runtime unable to read its own chat-model
+    setting, which is exactly the "관리자 전용 권한을 요구해 agent-runtime이
+    못 읽게 만드는" failure D-092 explicitly calls out to avoid. This is a
+    narrow, read-only lookup (one field, no Secret) so authenticating
+    without an admin-only permission is intentional, not an oversight.
+
+    Response shape is a fixed contract other services build adapters
+    against — do not add/rename/remove fields here without a contract
+    change.
+    """
+    trace_id = _trace_id()
+    configured_model = await get_setting(db, CHAT_MODEL_KEY)
+    return ChatModelSettingOut(configured_model=configured_model, trace_id=trace_id)
+
+
 @router.get("/settings", response_model=None)
 async def get_admin_settings(
     db: AsyncSession = Depends(get_db),
@@ -640,4 +878,5 @@ async def get_admin_settings(
         security_classification_retention=_build_security_classification_retention(),
         package_trust_signature=_build_package_trust_signature(),
         indexing_embedding_model=await _build_indexing_embedding_model(db),
+        chat_model=await _build_chat_model_section(db),
     )

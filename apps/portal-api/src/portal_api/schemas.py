@@ -1036,7 +1036,7 @@ class PackageTrustSignatureSectionOut(BaseModel):
     not_implemented: NotImplementedInfoOut
 
 
-# --- D-065 UPDATE / D-075: 인덱싱 임베딩 모델 (P15의 유일한 편집 가능 영역) -------
+# --- D-065 UPDATE / D-075: 인덱싱 임베딩 모델 (P15의 편집 가능 영역 중 하나) -------
 
 
 class IndexingEmbeddingModelSectionOut(BaseModel):
@@ -1066,6 +1066,49 @@ class IndexingEmbeddingModelUpdateIn(BaseModel):
     model: str = Field(min_length=1)
 
 
+# --- D-092: 채팅 모델 (P15의 편집 가능 영역 중 하나, 인덱싱 임베딩 모델과 같은 구조) --
+#
+# D-091 사고(office-profile.json에 하드코딩된 채팅 모델이 그 PC에 설치돼 있지 않아
+# Ollama가 404를 돌려줄 때까지 아무도 몰랐다)에서 나온 요구. 저장은
+# `portal_api.platform_settings.CHAT_MODEL_KEY`(portal.db), 모델 목록은 agent-runtime의
+# `GET /local/v1/models`를 프록시한다(portal-api는 Ollama를 직접 호출하지 않음).
+
+
+class ChatModelSectionOut(BaseModel):
+    status: Literal["AVAILABLE"] = "AVAILABLE"
+    source: str
+    configured_model: str | None = None
+    updated_at: datetime | None = None
+    updated_by: str | None = None
+    note: str
+
+
+class ChatModelInfoOut(BaseModel):
+    name: str
+    chat_capable: bool
+    size: int | None = None
+    modified_at: str | None = None
+
+
+class ChatModelsOut(BaseModel):
+    models: list[ChatModelInfoOut]
+    default_chat_model: str
+    source: str
+    trace_id: str
+
+
+class ChatModelUpdateIn(BaseModel):
+    model: str = Field(min_length=1)
+
+
+class ChatModelSettingOut(BaseModel):
+    """agent-runtime이 `GET /api/v1/admin/chat-model-setting`으로 조회하는 응답
+    모양 — 이 계약은 바꾸지 않는다(agent-runtime이 이 모양에 맞춰 어댑터를 만듦)."""
+
+    configured_model: str | None = None
+    trace_id: str
+
+
 class AdminSettingsOut(BaseModel):
     generated_at: datetime
     trace_id: str
@@ -1078,6 +1121,7 @@ class AdminSettingsOut(BaseModel):
     security_classification_retention: SecurityClassificationRetentionSectionOut
     package_trust_signature: PackageTrustSignatureSectionOut
     indexing_embedding_model: IndexingEmbeddingModelSectionOut
+    chat_model: ChatModelSectionOut
 
 
 # --- POST /api/v1/knowledge-search — cross-Knowledge Hub Search (M02) -----

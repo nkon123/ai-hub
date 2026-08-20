@@ -1954,6 +1954,93 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/admin/chat-models:
+    get:
+      tags: [admin]
+      summary: >
+        P15 채팅 모델 설정(D-092) — Ollama에 실제 설치된 모델 목록(agent-runtime의
+        GET /local/v1/models를 그대로 proxy). portal-api는 모델을 직접 호출하지
+        않으므로(CLAUDE.md) agent-runtime을 경유한다. agent-runtime에 연결할 수 없으면
+        빈 목록이 아니라 명확한 오류를 반환한다. ADMIN only.
+      operationId: list_chat_models
+      responses:
+        "200":
+          description: Ollama에 설치된 모델 목록과 채팅 가능 여부
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatModelsOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: agent-runtime 또는 Ollama에 연결할 수 없음 (MODEL_UNAVAILABLE)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/admin/chat-model:
+    put:
+      tags: [admin]
+      summary: >
+        신규 Run에 사용할 채팅 모델을 설정한다(D-092, D-091 사고 대응). portal.db의
+        platform_settings에 저장되며, 이미 실행 중인 Run에는 즉시 적용되지 않는다
+        (TTL 캐시 경계). GET /api/v1/admin/chat-models가 채팅 가능으로 보고하지 않는
+        모델은 거부한다(VALIDATION_ERROR) — 설치되지 않은 모델이 설정되어 실행
+        시점까지 아무도 모르는 사고를 구조적으로 막는다. ADMIN only, 감사 기록.
+      operationId: set_chat_model
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ChatModelUpdateRequest"
+      responses:
+        "200":
+          description: 저장된 설정
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatModelSection"
+        "400":
+          description: 요청한 모델이 설치된 채팅 가능 모델로 확인되지 않음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "503":
+          description: agent-runtime 또는 Ollama에 연결할 수 없어 검증할 수 없음
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/admin/chat-model-setting:
+    get:
+      tags: [admin]
+      summary: >
+        D-092 — agent-runtime이 server-to-server로 조회하는 현재 채팅 모델 설정.
+        관리자 화면용이 아니다(그건 GET /api/v1/admin/settings의 chat_model 절).
+        ADMIN_SETTINGS_READ를 요구하지 않는다 — agent-runtime은 고정 토큰(D-034
+        portal_api_token, role CREATOR)으로 인증하며 그 role은 ADMIN 전용 권한을
+        갖지 않는다. 응답 모양은 고정 계약이다(변경 금지).
+      operationId: get_chat_model_setting
+      responses:
+        "200":
+          description: 현재 설정(미설정 시 configured_model=null)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ChatModelSettingOut"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+
 components:
   parameters:
     AssetId:
@@ -4438,6 +4525,71 @@ components:
       properties:
         model: { type: string, minLength: 1 }
 
+    ChatModelSection:
+      type: object
+      description: >
+        P15의 편집 가능 하위 영역(D-092). configured_model이 null이면 agent-runtime
+        자체 기본값(AGENT_RUNTIME_CHAT_MODEL_ID 환경변수, 미설정 시 office-profile.json의
+        model_aliases["default-chat"].model_id)이 적용된다(D-091). 이 설정을 바꿔도
+        이미 실행 중인 Run에는 즉시 적용되지 않는다(TTL 캐시 경계) — 새 Run부터 적용된다.
+      required: [status, source, configured_model, note]
+      properties:
+        status: { type: string, enum: [AVAILABLE] }
+        source: { type: string }
+        configured_model:
+          type: string
+          nullable: true
+          description: null이면 agent-runtime의 자체 기본값이 사용됨(미설정).
+        updated_at: { type: string, format: date-time, nullable: true }
+        updated_by: { type: string, nullable: true }
+        note: { type: string }
+
+    ChatModelInfo:
+      type: object
+      required: [name, chat_capable]
+      properties:
+        name: { type: string }
+        chat_capable:
+          type: boolean
+          description: >
+            agent-runtime(GET /local/v1/models)이 보고하는 채팅 가능 여부 — 임베딩
+            전용 모델은 false.
+        size: { type: integer, nullable: true }
+        modified_at: { type: string, nullable: true }
+
+    ChatModelsOut:
+      type: object
+      required: [models, default_chat_model, source, trace_id]
+      properties:
+        models:
+          type: array
+          items:
+            $ref: "#/components/schemas/ChatModelInfo"
+        default_chat_model:
+          type: string
+          description: agent-runtime의 채팅 모델 기본값 현재값(미설정 시 적용될 값).
+        source: { type: string }
+        trace_id: { type: string }
+
+    ChatModelUpdateRequest:
+      type: object
+      required: [model]
+      properties:
+        model: { type: string, minLength: 1 }
+
+    ChatModelSettingOut:
+      type: object
+      description: >
+        D-092 — agent-runtime이 server-to-server로 조회하는 고정 계약. 필드 추가/변경
+        시 agent-runtime 어댑터와 함께 별도 계약 변경 PR로 진행한다.
+      required: [configured_model, trace_id]
+      properties:
+        configured_model:
+          type: string
+          nullable: true
+          description: null이면 agent-runtime 자체 기본값이 적용됨(미설정).
+        trace_id: { type: string }
+
     AdminSettingsOut:
       type: object
       required:
@@ -4452,6 +4604,7 @@ components:
         - security_classification_retention
         - package_trust_signature
         - indexing_embedding_model
+        - chat_model
       properties:
         generated_at: { type: string, format: date-time }
         trace_id: { type: string }
@@ -4473,6 +4626,8 @@ components:
           $ref: "#/components/schemas/PackageTrustSignatureSection"
         indexing_embedding_model:
           $ref: "#/components/schemas/IndexingEmbeddingModelSection"
+        chat_model:
+          $ref: "#/components/schemas/ChatModelSection"
 
   securitySchemes:
     BearerAuth:

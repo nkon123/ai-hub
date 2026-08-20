@@ -25,6 +25,7 @@ from agent_runtime.adapters.mcp import HttpMCPAdapter
 from agent_runtime.adapters.ollama import OllamaLLMAdapter
 from agent_runtime.adapters.registry import HttpAssetRegistryResolver
 from agent_runtime.adapters.search import HttpKnowledgeAdapter
+from agent_runtime.chat_model_setting_cache import get_chat_model_setting_cache
 from agent_runtime.config import settings
 from agent_runtime.local_agent_registry import LocalAgentRegistry
 from agent_runtime.local_agent_registry import get_registry as get_local_agent_registry
@@ -100,9 +101,37 @@ def _to_run_response(record: RunRecord) -> RunResponse:
     )
 
 
-def get_llm_adapter() -> LLMAdapter:
+async def get_llm_adapter() -> LLMAdapter:
+    """Builds the `OllamaLLMAdapter` every Run actually calls out to.
+
+    D-092 (open-decisions.md) priority, applied here on every call: Portal
+    admin setting (P15, via `get_chat_model_setting_cache` — TTL-cached,
+    fail-open to whatever was last known if portal-api is unreachable) >
+    `AGENT_RUNTIME_CHAT_MODEL_ID` > office-profile.json. The bottom two
+    layers are already baked into `config.office_profile` at load time by
+    `manifests._load_default_office_profile`; only the Portal layer is
+    re-checked per call (bounded by the TTL, not per-request), so this
+    function builds a shallow copy of the `default-chat` alias rather than
+    mutating the cached `StandardKnowledgeChatConfig.office_profile` — that
+    object is shared/cached across every run and must stay untouched.
+
+    Deliberately does NOT fall back to another installed model when the
+    resolved `model_id` (whichever layer it came from) isn't actually
+    installed — `OllamaLLMAdapter`/`OllamaModelNotFoundError` fails that
+    honestly instead (D-091/D-092: no silent model substitution)."""
     config = get_standard_config()
-    return OllamaLLMAdapter(model_aliases=config.office_profile.get("model_aliases", {}))
+    model_aliases = config.office_profile.get("model_aliases", {})
+
+    configured_model = await get_chat_model_setting_cache().get_configured_chat_model()
+    if configured_model:
+        default_chat_alias = model_aliases.get("default-chat")
+        if default_chat_alias is not None:
+            model_aliases = {
+                **model_aliases,
+                "default-chat": {**default_chat_alias, "model_id": configured_model},
+            }
+
+    return OllamaLLMAdapter(model_aliases=model_aliases)
 
 
 def get_knowledge_adapter() -> KnowledgeAdapter:

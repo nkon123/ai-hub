@@ -19,13 +19,22 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
 
 - 실제 코드는 전부 `src/agent_runtime/` 아래에 있다. **`src/adapters/`는 빈
   부트스트랩 잔재이며 파일이 없다 — 여기에 새 코드를 쓰지 않는다.**
-- `adapters/__init__.py` — ABC 6개: `LLMAdapter`, `KnowledgeAdapter`,
+- `adapters/__init__.py` — ABC 7개: `LLMAdapter`, `KnowledgeAdapter`,
   `HubSearchAdapter`, `MCPAdapter`, `DeploymentResolver`,
-  `AssetRegistryResolver`. 구현체는 각각 `adapters/ollama.py`
-  (`OllamaLLMAdapter`), `search.py`(`HttpKnowledgeAdapter`, search-runtime),
-  `hub_search.py`(`HttpHubSearchAdapter`, portal-api 검색), `mcp.py`
-  (`HttpMCPAdapter`, office-mcp-server), `deployment.py`
-  (`HttpDeploymentResolver`), `registry.py`(`HttpAssetRegistryResolver`).
+  `AssetRegistryResolver`, `ChatModelSettingResolver`(D-092). 구현체는
+  각각 `adapters/ollama.py`(`OllamaLLMAdapter`), `search.py`
+  (`HttpKnowledgeAdapter`, search-runtime), `hub_search.py`
+  (`HttpHubSearchAdapter`, portal-api 검색), `mcp.py`(`HttpMCPAdapter`,
+  office-mcp-server), `deployment.py`(`HttpDeploymentResolver`),
+  `registry.py`(`HttpAssetRegistryResolver`), `chat_model_setting.py`
+  (`HttpChatModelSettingResolver`, portal-api의
+  `GET /api/v1/admin/chat-model-setting`) — 이 마지막 것은 직접 쓰지 않고
+  `chat_model_setting_cache.py`의 `ChatModelSettingCache`(TTL 캐시 +
+  portal-api 미도달 시 마지막 값으로 fail-open)를 통해서만 쓴다(아래 D-092
+  항목 참고). `ollama_models.py`(`list_ollama_models`/`is_chat_capable`,
+  `GET /local/v1/models`가 쓰는 Ollama `/api/tags` 조회 + 채팅 가능 여부
+  휴리스틱 — indexing-runtime의 `embedders.py`와 같은 역할, import 아님,
+  모듈 경계상 복제).
 - `workflow.py`(`run_knowledge_chat` 상태 머신), `routers/runs.py`
   (`/local/v1/runs*`), `routers/chat.py`(`/chat-api/v1/*`) — 동일한
   `run_knowledge_chat`/`RunStore`를 공유(spec §6.2 "Preview가 게시 Runtime
@@ -136,15 +145,41 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
 - **"404 model not found"가 뜨면**(Knowledge 메타데이터 서제스트, 대화,
   Hosted Chat, 라우팅 등 `OllamaLLMAdapter`를 쓰는 모든 경로에서 발생 가능,
   D-091): 이건 `/api/chat` 경로가 없다는 뜻이 아니다(그 경로는 항상 있고
-  GET 하면 405가 뜬다) — office-profile의 `model_aliases["default-chat"]
-  .model_id`(기본 `exaone3.5:7.8b`)가 그 PC의 Ollama에 설치돼 있지 않다는
-  뜻이다. 조치: (1) `ollama list`로 설치된 모델 확인 (2) 네트워크가 있으면
-  `ollama pull <model_id>` (3) **폐쇄망이라 pull이 안 되면** 이미 설치된
-  모델을 가리키도록 `AGENT_RUNTIME_CHAT_MODEL_ID=<installed-model-id>`
-  환경변수를 설정하고 재기동 — 기동 로그에
-  `office_profile.chat_model_id_override applied ...` 한 줄이 찍히면
-  적용된 것이다. 설치된 모델로 **자동 대체는 절대 하지 않는다**(D-091) —
-  안 하면 사용자가 어떤 모델이 실제로 답하는지 모른 채 성격이 바뀐다.
+  GET 하면 405가 뜬다) — 지금 실제로 적용 중인 `default-chat` model_id가
+  그 PC의 Ollama에 설치돼 있지 않다는 뜻이다. **D-092(2026-08-20)로 조치
+  우선순위가 바뀌었다** — 지금 어떤 model_id가 적용 중인지는
+  `GET /local/v1/models`의 `default_chat_model`로 확인한다(설치된 모델
+  목록도 같은 응답의 `models`에 있다). 조치, 우선순위 높은 순: (1) **Portal
+  관리자 화면(P15)에 채팅 모델 설정이 저장돼 있다면 그게 최우선이다** — 그
+  화면에서 이미 설치된 모델로 바꾼다(설치 안 된 모델은 그 화면이 저장 자체를
+  거부한다). (2) Portal 설정이 없다면 `ollama list`로 설치된 모델을 확인하고
+  네트워크가 있으면 `ollama pull <model_id>`. (3) **폐쇄망이라 pull이 안
+  되면** 이미 설치된 모델을 가리키도록
+  `AGENT_RUNTIME_CHAT_MODEL_ID=<installed-model-id>` 환경변수를 설정하고
+  재기동 — 기동 로그에 `office_profile.chat_model_id_override applied ...`
+  한 줄이 찍히면 적용된 것이다. 단, **Portal 설정이 있으면 이 환경변수보다
+  Portal 쪽이 이긴다** — 환경변수를 바꿔도 반응이 없다면 먼저 Portal에
+  설정이 저장돼 있는지부터 확인한다. 설치된 모델로 **자동 대체는 절대 하지
+  않는다**(D-091/D-092, 모든 층 공통) — 안 하면 사용자가 어떤 모델이 실제로
+  답하는지 모른 채 성격이 바뀐다.
+- **D-092 (2026-08-20): 채팅 모델 설정에 Portal 관리자 화면(P15) 계층이
+  추가됐다.** 우선순위: Portal 설정(`chat_model_setting_cache
+  .get_chat_model_setting_cache`, portal-api의
+  `GET /api/v1/admin/chat-model-setting`을 TTL(`settings
+  .chat_model_setting_cache_ttl_seconds`, 기본 30초)로 캐시) >
+  `AGENT_RUNTIME_CHAT_MODEL_ID`(`settings.chat_model_id_override`) >
+  office-profile.json. 뒤 두 층은 `manifests._load_default_office_profile`이
+  기동 시점에 이미 `office_profile`에 반영해 두고, `routers/runs
+  .get_llm_adapter`(현재 async)와 `routers/models.py`가 매 호출마다 그 위에
+  Portal 층을 얹는다 — **office_profile을 직접 mutate하지 않고 얕은 복사로
+  얹는다**, 그 객체는 여러 Run이 공유하는 캐시이기 때문이다. portal-api가
+  닿지 않으면 `ChatModelSettingCache`가 예외를 삼키고 마지막으로 알려진
+  값으로 계속 돈다(로그는 남기되 TTL당 한 번만 — 매 호출마다 도배하지
+  않는다) — Portal이 죽어도 채팅이 죽지 않는다는 D-092의 요구사항이다.
+  `GET /local/v1/models`(`routers/models.py`, `ollama_models.py`)가 이 모든
+  계산의 참조 구현이자 설치된 모델 목록 조회 endpoint다 — 이 endpoint를
+  건드리면 `tests/integration/agent_runtime/test_local_models_endpoint.py`를
+  반드시 돌린다.
 
 ## 완료 전 확인
 

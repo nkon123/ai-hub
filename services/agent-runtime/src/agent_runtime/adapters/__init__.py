@@ -109,3 +109,32 @@ class AssetRegistryResolver(ABC):
         is missing. Only meaningful after `get_asset_version` confirms the
         type is `prompt`."""
         ...
+
+
+class ChatModelSettingResolver(ABC):
+    """Interface for reading the Portal-admin-configured chat model_id
+    (D-092, open-decisions.md) — a different concern than
+    `AssetRegistryResolver` even though both call portal-api: this reads one
+    platform-wide admin setting (`platform_settings` table), not an
+    Asset/AssetVersion.
+
+    Backed in production by
+    `agent_runtime.adapters.chat_model_setting.HttpChatModelSettingResolver`,
+    calling portal-api's `GET /api/v1/admin/chat-model-setting`. Callers
+    should almost never use this interface directly — go through
+    `agent_runtime.chat_model_setting_cache.ChatModelSettingCache`, which
+    adds the TTL caching and fail-open-to-last-known-value behavior D-092
+    requires (a raw resolver call on every LLM invocation would put
+    portal-api's latency/availability on this runtime's critical path).
+    """
+
+    @abstractmethod
+    async def get_configured_chat_model(self) -> str | None:
+        """Returns the Portal-admin-configured chat model_id, or `None` if
+        no setting has ever been saved (`configured_model: null`). Must
+        raise (never silently return `None`) on any transport/HTTP failure
+        — a `None` from this method means "genuinely unset", which is a
+        different fact than "couldn't ask portal-api at all"; only the
+        caller (the cache) decides how an unreachable portal-api degrades.
+        """
+        ...

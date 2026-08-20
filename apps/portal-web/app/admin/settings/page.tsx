@@ -14,21 +14,31 @@
  * id, never an empty form). See open-decisions.md D-065 for the full
  * rationale.
  *
- * **UPDATE (D-065 UPDATE / D-075): one sub-area now IS editable** — the
+ * **UPDATE (D-065 UPDATE / D-075): one sub-area became editable** — the
  * indexing embedding model (`IndexingEmbeddingModelCard` below). It has
- * real storage (`portal_api.platform_settings`) and is the only card on
- * this page with a Save action. Two warnings are always visible next to it
- * (never collapsed/hidden): changing it only affects newly-indexed
- * Knowledge (existing indexes keep searching with the model recorded in
- * their own index-meta.json — re-indexing is required to move them), and
- * switching model *families* also requires revisiting search-runtime's
- * SEARCH_QUERY_INSTRUCT_PREFIX (D-046/D-075) or the relevance threshold
- * silently stops separating in-scope from out-of-scope questions. A model
- * that `GET /api/v1/admin/embedding-models` doesn't report as
- * `embedding_capable` cannot be selected (disabled option with a reason,
- * not just omitted) and is rejected server-side too if attempted directly.
+ * real storage (`portal_api.platform_settings`). Two warnings are always
+ * visible next to it (never collapsed/hidden): changing it only affects
+ * newly-indexed Knowledge (existing indexes keep searching with the model
+ * recorded in their own index-meta.json — re-indexing is required to move
+ * them), and switching model *families* also requires revisiting
+ * search-runtime's SEARCH_QUERY_INSTRUCT_PREFIX (D-046/D-075) or the
+ * relevance threshold silently stops separating in-scope from
+ * out-of-scope questions. A model that `GET /api/v1/admin/embedding-models`
+ * doesn't report as `embedding_capable` cannot be selected (disabled
+ * option with a reason, not just omitted) and is rejected server-side too
+ * if attempted directly.
+ *
+ * **UPDATE (D-092): a second sub-area became editable** — the chat model
+ * (`ChatModelCard` below), cloned from the same structure for the same
+ * reason (D-091 incident: a chat model configured in office-profile.json
+ * that wasn't installed on that PC, discovered only when a run 404'd). A
+ * model that `GET /api/v1/admin/chat-models` doesn't report as
+ * `chat_capable` (e.g. an embedding-only model) cannot be selected either.
+ * Saving only affects new Runs — an in-flight Run keeps its already-resolved
+ * model (TTL cache boundary, spelled out in the card's note).
+ *
  * Only ADMIN ever reaches this page (`ADMIN_SETTINGS_READ`), so no separate
- * per-card Permission gate is needed for the Save action itself.
+ * per-card Permission gate is needed for either card's Save action.
  *
  * Secrets: the server never returns a live credential (redacted at the
  * source — see `security_policy.redact_if_secret`); this screen has no
@@ -186,6 +196,30 @@ interface EmbeddingModelsResponse {
   trace_id: string;
 }
 
+// D-092 — the chat-model counterpart of the indexing embedding model above.
+interface ChatModelSection {
+  status: "AVAILABLE";
+  source: string;
+  configured_model: string | null;
+  updated_at: string | null;
+  updated_by: string | null;
+  note: string;
+}
+
+interface ChatModelInfo {
+  name: string;
+  chat_capable: boolean;
+  size: number | null;
+  modified_at: string | null;
+}
+
+interface ChatModelsResponse {
+  models: ChatModelInfo[];
+  default_chat_model: string;
+  source: string;
+  trace_id: string;
+}
+
 interface AdminSettingsOut {
   generated_at: string;
   trace_id: string;
@@ -198,6 +232,7 @@ interface AdminSettingsOut {
   security_classification_retention: SecurityClassificationRetentionSection;
   package_trust_signature: PackageTrustSignatureSection;
   indexing_embedding_model: IndexingEmbeddingModelSection;
+  chat_model: ChatModelSection;
 }
 
 type LoadState = "loading" | "ok" | "forbidden" | "error";
@@ -256,7 +291,8 @@ function Pill({ children }: { children: React.ReactNode }) {
 }
 
 /**
- * 인덱싱 임베딩 모델 — P15의 유일한 편집 가능 하위 영역(D-065 UPDATE / D-075).
+ * 인덱싱 임베딩 모델 — P15의 편집 가능 하위 영역 중 하나(D-065 UPDATE / D-075).
+ * 채팅 모델 카드(`ChatModelCard`, D-092)와 정확히 같은 구조다.
  * ADMIN만 이 페이지에 진입할 수 있으므로(GET /api/v1/admin/settings 자체가
  * ADMIN_SETTINGS_READ 전용) 별도의 Permission 배지는 필요 없다 — 이 카드가
  * 렌더링된다는 사실 자체가 이미 ADMIN임을 보장한다.
@@ -463,6 +499,226 @@ function IndexingEmbeddingModelCard({
   );
 }
 
+/**
+ * 채팅 모델 — P15의 편집 가능 하위 영역 중 하나(D-092). D-091 사고(그 PC에
+ * 설치돼 있지 않은 채팅 모델이 office-profile.json에 하드코딩돼 있어, 실제 Run이
+ * 실행되어 Ollama가 404를 돌려줄 때까지 아무도 몰랐다)에서 나온 카드로,
+ * `IndexingEmbeddingModelCard`를 그대로 복제한 구조다. "모델 목록을 못
+ * 가져왔다"(Error, agent-runtime 미도달)와 "설치된 모델이 0개"(Empty)를 서로 다른
+ * 화면으로 구분한다 — 둘 다 "결과 없음"으로 뭉개면 정책/장애를 구분할 수 없게
+ * 된다(원인이 다르면 조치도 다르다).
+ */
+function ChatModelCard({
+  section,
+  token,
+}: {
+  section: ChatModelSection;
+  token: string;
+}) {
+  const [modelsState, setModelsState] = useState<"loading" | "ok" | "empty" | "error">("loading");
+  const [models, setModels] = useState<ChatModelInfo[]>([]);
+  const [defaultModel, setDefaultModel] = useState<string>("");
+  const [modelsError, setModelsError] = useState<string | null>(null);
+  const [modelsErrorTraceId, setModelsErrorTraceId] = useState<string | null>(null);
+
+  const [configuredModel, setConfiguredModel] = useState<string | null>(section.configured_model);
+  const [updatedAt, setUpdatedAt] = useState<string | null>(section.updated_at);
+  const [updatedBy, setUpdatedBy] = useState<string | null>(section.updated_by);
+
+  const [selected, setSelected] = useState<string>(section.configured_model ?? "");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveErrorTraceId, setSaveErrorTraceId] = useState<string | null>(null);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+
+  async function loadModels() {
+    setModelsState("loading");
+    setModelsError(null);
+    setModelsErrorTraceId(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/chat-models`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setModelsErrorTraceId(body?.error?.trace_id ?? null);
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      }
+      const body = (await res.json()) as ChatModelsResponse;
+      setModels(body.models);
+      setDefaultModel(body.default_chat_model);
+      setModelsState(body.models.length === 0 ? "empty" : "ok");
+    } catch (e) {
+      setModelsError(e instanceof Error ? e.message : String(e));
+      setModelsState("error");
+    }
+  }
+
+  useEffect(() => {
+    loadModels();
+    // 최초 1회만 — token은 이 페이지 진입 시점에 이미 ADMIN으로 고정됨.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function handleSave() {
+    if (!selected) return;
+    setSaving(true);
+    setSaveError(null);
+    setSaveErrorTraceId(null);
+    setSaveSuccess(false);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/admin/chat-model`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ model: selected }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok) {
+        setSaveErrorTraceId(body?.error?.trace_id ?? null);
+        throw new Error(body?.error?.message ?? `HTTP ${res.status}`);
+      }
+      const updated = body as ChatModelSection;
+      setConfiguredModel(updated.configured_model);
+      setUpdatedAt(updated.updated_at);
+      setUpdatedBy(updated.updated_by);
+      setSaveSuccess(true);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const noUsableModels = modelsState === "ok" && !models.some((m) => m.chat_capable);
+
+  return (
+    <SectionCard title="채팅 모델" status={section.status}>
+      <SourceCaption source={section.source} />
+
+      <div className="mb-4 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-body text-text-secondary">
+        <AlertTriangle size={16} className="mt-0.5 shrink-0 text-warning" />
+        <p>
+          이 설정은 <strong>새로 시작되는 Run부터</strong> 적용됩니다. 이미 실행 중인 Run은
+          시작 시점에 이미 결정된 모델을 그대로 사용합니다(agent-runtime의 조회 주기(TTL
+          캐시) 경계 — 변경 직후에는 &ldquo;바뀌었는데 왜 그대로지&rdquo;로 보일 수 있습니다). 게시된
+          Hosted Chat도 게시 시점이 아니라 각 Run 실행 시점의 값을 그대로 따릅니다.
+        </p>
+      </div>
+
+      <dl className="mb-4 grid grid-cols-1 gap-x-4 gap-y-2 text-body sm:grid-cols-3">
+        <div>
+          <dt className="text-caption text-text-muted">현재 설정된 모델</dt>
+          <dd className="font-mono text-text-primary">
+            {configuredModel ?? (
+              <span className="font-sans text-text-muted">
+                미설정{defaultModel ? ` (기본값 ${defaultModel} 사용)` : ""}
+              </span>
+            )}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-caption text-text-muted">마지막 변경</dt>
+          <dd className="text-text-secondary">{updatedAt ? formatDateTime(updatedAt) : "-"}</dd>
+        </div>
+        <div>
+          <dt className="text-caption text-text-muted">변경자</dt>
+          <dd className="text-text-secondary">{updatedBy ?? "-"}</dd>
+        </div>
+      </dl>
+
+      {modelsState === "loading" && (
+        <LoadingState label="agent-runtime의 설치 모델 목록을 불러오는 중..." />
+      )}
+
+      {modelsState === "error" && (
+        <div className="mb-3 flex flex-col gap-2">
+          <ErrorBanner message={`사용 가능한 모델 목록을 가져오지 못했습니다: ${modelsError}`} />
+          {modelsErrorTraceId && (
+            <p className="text-caption text-text-muted">Trace ID: {modelsErrorTraceId}</p>
+          )}
+          <Button variant="secondary" size="sm" onClick={loadModels} className="w-fit">
+            <RefreshCw size={14} /> 다시 시도
+          </Button>
+        </div>
+      )}
+
+      {modelsState === "empty" && (
+        <EmptyState
+          title="agent-runtime에 설치된 모델이 없습니다."
+          description="Ollama에 채팅 가능한 모델을 먼저 설치한 뒤 다시 시도하세요."
+        />
+      )}
+
+      {modelsState === "ok" && (
+        <>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+            <div className="flex-1">
+              <FormField label="새 채팅 모델">
+                <select
+                  className={inputClass}
+                  value={selected}
+                  onChange={(e) => {
+                    setSelected(e.target.value);
+                    setSaveSuccess(false);
+                  }}
+                  disabled={models.length === 0}
+                >
+                  <option value="" disabled>
+                    모델을 선택하세요
+                  </option>
+                  {models.map((m) => (
+                    <option key={m.name} value={m.name} disabled={!m.chat_capable}>
+                      {m.name}
+                      {!m.chat_capable ? " (채팅 불가 모델로 판별됨)" : ""}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
+            <Button
+              onClick={handleSave}
+              disabled={saving || !selected || selected === configuredModel || noUsableModels}
+              title={
+                noUsableModels
+                  ? "agent-runtime에 채팅 가능 모델로 판별된 모델이 없습니다."
+                  : selected === configuredModel
+                    ? "이미 적용된 모델입니다."
+                    : undefined
+              }
+            >
+              {saving ? "저장 중..." : "저장"}
+            </Button>
+          </div>
+
+          {noUsableModels && (
+            <p className="mt-2 text-caption text-danger">
+              설치된 모델 중 채팅 가능으로 판별된 모델이 없습니다. 채팅용 모델을 먼저
+              설치하세요.
+            </p>
+          )}
+        </>
+      )}
+
+      {saveError && (
+        <div className="mt-3 flex flex-col gap-1">
+          <ErrorBanner message={`저장하지 못했습니다: ${saveError}`} />
+          {saveErrorTraceId && (
+            <p className="text-caption text-text-muted">Trace ID: {saveErrorTraceId}</p>
+          )}
+        </div>
+      )}
+
+      {saveSuccess && (
+        <p className="mt-3 text-body text-success">
+          저장했습니다. 새로 시작되는 Run부터 적용됩니다.
+        </p>
+      )}
+
+      <p className="mt-3 text-caption text-text-muted">{section.note}</p>
+    </SectionCard>
+  );
+}
+
 export default function AdminSettingsPage() {
   const { role } = useRole();
   const [state, setState] = useState<LoadState>("loading");
@@ -508,7 +764,7 @@ export default function AdminSettingsPage() {
     <div>
       <PageHeader
         title="관리자 설정"
-        description="플랫폼에 실제 적용 중인 정책·구성 현황입니다. 인덱싱 임베딩 모델을 제외한 나머지 항목은 저장소가 없어 편집 폼 대신 미구현 사유를 표시합니다."
+        description="플랫폼에 실제 적용 중인 정책·구성 현황입니다. 인덱싱 임베딩 모델과 채팅 모델을 제외한 나머지 항목은 저장소가 없어 편집 폼 대신 미구현 사유를 표시합니다."
       />
 
       {state === "loading" && <LoadingState label="설정 현황을 불러오는 중..." />}
@@ -826,6 +1082,8 @@ export default function AdminSettingsPage() {
             section={data.indexing_embedding_model}
             token={role.token}
           />
+
+          <ChatModelCard section={data.chat_model} token={role.token} />
         </div>
       )}
     </div>

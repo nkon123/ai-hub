@@ -24,6 +24,18 @@ from portal_api.models import PlatformSetting
 # endpoints and the two UI warnings this setting requires.
 INDEXING_EMBED_MODEL_KEY = "indexing_embedding_model"
 
+# open-decisions.md D-092: the chat model agent-runtime should use for
+# `model_aliases["default-chat"].model_id` (D-091 incident — a chat model
+# hardcoded in office-profile.json that wasn't installed on that PC, and
+# nobody knew until a run 404'd). Unset (no row / value None) means "let
+# agent-runtime apply its own two-tier default"
+# (`AGENT_RUNTIME_CHAT_MODEL_ID` env override -> office-profile.json), same
+# priority shape as `INDEXING_EMBED_MODEL_KEY` above. agent-runtime reads
+# this back via `GET /api/v1/admin/chat-model-setting` (server-to-server,
+# see `routers/admin.py`) — portal-api unreachable means agent-runtime keeps
+# running on its existing value (D-092), it never blocks chat on this call.
+CHAT_MODEL_KEY = "chat_model"
+
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
     row = (
