@@ -31,6 +31,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from agent_runtime.adapters import LLMAdapter
+from agent_runtime.adapters.ollama import OllamaModelNotFoundError
 from agent_runtime.config import settings
 from agent_runtime.routers.runs import get_llm_adapter
 
@@ -132,6 +133,31 @@ async def suggest_knowledge_metadata(
             503,
             "MODEL_UNAVAILABLE",
             "AI 추천 응답이 시간 내에 오지 않았습니다. 직접 입력해 주세요.",
+            trace_id,
+        )
+    except OllamaModelNotFoundError as exc:
+        # 실사용 제보(2026-08-20): Ollama가 model_id 미설치를 404로 알리는
+        # 것과 "Ollama 자체가 죽었다/응답 없음"을 뭉뚱그리면 사용자가 아무
+        # 조치도 취할 수 없다 — 여기는 `ollama pull`(또는 이미 설치된 모델을
+        # 가리키도록 AGENT_RUNTIME_CHAT_MODEL_ID 설정) 한 줄로 끝나는
+        # 원인이므로 model_id/alias를 그대로 알려준다(Secret 아님).
+        logger.warning(
+            "knowledge_metadata_suggest.model_not_found trace_id=%s model_id=%s "
+            "model_alias=%s",
+            trace_id,
+            exc.model_id,
+            exc.model_alias,
+        )
+        return _error_envelope(
+            503,
+            "MODEL_UNAVAILABLE",
+            (
+                f"AI 모델 '{exc.model_id}'이(가) Ollama에 설치되어 있지 않습니다 "
+                f"(office-profile.json의 model_aliases.{exc.model_alias}에 설정된 값). "
+                f"터미널에서 `ollama pull {exc.model_id}`를 실행하거나, 이미 설치된 "
+                "다른 모델을 쓰려면 관리자에게 AGENT_RUNTIME_CHAT_MODEL_ID 환경변수 "
+                "설정을 요청해 주세요. 그동안은 직접 입력해 주세요."
+            ),
             trace_id,
         )
     except Exception:

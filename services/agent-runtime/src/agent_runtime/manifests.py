@@ -50,6 +50,7 @@ since they depend on a specific run's input, not on startup state.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -59,6 +60,8 @@ from ai_asset_schemas.validator import SchemaType, ValidationError, validate
 from agent_runtime import local_agent_registry
 from agent_runtime.adapters import AssetRegistryResolver
 from agent_runtime.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -81,6 +84,27 @@ def _load_default_office_profile(config_dir: Path) -> dict[str, Any]:
     Registry-resolved Agent/Prompt still runs against this one static
     Office Profile rather than a per-Service one."""
     office_profile = _load_json(config_dir / "office-profile-default" / "office-profile.json")
+
+    # AGENT_RUNTIME_CHAT_MODEL_ID (settings.chat_model_id_override) — 실사용
+    # 제보(2026-08-20): 테스트 PC마다 설치된 Ollama 모델이 다를 때
+    # office-profile.json(git 추적 파일)을 직접 고치지 않고도 alias
+    # "default-chat"의 model_id만 덮어쓸 수 있게 한다. 기본값 None이면
+    # 아무 것도 바뀌지 않는다. 조용한 대체를 막기 위해 적용될 때마다 로그
+    # 한 줄을 남긴다 — 다른 모델로 자동 대체(fallback)하는 기능이 아니라,
+    # 설정으로 명시된 값을 그대로 쓰는 것뿐이다.
+    override_model_id = settings.chat_model_id_override
+    if override_model_id:
+        default_chat_alias = office_profile.get("model_aliases", {}).get("default-chat")
+        if default_chat_alias is not None:
+            original_model_id = default_chat_alias.get("model_id")
+            default_chat_alias["model_id"] = override_model_id
+            logger.info(
+                "office_profile.chat_model_id_override applied alias=default-chat "
+                "original_model_id=%s override_model_id=%s",
+                original_model_id,
+                override_model_id,
+            )
+
     validate(office_profile, SchemaType.OFFICE_PROFILE)
     return office_profile
 

@@ -65,3 +65,7 @@ Thumbs.db
 
 # 사내 미러 주소를 담을 수 있으므로 커밋하지 않는다 (13-windows-local-setup.md §2.7)
 uv.toml
+
+# verify-change 기준선 스냅샷 (scripts/agent/verify-change.mjs --save-baseline)
+# 세션·작업별 로컬 산출물이라 공유하지 않는다.
+.agent-baseline*.json

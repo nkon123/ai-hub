@@ -83,6 +83,7 @@ from agent_runtime import mcp_tools
 from agent_runtime.adapters import HubSearchAdapter, KnowledgeAdapter, LLMAdapter, MCPAdapter
 from agent_runtime.adapters.hub_search import HubSearchError
 from agent_runtime.adapters.mcp import MCPCallError
+from agent_runtime.adapters.ollama import OllamaModelNotFoundError
 from agent_runtime.adapters.search import KnowledgeSearchError
 from agent_runtime.config import settings
 from agent_runtime.conversation import bound_history, rewrite_query_for_search
@@ -1158,6 +1159,30 @@ async def run_knowledge_chat(
         run_store.set_status(run_id, "SUCCEEDED", output=output)
         run_store.append_event(run_id, "run.completed", {"status": "SUCCEEDED", "output": output})
 
+    except OllamaModelNotFoundError as exc:
+        # 실사용 제보(2026-08-20): Ollama가 model_id 미설치를 404로 알리는
+        # 것은 "Ollama가 죽었음/응답 없음"과 원인·조치가 다르다 — 여기 잡지
+        # 않으면 아래 generic except가 INTERNAL_ERROR로 뭉개 사용자가 아무
+        # 조치도 취할 수 없게 된다. model_id/alias는 Secret이 아니다.
+        logger.warning(
+            "run.model_not_found run_id=%s model_id=%s model_alias=%s",
+            run_id,
+            exc.model_id,
+            exc.model_alias,
+        )
+        _fail(
+            run_store,
+            run_id,
+            trace_id,
+            "MODEL_UNAVAILABLE",
+            (
+                f"AI 모델 '{exc.model_id}'이(가) Ollama에 설치되어 있지 않습니다 "
+                f"(office-profile.json의 model_aliases.{exc.model_alias}에 설정된 값). "
+                f"`ollama pull {exc.model_id}`를 실행하거나 관리자에게 "
+                "AGENT_RUNTIME_CHAT_MODEL_ID 환경변수로 이미 설치된 모델을 "
+                "지정해 달라고 요청해 주세요."
+            ),
+        )
     except Exception:  # noqa: BLE001 - a bug here must never leave a run RUNNING
         logger.exception("run.internal_error run_id=%s", run_id)
         _fail(

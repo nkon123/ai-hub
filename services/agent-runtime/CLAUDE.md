@@ -133,6 +133,19 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   `test_default_origins_match_every_browser_facing_service`가 세 서비스 목록이 갈라지면
   즉시 깨지도록 고정한다 — 이 목록을 바꾸면 그 테스트를 반드시 같이 돌린다.
 
+- **"404 model not found"가 뜨면**(Knowledge 메타데이터 서제스트, 대화,
+  Hosted Chat, 라우팅 등 `OllamaLLMAdapter`를 쓰는 모든 경로에서 발생 가능,
+  D-091): 이건 `/api/chat` 경로가 없다는 뜻이 아니다(그 경로는 항상 있고
+  GET 하면 405가 뜬다) — office-profile의 `model_aliases["default-chat"]
+  .model_id`(기본 `exaone3.5:7.8b`)가 그 PC의 Ollama에 설치돼 있지 않다는
+  뜻이다. 조치: (1) `ollama list`로 설치된 모델 확인 (2) 네트워크가 있으면
+  `ollama pull <model_id>` (3) **폐쇄망이라 pull이 안 되면** 이미 설치된
+  모델을 가리키도록 `AGENT_RUNTIME_CHAT_MODEL_ID=<installed-model-id>`
+  환경변수를 설정하고 재기동 — 기동 로그에
+  `office_profile.chat_model_id_override applied ...` 한 줄이 찍히면
+  적용된 것이다. 설치된 모델로 **자동 대체는 절대 하지 않는다**(D-091) —
+  안 하면 사용자가 어떤 모델이 실제로 답하는지 모른 채 성격이 바뀐다.
+
 ## 완료 전 확인
 
 - `mcp_tools.py`의 `MCP_TOOL_SPECS`를 office-mcp-server의

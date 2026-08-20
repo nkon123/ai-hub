@@ -252,7 +252,14 @@ paths:
           description: >
             MODEL_UNAVAILABLE — the underlying LLM (Ollama) could not be
             reached or failed. Registration itself never depends on this
-            endpoint succeeding.
+            endpoint succeeding. When the specific cause is that the
+            configured `model_id` is not installed on the Ollama instance
+            (Ollama's own /api/chat 404 for this reason, D-091,
+            open-decisions.md), `message` names the missing `model_id` and
+            the office-profile `model_aliases` key it came from, and points
+            at `ollama pull <model_id>` or the `AGENT_RUNTIME_CHAT_MODEL_ID`
+            override — this is distinguishable only via `message` text, not
+            a separate error code.
 
 components:
   parameters:

@@ -188,6 +188,20 @@ class AgentRuntimeSettings(BaseSettings):
     # registration screen.
     knowledge_metadata_suggest_timeout_seconds: float = 20.0
 
+    # 실사용 제보(2026-08-20, 사내 Windows): `office-profile.json`의
+    # `model_aliases["default-chat"].model_id`는 git 추적 파일이라, 테스트
+    # PC마다 설치된 Ollama 모델이 다르면 그 파일을 직접 고쳐야 했고 그때마다
+    # 더러운 작업 트리가 생겼다. 이 값을 설정하면 `manifests
+    # ._load_default_office_profile`이 로드 직후 alias "default-chat"의
+    # `model_id`만 이 값으로 덮어쓴다(다른 alias는 건드리지 않는다) — 적용
+    # 시점에 로그 한 줄을 남긴다(조용한 대체가 가장 나쁘다). 기본값
+    # `None`이면 아무 것도 바뀌지 않는다(office-profile.json 값 그대로).
+    # 설치된 모델로 자동 대체(fallback)는 절대 하지 않는다 — Desktop이
+    # `/api/tags`로 설치된 모델 중 자동 선택하는 것과 달리, 여기서 조용히
+    # 다른 모델로 바뀌면 답변 품질/성격이 말없이 달라진다(이 저장소 원칙:
+    # 모르면 추측하지 말고 정직하게 실패한다). open-decisions.md 참고.
+    chat_model_id_override: str | None = None
+
     # D-034 해석 경로 4 (`local_agent_registry.py`): registration table that
     # turns a Desktop-installed Agent Package into a runnable local
     # resolution path — same fail-closed-by-default shape as D-079's

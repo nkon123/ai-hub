@@ -8,8 +8,12 @@ from typing import Any
 
 import httpx
 import pytest
+from agent_runtime.adapters import LLMAdapter
 from agent_runtime.adapters.hub_search import HubSearchError
+from agent_runtime.adapters.ollama import OllamaModelNotFoundError
 from agent_runtime.config import settings as agent_runtime_settings
+from agent_runtime.main import app
+from agent_runtime.routers.runs import get_llm_adapter
 
 from tests.integration.agent_runtime.conftest import (
     FakeHubSearchAdapter,
@@ -164,6 +168,53 @@ async def test_missing_question_fails_run(
     assert final.json()["status"] == "FAILED"
     assert fake_llm_adapter.call_count == 0
     assert fake_knowledge_adapter.call_count == 0
+
+
+class _ModelNotFoundLLMAdapter(LLMAdapter):
+    """Simulates Ollama's 404 "model not installed" at ANSWER_GENERATE —
+    workflow.py is the single choke point `run_knowledge_chat` shared by
+    /local/v1/runs* and Hosted Chat (chat.py), so this covers both."""
+
+    async def generate(self, messages, model_alias, stream=True):  # type: ignore[override]
+        raise OllamaModelNotFoundError(model_id="exaone3.5:7.8b", model_alias="default-chat")
+        yield  # pragma: no cover - makes this an async generator function
+
+
+async def test_model_not_found_fails_run_with_actionable_message(
+    client: httpx.AsyncClient,
+    fake_knowledge_adapter: FakeKnowledgeAdapter,
+) -> None:
+    """실사용 제보(2026-08-20, D-091): a 404 "model not installed" must reach
+    the caller as a distinguishable, actionable MODEL_UNAVAILABLE — not the
+    generic INTERNAL_ERROR the top-level `except Exception` in workflow.py
+    would otherwise produce for any unexpected failure."""
+    app.dependency_overrides[get_llm_adapter] = lambda: _ModelNotFoundLLMAdapter()
+    try:
+        resp = await client.post(
+            "/local/v1/runs",
+            json={
+                "service_id": "hr-chatbot-service",
+                "input": {"knowledge_id": "hr-policy-knowledge", "question": "연차는 며칠인가요?"},
+            },
+        )
+        assert resp.status_code == 202
+        run_id = resp.json()["id"]
+
+        events = await _read_all_sse_events(client, run_id)
+    finally:
+        app.dependency_overrides.pop(get_llm_adapter, None)
+
+    event_names = [e["event"] for e in events]
+    assert "run.failed" in event_names
+    failed_event = next(e for e in events if e["event"] == "run.failed")
+    assert failed_event["data"]["code"] == "MODEL_UNAVAILABLE"
+    message = failed_event["data"]["message"]
+    assert "exaone3.5:7.8b" in message
+    assert "default-chat" in message
+    assert "ollama pull" in message
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "FAILED"
 
 
 async def test_cancel_mid_stream_stops_generation(
