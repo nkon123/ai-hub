@@ -9,6 +9,7 @@ import type {
   LocalToolParameterInfo,
   ToolExecutionRecord,
   ToolExecutionRoute,
+  ToolResultDisplayKind,
 } from "../../electron/types";
 import { formatBytes, formatDurationMs } from "../format";
 
@@ -88,6 +89,11 @@ export interface InvocationOutcomeDisplay {
   tone: InvocationOutcomeTone;
   title: string;
   detail: string;
+  /** `detail`을 어떻게 그릴지 — 생략(`undefined`)이면 "structured"(기존
+   * `<pre>` 표시)와 동일하게 취급한다. 성공 결과가 원래 문자열이었을 때만
+   * `formatInvocationOutcome`이 "markdown"을 채운다(위 설명 참고). 실패/
+   * 취소/타임아웃 등 사람이 쓴 안내 문구는 항상 structured로 남는다. */
+  detailKind?: ToolResultDisplayKind;
 }
 
 function safeStringifyResult(value: unknown): string {
@@ -99,13 +105,43 @@ function safeStringifyResult(value: unknown): string {
   }
 }
 
+// --- 실사용 제보(2026-08-20) — "로컬 Tool 결과가 마크다운으로 안 보인다"
+// ---------------------------------------------------------------------------
+// 로컬 Tool의 반환값 타입은 `unknown`이다(`electron/types.ts`의
+// `LocalToolInvocationResult`). 실제로는 두 종류가 온다: Markdown 문자열을
+// 돌려주는 Tool(예: `disk_space_report.py`)과 dict/list를 돌려주는 Tool(예:
+// `add_numbers.py`). 후자를 `AnswerMarkdown`에 그대로 넣으면 JSON을 한 줄
+// 텍스트로 직렬화해 지금보다 읽기 나빠진다 — 그래서 판정을 순수 함수로 뺀다
+// (컴포넌트를 렌더링할 수 없는 `environment: "node"` vitest 설정이라 이
+// 판정 자체를 단위 테스트하려면 함수로 분리해야 한다, `scheduleHistoryDetail.
+// ts`의 `summarizeForList`와 같은 이유). 값 집합 자체(`ToolResultDisplayKind`)는
+// `electron/types.ts`가 정의한다 — `ToolExecutionRecord.resultDisplayKind`도
+// 같은 타입을 쓰므로 저장 계약과 화면 판정이 갈라지지 않는다.
+export type { ToolResultDisplayKind };
+
+export interface ToolResultDisplay {
+  kind: ToolResultDisplayKind;
+  text: string;
+}
+
+/** 로컬 Tool의 원시 반환값을 화면에 그릴 문자열과 그 표시 방식으로 바꾼다.
+ * 문자열 결과만 "markdown"(그대로 `AnswerMarkdown`으로 렌더링) — 문자열이
+ * 아닌 모든 값(객체/배열/숫자/불리언/null/undefined)은 "structured"로 남아
+ * 지금까지처럼 JSON pretty-print로 보인다. */
+export function classifyToolResultForDisplay(value: unknown): ToolResultDisplay {
+  if (typeof value === "string") return { kind: "markdown", text: value };
+  return { kind: "structured", text: safeStringifyResult(value) };
+}
+
 /** Maps each of the six `LocalToolInvocationResult.outcome` values to a
  * distinct display — Task Brief: never collapse timeout/nonzero-exit/
  * oversized-output/etc. into one generic "실패" bucket. */
 export function formatInvocationOutcome(result: LocalToolInvocationResult): InvocationOutcomeDisplay {
   switch (result.outcome) {
-    case "success":
-      return { tone: "success", title: "실행 성공", detail: safeStringifyResult(result.result) };
+    case "success": {
+      const display = classifyToolResultForDisplay(result.result);
+      return { tone: "success", title: "실행 성공", detail: display.text, detailKind: display.kind };
+    }
     case "function_error":
       return { tone: "danger", title: `Python 예외: ${result.errorType}`, detail: result.errorMessage || "(메시지 없음)" };
     case "nonzero_exit":
@@ -209,6 +245,10 @@ export function buildToolOnlyTurnPersistPayload(params: {
           resultSummary: status === "succeeded" ? params.outcome.detail : null,
           failureReason: status === "failed" ? params.outcome.detail : null,
           route: params.route,
+          // 성공일 때만 의미 있다 — 실패 사유(`failureReason`)는 항상 사람이
+          // 쓴 안내 문장이지 Tool 반환값이 아니므로 structured로 취급된다
+          // (렌더 쪽이 `resultDisplayKind`를 `resultSummary`에만 적용한다).
+          resultDisplayKind: status === "succeeded" ? params.outcome.detailKind : undefined,
         },
       ]
     : [];

@@ -1224,7 +1224,20 @@ export interface ToolExecutionRecord {
   /** 실패/거절/오류일 때만 채워지는 사유 — 성공 시 `null`. */
   failureReason: string | null;
   route: ToolExecutionRoute;
+  /** 실사용 제보(2026-08-20) — `resultSummary`를 그릴 방식.
+   * `resultSummary`가 로컬 Tool의 원시 문자열 반환값 그대로일 때만
+   * `"markdown"`이고(`localToolsTypes.ts`의 `classifyToolResultForDisplay`),
+   * 나머지(구조적 결과의 JSON 요약, Hub Tool의 headline, MCP Tool 요약
+   * 문장)는 `"structured"`다. 생략(`undefined`)이면 이 필드 도입 이전에
+   * 저장된 과거 턴이며 `"structured"`와 동일하게 취급한다(안전한 기본값 —
+   * 과거 텍스트를 임의로 마크다운으로 재해석하지 않는다). */
+  resultDisplayKind?: ToolResultDisplayKind;
 }
+
+/** `localToolsTypes.ts`의 `ToolResultDisplayKind`와 같은 값 집합이지만, 이
+ * 파일은 렌더러 순수 로직 모듈을 import하지 않는다(코드 배치 규칙 — Main
+ * 전용/순수 모듈과 화면 모듈을 섞지 않는다) 대신 값 집합을 여기 복제한다. */
+export type ToolResultDisplayKind = "markdown" | "structured";
 
 export interface ConversationTurnRecord {
   id: string;

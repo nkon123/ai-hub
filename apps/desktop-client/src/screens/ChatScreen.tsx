@@ -408,7 +408,19 @@ function ToolExecutionsPanel({ executions }: { executions: ToolExecutionRecord[]
               {JSON.stringify(exec.args)}
             </pre>
           )}
-          {exec.resultSummary && <p className="mt-1">{exec.resultSummary}</p>}
+          {exec.resultSummary &&
+            (exec.resultDisplayKind === "markdown" ? (
+              // 실사용 제보(2026-08-20) — 복원된 턴에서도 로컬 Tool이 돌려준
+              // 원시 문자열 결과(예: 마크다운 표)는 서식과 함께 보인다.
+              // `resultDisplayKind`가 없거나(과거 턴) "structured"면 아래
+              // 평문 문단으로 남는다 — 구조적 결과를 마크다운으로 잘못
+              // 재해석하지 않는다.
+              <div className="mt-1 max-h-64 overflow-y-auto overflow-x-auto rounded border border-border bg-white px-2 py-1.5">
+                <AnswerMarkdown source={exec.resultSummary} />
+              </div>
+            ) : (
+              <p className="mt-1">{exec.resultSummary}</p>
+            ))}
           {exec.failureReason && <p className="mt-1">{exec.failureReason}</p>}
         </div>
       ))}

@@ -3,6 +3,7 @@ import type { LocalTool, LocalToolCandidateResult, LocalToolInvocationResult } f
 import {
   buildLocalToolArgs,
   buildToolOnlyTurnPersistPayload,
+  classifyToolResultForDisplay,
   defaultSelectedFunctionNames,
   describeMcpToolsNoticeForEmptyState,
   fieldKindForSchemaType,
@@ -98,6 +99,30 @@ describe("formatArgsForConfirm", () => {
   });
 });
 
+describe("classifyToolResultForDisplay", () => {
+  it("classifies a string result as markdown, keeping the raw text", () => {
+    expect(classifyToolResultForDisplay("# 제목\n표\n")).toEqual({ kind: "markdown", text: "# 제목\n표\n" });
+  });
+
+  it("classifies a plain object as structured JSON", () => {
+    const result = classifyToolResultForDisplay({ a: 1, sum: 3334 });
+    expect(result.kind).toBe("structured");
+    expect(result.text).toContain('"sum": 3334');
+  });
+
+  it("classifies an array as structured, not markdown", () => {
+    expect(classifyToolResultForDisplay([1, 2, 3]).kind).toBe("structured");
+  });
+
+  it("does not throw for null/undefined/number/boolean and classifies them as structured", () => {
+    for (const value of [null, undefined, 0, 42, false, true]) {
+      expect(() => classifyToolResultForDisplay(value)).not.toThrow();
+      expect(classifyToolResultForDisplay(value).kind).toBe("structured");
+    }
+    expect(classifyToolResultForDisplay(undefined).text).toBe("(반환값 없음)");
+  });
+});
+
 describe("formatInvocationOutcome", () => {
   it("distinguishes all nine outcomes", () => {
     const cases: LocalToolInvocationResult[] = [
@@ -115,10 +140,68 @@ describe("formatInvocationOutcome", () => {
     expect(new Set(titles).size).toBe(titles.length); // all distinct
   });
 
-  it("success shows the JSON result", () => {
+  it("success shows the JSON result and marks it structured (not markdown) for an object return value", () => {
     const display = formatInvocationOutcome({ outcome: "success", result: { greeting: "hi" } });
     expect(display.tone).toBe("success");
     expect(display.detail).toContain("greeting");
+    expect(display.detailKind).toBe("structured");
+  });
+
+  // 실사용 제보(2026-08-20) — "결과가 마크다운으로 안 보인다". 문자열을
+  // 돌려주는 Tool(예: markdown_table.py)의 결과는 markdown으로 표시돼야
+  // 한다 — 그리고 JSON.stringify로 따옴표를 씌우면 안 된다(그러면 원문이
+  // 아니게 된다).
+  it("success marks a string return value as markdown and keeps the raw text (no JSON quoting)", () => {
+    const display = formatInvocationOutcome({ outcome: "success", result: "| a | b |\n|---|---|\n| 1 | 2 |" });
+    expect(display.detailKind).toBe("markdown");
+    expect(display.detail).toBe("| a | b |\n|---|---|\n| 1 | 2 |");
+    expect(display.detail).not.toContain('"'); // JSON.stringify would have added quotes
+  });
+
+  it("success marks an array return value as structured, not markdown", () => {
+    const display = formatInvocationOutcome({ outcome: "success", result: [1, 2, 3] });
+    expect(display.detailKind).toBe("structured");
+  });
+
+  // 경계값들 — 크래시 없이 structured로 처리된다.
+  it.each([
+    ["null", null],
+    ["a number", 42],
+    ["a boolean", false],
+  ] as const)("success treats %s as structured, not markdown", (_label, value) => {
+    expect(() => formatInvocationOutcome({ outcome: "success", result: value })).not.toThrow();
+    const display = formatInvocationOutcome({ outcome: "success", result: value });
+    expect(display.detailKind).toBe("structured");
+  });
+
+  // 빈 문자열은 여전히 "문자열"이므로 markdown 경로다(크래시하지 않고,
+  // `AnswerMarkdown`이 빈 문자열을 안전하게 다룬다 — 그 파일 자체는 이번
+  // 변경 범위 밖이다).
+  it("success treats an empty string as markdown without throwing", () => {
+    expect(() => formatInvocationOutcome({ outcome: "success", result: "" })).not.toThrow();
+    const display = formatInvocationOutcome({ outcome: "success", result: "" });
+    expect(display.detailKind).toBe("markdown");
+    expect(display.detail).toBe("");
+  });
+
+  // 기존 실패/취소/타임아웃 표시는 회귀하지 않는다 — 사람이 쓴 안내
+  // 문구이지 Tool 반환값이 아니므로 markdown으로 분류되지 않는다(그리고
+  // 기존 톤/제목 규칙도 그대로 유지된다).
+  it("non-success outcomes are never marked as markdown (they're hand-written notices, not tool return values)", () => {
+    const nonSuccessCases: LocalToolInvocationResult[] = [
+      { outcome: "function_error", errorType: "ValueError", errorMessage: "bad" },
+      { outcome: "nonzero_exit", exitCode: 2, stderrSnippet: "boom" },
+      { outcome: "timeout", timeoutMs: 30_000 },
+      { outcome: "oversized_output", limitBytes: 1024 },
+      { outcome: "spawn_error", message: "ENOENT" },
+      { outcome: "interpreter_not_configured" },
+      { outcome: "user_denied" },
+      { outcome: "cancelled" },
+    ];
+    for (const c of nonSuccessCases) {
+      const display = formatInvocationOutcome(c);
+      expect(display.detailKind).not.toBe("markdown");
+    }
   });
 
   it("interpreter_not_configured points at Settings", () => {
@@ -301,6 +384,40 @@ describe("buildToolOnlyTurnPersistPayload", () => {
       failureReason: null,
       route: "ai_auto_selected",
     });
+  });
+
+  // 실사용 제보(2026-08-20) — 복원된 턴(ChatScreen.tsx의 ToolExecutionsPanel)도
+  // 마크다운으로 그려지려면, 저장 Payload가 `outcome.detailKind`를
+  // `resultDisplayKind`로 옮겨야 한다.
+  it("propagates the outcome's detailKind onto the persisted record's resultDisplayKind", () => {
+    const markdownPayload = buildToolOnlyTurnPersistPayload({
+      question: "디스크 사용량 보여줘",
+      toolName: "disk_space_report",
+      args: {},
+      route: "user_selected",
+      outcome: outcome({ tone: "success", detail: "| 드라이브 | 여유 |\n|---|---|\n| C | 10GB |", detailKind: "markdown" }),
+    });
+    expect(markdownPayload.toolExecutions[0].resultDisplayKind).toBe("markdown");
+
+    const structuredPayload = buildToolOnlyTurnPersistPayload({
+      question: "숫자 더해줘",
+      toolName: "add_numbers",
+      args: { a: 1, b: 3333 },
+      route: "user_selected",
+      outcome: outcome({ tone: "success", detail: '{\n  "sum": 3334\n}', detailKind: "structured" }),
+    });
+    expect(structuredPayload.toolExecutions[0].resultDisplayKind).toBe("structured");
+  });
+
+  it("does not set resultDisplayKind for a failed execution (failureReason is always hand-written, not a tool return value)", () => {
+    const payload = buildToolOnlyTurnPersistPayload({
+      question: "재고 몇 개 남았어?",
+      toolName: "check_stock",
+      args: null,
+      route: "ai_auto_selected",
+      outcome: outcome({ tone: "danger", detail: "sku: 필수 항목입니다" }),
+    });
+    expect(payload.toolExecutions[0].resultDisplayKind).toBeUndefined();
   });
 
   it("persists a schema-validation failure with the chosen tool name and a failureReason (danger tone)", () => {

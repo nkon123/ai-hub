@@ -45,6 +45,7 @@ import type { DesktopBridge, LocalTool } from "../../electron/types";
 import { routeLocalToolCall } from "../../electron/local-tool-router";
 import { Button, ErrorBanner, LoadingState, Modal } from "../ui";
 import { formatDateTime } from "../format";
+import { AnswerMarkdown } from "./AnswerMarkdown";
 import {
   NOT_A_SANDBOX_NOTICE,
   buildLocalToolArgs,
@@ -78,6 +79,24 @@ const OUTCOME_TONE_CLASS: Record<InvocationOutcomeDisplay["tone"], string> = {
   muted: "border-border bg-slate-50 text-text-secondary",
 };
 
+/** 실사용 제보(2026-08-20) — "로컬 Tool 결과가 마크다운으로 안 보인다".
+ * 이 컴포넌트가 세 자리(수동 실행 카드/자동 라우팅 카드/수동 실행 완료
+ * 모달)에서 반복해 쓰인다 — `formatInvocationOutcome`(`localToolsTypes.ts`)
+ * 이 이미 문자열 결과와 구조적 결과를 `detailKind`로 구분해 뒀으므로, 여기서는
+ * 그 판정을 그대로 따라 그리기만 한다. `detailKind`가 없으면(실패/취소/타임
+ * 아웃 등 사람이 쓴 안내 문구) 지금까지와 같은 `<pre>` 표시를 유지한다 —
+ * 구조적 텍스트를 마크다운으로 잘못 해석하지 않는다. */
+function OutcomeDetail({ outcome }: { outcome: InvocationOutcomeDisplay }) {
+  if (outcome.detailKind === "markdown") {
+    return (
+      <div className="mt-0.5 max-h-72 overflow-y-auto overflow-x-auto rounded border border-black/10 bg-white/60 px-2 py-1.5">
+        <AnswerMarkdown source={outcome.detail} />
+      </div>
+    );
+  }
+  return <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap text-caption">{outcome.detail}</pre>;
+}
+
 /** 대화 스레드 안에 그려지는 카드 — Hub Tool 결과(ToolRoutePanel)나 Knowledge
  * Citation과 절대 같은 모양으로 보이면 안 된다(Task Brief 요구사항): 배지를
  * 항상 붙이고, 카드 자체를 대시 테두리(로컬/미검토임을 시각적으로 구분)로
@@ -104,7 +123,7 @@ export function LocalToolChatEntryCard({ entry }: { entry: LocalToolChatEntry })
       ) : (
         <div className={`mt-1.5 rounded border px-2 py-1.5 ${OUTCOME_TONE_CLASS[outcome.tone]}`}>
           <p className="font-semibold">{outcome.title}</p>
-          <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap text-[10px]">{outcome.detail}</pre>
+          <OutcomeDetail outcome={outcome} />
         </div>
       )}
     </div>
@@ -160,7 +179,7 @@ export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRou
       ) : (
         <div className={`mt-1.5 rounded border px-2 py-1.5 ${OUTCOME_TONE_CLASS[display.tone]}`}>
           <p className="font-semibold">{display.title}</p>
-          <pre className="mt-0.5 overflow-x-auto whitespace-pre-wrap text-[10px]">{display.detail}</pre>
+          <OutcomeDetail outcome={display} />
         </div>
       )}
     </div>
@@ -614,7 +633,7 @@ export function LocalToolInvokePanel({
             {lastOutcome && (
               <div className={`rounded-lg border px-3 py-3 ${OUTCOME_TONE_CLASS[lastOutcome.tone]}`}>
                 <p className="font-semibold">{lastOutcome.title}</p>
-                <pre className="mt-1 overflow-x-auto whitespace-pre-wrap text-caption">{lastOutcome.detail}</pre>
+                <OutcomeDetail outcome={lastOutcome} />
               </div>
             )}
             <p className="text-caption text-text-muted">결과가 대화창에도 기록되었습니다.</p>
