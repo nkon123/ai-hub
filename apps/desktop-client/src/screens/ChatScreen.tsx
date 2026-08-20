@@ -109,7 +109,9 @@ import {
 // `InvocationOutcomeDisplay`는 이 화면이 결과 톤(success/danger/warning/muted)을
 // 저장할 대화 턴 상태로 옮길 때만 필요하다(persistToolOnlyTurn) — Run/agent-runtime
 // 경로와는 무관하므로 위 로컬 Tool 격리 원칙을 어기지 않는다(타입만 공유).
-import type { InvocationOutcomeDisplay } from "./localToolsTypes";
+// `buildToolOnlyTurnPersistPayload`는 그 변환 로직 자체(순수 함수, 단위
+// 테스트 가능) — `localToolsTypes.test.ts` 참고.
+import { buildToolOnlyTurnPersistPayload, type InvocationOutcomeDisplay } from "./localToolsTypes";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -1212,38 +1214,31 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     }
   }
 
-  // 실사용 제보(2026-08-19) — 로컬 Tool 수동 실행(`LocalToolInvokePanel`)과
-  // 자동 라우팅(`runLocalToolAutoRoute`)은 `startRun`을 거치지 않아
-  // `ChatMessage`/정상 턴이 아예 만들어지지 않는다(위 handleLocalToolAutoRoute
-  // 모듈 주석) — 그래서 `persistTurn`(터미널 상태가 된 `messages` 항목을
-  // 지켜보는 effect)이 이 실행들을 볼 방법이 없다. 이 함수가 그 간극을
-  // 메운다: Tool 실행 자체를 "질문 없는 턴"으로 저장해, 대화를 다시 열었을
-  // 때도 실행 사실이 남는다. "아무 Tool도 실행되지 않음"(muted, 예:
-  // 후보 없음/AI가 불필요 판단)은 `null` 상태를 반환해 저장을 건너뛴다 —
-  // 실행된 적이 없으므로 남길 기록도 없다(honest empty, 지어내지 않는다).
-  function outcomeToTurnStatus(tone: InvocationOutcomeDisplay["tone"]): ConversationTurnStatus | null {
-    if (tone === "success") return "succeeded";
-    if (tone === "danger" || tone === "warning") return "failed";
-    return null;
-  }
-
+  // 실사용 제보(2026-08-19, 2026-08-20 후속) — 로컬 Tool 수동 실행
+  // (`LocalToolInvokePanel`)과 자동 라우팅(`runLocalToolAutoRoute`)은
+  // `startRun`을 거치지 않아 `ChatMessage`/정상 턴이 아예 만들어지지 않는다
+  // (위 handleLocalToolAutoRoute 모듈 주석) — 그래서 `persistTurn`(터미널
+  // 상태가 된 `messages` 항목을 지켜보는 effect)이 이 실행들을 볼 방법이
+  // 없다. 이 함수가 그 간극을 메운다: Tool 실행(또는 "실행 안 됨") 자체를
+  // "질문 없는 턴"으로 저장해, 대화를 다시 열었을 때도 그 사실이 남는다.
+  // 2026-08-20 이전에는 muted(불필요 판단/후보 없음)와 warning(후보 중 못
+  // 고름)일 때 저장을 통째로 건너뛰었다 — 그 결과 "질문을 입력했는데
+  // 대화에 아무 흔적도 남지 않는다"는 바로 그 제보 증상이 재발했다. 실제
+  // 변환 로직(톤 -> 저장 Payload)은 `buildToolOnlyTurnPersistPayload`
+  // (`localToolsTypes.ts`)로 뺐다 — 이 함수 자체는 렌더링 없이 단위
+  // 테스트할 수 없는 컴포넌트 클로저이므로, 로직은 순수 함수에 두고 여기서는
+  // IPC 왕복(대화 생성/저장/오류 처리)만 담당한다.
   async function persistToolOnlyTurn(params: {
     question: string;
-    toolName: string;
+    /** `null`이면 어떤 Tool도 선택되지 않았다(불필요 판단/후보 없음/후보
+     * 중 못 고름) — 그래도 턴 자체는 저장된다(no_action). */
+    toolName: string | null;
     args: Record<string, unknown> | null;
     route: ToolExecutionRoute;
     outcome: InvocationOutcomeDisplay;
   }): Promise<void> {
     if (!conversationBridge) return;
-    const status = outcomeToTurnStatus(params.outcome.tone);
-    if (!status) return;
-    const toolExecution: ToolExecutionRecord = {
-      toolName: params.toolName,
-      args: params.args,
-      resultSummary: status === "succeeded" ? params.outcome.detail : null,
-      failureReason: status === "failed" ? params.outcome.detail : null,
-      route: params.route,
-    };
+    const payload = buildToolOnlyTurnPersistPayload(params);
     try {
       let conversationId = currentConversationId;
       if (!conversationId) {
@@ -1251,13 +1246,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         conversationId = created.id;
         setCurrentConversationId(created.id);
       }
-      await conversationBridge.appendConversationTurn(conversationId, {
-        question: params.question,
-        answer: "",
-        status,
-        citationCount: 0,
-        toolExecutions: [toolExecution],
-      });
+      await conversationBridge.appendConversationTurn(conversationId, payload);
       await loadConversations();
     } catch {
       // 정상 턴 저장 실패와 동일한 원칙 — 조용히 무시하지 않고 알리되,
@@ -1346,19 +1335,19 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           setLocalToolRouteEntries((prev) =>
             prev.map((e) => (e.id === entryId ? { ...e, completedAt, toolName, args, display } : e)),
           );
-          // 실사용 제보(2026-08-19) — AI가 실제로 Tool을 골라 실행한
-          // 경우에만 기록한다(toolName === null이면 "필요 없음"/"후보 중
-          // 못 고름" — 실행 사실이 없다, persistToolOnlyTurn이 muted도
-          // 다시 한 번 걸러낸다).
-          if (toolName) {
-            void persistToolOnlyTurn({
-              question: q,
-              toolName,
-              args,
-              route: "ai_auto_selected",
-              outcome: display,
-            });
-          }
+          // 실사용 제보(2026-08-19, 2026-08-20 후속) — 이 턴은 항상
+          // 저장한다. `toolName === null`(AI가 불필요 판단/후보 없음/후보
+          // 중 못 고름)이어도 질문은 실제로 있었고 이유도 있다 — 저장을
+          // 건너뛰면 "질문이 대화에서 사라진다"는 바로 그 제보 증상이
+          // 재발한다(persistToolOnlyTurn이 이 경우 "no_action" 상태로
+          // 사유를 answer에 담아 저장한다).
+          void persistToolOnlyTurn({
+            question: q,
+            toolName,
+            args,
+            route: "ai_auto_selected",
+            outcome: display,
+          });
         },
       });
     } finally {
@@ -2206,7 +2195,25 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     return <LocalToolChatEntryCard key={item.entry.id} entry={item.entry} />;
                   }
                   if (item.kind === "localToolRoute") {
-                    return <LocalToolAutoRouteEntryCard key={item.entry.id} entry={item.entry} />;
+                    // 실사용 제보(2026-08-20) — 자동 라우팅도 대화의 일부다:
+                    // "Tool을 자동으로 골랐다"는 실행 방식의 차이일 뿐, 사용자가
+                    // 입력한 질문 자체가 대화가 아닌 것은 아니다. 일반 턴과
+                    // 동일한 질문 말풍선(`ChatTurn`의 것과 같은 스타일)을 이
+                    // 카드 바로 위에 붙여, 질문과 결과가 시간순으로 붙어
+                    // 보이게 한다 — `ChatMessage`로 승격하지 않고 카드는
+                    // 그대로 둔 이유는 이 항목이 "Tool 검토 대상"이라는 시각적
+                    // 신호(대시 테두리 + AI 자동 선택 배지)를 잃으면 안 되기
+                    // 때문이다(위 LocalToolAutoRouteEntryCard 문서 참고) —
+                    // 정상 대화 답변과 같은 모양으로 보이면 검토되지 않은
+                    // 실행 결과를 검증된 답변처럼 오해할 수 있다.
+                    return (
+                      <div key={item.entry.id} className="space-y-2">
+                        <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
+                          {item.entry.question}
+                        </div>
+                        <LocalToolAutoRouteEntryCard entry={item.entry} />
+                      </div>
+                    );
                   }
                   const m = item.message;
                   const idx = messages.indexOf(m);
@@ -2676,6 +2683,18 @@ function ChatTurn({
 
         {message.status === "cancelled" && (
           <p className="text-body text-text-muted">취소됨{message.traceId ? ` (Trace ID: ${message.traceId})` : ""}</p>
+        )}
+
+        {/* 실사용 제보(2026-08-20) — 저장소에서 복원된 로컬 Tool 자동
+            라우팅 턴 중 어떤 Tool도 실행되지 않은 경우("no_action",
+            `outcomeToTurnStatus` 참고). "실패"(danger 배너)로 보이면 안
+            된다 — AI가 불필요하다고 판단했거나 후보를 못 골랐을 뿐, 오류가
+            아니다. 사유는 `persistToolOnlyTurn`이 `answer`에 담아 둔
+            그대로 보여준다(지어내지 않는다). */}
+        {message.status === "no_action" && (
+          <div className="rounded-xl border border-border bg-slate-50 px-4 py-2.5 text-body text-text-secondary">
+            {message.answer || "실행할 로컬 Tool을 정하지 못해 아무것도 실행하지 않았습니다."}
+          </div>
         )}
 
         {/* D-034 해석 경로 4 — 등록이 실행 도중 사라진 경우(재확인으로

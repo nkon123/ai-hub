@@ -1194,7 +1194,11 @@ export interface StoreInstallResult {
 // `electron/conversation-store.ts`의 renderer 쪽 거울(mirror) 타입 — 그
 // 파일의 모듈 docstring 참고: 질문/답변 원문은 민감 데이터로 취급하고,
 // 진단 Bundle에는 절대 포함하지 않는다.
-export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled";
+// 실사용 제보(2026-08-20) — `conversation-store.ts`의 같은 이름 타입과
+// 동기화된 mirror. `"no_action"`은 자동 라우팅 턴이 애초에 어떤 Tool도
+// 실행하지 않은 경우(불필요 판단/후보 없음/후보 중 못 고름)를 위한 값이다 —
+// 실행 안 됨을 실패로 뭉개지 않는다.
+export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled" | "no_action";
 
 // 실사용 제보(2026-08-19) — "채팅에서 툴 수행시 기록이 안 남는다" 대응.
 // 이 턴이 실제로 호출한 Tool(들)의 사실 기록 — 이름/인자/결과 요약(또는

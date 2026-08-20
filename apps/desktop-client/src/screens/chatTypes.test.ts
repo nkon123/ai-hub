@@ -205,6 +205,31 @@ describe("chatMessageFromStoredTurn (D06 대화 보존 — 재시작 후 복원)
     expect(message.toolExecutions).toEqual(toolExecutions);
     expect(message.mcpToolCallUsed).toBeNull();
   });
+
+  // 실사용 제보(2026-08-19, 2026-08-20 후속) — 자동 Tool 라우팅이 어떤
+  // Tool도 실행하지 않은 턴("no_action", `localToolsTypes.ts`의
+  // `outcomeToTurnStatus` 참고)도 복원됐을 때 질문과 사유가 그대로 남아야
+  // 한다 — toolExecutions가 비어 있어도(실행된 Tool이 없으므로 정직하게
+  // 빈 배열) 질문은 사라지지 않고, 사유는 answer에 담겨 있다.
+  it("rehydrates a no_action turn (auto-routing ran but no tool was executed) with the question and reason intact", () => {
+    const message = chatMessageFromStoredTurn(
+      {
+        id: "turn-1",
+        question: "오늘 날씨 어때?",
+        answer: "이 질문에는 등록된 로컬 Tool 중 어느 것도 필요하지 않다고 판단해 아무것도 실행하지 않았습니다.",
+        status: "no_action",
+        citationCount: 0,
+        toolExecutions: [],
+        createdAt: "2026-08-20T00:00:00.000Z",
+      },
+      conversation,
+    );
+    expect(message.question).toBe("오늘 날씨 어때?");
+    expect(message.status).toBe("no_action");
+    expect(message.answer).toContain("필요하지 않다고 판단");
+    expect(message.toolExecutions).toEqual([]);
+    expect(message.restored).toBe(true);
+  });
 });
 
 const ACTIVE = { state: "ACTIVE" as const, checkedAt: "2026-08-13T00:00:00.000Z", reason: null, message: null, indexPath: "/idx" };

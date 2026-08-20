@@ -13,7 +13,14 @@ export type ChatMessageStatus =
   | "succeeded"
   | "insufficient_evidence"
   | "failed"
-  | "cancelled";
+  | "cancelled"
+  // 실사용 제보(2026-08-20) — 저장소에 복원된 자동 Tool 라우팅 턴 중,
+  // 애초에 어떤 Tool도 실행되지 않은 경우(`ConversationTurnStatus`의
+  // `"no_action"`을 그대로 옮김). 실패가 아니라 "실행할 것이 없었다"는
+  // 별개의 사실이다 — 라이브 세션 중에는 이 값이 만들어지지 않고 복원
+  // (`chatMessageFromStoredTurn`)에서만 나타난다(ChatScreen.tsx의 자동
+  // 라우팅 핸들러는 이 파일이 정의하는 `messages` 배열에 직접 쓰지 않는다).
+  | "no_action";
 
 export interface ChatMessage {
   id: string;

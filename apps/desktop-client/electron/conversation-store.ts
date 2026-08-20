@@ -49,7 +49,13 @@ import path from "node:path";
 import crypto from "node:crypto";
 import type { ToolExecutionRecord } from "./types";
 
-export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled";
+// 실사용 제보(2026-08-20) — "로컬 Tool 자동 라우팅이 생기면서 기존 대화가
+// 없어진다": 자동 라우팅 턴 중 "AI가 Tool이 필요 없다고 판단"/"후보 중
+// 못 고름"처럼 애초에 어떤 Tool도 실행되지 않은 경우는 succeeded/failed 중
+// 어느 쪽도 정확하지 않다(실패한 것이 아니라 실행할 것이 없었을 뿐이다) —
+// `"no_action"`으로 별도 구분해, 실행 안 됨을 실패로 뭉개지 않는다
+// (ChatScreen.tsx의 `outcomeToTurnStatus` 참고).
+export type ConversationTurnStatus = "succeeded" | "insufficient_evidence" | "failed" | "cancelled" | "no_action";
 
 const TOOL_RESULT_MAX_CHARS = 240;
 

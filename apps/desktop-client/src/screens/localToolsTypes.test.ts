@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { LocalTool, LocalToolCandidateResult, LocalToolInvocationResult } from "../../electron/types";
 import {
   buildLocalToolArgs,
+  buildToolOnlyTurnPersistPayload,
   defaultSelectedFunctionNames,
   describeMcpToolsNoticeForEmptyState,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
+  outcomeToTurnStatus,
   parseLocalToolFieldValue,
   summarizeBulkAddResults,
+  type InvocationOutcomeDisplay,
   type LocalToolBulkAddOutcome,
 } from "./localToolsTypes";
 
@@ -250,5 +253,122 @@ describe("summarizeBulkAddResults", () => {
 
   it("returns a distinct message when nothing was selected", () => {
     expect(summarizeBulkAddResults([])).not.toBe("");
+  });
+});
+
+// 실사용 제보(2026-08-19, 2026-08-20 후속) — "로컬 Tool 자동 라우팅이
+// 생기면서 기존 대화가 없어진다": 자동 라우팅으로 보낸 질문이 대화 저장소에
+// 남아야 하고, Tool이 실행되지 않은 경우("불필요 판단"/"후보 없음"/"후보 중
+// 못 고름")도 실패로 뭉개지 않은 채 그 사실이 드러나야 한다.
+describe("outcomeToTurnStatus", () => {
+  it("maps success to succeeded", () => {
+    expect(outcomeToTurnStatus("success")).toBe("succeeded");
+  });
+
+  it("maps danger (a tool was chosen but couldn't run, e.g. schema validation failure) to failed", () => {
+    expect(outcomeToTurnStatus("danger")).toBe("failed");
+  });
+
+  it("maps warning (couldn't pick a candidate) to no_action, not failed — nothing actually ran", () => {
+    expect(outcomeToTurnStatus("warning")).toBe("no_action");
+  });
+
+  it("maps muted (AI decided no tool was needed / no candidates registered) to no_action, not failed", () => {
+    expect(outcomeToTurnStatus("muted")).toBe("no_action");
+  });
+});
+
+describe("buildToolOnlyTurnPersistPayload", () => {
+  function outcome(overrides: Partial<InvocationOutcomeDisplay> = {}): InvocationOutcomeDisplay {
+    return { tone: "success", title: "실행 성공", detail: "반환값 없음", ...overrides };
+  }
+
+  it("persists a succeeded turn with the executed tool recorded in toolExecutions", () => {
+    const payload = buildToolOnlyTurnPersistPayload({
+      question: "재고 몇 개 남았어?",
+      toolName: "check_stock",
+      args: { sku: "A-1" },
+      route: "ai_auto_selected",
+      outcome: outcome({ tone: "success", detail: "재고 12개" }),
+    });
+    expect(payload.status).toBe("succeeded");
+    expect(payload.question).toBe("재고 몇 개 남았어?");
+    expect(payload.toolExecutions).toHaveLength(1);
+    expect(payload.toolExecutions[0]).toMatchObject({
+      toolName: "check_stock",
+      args: { sku: "A-1" },
+      resultSummary: "재고 12개",
+      failureReason: null,
+      route: "ai_auto_selected",
+    });
+  });
+
+  it("persists a schema-validation failure with the chosen tool name and a failureReason (danger tone)", () => {
+    const payload = buildToolOnlyTurnPersistPayload({
+      question: "재고 몇 개 남았어?",
+      toolName: "check_stock",
+      args: null,
+      route: "ai_auto_selected",
+      outcome: outcome({ tone: "danger", detail: "sku: 필수 항목입니다" }),
+    });
+    expect(payload.status).toBe("failed");
+    expect(payload.toolExecutions).toHaveLength(1);
+    expect(payload.toolExecutions[0].failureReason).toBe("sku: 필수 항목입니다");
+    expect(payload.toolExecutions[0].resultSummary).toBeNull();
+  });
+
+  // 이 테스트가 이번 수정의 핵심 회귀 방지 대상이다: 이전에는 muted/warning
+  // 톤일 때 이 함수 자체를 호출하지 않아(ChatScreen.tsx의 `if (toolName)`
+  // 가드) 질문이 대화 저장소에서 통째로 사라졌다.
+  it("still persists the question when the AI decided no tool was needed (muted, toolName null) — never drops the turn", () => {
+    const payload = buildToolOnlyTurnPersistPayload({
+      question: "오늘 날씨 어때?",
+      toolName: null,
+      args: null,
+      route: "ai_auto_selected",
+      outcome: outcome({
+        tone: "muted",
+        title: "AI가 Tool이 필요 없다고 판단했습니다",
+        detail: "이 질문에는 등록된 로컬 Tool 중 어느 것도 필요하지 않다고 판단해 아무것도 실행하지 않았습니다.",
+      }),
+    });
+    expect(payload.question).toBe("오늘 날씨 어때?");
+    expect(payload.status).toBe("no_action");
+    // 실행된 Tool이 없으므로 toolExecutions는 정직하게 빈 배열 — 대신
+    // 사유는 answer에 담겨 질문만 있고 결과가 텅 비어 보이지 않는다.
+    expect(payload.toolExecutions).toEqual([]);
+    expect(payload.answer).toContain("필요하지 않다고 판단");
+  });
+
+  it("still persists the question when the AI couldn't pick a candidate from the registered tools (warning, toolName null)", () => {
+    const payload = buildToolOnlyTurnPersistPayload({
+      question: "이 파일 좀 처리해줘",
+      toolName: null,
+      args: null,
+      route: "ai_auto_selected",
+      outcome: outcome({
+        tone: "warning",
+        title: "후보 중에서 Tool을 고르지 못했습니다",
+        detail: "AI 응답을 해석하지 못해 어떤 Tool도 실행하지 않았습니다.",
+      }),
+    });
+    expect(payload.question).toBe("이 파일 좀 처리해줘");
+    expect(payload.status).toBe("no_action");
+    expect(payload.toolExecutions).toEqual([]);
+    expect(payload.answer).toContain("해석하지 못해");
+  });
+
+  it("never leaves both toolExecutions and answer empty for a terminal status (a turn must always show why)", () => {
+    for (const tone of ["success", "danger", "warning", "muted"] as const) {
+      const payload = buildToolOnlyTurnPersistPayload({
+        question: "질문",
+        toolName: tone === "success" || tone === "danger" ? "some_tool" : null,
+        args: null,
+        route: "ai_auto_selected",
+        outcome: outcome({ tone, detail: "상세 내용" }),
+      });
+      const hasVisibleOutcome = payload.toolExecutions.length > 0 || payload.answer.length > 0;
+      expect(hasVisibleOutcome).toBe(true);
+    }
   });
 });

@@ -2,10 +2,13 @@
 // fs/electron/node imports), mirroring how chatTypes.ts/assetsTypes.ts keep
 // branching logic out of JSX so it can be unit-tested directly.
 import type {
+  ConversationTurnStatus,
   LocalTool,
   LocalToolCandidateResult,
   LocalToolInvocationResult,
   LocalToolParameterInfo,
+  ToolExecutionRecord,
+  ToolExecutionRoute,
 } from "../../electron/types";
 import { formatBytes, formatDurationMs } from "../format";
 
@@ -154,6 +157,68 @@ export function formatInvocationOutcome(result: LocalToolInvocationResult): Invo
         detail: "사용자가 실행 중 중단해 이 Tool의 프로세스를 종료했습니다.",
       };
   }
+}
+
+// --- 실사용 제보(2026-08-19, 2026-08-20 후속) — "로컬 Tool 자동 라우팅이
+// 생기면서 기존 대화가 없어진다" ------------------------------------------
+// `ChatScreen.tsx`의 `handleLocalToolAutoRoute`(agent-runtime을 절대 거치지
+// 않고 여기서 끝나는 자동 라우팅 한 턴)의 최종 결과를 `conversationBridge.
+// appendConversationTurn`에 보낼 저장 Payload로 옮기는 순수 로직을 여기 둔다
+// — ChatScreen.tsx는 컴포넌트 클로저 안이라 렌더링 없이 단위 테스트할 수
+// 없고(vitest는 `environment: "node"`), 이 파일은 이미 chatTypes.ts/
+// agentRuntime.ts를 import하지 않는 순수 로직 파일이라 여기 두면 그대로
+// 단위 테스트할 수 있다.
+
+/** success -> 실제로 Tool이 실행됨. danger(예: 스키마 검증 실패) -> Tool은
+ * 골랐으나 실행하지 못함. warning(후보 중에서 고르지 못함)/muted(불필요
+ * 판단·후보 없음) -> 애초에 어떤 Tool도 실행되지 않음 — 이 셋을 "failed"로
+ * 뭉개면 실행 안 됨이 오류처럼 보인다(Task Brief: 실패와 무실행을 구분). */
+export function outcomeToTurnStatus(tone: InvocationOutcomeTone): ConversationTurnStatus {
+  if (tone === "success") return "succeeded";
+  if (tone === "danger") return "failed";
+  return "no_action";
+}
+
+export interface ToolOnlyTurnPersistPayload {
+  question: string;
+  answer: string;
+  status: ConversationTurnStatus;
+  citationCount: number;
+  toolExecutions: ToolExecutionRecord[];
+}
+
+/** `appendConversationTurn`에 그대로 넘길 Payload를 만든다. `toolName ===
+ * null`이면 어떤 Tool도 선택되지 않았다는 뜻이다 — 그 경우에도 턴 자체는
+ * 저장해야 한다(질문이 대화에서 사라지면 안 된다는 것이 이 기능의 핵심
+ * 요구사항이다). 이유는 `toolExecutions`가 아니라 `answer`에 담는다 —
+ * 실행된 Tool이 없으니 Tool 실행 기록도 없는 것이 맞고(정직한 빈 배열),
+ * 대신 "왜 아무것도 하지 않았는지"는 사람이 읽는 답변 자리에서 보여준다. */
+export function buildToolOnlyTurnPersistPayload(params: {
+  question: string;
+  toolName: string | null;
+  args: Record<string, unknown> | null;
+  route: ToolExecutionRoute;
+  outcome: InvocationOutcomeDisplay;
+}): ToolOnlyTurnPersistPayload {
+  const status = outcomeToTurnStatus(params.outcome.tone);
+  const toolExecutions: ToolExecutionRecord[] = params.toolName
+    ? [
+        {
+          toolName: params.toolName,
+          args: params.args,
+          resultSummary: status === "succeeded" ? params.outcome.detail : null,
+          failureReason: status === "failed" ? params.outcome.detail : null,
+          route: params.route,
+        },
+      ]
+    : [];
+  return {
+    question: params.question,
+    answer: status === "no_action" ? params.outcome.detail : "",
+    status,
+    citationCount: 0,
+    toolExecutions,
+  };
 }
 
 export type LocalToolFieldKind = "text" | "number" | "boolean" | "json";

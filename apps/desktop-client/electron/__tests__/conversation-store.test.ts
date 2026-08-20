@@ -216,4 +216,41 @@ describe("ConversationStore", () => {
       expect(store.list()).toHaveLength(1);
     });
   });
+
+  // 실사용 제보(2026-08-19, 2026-08-20 후속) — "로컬 Tool 자동 라우팅이
+  // 생기면서 기존 대화가 없어진다": 자동 라우팅으로 보낸 질문 중 어떤
+  // Tool도 실행되지 않은 턴("no_action")도 저장소가 그대로 받아들이고,
+  // 재시작(새 인스턴스)에서도 질문과 사유가 남아야 한다.
+  describe("no_action status (실사용 제보 2026-08-20 — 자동 라우팅이 아무 Tool도 실행하지 않은 턴)", () => {
+    it("persists a no_action turn with an empty toolExecutions and restores it from a fresh instance", () => {
+      const store = new ConversationStore(stateDir);
+      const created = store.create("know-1", "label");
+      store.appendTurn(created.id, {
+        question: "오늘 날씨 어때?",
+        answer: "이 질문에는 등록된 로컬 Tool 중 어느 것도 필요하지 않다고 판단해 아무것도 실행하지 않았습니다.",
+        status: "no_action",
+        citationCount: 0,
+        toolExecutions: [],
+      });
+      const reopened = new ConversationStore(stateDir);
+      const turn = reopened.get(created.id)?.turns[0];
+      expect(turn?.question).toBe("오늘 날씨 어때?");
+      expect(turn?.status).toBe("no_action");
+      expect(turn?.answer).toContain("필요하지 않다고 판단");
+      expect(turn?.toolExecutions).toEqual([]);
+    });
+
+    it("a no_action turn still becomes the conversation's list title (the question is never dropped)", () => {
+      const store = new ConversationStore(stateDir);
+      const created = store.create("know-1", "label");
+      store.appendTurn(created.id, {
+        question: "오늘 날씨 어때?",
+        answer: "아무것도 실행하지 않았습니다.",
+        status: "no_action",
+        citationCount: 0,
+        toolExecutions: [],
+      });
+      expect(store.list()[0].title).toBe("오늘 날씨 어때?");
+    });
+  });
 });
