@@ -84,6 +84,9 @@ const bridge: DesktopBridge = {
 
   getInstallRootPath: (): Promise<string> => ipcRenderer.invoke("app:getInstallRootPath"),
 
+  openOllamaDownloadPage: (): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("external:openOllamaDownloadPage"),
+
   checkAssetRemoval: (assetType: string, assetId: string, version: string): Promise<AssetRemovalCheck> =>
     ipcRenderer.invoke("assets:checkRemoval", assetType, assetId, version),
 

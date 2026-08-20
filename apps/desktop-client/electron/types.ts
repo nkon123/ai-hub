@@ -1829,4 +1829,17 @@ export interface DesktopBridge {
    * `toolRiskAcknowledgedAt`이 없으면(정식 저장 경로를 우회해 만들어졌거나
    * 예전 기록이거나) 승인 우회 없이 거부한다 — 정기 실행과 동일한 게이트. */
   runNowSchedule(id: string): Promise<{ ok: boolean; error: string | null }>;
+
+  // --- D-093 Ollama 설치 안내 -----------------------------------------------
+  /** 승인된 유일한 외부 URL(D-093, `electron/external-links.ts`의
+   * `OLLAMA_DOWNLOAD_URL`, https://ollama.com/download)을 시스템 기본
+   * 브라우저로 연다. **인자를 받지 않는다** — 렌더러가 열 주소를 스스로
+   * 정할 수 없게 하는 것이 이 메서드의 유일한 목적이다(구현 원칙 7의 "승인되지
+   * 않은 임의... 외부 URL... 기능을 만들지 않는다"에 대한 D-093의 좁은
+   * 예외 — 이 한 주소에 한해서만 승인됨). 브라우저를 열지 못해도(설치된
+   * 브라우저 없음 등) 앱은 종료되지 않는다 — `ok:false`+`error`로 정직하게
+   * 실패를 알린다. 폐쇄망 PC에서는 브라우저 실행 자체는 성공(`ok:true`)해도
+   * 그 안에서 페이지 로딩이 실패할 수 있다 — Main Process는 그 실패를 볼 수
+   * 없으므로(별도 창), UI는 항상 주소를 복사 가능한 텍스트로도 함께 보여준다. */
+  openOllamaDownloadPage(): Promise<{ ok: boolean; error: string | null }>;
 }

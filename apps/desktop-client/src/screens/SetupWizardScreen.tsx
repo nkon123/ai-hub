@@ -15,10 +15,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, CheckCircle2, Loader2, RefreshCw } from "lucide-react";
 import type { ConnectionStatus, DesktopSettingsPublic, DiskSpaceInfo, OllamaModelsResult } from "../../electron/types";
+import { shouldShowOllamaInstallGuidance } from "../../electron/external-links";
 import { getDesktopBridge } from "../bridge";
 import { getBrowserSettingsBridge, isBrowserDesktopPreviewEnabled } from "../browserPreviewBridge";
 import { Button, BridgeUnavailableState, Card, CheckRow, ErrorBanner, LabeledInput, LoadingState, PageHeader } from "../ui";
 import { computeDiskSpaceCheck, computeModelsCheck, computeOverallStatus, WIZARD_STEPS } from "./setupWizardTypes";
+import { OllamaInstallGuidance } from "./OllamaInstallGuidance";
 
 export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) {
   const bridge = getDesktopBridge() ?? getBrowserSettingsBridge();
@@ -300,6 +302,17 @@ export function SetupWizardScreen({ onCompleted }: { onCompleted: () => void }) 
               </Button>
             </div>
             {ollamaStatus && <CheckRow label={ollamaStatus.label} status={ollamaStatus.ok ? "PASS" : "FAIL"} message={ollamaStatus.ok ? ollamaStatus.detail : `${ollamaStatus.detail} — ${ollamaStatus.recoveryHint ?? ""}`} />}
+            {shouldShowOllamaInstallGuidance(ollamaStatus) && (
+              <OllamaInstallGuidance
+                bridge={bridge}
+                disabled={browserPreview}
+                disabledReason={
+                  browserPreview
+                    ? "브라우저 개발 모드에서는 외부 브라우저를 열 수 없습니다. 위 주소를 복사해 직접 여세요."
+                    : undefined
+                }
+              />
+            )}
           </div>
         )}
 

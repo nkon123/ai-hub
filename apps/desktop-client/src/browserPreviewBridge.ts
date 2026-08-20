@@ -278,6 +278,18 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async getInstallRootPath() {
       return "브라우저 개발 모드 (파일 저장 없음)";
     },
+
+    // D-093 — 외부 브라우저를 여는 것은 Electron Main Process(shell.openExternal)만
+    // 할 수 있다. 브라우저 개발 모드는 그 자체가 브라우저 탭이므로 이 동작을
+    // 수행할 수 없다 — 조용히 성공한 척하지 않고 정직한 실패를 돌려준다. 화면은
+    // 이 `ok:false`를 보고 버튼을 비활성화하고 사유를 보여준다(주소는 항상
+    // 복사 가능한 텍스트로 별도로 보여준다).
+    async openOllamaDownloadPage() {
+      return {
+        ok: false,
+        error: "브라우저 개발 모드에서는 외부 브라우저를 열 수 없습니다. 아래 주소를 복사해 직접 여세요.",
+      };
+    },
     async getDiskSpace() {
       return { path: "브라우저 개발 모드 (파일 저장 없음)", freeBytes: 0 };
     },

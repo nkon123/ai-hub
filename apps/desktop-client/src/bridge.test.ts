@@ -309,6 +309,9 @@ function createCompleteBridge(): DesktopBridge {
     async runNowSchedule() {
       return { ok: false, error: null };
     },
+    async openOllamaDownloadPage() {
+      return { ok: false, error: null };
+    },
   };
 }
 

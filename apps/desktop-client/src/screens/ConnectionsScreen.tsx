@@ -2,9 +2,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { CheckCircle2, RefreshCw, XCircle } from "lucide-react";
 import type { ConnectionStatus } from "../../electron/types";
+import { shouldShowOllamaInstallGuidance } from "../../electron/external-links";
 import { getDesktopBridge } from "../bridge";
 import { Button, BridgeUnavailableState, Card, ErrorBanner, LoadingState, PageHeader } from "../ui";
 import { formatDateTime } from "../format";
+import { OllamaInstallGuidance } from "./OllamaInstallGuidance";
 
 export function ConnectionsScreen() {
   const bridge = getDesktopBridge();
@@ -66,6 +68,12 @@ export function ConnectionsScreen() {
       )}
 
       {statuses === null && !error && <LoadingState label="연결 상태를 확인하는 중..." />}
+
+      {statuses !== null && shouldShowOllamaInstallGuidance(statuses.find((s) => s.id === "ollama") ?? null) && (
+        <div className="mb-4">
+          <OllamaInstallGuidance bridge={bridge} />
+        </div>
+      )}
 
       {statuses !== null && (
         <div className="space-y-3">

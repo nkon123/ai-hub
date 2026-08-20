@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
@@ -7,6 +7,7 @@ import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
 import { checkAllConnections, listOllamaModels, DEFAULT_RUNTIME_BASE_URL } from "./connections";
+import { OLLAMA_DOWNLOAD_URL } from "./external-links";
 import { DesktopSettingsStore } from "./desktop-settings";
 import { chatWithOllama } from "./ollama-chat";
 import { buildSystemPromptDraftRequest, AGENT_DRAFT_TEMPLATE_FILE_NAME } from "./agent-draft";
@@ -806,6 +807,23 @@ function registerIpcHandlers(): void {
   });
 
   ipcMain.handle("app:getInstallRootPath", async () => getLayout().root);
+
+  // D-093 — 인자 없이 이 한 주소(OLLAMA_DOWNLOAD_URL)만 여는 핸들러. 렌더러가
+  // 다른 주소를 요청할 방법이 없다(electron/external-links.ts, electron/types.ts
+  // 참고) — 이것이 구현 원칙 7 예외의 실제 강제 지점이다.
+  ipcMain.handle("external:openOllamaDownloadPage", async (): Promise<{ ok: boolean; error: string | null }> => {
+    try {
+      await shell.openExternal(OLLAMA_DOWNLOAD_URL);
+      getLogger().info("external-link", "Ollama 다운로드 페이지 열기 시도");
+      return { ok: true, error: null };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "외부 브라우저를 열지 못했습니다.";
+      getLogger().warn("external-link", `Ollama 다운로드 페이지 열기 실패: ${message}`, {
+        errorCode: "EXTERNAL_LINK_OPEN_FAILED",
+      });
+      return { ok: false, error: message };
+    }
+  });
 
   // --- D11 로그/진단 ---------------------------------------------------------
   ipcMain.handle("logs:list", async (_event, filters: LogFilters): Promise<LogEntry[]> => {
