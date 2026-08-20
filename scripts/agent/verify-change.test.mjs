@@ -70,3 +70,45 @@ test("runSuite: 명령이 실패하면 ok=false 이고 종료 코드를 담는�
   assert.equal(r.ok, false);
   assert.equal(r.exitCode, 1);
 });
+
+// --- 압축 출력 (기본) ---------------------------------------------------
+import { renderCompact } from "./verify-change.mjs";
+
+test("renderCompact: 통과 시 숫자와 delta 만 남긴다", () => {
+  const out = renderCompact({
+    ok: true,
+    failed: [],
+    suites: [
+      { suite: "python", ok: true, exitCode: 0, counts: { passed: 1285, skipped: 4 }, delta: { passed: 0 } },
+      { suite: "ruff", ok: true, exitCode: 0, counts: { errors: 0 } },
+    ],
+  });
+  assert.equal(out, '{"ok":true,"python":{"pass":1285,"d":0},"ruff":{"err":0}}');
+});
+
+test("renderCompact: 실패는 절대 생략하지 않는다", () => {
+  const out = JSON.parse(renderCompact({
+    ok: false,
+    failed: ["python"],
+    suites: [{ suite: "python", ok: false, exitCode: 1, counts: { passed: 3 } }],
+  }));
+  assert.deepEqual(out.failed, ["python"]);
+  assert.equal(out.python.exit, 1);
+});
+
+test("renderCompact: 파싱 실패도 절대 생략하지 않는다", () => {
+  const out = JSON.parse(renderCompact({
+    ok: false,
+    failed: [],
+    suites: [{ suite: "python", ok: true, exitCode: 0, parseFailed: true }],
+  }));
+  assert.deepEqual(out.parseFailed, ["python"]);
+});
+
+test("renderCompact: 기준선이 없으면 d 를 지어내지 않는다", () => {
+  const out = JSON.parse(renderCompact({
+    ok: true, failed: [],
+    suites: [{ suite: "python", ok: true, exitCode: 0, counts: { passed: 10 } }],
+  }));
+  assert.equal("d" in out.python, false);
+});

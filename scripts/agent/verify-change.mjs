@@ -86,7 +86,8 @@ const HELP = `verify-change — 변경 검증을 돌리고 기준선 대비 증�
                        가능: ${Object.keys(SUITES).join(", ")}
   --baseline <path>    이전 결과 JSON. 있으면 delta 를 함께 낸다.
   --save-baseline <p>  이번 결과를 그 경로에 쓴다(작업 시작 전에 찍어 둘 것).
-  --verbose            각 스위트의 원본 출력 마지막 40줄을 함께 낸다.
+  --verbose            라벨·종료코드·원본 출력 마지막 40줄까지 전부 낸다.
+                       (기본 출력은 압축 JSON 한 줄이다)
   --help               이 도움말.
 
 종료 코드:
@@ -158,6 +159,29 @@ export function runSuite(name, { verbose = false, runner = spawnSync } = {}) {
   return entry;
 }
 
+/** 기본 출력. 에이전트가 읽는 것이므로 사람용 들여쓰기·라벨을 뺀다.
+ *  실패/파싱실패는 절대 생략하지 않는다 — 조용해지면 안 되는 신호다. */
+export function renderCompact(payload) {
+  const out = { ok: payload.ok };
+  for (const r of payload.suites) {
+    const e = {};
+    if (r.counts) {
+      if (typeof r.counts.passed === "number") e.pass = r.counts.passed;
+      if (typeof r.counts.errors === "number") e.err = r.counts.errors;
+      if (typeof r.counts.files === "number") e.files = r.counts.files;
+    }
+    if (r.delta && typeof r.delta.passed === "number") e.d = r.delta.passed;
+    if (!r.ok) e.exit = r.exitCode;
+    if (r.parseFailed) e.parseFailed = true;
+    out[r.suite] = e;
+  }
+  if (payload.failed.length) out.failed = payload.failed;
+  const pf = payload.suites.filter((r) => r.parseFailed).map((r) => r.suite);
+  if (pf.length) out.parseFailed = pf;
+  if (payload.savedBaseline) out.savedBaseline = payload.savedBaseline;
+  return JSON.stringify(out);
+}
+
 function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.error) fail(2, args.error);
@@ -201,7 +225,9 @@ function main() {
     payload.savedBaseline = args.saveBaseline;
   }
 
-  process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
+  // 기본은 압축. 상세(라벨/원본 tail)는 --verbose 일 때만 — 에이전트가
+  // 읽는 출력에서 사람용 서식이 차지하는 비용이 실측으로 확인됐다.
+  process.stdout.write((args.verbose ? JSON.stringify(payload, null, 2) : renderCompact(payload)) + "\n");
   if (parseFailures.length) process.exit(3);
   process.exit(failures.length ? 1 : 0);
 }

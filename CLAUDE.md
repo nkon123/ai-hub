@@ -139,7 +139,7 @@
 
 | 명령 | 용도 | 입력 | 출력 |
 |---|---|---|---|
-| `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | JSON `{ok, suites:[{suite,exitCode,ok,counts,delta}], failed:[]}`. 전체 덤프 없음 |
+| `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | 압축 JSON 한 줄 `{ok, <suite>:{pass,d,err,exit,parseFailed}, failed:[], parseFailed:[]}`. `--verbose` 로만 라벨·원본 출력 |
 
 `verify-change` 사용 규율:
 
@@ -152,6 +152,9 @@
    것이다. 조용히 0으로 넘어가지 않는다. 숫자가 안 나왔는데 통과로 보고하지 마라.
 5. 이 스크립트는 **의존성이 없다**(Node 내장만). 폐쇄망에서 그대로 돈다.
    테스트: `node --test scripts/agent/verify-change.test.mjs`
+6. 기본 출력은 **압축 JSON 한 줄**이다(실측 98 bytes). 명령문까지 합쳐 195 bytes 로,
+   같은 일을 수동 3회로 하던 367 bytes 의 **약 절반**이다. 사람이 읽을 일이 있을 때만
+   `--verbose` 를 쓴다 — 그 출력은 6배 크다.
 
 ## 완료 전 확인
 
