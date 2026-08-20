@@ -3,6 +3,7 @@ import type { ConversationRecord, InstalledAsset } from "../../electron/types";
 import { initialStages } from "../runStages";
 import type { ChatMessage } from "./chatTypes";
 import {
+  CHAT_THREAD_NEAR_BOTTOM_PX,
   KNOWLEDGE_NOT_ACTIVATED_REASON,
   LEGACY_BUNDLE_KNOWLEDGE_ID_REASON,
   RECONCILE_SAME_CAUSE_NOTICE,
@@ -16,6 +17,7 @@ import {
   describeToolRouteSelected,
   groupExcludedKnowledgeByReason,
   groupKnowledgeRouteChoicesByReason,
+  isChatThreadNearBottom,
   partitionInstalledKnowledgeByActivation,
   resolveActivatedKnowledgeIds,
   resolveExcludedRowText,
@@ -858,5 +860,45 @@ describe("summarizeMcpToolConnections / describeToolRouteMcpToolsHint (D-080/D-0
     expect(summary.installedNotConnectedCount).toBe(1);
     expect(describeToolRouteMcpToolsHint(summary)).toContain("1개");
     expect(describeToolRouteMcpToolsHint(summary)).not.toContain("설치만 됨");
+  });
+});
+
+describe("isChatThreadNearBottom", () => {
+  it("follows new content when the user is scrolled all the way to the bottom", () => {
+    expect(isChatThreadNearBottom({ scrollTop: 900, scrollHeight: 1000, clientHeight: 100 })).toBe(true);
+  });
+
+  it("does NOT follow when the user has scrolled up to read earlier turns (most important case)", () => {
+    // 바닥에서 300px 위 — 임계값(96px)보다 훨씬 멀다. 사용자가 이전 대화를
+    // 읽는 중이라고 보고 절대 끌어내리면 안 된다.
+    expect(isChatThreadNearBottom({ scrollTop: 600, scrollHeight: 1000, clientHeight: 100 })).toBe(false);
+  });
+
+  it("treats exactly the threshold distance as still near the bottom (boundary, inclusive)", () => {
+    // distance = 1000 - 804 - 100 = 96 === threshold
+    expect(isChatThreadNearBottom({ scrollTop: 804, scrollHeight: 1000, clientHeight: 100 })).toBe(true);
+  });
+
+  it("treats one pixel past the threshold as no longer near the bottom (boundary)", () => {
+    // distance = 1000 - 803 - 100 = 97 > threshold
+    expect(isChatThreadNearBottom({ scrollTop: 803, scrollHeight: 1000, clientHeight: 100 })).toBe(false);
+  });
+
+  it("treats a container shorter than its content area as near the bottom (nothing to scroll)", () => {
+    // scrollHeight <= clientHeight: distance <= 0, no crash, always "near".
+    expect(isChatThreadNearBottom({ scrollTop: 0, scrollHeight: 80, clientHeight: 200 })).toBe(true);
+  });
+
+  it("does not crash and reports near-bottom for a zero-height container", () => {
+    expect(isChatThreadNearBottom({ scrollTop: 0, scrollHeight: 0, clientHeight: 0 })).toBe(true);
+  });
+
+  it("accepts a custom threshold instead of the default constant", () => {
+    expect(isChatThreadNearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 100 }, 500)).toBe(true);
+    expect(isChatThreadNearBottom({ scrollTop: 500, scrollHeight: 1000, clientHeight: 100 }, 10)).toBe(false);
+  });
+
+  it("exposes the default threshold as a named constant, not a magic number", () => {
+    expect(CHAT_THREAD_NEAR_BOTTOM_PX).toBe(96);
   });
 });

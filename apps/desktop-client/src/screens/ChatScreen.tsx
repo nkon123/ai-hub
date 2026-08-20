@@ -19,7 +19,7 @@
 // agent-runtime 연결까지 확인된 `calculator.add` 샘플에만 닫힌 숫자 입력을
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
-import { type ReactNode, useCallback, useEffect, useRef, useState } from "react";
+import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpenCheck, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
@@ -82,6 +82,7 @@ import {
   downloadMarkdown,
   groupExcludedKnowledgeByReason,
   hasLowConfidenceCitation,
+  isChatThreadNearBottom,
   mergeCitations,
   partitionInstalledKnowledgeByActivation,
   resolveExcludedRowText,
@@ -982,6 +983,54 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const runIdRef = useRef<string | null>(null);
   const ollamaAbortRef = useRef<AbortController | null>(null);
   const cancelledOllamaMessageIdsRef = useRef<Set<string>>(new Set());
+
+  // 실사용 제보(2026-08-20) — 대화 스레드 자동 스크롤. "바닥 근처에 있을
+  // 때만 따라간다"는 판정은 `chatTypes.ts`의 `isChatThreadNearBottom`(순수
+  // 함수, 단위 테스트됨)에 맡기고 여기서는 스크롤 이벤트로 그 판정을
+  // 최신으로 유지하는 것과, 실제로 DOM에 스크롤을 적용하는 것만 담당한다.
+  // `useState`로 두지 않는 이유: 스크롤 이벤트마다 리렌더를 유발하지 않기
+  // 위해서다(스크롤 위치 자체는 화면에 아무것도 그리지 않는다).
+  const threadScrollRef = useRef<HTMLDivElement | null>(null);
+  const threadNearBottomRef = useRef(true);
+
+  function handleThreadScroll(e: UIEvent<HTMLDivElement>): void {
+    const el = e.currentTarget;
+    threadNearBottomRef.current = isChatThreadNearBottom({
+      scrollTop: el.scrollTop,
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+    });
+  }
+
+  // 요구 B — 내가 보낸 질문(messages에 즉시 push), 응답/스트리밍 델타
+  // (`answer.delta`도 setMessages로 새 배열을 만든다), 로컬 Tool 실행
+  // 결과(localToolEntries), 로컬 Tool 자동 라우팅 결과(localToolRouteEntries)
+  // 네 가지 모두 여기 의존성 배열에 있는 세 상태 중 하나를 갱신한다 — 즉
+  // 스레드에 그려지는 항목 종류(kind: "chat"/"localTool"/"localToolRoute")를
+  // 만드는 상태를 전부 구독하므로, 어느 한 종류만 갱신돼도 이 effect가
+  // 돈다. 다만 사용자가 위로 스크롤해 읽는 중이면(threadNearBottomRef가
+  // false) 절대 끌어내리지 않는다 — 이게 이 기능의 핵심 요구다.
+  useEffect(() => {
+    const el = threadScrollRef.current;
+    if (!el) return;
+    if (!threadNearBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages, localToolEntries, localToolRouteEntries]);
+
+  // 요구 C — 저장된 대화를 열거나("복원") 새 대화를 시작하면 항상 맨
+  // 아래(가장 최근)에서 시작한다. 위 "바닥 근처일 때만" 규칙과 별개로 매번
+  // 강제 적용하는 이유: 대화를 막 연 시점에는 사용자가 "읽던 자리"라는
+  // 것이 아직 없기 때문이다(이전 대화의 스크롤 위치가 남아 있을 뿐). 여기서는
+  // 즉시 위치시킨다 — 대화를 열 때마다 위에서 아래로 주르륵 흐르는 스크롤
+  // 애니메이션은 매번 반복되면 산만하고, "복원"은 사용자가 능동적으로
+  // 유발한 전환이지 실시간으로 뒤따라가야 할 이벤트가 아니므로 즉시
+  // 위치시키는 쪽이 자연스럽다.
+  useEffect(() => {
+    const el = threadScrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    threadNearBottomRef.current = true;
+  }, [currentConversationId]);
 
   // 화면을 벗어나거나 언마운트될 때 진행 중인 Run을 고아 상태로 남기지 않는다.
   useEffect(() => {
@@ -2170,7 +2219,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               </div>
             )}
 
-            <div className="flex-1 space-y-5 overflow-y-auto pr-1">
+            <div
+              ref={threadScrollRef}
+              onScroll={handleThreadScroll}
+              className="flex-1 space-y-5 overflow-y-auto pr-1"
+            >
               {messages.length === 0 && localToolEntries.length === 0 && localToolRouteEntries.length === 0 && (
                 <div className="flex h-full flex-col items-center justify-center gap-2 px-6 text-center">
                   <div className="mb-1 flex h-11 w-11 items-center justify-center rounded-full bg-brand-50 text-brand-600">

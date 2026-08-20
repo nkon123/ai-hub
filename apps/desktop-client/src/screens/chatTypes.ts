@@ -836,3 +836,49 @@ export function downloadMarkdown(filename: string, content: string): void {
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
+
+/**
+ * 실사용 제보(2026-08-20) — 대화 스레드(D06 `ChatScreen.tsx`의 메시지 목록
+ * 컨테이너)에 자동 스크롤이 전혀 없어, 새 턴/로컬 Tool 결과/자동 라우팅
+ * 결과가 붙어도 사용자가 매번 직접 내려야 했다. 그렇다고 항상 바닥으로
+ * 끌어내리면 사용자가 위로 올려 이전 대화를 읽는 중에 화면이 튀어 읽던
+ * 자리를 잃는다 — 그게 자동 스크롤이 없는 것보다 나쁘다. 그래서 "지금
+ * 바닥 근처에 있었는가"만 판정하는 계산을 순수 함수로 뺀다(이
+ * 저장소는 `vitest`가 `environment: "node"`라 컴포넌트를 렌더할 수
+ * 없다 — `summarizeForList`/`classifyToolResultForDisplay`와 같은 이유로
+ * 계산만 여기서 단위 테스트한다).
+ *
+ * 임계값 96px 근거: 대화 말풍선 한 줄(패딩 포함 대략 40~56px)이 화면 밖에
+ * 남아 있어도 "거의 바닥"으로 보고, 그 위에 트랙패드 관성 스크롤이 스크롤이
+ * 멈춘 뒤에도 남기는 잔여 오차(수십 px)를 흡수할 여유를 더한 값이다. 이보다
+ * 크게 잡으면 사용자가 의도적으로 몇 줄 위로 올린 상태에서도 계속 끌려
+ * 내려가고, 이보다 작게 잡으면 방금 바닥에 있었을 뿐인 사용자가 관성
+ * 스크롤 잔여값 때문에 "안 따라감"으로 오판된다.
+ */
+export const CHAT_THREAD_NEAR_BOTTOM_PX = 96;
+
+/** `HTMLElement`에서 뽑아 쓰는 세 값만 담는다 — DOM 타입 자체를 이 순수
+ * 계산 함수의 시그니처에 넣지 않아야 jsdom 없이도 단위 테스트할 수 있다. */
+export interface ChatThreadScrollMetrics {
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+}
+
+/**
+ * "지금 스레드 바닥 근처에 있는가"만 판정한다 — 언제 스크롤을 내릴지(새
+ * 턴/Tool 결과 도착, 대화 전환)는 `ChatScreen.tsx`가 결정하고 이 함수는
+ * 그 판단에 쓸 사실 하나만 계산해 돌려준다.
+ *
+ * 컨테이너가 내용보다 짧아 스크롤 자체가 없는 경우(`distance <= 0`)와
+ * 크기가 0인 컨테이너(`scrollHeight`/`clientHeight` 모두 0, `distance === 0`)
+ * 는 모두 "바닥"으로 취급한다 — 스크롤할 곳이 없다는 것은 이미 전체가
+ * 보인다는 뜻이고, 새 내용이 오면 당연히 따라가야 자연스럽다.
+ */
+export function isChatThreadNearBottom(
+  metrics: ChatThreadScrollMetrics,
+  thresholdPx: number = CHAT_THREAD_NEAR_BOTTOM_PX,
+): boolean {
+  const distanceFromBottom = metrics.scrollHeight - metrics.scrollTop - metrics.clientHeight;
+  return distanceFromBottom <= thresholdPx;
+}
