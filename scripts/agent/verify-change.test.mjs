@@ -112,3 +112,62 @@ test("renderCompact: 기준선이 없으면 d 를 지어내지 않는다", () =>
   }));
   assert.equal("d" in out.python, false);
 });
+
+// --- 실패 발췌 (실측한 진짜 출력 형식으로 고정) --------------------------
+// 아래 문자열은 지어낸 것이 아니라 실제로 실패를 만들어 캡처한 것이다.
+// 형식이 바뀌면 이 테스트가 먼저 깨진다.
+
+const REAL_VITEST_FAIL = [
+  " FAIL  src/__tmp_failsample.test.ts > 임시 실패 샘플",
+  "AssertionError: expected 4 to be 5 // Object.is equality",
+  " Test Files  1 failed | 63 passed (64)",
+  "      Tests  1 failed | 875 passed (876)",
+].join("\n");
+
+const REAL_PYTEST_FAIL = [
+  "=========================== short test summary info ============================",
+  "FAILED tests/unit/x/test_sample.py::test_broken",
+  "FAILED tests/unit/x/test_sample.py::test_raises",
+  "2 failed, 1 passed in 0.01s",
+].join("\n");
+
+test("vitest 실패 출력을 parseFailed 로 잘못 보고하지 않는다 (실측 버그 회귀)", () => {
+  const r = runSuite("desktop", { runner: () => ({ status: 1, stdout: REAL_VITEST_FAIL, stderr: "" }) });
+  assert.equal(r.parseFailed, undefined, "실패는 파싱 실패가 아니다");
+  assert.equal(r.counts.passed, 875);
+  assert.equal(r.counts.failed, 1);
+  assert.equal(r.ok, false);
+});
+
+test("vitest 실패 시 어떤 테스트가 깨졌는지 발췌한다", () => {
+  const r = runSuite("desktop", { runner: () => ({ status: 1, stdout: REAL_VITEST_FAIL, stderr: "" }) });
+  assert.deepEqual(r.fail, ["src/__tmp_failsample.test.ts > 임시 실패 샘플"]);
+});
+
+test("pytest 실패 시 failed 수와 실패한 테스트를 함께 낸다", () => {
+  const r = runSuite("python", { runner: () => ({ status: 1, stdout: REAL_PYTEST_FAIL, stderr: "" }) });
+  assert.equal(r.counts.passed, 1);
+  assert.equal(r.counts.failed, 2);
+  assert.deepEqual(r.fail, ["tests/unit/x/test_sample.py::test_broken", "tests/unit/x/test_sample.py::test_raises"]);
+});
+
+test("대량 실패는 상한을 걸어 전체 덤프로 되돌아가지 않는다", () => {
+  const many = ["short test summary info", ...Array.from({ length: 12 }, (_, i) => `FAILED tests/t.py::test_${i}`), "12 failed, 1 passed"].join("\n");
+  const r = runSuite("python", { runner: () => ({ status: 1, stdout: many, stderr: "" }) });
+  assert.equal(r.fail.length, 5);
+  assert.equal(r.failMore, 7);
+});
+
+test("성공 시에는 발췌를 만들지 않는다 (98 bytes 유지)", () => {
+  const r = runSuite("desktop", { runner: () => ({ status: 0, stdout: "Tests  875 passed (875)\nTest Files  63 passed (63)", stderr: "" }) });
+  assert.equal(r.fail, undefined);
+});
+
+test("renderCompact: 실패 발췌를 압축 출력에도 담는다", () => {
+  const out = JSON.parse(renderCompact({
+    ok: false, failed: ["desktop"],
+    suites: [{ suite: "desktop", ok: false, exitCode: 1, counts: { passed: 875, failed: 1 }, fail: ["src/a.test.ts > 이름"] }],
+  }));
+  assert.equal(out.desktop.failCount, 1);
+  assert.deepEqual(out.desktop.fail, ["src/a.test.ts > 이름"]);
+});

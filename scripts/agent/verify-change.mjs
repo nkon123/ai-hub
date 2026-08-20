@@ -16,6 +16,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+/** 실패 발췌 상한 — 대량 실패 시 전체 덤프로 되돌아가지 않게 한다. */
+const MAX_FAIL_LINES = 5;
+const MAX_FAIL_LINE_CHARS = 120;
+
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 /** 스위트 정의. 새 스위트를 추가하려면 여기만 고친다.
@@ -29,19 +33,36 @@ const SUITES = {
     parse: (out) => {
       const m = out.match(/(\d+) passed(?:, (\d+) skipped)?(?:, (\d+) deselected)?/);
       if (!m) return null;
-      return { passed: +m[1], skipped: +(m[2] ?? 0), deselected: +(m[3] ?? 0) };
+      // 실패 시 요약은 "2 failed, 1 passed" 처럼 failed 가 앞에 온다.
+      const f = out.match(/(\d+) failed/);
+      const counts = { passed: +m[1], skipped: +(m[2] ?? 0), deselected: +(m[3] ?? 0) };
+      if (f) counts.failed = +f[1];
+      return counts;
     },
+    // `FAILED tests/x.py::test_name` (short test summary info)
+    excerpt: (out) => out.split("\n").filter((l) => l.startsWith("FAILED ")).map((l) => l.slice(7)),
   },
   desktop: {
     label: "vitest (desktop-client)",
     cmd: ["pnpm", "test"],
     cwd: "apps/desktop-client",
     parse: (out) => {
-      const t = out.match(/Tests\s+(\d+) passed/);
-      const f = out.match(/Test Files\s+(\d+) passed/);
-      if (!t) return null;
-      return { passed: +t[1], files: f ? +f[1] : null };
+      // 실패가 있으면 "Tests  1 failed | 875 passed (876)" 로 나온다 —
+      // `Tests\s+(\d+) passed` 로만 보면 매칭이 통째로 실패해 실패를
+      // parseFailed(종료 3)로 잘못 보고했다. 실측으로 확인한 버그다.
+      const line = out.match(/Tests\s+([^\n]+)/);
+      if (!line) return null;
+      const passed = line[1].match(/(\d+) passed/);
+      if (!passed) return null;
+      const failed = line[1].match(/(\d+) failed/);
+      const filesLine = out.match(/Test Files\s+([^\n]+)/);
+      const files = filesLine ? filesLine[1].match(/(\d+) passed/) : null;
+      const counts = { passed: +passed[1], files: files ? +files[1] : null };
+      if (failed) counts.failed = +failed[1];
+      return counts;
     },
+    // ` FAIL  src/x.test.ts > 테스트 이름`
+    excerpt: (out) => out.split("\n").filter((l) => /^\s*FAIL\s/.test(l)).map((l) => l.trim().replace(/^FAIL\s+/, "")),
   },
   ruff: {
     label: "ruff check",
@@ -155,6 +176,15 @@ export function runSuite(name, { verbose = false, runner = spawnSync } = {}) {
   } else {
     entry.counts = counts;
   }
+  // 실패했을 때만 "왜" 를 담는다. 성공 출력은 그대로 98 bytes 를 유지한다.
+  // 상한을 두는 이유: 대량 실패 때 전체를 쏟으면 소음 제거라는 목적이 사라진다.
+  if (!entry.ok && suite.excerpt) {
+    const lines = suite.excerpt(out).filter(Boolean);
+    if (lines.length) {
+      entry.fail = lines.slice(0, MAX_FAIL_LINES).map((l) => (l.length > MAX_FAIL_LINE_CHARS ? l.slice(0, MAX_FAIL_LINE_CHARS) + "…" : l));
+      if (lines.length > MAX_FAIL_LINES) entry.failMore = lines.length - MAX_FAIL_LINES;
+    }
+  }
   if (verbose) entry.tail = out.trimEnd().split("\n").slice(-40);
   return entry;
 }
@@ -171,7 +201,10 @@ export function renderCompact(payload) {
       if (typeof r.counts.files === "number") e.files = r.counts.files;
     }
     if (r.delta && typeof r.delta.passed === "number") e.d = r.delta.passed;
+    if (typeof r.counts?.failed === "number") e.failCount = r.counts.failed;
     if (!r.ok) e.exit = r.exitCode;
+    if (r.fail) e.fail = r.fail;
+    if (r.failMore) e.failMore = r.failMore;
     if (r.parseFailed) e.parseFailed = true;
     out[r.suite] = e;
   }

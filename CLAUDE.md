@@ -139,7 +139,7 @@
 
 | 명령 | 용도 | 입력 | 출력 |
 |---|---|---|---|
-| `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | 압축 JSON 한 줄 `{ok, <suite>:{pass,d,err,exit,parseFailed}, failed:[], parseFailed:[]}`. `--verbose` 로만 라벨·원본 출력 |
+| `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | 압축 JSON 한 줄. 성공 시 `{ok,<suite>:{pass,d}}`, 실패 시 `failCount`·`exit`·`fail`(깨진 테스트 최대 5개)까지 함께. `--verbose` 로만 원본 출력 |
 
 검증 절차 전체(기준선 → 작업 → 비교 → 무엇을 보고할 것인가)는 `verify-change`
 **스킬**에 있다. 이 표는 스킬이 로드되지 않아도 명령의 존재를 알 수 있게 남긴

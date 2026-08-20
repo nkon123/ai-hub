@@ -39,6 +39,9 @@ node scripts/agent/verify-change.mjs --suites <a,b> --baseline .agent-baseline.j
 - **종료 코드 3은 파싱 실패다.** 명령이 아예 안 돌았거나 출력 형식이 바뀐 것이다.
   숫자를 못 찾았는데 "통과"라고 보고하지 마라.
 - `failed` / `parseFailed` 키는 압축 출력에서도 절대 생략되지 않는다.
+- **실패하면 왜 실패했는지도 같이 나온다** — `fail` 에 깨진 테스트가 최대 5개
+  (넘치면 `failMore` 로 몇 개 더 있는지). 원인을 보려고 `--verbose` 로 다시 돌릴
+  필요가 없다. 5개로 부족할 때만 `--verbose`.
 
 ## 3. 커밋 범위를 눈으로 확인한다
 
