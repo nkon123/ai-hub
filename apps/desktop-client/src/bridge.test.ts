@@ -21,6 +21,7 @@ const SETTINGS: DesktopSettingsPublic = {
   pythonInterpreterPath: null,
   localToolTimeoutMinutes: 5,
   maxConcurrentRuns: { value: 1, enforced: false, reason: "" },
+  unifiedToolRouteEnabled: true,
   setupCompletedAt: null,
   updatedAt: null,
 };

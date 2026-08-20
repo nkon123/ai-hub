@@ -21,7 +21,7 @@
 //
 // D-084 후속 2 — "채팅에 질문을 입력하면 로컬 Tool 인자가 자동으로
 // 채워지게" 요구(사용자 실사용 피드백, 두 번 재확인받은 의도적 예외). 이
-// 파일에 `runLocalToolAutoRoute`/`LocalToolAutoRouteEntryCard`를 함께 둔
+// 파일에 `runResolvedLocalTool`/`LocalToolAutoRouteEntryCard`를 함께 둔
 // 이유: 위 경계 (1)을 그대로 지키면서 자동화를 추가하려면 "Tool을
 // 고르고 인자를 만드는" 로직이 여전히 agent-runtime/chatTypes와 물리적으로
 // 분리된 자리에 있어야 하기 때문이다.
@@ -42,7 +42,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { AlertTriangle, FileCode2, Loader2, Sparkles, Terminal } from "lucide-react";
 import type { DesktopBridge, LocalTool } from "../../electron/types";
-import { routeLocalToolCall } from "../../electron/local-tool-router";
 import { Button, ErrorBanner, LoadingState, Modal } from "../ui";
 import { formatDateTime } from "../format";
 import { AnswerMarkdown } from "./AnswerMarkdown";
@@ -153,7 +152,7 @@ export interface LocalToolAutoRouteEntry {
  * 아이콘(Sparkles, "AI가 자동 선택"임을 표시)과 배지 문구를 쓴다. Task
  * Brief 요구사항 F: "Tool 불필요"/"후보 중 못 고름"/"검증 실패"/"승인
  * 거절"/"실행 성공"을 절대 하나의 "실패"로 뭉개지 않는다 — 그 구분은
- * `runLocalToolAutoRoute`가 만든 `display.title`에 이미 담겨 있고, 이
+ * `runResolvedLocalTool`이 만든 `display.title`에 이미 담겨 있고, 이
  * 카드는 그것을 그대로 보여줄 뿐이다(같은 카드를 다른 오해로 재사용하지
  * 않는다). */
 export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRouteEntry }) {
@@ -186,18 +185,23 @@ export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRou
   );
 }
 
-/** 이번 턴 질문 하나에 대해 로컬 Tool 자동 라우팅을 끝까지 진행한다:
- * (1) 등록된 로컬 Tool 목록 조회 -> (2) `electron/local-tool-router.ts`로
- * 로컬 Ollama에 한 번 물어 제안받음(실패/거절/모르는 이름/스키마 불일치는
- * 전부 "실행 안 함") -> (3) 제안이 유효하면 `bridge.invokeLocalTool`로
- * 넘겨 Main Process의 네이티브 승인 대화상자를 거쳐 실행. 이 함수는 절대
- * throw하지 않는다 — 모든 실패 경로는 `onFinish`로 전달되는 `display`
- * 값 하나로 귀결된다(다섯 outcome을 서로 다른 문구로 구분, Task Brief F). */
-export async function runLocalToolAutoRoute(params: {
+// D-089 후속(통합 Tool 라우팅) — "로컬 Tool 또는 MCP Tool 중 무엇을 쓸지"는
+// 더 이상 이 파일이 결정하지 않는다(`electron/unified-tool-router.ts`가
+// 로컬+MCP 후보를 함께 놓고 그 판단을 한 번의 LLM 호출로 끝낸다, MCP 우선
+// tie-break도 거기서 코드로 강제된다). 이 파일은 그 판단이 "로컬"로 끝났을
+// 때 실제 실행 한 건만 담당한다 — 라우팅을 여기서 다시 하지 않는다(같은
+// 질문에 Ollama를 두 번 묻지 않기 위해서이기도 하다).
+
+/** 이미 확정된 로컬 Tool 선택(id/이름/검증된 args)을 실행한다. 승인은
+ * 여전히 Main Process가 맡는다(위 모듈 docstring 2번) — 이 함수는 그 결과를
+ * `onStart`/`onFinish` 콜백으로 부모에 알리기만 한다. 절대 throw하지
+ * 않는다 — 실패는 `onFinish`로 전달되는 `display` 값으로 귀결된다. */
+export async function runResolvedLocalTool(params: {
   bridge: DesktopBridge;
   question: string;
-  ollamaBaseUrl: string;
-  preferredModel: string;
+  toolId: string;
+  toolName: string;
+  args: Record<string, unknown>;
   onStart: (entry: LocalToolAutoRouteEntry) => void;
   onFinish: (
     id: string,
@@ -207,75 +211,21 @@ export async function runLocalToolAutoRoute(params: {
     display: InvocationOutcomeDisplay,
   ) => void;
 }): Promise<void> {
-  const { bridge, question, ollamaBaseUrl, preferredModel, onStart, onFinish } = params;
+  const { bridge, question, toolId, toolName, args, onStart, onFinish } = params;
   const id = crypto.randomUUID();
   const startedAt = new Date().toISOString();
-  onStart({ id, question, toolName: null, args: null, startedAt, completedAt: null, display: null });
-  const finish = (
-    toolName: string | null,
-    args: Record<string, unknown> | null,
-    display: InvocationOutcomeDisplay,
-  ) => onFinish(id, new Date().toISOString(), toolName, args, display);
+  onStart({ id, question, toolName, args, startedAt, completedAt: null, display: null });
+  const finish = (display: InvocationOutcomeDisplay) => onFinish(id, new Date().toISOString(), toolName, args, display);
 
   try {
-    const tools = await bridge.listLocalTools();
-    const route = await routeLocalToolCall(
-      question,
-      tools.map((t) => ({ id: t.id, toolName: t.toolName, functionName: t.functionName, inputSchema: t.inputSchema })),
-      { baseUrl: ollamaBaseUrl, preferredModel },
-    );
-
-    if (route.status === "no_candidates") {
-      finish(null, null, {
-        tone: "muted",
-        title: "등록된 로컬 Tool 없음",
-        detail: "자산 허브 > 로컬 Tool에서 먼저 Python 파일을 추가해야 자동 라우팅을 쓸 수 있습니다.",
-      });
-      return;
-    }
-    if (route.status === "declined_by_model") {
-      finish(null, null, {
-        tone: "muted",
-        title: "AI가 Tool이 필요 없다고 판단했습니다",
-        detail: "이 질문에는 등록된 로컬 Tool 중 어느 것도 필요하지 않다고 판단해 아무것도 실행하지 않았습니다.",
-      });
-      return;
-    }
-    if (route.status === "unknown_tool_name" || route.status === "unparseable" || route.status === "error_or_timeout") {
-      const detail =
-        route.status === "unknown_tool_name"
-          ? "AI가 등록되지 않은 Tool 이름으로 응답해 어떤 Tool도 실행하지 않았습니다."
-          : route.status === "unparseable"
-            ? "AI 응답을 해석하지 못해 어떤 Tool도 실행하지 않았습니다."
-            : "AI에게 물어보는 중 시간이 초과되었거나 오류가 발생해 어떤 Tool도 실행하지 않았습니다.";
-      finish(null, null, { tone: "warning", title: "후보 중에서 Tool을 고르지 못했습니다", detail });
-      return;
-    }
-    if (route.status === "schema_invalid") {
-      const detail = route.schemaErrors
-        ? Object.entries(route.schemaErrors)
-            .map(([key, message]) => `${key}: ${message}`)
-            .join("\n")
-        : "AI가 만든 인자가 이 Tool의 입력 형식과 맞지 않습니다.";
-      finish(route.toolName, null, {
-        tone: "danger",
-        title: `'${route.toolName}' 인자 검증 실패 — 실행하지 않았습니다`,
-        detail,
-      });
-      return;
-    }
-
-    // route.status === "ran" — 실제 승인/실행은 여전히 Main Process가
-    // 맡는다(위 모듈 docstring). 사용자가 대화상자에서 거절하면
-    // `formatInvocationOutcome`이 "실행하지 않았습니다"로 정직하게 보여준다
-    // (실패가 아니다).
-    const args = route.args ?? {};
-    const invocation = await bridge.invokeLocalTool(route.toolId!, args, { aiSelected: true });
-    finish(route.toolName, args, formatInvocationOutcome(invocation));
+    // 사용자가 대화상자에서 거절하면 `formatInvocationOutcome`이
+    // "실행하지 않았습니다"로 정직하게 보여준다(실패가 아니다).
+    const invocation = await bridge.invokeLocalTool(toolId, args, { aiSelected: true });
+    finish(formatInvocationOutcome(invocation));
   } catch (err) {
-    finish(null, null, {
+    finish({
       tone: "danger",
-      title: "자동 Tool 라우팅 실패",
+      title: "자동 Tool 실행 실패",
       detail: err instanceof Error ? err.message : "알 수 없는 오류입니다.",
     });
   }

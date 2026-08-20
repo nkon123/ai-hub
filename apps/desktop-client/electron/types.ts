@@ -892,6 +892,13 @@ export interface DesktopSettingsPublic {
    * 이 값을 늘리는 것이 안전하다 — 취소 수단 없이 값만 올리면 멈춘 Tool을
    * 이 시간 내내 붙잡고 빠져나올 방법이 없어진다. */
   localToolTimeoutMinutes: number;
+  /** D-089 후속(통합 Tool 라우팅) — 로컬 Tool + 연결된 MCP Tool 후보를
+   * 하나로 합쳐 이번 턴에 어느 쪽을 쓸지 AI가 고르는 동의. 기본값 `true`
+   * (`desktop-settings.ts`의 `DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED` 주석 —
+   * 이 토글은 실행을 막지 않는다, 실행 승인은 별도). 허브 조회 동의와
+   * 달리 세션 간 초기화되지 않는다 — 사용자가 끄면 이 설정 저장소에
+   * 저장되어 재시작 후에도 유지된다. */
+  unifiedToolRouteEnabled: boolean;
   maxConcurrentRuns: MaxConcurrentRunsInfo;
   setupCompletedAt: string | null;
   updatedAt: string | null;
@@ -911,6 +918,7 @@ export interface DesktopSettingsInput {
   agentRuntimeBaseUrl?: string;
   pythonInterpreterPath?: string;
   localToolTimeoutMinutes?: number;
+  unifiedToolRouteEnabled?: boolean;
 }
 
 export interface DesktopSettingsUpdateResult {

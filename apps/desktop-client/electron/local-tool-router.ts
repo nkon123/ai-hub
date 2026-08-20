@@ -80,7 +80,10 @@ function renderCandidateBlock(candidates: LocalToolRouteCandidate[]): string {
     .join("\n");
 }
 
-function parseJsonObject(raw: string): Record<string, unknown> | null {
+// D-089 후속(통합 Tool 라우팅) — `unified-tool-router.ts`가 이 파서를
+// 그대로 재사용한다(같은 "모델이 JSON 하나만 내야 한다" 계약이므로 별도
+// 구현을 두지 않는다). export 외에는 이 함수의 동작을 바꾸지 않았다.
+export function parseJsonObject(raw: string): Record<string, unknown> | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;

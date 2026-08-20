@@ -154,6 +154,20 @@ describe("D-084 local tool structural isolation", () => {
       expect(betweenAutoRouteAndStartRun).toContain("return");
     });
 
+    // D-089 후속(통합 Tool 라우팅) — 이번 턴이 통합 라우팅에서 "MCP"로
+    // 판정된 경우에도(handleLocalToolAutoRoute가 "mcp"를 반환해 아래로
+    // 흘러 내려온 경우) 위 payload literal 검사가 여전히 유효하다는 것을
+    // 직접 고정한다: payload는 `turnMcpToolRouteForced`라는 지역 변수
+    // (로컬 Tool 정보를 전혀 담지 않는 boolean)만 참조하고, 로컬 Tool
+    // 식별자는 그 변수 이름에도, payload 리터럴 어디에도 등장하지 않는다.
+    it("an MCP-picked turn's startRun payload only ever carries the boolean turnMcpToolRouteForced — never a local-tool identifier", () => {
+      const start = chatScreen.indexOf("const created = await startRun({");
+      const end = chatScreen.indexOf("runIdRef.current = created.id");
+      const startRunPayload = chatScreen.slice(start, end);
+      expect(startRunPayload).toContain("turnMcpToolRouteForced");
+      expect(startRunPayload).not.toMatch(/localTool|LocalTool|local-tool/);
+    });
+
     it("startRun is called from exactly one place, so the slice checked above is the whole payload path", () => {
       // 위 검사는 handleSend 안의 한 구간만 읽는다. 그 검사가 의미를 가지려면
       // "Run을 시작하는 곳이 거기 하나뿐"이라는 전제가 참이어야 한다 — 두 번째
@@ -200,6 +214,30 @@ describe("D-084 local tool structural isolation", () => {
     const source = read("electron/mcp-tool-connection.ts");
     expect(source).not.toContain("localTool");
     expect(source).not.toContain("LocalTool");
+  });
+
+  // D-089 후속(통합 Tool 라우팅, 2026-08-20) — "선택은 합치고 실행은 합치지
+  // 않는다"의 새 경계 지점. `unified-tool-router.ts`는 로컬 Tool 후보와
+  // 연결된 MCP Tool 이름을 함께 받아 "이번 턴에 어느 쪽을 쓸지"만 결정하고,
+  // agent-runtime이나 MCP 등록 모듈은 전혀 모른다 — 실제 실행은 여전히
+  // 호출자(ChatScreen.tsx)가 kind로 분기한다.
+  it("unified-tool-router.ts never imports agent-runtime/MCP registration/installed-assets modules and stays fs/electron-free", () => {
+    const source = read("electron/unified-tool-router.ts");
+    expect(source).not.toContain("mcp-tool-registration-client");
+    expect(source).not.toContain("agentRuntime");
+    expect(source).not.toContain("installed-assets-store");
+    expect(source).not.toMatch(/from ["']node:/);
+    expect(source).not.toMatch(/from ["']electron["']/);
+  });
+
+  // D-089 후속 — ChatScreen.tsx가 통합 라우터를 직접 import하는 것은
+  // 허용된다(격리 경계는 "agent-runtime으로 나가는 Payload에 로컬 Tool
+  // 식별자가 섞이지 않는다"이지, "ChatScreen이 이 모듈을 모른다"가 아니다).
+  // 다만 그 import가 로컬 Tool 이름을 담은 채로 오지 않는지 확인한다.
+  it("src/screens/ChatScreen.tsx imports the unified router only from electron/unified-tool-router, not electron/local-tool-router directly for routing", () => {
+    const chatScreen = read("src/screens/ChatScreen.tsx");
+    expect(chatScreen).toContain('from "../../electron/unified-tool-router"');
+    expect(chatScreen).not.toContain('from "../../electron/local-tool-router"');
   });
 });
 

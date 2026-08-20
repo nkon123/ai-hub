@@ -76,7 +76,6 @@ import {
   buildToolExecutionsForPersist,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
-  describeToolRouteMcpToolsHint,
   describeToolRouteRejected,
   describeToolRouteSelected,
   downloadMarkdown,
@@ -103,16 +102,29 @@ import {
   LocalToolAutoRouteEntryCard,
   LocalToolChatEntryCard,
   LocalToolInvokePanel,
-  runLocalToolAutoRoute,
+  runResolvedLocalTool,
   type LocalToolAutoRouteEntry,
   type LocalToolChatEntry,
 } from "./LocalToolInvokePanel";
+// D-089 후속(통합 Tool 라우팅) — 로컬 Tool + 연결된 MCP Tool 후보를 하나로
+// 합쳐 "이번 턴에 어느 쪽을 쓸지"를 판단하는 순수 HTTP 모듈. agent-runtime을
+// 전혀 모른다(위 로컬 Tool 격리 원칙과 동일한 이유로 이 파일도 그 경계를
+// 지킨다) — `electron/unified-tool-router.ts`의 모듈 docstring 참고.
+import {
+  buildUnifiedToolCandidates,
+  hasAnyUnifiedCandidates,
+  routeUnifiedToolCall,
+} from "../../electron/unified-tool-router";
 // `InvocationOutcomeDisplay`는 이 화면이 결과 톤(success/danger/warning/muted)을
 // 저장할 대화 턴 상태로 옮길 때만 필요하다(persistToolOnlyTurn) — Run/agent-runtime
 // 경로와는 무관하므로 위 로컬 Tool 격리 원칙을 어기지 않는다(타입만 공유).
 // `buildToolOnlyTurnPersistPayload`는 그 변환 로직 자체(순수 함수, 단위
 // 테스트 가능) — `localToolsTypes.test.ts` 참고.
-import { buildToolOnlyTurnPersistPayload, type InvocationOutcomeDisplay } from "./localToolsTypes";
+import {
+  buildToolOnlyTurnPersistPayload,
+  describeUnifiedToolRouteCandidates,
+  type InvocationOutcomeDisplay,
+} from "./localToolsTypes";
 
 // D06 대화 보존 — 완료된 턴만 저장 대상이다(진행 중/대기 중 상태는 아직
 // 결과가 확정되지 않았다). `agent_runtime.conversation`의 History 개념과
@@ -735,41 +747,120 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 그대로 요약한다.
   const mcpToolConnectionSummary = summarizeMcpToolConnections(installedMcpTools);
 
-  // --- D-083 TOOL_ROUTE 동의 — 허브 조회 토글(allowHubLookup)과 같은 모양의
-  // 동의: 기본 꺼짐, 세션 간 영속하지 않음, 매 Run마다 명시적으로 다시
-  // 보낸다. 켜지면 이번 턴은 (1) `input.tool_route = true`를 보내고 (2)
-  // agent-runtime의 `standard-agent`는 `capabilities.mcp_allowed = false`라
-  // 라우팅이 아예 실행되지 않으므로(config/standard-agent/agent-manifest.json)
-  // `agentProfile: "standard-db-agent"`도 함께 보낸다 — 개발 확인용 명시적
-  // Tool 호출(mcpDevActive)과 동일하게 이 Profile을 쓰지만, 이쪽은 어떤
-  // Tool을 부를지 사용자가 아니라 AI가 이번 질문에서 고른다는 차이가 있다.
-  // 개발 확인용 입력이 이미 명시적 `mcp_tool_request`를 보내는 중이면(D-083
-  // 서버 규칙: 명시적 요청이 항상 우선) 이 토글은 아무 효과가 없으므로
-  // "적용 불가"로 끄고 비활성화한다(허브 토글의 `hubLookupApplicable`과
-  // 동일한 패턴).
-  const [toolRouteEnabled, setToolRouteEnabled] = useState(false);
-  const toolRouteApplicable = !mcpDevActive;
-  const toolRouteActive = toolRouteEnabled && toolRouteApplicable;
-  useEffect(() => {
-    if (!toolRouteApplicable && toolRouteEnabled) setToolRouteEnabled(false);
-  }, [toolRouteApplicable, toolRouteEnabled]);
-
-  // --- D-034 해석 경로 4 — 등록된 Local Agent 선택. 개발 확인용 명시적 Tool
-  // 호출(mcpDevActive)·TOOL_ROUTE 동의(toolRouteActive)는 둘 다
-  // `agent_profile: "standard-db-agent"`를 명시적으로 보내는 경로다 —
+  // --- D-034 해석 경로 4 — 등록된 Local Agent 선택. 아래에서 정의하는 통합
+  // Tool 라우팅 동의(unifiedToolRouteActive)와는 서로 배타적이다 —
   // `local_agent_id`가 있으면 서버가 `agent_profile`을 아예 읽지 않으므로
-  // (agentRuntime.ts 주석) 셋을 동시에 켜면 사용자가 고른 것 중 무엇이
-  // 실제로 적용됐는지 헷갈린다. 서로 배타적으로 둔다(CLAUDE.md: 호환되지
-  // 않는 선택지는 이유와 함께 비활성화한다).
-  // "설치됨"(installedAgents 전체)과 "등록됨/고를 수 있음"(registeredLocalAgents)은
-  // 서로 다른 사실이다 — 아래 UI가 설치되어 있으나 등록 안 된 개수와 등록된
-  // 목록을 각각 다른 자리에서 보여준다(Knowledge/MCP Tool과 동일한 원칙).
+  // (agentRuntime.ts 주석) 동시에 켜지면 사용자가 고른 것 중 무엇이 실제로
+  // 적용됐는지 헷갈린다(CLAUDE.md: 호환되지 않는 선택지는 이유와 함께
+  // 비활성화한다). "설치됨"(installedAgents 전체)과 "등록됨/고를 수 있음"
+  // (registeredLocalAgents)은 서로 다른 사실이다 — 아래 UI가 설치되어
+  // 있으나 등록 안 된 개수와 등록된 목록을 각각 다른 자리에서 보여준다
+  // (Knowledge/MCP Tool과 동일한 원칙). `localAgentActive`를 통합 토글보다
+  // 먼저 계산해 두는 이유: 통합 토글의 적용 가능 여부가 이 값에 의존한다
+  // (아래).
   const registeredLocalAgents = selectRegisteredLocalAgents(installedAgents);
   const selectedLocalAgent = registeredLocalAgents.find((a) => a.assetId === selectedLocalAgentId) ?? null;
   const localAgentActive = !!selectedLocalAgent;
+
+  // --- D-089 후속(통합 Tool 라우팅, 2026-08-20 승인 설계) — 로컬 Tool
+  // 자동 라우팅(D-084/D-089)과 MCP Tool 자동 제안(구 D-083 TOOL_ROUTE
+  // 토글)을 하나의 동의로 합쳤다. "선택은 합치고 실행은 합치지 않는다" —
+  // 이 토글이 켜져 있으면 이번 턴 먼저 Desktop이 로컬 Tool + 연결된 MCP
+  // Tool 후보를 하나로 묶어 라우팅 LLM을 한 번 호출해 "로컬"/"MCP"/"안 함"
+  // 중 하나를 고른다(`electron/unified-tool-router.ts`, `handleSend`의
+  // `handleLocalToolAutoRoute` 참고). MCP를 고른 턴에만 그 턴의
+  // `agentProfile`을 "standard-db-agent"로, `toolRoute`를 `true`로 보내
+  // 기존 D-083 검증 체인(등록·승인·READ_ONLY)을 그대로 태운다 — 정적
+  // 상태가 아니라 그 턴의 라우팅 결과 하나로 결정한다(Task Brief D). 로컬을
+  // 고르면 agent-runtime을 전혀 거치지 않고 그 자리에서 끝난다(D-084 격리
+  // 그대로, `electron/__tests__/local-tool-isolation.test.ts`). MCP를
+  // 고르면 실제 어떤 세부 Tool·인자를 쓸지는 여전히 서버가 정한다 — 이
+  // 판단은 "이번 턴에 MCP를 시도할지"만 결정한다(MCP 우선 tie-break은
+  // `unified-tool-router.ts`의 `resolveUnifiedPick`이 코드로 강제한다).
+  //
+  // 먼저 후보(등록된 로컬 Tool)를 모은다 — 같은 목록을 이 버튼을 통한 수동
+  // 실행(LocalToolInvokePanel)에도 함께 쓴다.
+  const [registeredLocalTools, setRegisteredLocalTools] = useState<LocalTool[]>([]);
+  useEffect(() => {
+    if (!bridge) return;
+    let cancelled = false;
+    void bridge
+      .listLocalTools()
+      .then((tools) => {
+        if (!cancelled) setRegisteredLocalTools(tools);
+      })
+      .catch(() => {
+        // 목록 조회 실패는 이 토글을 그냥 숨긴다(applicable=false) — 이미
+        // "로컬 Tool" 버튼을 통한 수동 경로가 자체 오류 상태를 보여준다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bridge]);
+  const connectedMcpToolNames = mcpToolConnectionSummary.connected.map((a) => a.name);
+
+  // 기본값은 반드시 켜짐이다(Task Brief E, `desktop-settings.ts`의
+  // `DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED` 주석에 근거를 남겼다) — 실행을
+  // 막는 것은 이 토글이 아니라 승인이다: 승인해 둔 로컬 Tool은 대화상자
+  // 없이 돌고(D-084 후속 3), MCP Tool도 D-083의 등록·승인·READ_ONLY 검증을
+  // 그대로 거친다. 이 토글은 "AI가 후보 중에서 고르게 해도 되는가"만
+  // 결정한다. 허브 조회/과거 TOOL_ROUTE 토글과 달리, 사용자가 끄면 그 선택이
+  // 세션을 넘어 유지되어야 한다(Task Brief E) — 그래서 `useState`만으로
+  // 두지 않고 D10 설정 저장소(`desktop-settings.ts`)에 저장한다.
+  const [unifiedToolRouteEnabledSetting, setUnifiedToolRouteEnabledSetting] = useState(true);
+  const [unifiedToolRouteSaveError, setUnifiedToolRouteSaveError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!settingsBridge) return;
+    let cancelled = false;
+    void settingsBridge
+      .getDesktopSettings()
+      .then((settings) => {
+        if (!cancelled) setUnifiedToolRouteEnabledSetting(settings.unifiedToolRouteEnabled);
+      })
+      .catch(() => {
+        // 조회 실패 시 기본값(켜짐)을 그대로 유지한다 — 이 조회 실패가
+        // 대화 자체를 막지 않는다.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [settingsBridge]);
+  async function handleUnifiedToolRouteToggle(next: boolean): Promise<void> {
+    const previous = unifiedToolRouteEnabledSetting;
+    setUnifiedToolRouteEnabledSetting(next);
+    setUnifiedToolRouteSaveError(null);
+    if (!settingsBridge) return;
+    try {
+      const result = await settingsBridge.updateDesktopSettings({ unifiedToolRouteEnabled: next });
+      if (!result.ok) {
+        setUnifiedToolRouteEnabledSetting(previous);
+        setUnifiedToolRouteSaveError(result.error);
+      }
+    } catch (error) {
+      setUnifiedToolRouteEnabledSetting(previous);
+      setUnifiedToolRouteSaveError(error instanceof Error ? error.message : "설정을 저장하지 못했습니다.");
+    }
+  }
+  // 후보가 하나도 없으면(등록된 로컬 Tool도, 연결된 MCP Tool도 없음) 토글
+  // 자체를 그리지 않는다(Task Brief E, `hasAnyUnifiedCandidates` — 순수
+  // 함수라 단위 테스트로 고정된다).
+  const unifiedToolRouteHasCandidates = hasAnyUnifiedCandidates(
+    registeredLocalTools.length,
+    connectedMcpToolNames.length,
+  );
+  // 개발 확인용 명시적 Tool 호출이 이미 명시적 mcp_tool_request를 보내는
+  // 중이면(D-083 서버 규칙: 명시적 요청이 항상 우선) 이 토글은 아무 효과가
+  // 없다. Local Agent를 선택한 상태에서도 막는다 — 로컬 실행이 이제 이
+  // 토글의 한 갈래이므로, 옛 `localToolRouteApplicable`과 동일하게
+  // `!localAgentActive`를 요구한다(아래 `localAgentSelectionDisabledReason`과
+  // 함께 양방향으로 배타적).
+  const unifiedToolRouteApplicable =
+    !!bridge && unifiedToolRouteHasCandidates && !mcpDevActive && !localAgentActive;
+  const unifiedToolRouteActive = unifiedToolRouteEnabledSetting && unifiedToolRouteApplicable;
+
   const localAgentSelectionDisabledReason =
-    mcpDevActive || toolRouteActive
-      ? "개발 확인용 Tool 호출/TOOL_ROUTE 동의가 켜져 있는 동안은 Local Agent를 선택할 수 없습니다 — 먼저 끄세요."
+    mcpDevActive || unifiedToolRouteActive
+      ? "개발 확인용 Tool 호출/Tool 자동 선택이 켜져 있는 동안은 Local Agent를 선택할 수 없습니다 — 먼저 끄세요."
       : null;
   useEffect(() => {
     if (localAgentSelectionDisabledReason && selectedLocalAgentId) setSelectedLocalAgentId("");
@@ -882,40 +973,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     }
   }
 
-  // D-084 후속 2 — 채팅 질문으로 로컬 Tool을 자동 선택/실행하는 기능
-  // (사용자 실사용 피드백, 의도적 예외로 두 번 재확인받음). 기본 꺼짐,
-  // 세션 간 영속하지 않음(허브 조회 토글·TOOL_ROUTE 동의 토글과 같은 모양,
-  // `useState`로만 유지) — 등록된 로컬 Tool이 하나도 없으면 이 토글 자체를
-  // 그리지 않는다(렌더 부분, 아래 §입력창). 개발 확인용 명시적 Tool
-  // 호출/TOOL_ROUTE 동의/Local Agent 선택과는 서로 배타적으로 둔다 — 넷이
-  // 동시에 켜지면 이번 턴에 무엇이 실제로 적용됐는지 사용자가 알 수 없다
-  // (CLAUDE.md: 호환되지 않는 선택지는 이유와 함께 비활성화한다).
-  const [registeredLocalTools, setRegisteredLocalTools] = useState<LocalTool[]>([]);
-  useEffect(() => {
-    if (!bridge) return;
-    let cancelled = false;
-    void bridge
-      .listLocalTools()
-      .then((tools) => {
-        if (!cancelled) setRegisteredLocalTools(tools);
-      })
-      .catch(() => {
-        // 목록 조회 실패는 이 토글을 그냥 숨긴다(applicable=false) — 이미
-        // "로컬 Tool" 버튼을 통한 수동 경로가 자체 오류 상태를 보여준다.
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [bridge]);
-  const [localToolRouteEnabled, setLocalToolRouteEnabled] = useState(false);
-  const localToolRouteApplicable =
-    !!bridge && registeredLocalTools.length > 0 && !mcpDevActive && !toolRouteActive && !localAgentActive;
-  const localToolRouteActive = localToolRouteEnabled && localToolRouteApplicable;
-  useEffect(() => {
-    if (!localToolRouteApplicable && localToolRouteEnabled) setLocalToolRouteEnabled(false);
-  }, [localToolRouteApplicable, localToolRouteEnabled]);
-
-  // D-084 후속 2 — 대화창에 표시되는 자동 라우팅 기록. `localToolEntries`
+  // D-089 후속 — 대화창에 표시되는 자동 라우팅 기록. `localToolEntries`
   // (수동 실행)와 별개 배열이다 — 카드 모양이 다르고(Sparkles 아이콘, "AI
   // 자동 선택" 배지), 어떤 Tool도 정해지지 않은 채 끝나는 경우가 있어
   // `LocalToolChatEntry`의 필수 필드(functionName/filePath)를 채울 수 없기
@@ -1374,62 +1432,89 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     }
   }
 
-  // D-084 후속 2 — 로컬 Tool 자동 라우팅 한 턴을 처리한다. 이 함수는
-  // `startRun`/agent-runtime을 절대 호출하지 않고 여기서 완결된다 —
-  // 실제로 무엇을 하는지(로컬 Ollama에 한 번 묻고, 승인 후 실행)는
-  // `runLocalToolAutoRoute`(LocalToolInvokePanel.tsx)에 있다. 이 함수는
-  // 상태 갱신(전송 중 표시, 목록에 항목 추가/갱신)만 담당한다.
-  async function handleLocalToolAutoRoute(q: string): Promise<void> {
-    if (!bridge) return;
+  // D-089 후속(통합 Tool 라우팅) — 이번 턴의 통합 판정 한 번을 처리한다.
+  // 반환값이 이 턴에서 실제로 무엇이 선택됐는지를 `handleSend`에 알린다:
+  //   - "local": 이 함수 안에서 로컬 Tool 실행까지 완결됐다(승인/실행 결과
+  //     반영 완료) — `startRun`/agent-runtime은 전혀 호출되지 않는다.
+  //     `electron/__tests__/local-tool-isolation.test.ts`의 "the local-tool
+  //     auto-route branch in handleSend returns before reaching startRun's
+  //     payload" 검사가 handleSend 쪽의 `return`을 직접 고정한다.
+  //   - "mcp": 아무것도 실행하지 않았다 — 호출자가 기존 D-083 경로(agent-
+  //     runtime, `agentProfile: "standard-db-agent"` + `toolRoute: true`)로
+  //     이번 턴을 이어가야 한다(Task Brief D: 이 profile은 이 턴에만 적용).
+  //   - "none": 아무것도 선택되지 않았다(AI가 불필요하다고 판단했거나 D-089
+  //     fail-closed 4종 중 하나) — 이번 턴은 평소 대화(Knowledge/Ollama)로
+  //     그대로 이어간다. 2026-08-19 제보("질문이 대화에서 사라진다")의
+  //     재발 방지는 여기서 "정상 답변으로 이어짐"으로 지켜진다 — 로컬
+  //     Tool만 다루던 예전 구현처럼 별도의 "실행 안 함" 턴을 새로 만들지
+  //     않는다(그 질문은 실제로 knowledge/ollama 답변을 받는다).
+  async function handleLocalToolAutoRoute(q: string): Promise<"local" | "mcp" | "none"> {
+    if (!bridge || !unifiedToolRouteActive) return "none";
+    const candidates = buildUnifiedToolCandidates(
+      registeredLocalTools.map((t) => ({
+        id: t.id,
+        toolName: t.toolName,
+        functionName: t.functionName,
+        inputSchema: t.inputSchema,
+      })),
+      connectedMcpToolNames,
+    );
+    if (candidates.length === 0) return "none";
+    const settings = settingsBridge ? await settingsBridge.getDesktopSettings().catch(() => null) : null;
+    const route = await routeUnifiedToolCall(q, candidates, {
+      baseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+      preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+    });
+    if (route.status === "ran_mcp") return "mcp";
+    if (route.status !== "ran_local") return "none";
+
+    // route.status === "ran_local" — 실제 로컬 실행(승인 대화상자 포함)은
+    // `runResolvedLocalTool`이 맡는다(라우팅을 다시 하지 않는다 — 이미
+    // 위에서 검증된 toolId/args를 그대로 넘긴다).
     setSendError(null);
     setQuestion("");
     setIsRunning(true);
     try {
-      const settings = settingsBridge ? await settingsBridge.getDesktopSettings().catch(() => null) : null;
-      await runLocalToolAutoRoute({
+      await runResolvedLocalTool({
         bridge,
         question: q,
-        ollamaBaseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
-        preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+        toolId: route.toolId!,
+        toolName: route.toolName!,
+        args: route.args ?? {},
         onStart: (entry) => setLocalToolRouteEntries((prev) => [...prev, entry]),
         onFinish: (entryId, completedAt, toolName, args, display) => {
           setLocalToolRouteEntries((prev) =>
             prev.map((e) => (e.id === entryId ? { ...e, completedAt, toolName, args, display } : e)),
           );
-          // 실사용 제보(2026-08-19, 2026-08-20 후속) — 이 턴은 항상
-          // 저장한다. `toolName === null`(AI가 불필요 판단/후보 없음/후보
-          // 중 못 고름)이어도 질문은 실제로 있었고 이유도 있다 — 저장을
-          // 건너뛰면 "질문이 대화에서 사라진다"는 바로 그 제보 증상이
-          // 재발한다(persistToolOnlyTurn이 이 경우 "no_action" 상태로
-          // 사유를 answer에 담아 저장한다).
-          void persistToolOnlyTurn({
-            question: q,
-            toolName,
-            args,
-            route: "ai_auto_selected",
-            outcome: display,
-          });
+          void persistToolOnlyTurn({ question: q, toolName, args, route: "ai_auto_selected", outcome: display });
         },
       });
     } finally {
       setIsRunning(false);
     }
+    return "local";
   }
 
   async function handleSend(text?: string) {
     const q = (text ?? question).trim();
     if (!q || isRunning) return;
 
-    // D-084 후속 2 — 이 토글이 켜져 있으면 이번 턴은 완전히 다른 경로다:
-    // agent-runtime을 전혀 거치지 않고 Desktop이 로컬 Ollama에 직접(한 번만)
-    // 물어 로컬 Tool을 자동으로 고르고 실행한다(위 브리프 제약 A). 아래
-    // agent-runtime Run 생성 Payload와는 물리적으로 분리된 함수에서 끝난다
-    // — `electron/__tests__/local-tool-isolation.test.ts`의 "the local-tool
-    // auto-route branch in handleSend returns before reaching startRun's
-    // payload" 검사가 이 return을 직접 고정한다.
-    if (localToolRouteActive) {
-      await handleLocalToolAutoRoute(q);
-      return;
+    // D-089 후속(통합 Tool 라우팅) — 이 토글이 켜져 있으면 이번 턴 먼저
+    // 로컬 Tool + 연결된 MCP Tool 후보를 하나로 합쳐 라우팅을 한 번
+    // 시도한다(위 브리프 제약 A). "local"로 끝나면 agent-runtime을 전혀
+    // 거치지 않고 여기서 완결된다 — 아래 agent-runtime Run 생성 Payload와는
+    // 물리적으로 분리된 함수에서 끝난다(`electron/__tests__/local-tool-isolation.test.ts`의
+    // "the local-tool auto-route branch in handleSend returns before
+    // reaching startRun's payload" 검사가 이 return을 직접 고정한다).
+    // "mcp"로 끝나면 이번 턴만 아래 agent-runtime 경로를 강제한다(Task
+    // Brief D — 정적 토글이 아니라 이 턴의 판정 결과 하나로 결정).
+    let turnMcpToolRouteForced = false;
+    if (unifiedToolRouteActive) {
+      const outcome = await handleLocalToolAutoRoute(q);
+      if (outcome === "local") return;
+      if (outcome === "mcp") turnMcpToolRouteForced = true;
+      // outcome === "none" — 아무것도 선택되지 않았다. 아래로 그대로
+      // 흘러가 평소 대화(Knowledge/Ollama)로 이어진다.
     }
 
     if (
@@ -1447,24 +1532,26 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setSendError(null);
     setQuestion("");
     const id = crypto.randomUUID();
-    // D-083: toolRouteActive는 명시적 Tool 요청 없이도(agentRuntime.ts에
+    // D-083: turnMcpToolRouteForced는 명시적 Tool 요청 없이도(agentRuntime.ts에
     // `mcpTool`을 전혀 넘기지 않는다) agent-runtime을 거쳐야 한다 — Ollama
     // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다. D-034 해석 경로
     // 4(localAgentActive) 역시 agent-runtime을 거쳐야만 그 Agent+Prompt
     // 짝이 적용된다 — Ollama 직통 경로로 새면 표준 Agent와 구분되지 않는다.
-    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteActive && !localAgentActive;
+    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !turnMcpToolRouteForced && !localAgentActive;
     const serviceId = ollamaOnly
       ? `${SERVICE_ID_PREFIX}:ollama-default`
       : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
     // standard-agent는 capabilities.mcp_allowed=false라 TOOL_ROUTE가 아예
-    // 실행되지 않는다(config/standard-agent/agent-manifest.json) — toolRouteActive도
-    // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다. localAgentActive일
-    // 때는 이 필드가 서버에서 아예 읽히지 않으므로(agentRuntime.ts 주석) 값
-    // 자체는 의미가 없다 — ChatMessage 타입이 두 값만 허용해 placeholder로
-    // "standard-agent"를 둔다(화면에는 이 필드를 직접 표시하지 않는다,
-    // localAgentLabelUsed가 실제 표시를 담당).
+    // 실행되지 않는다(config/standard-agent/agent-manifest.json) — turnMcpToolRouteForced도
+    // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다(Task Brief D:
+    // 이번 턴이 실제로 MCP를 골랐을 때만 — 정적 토글이 아니라 이 턴의 판정
+    // 결과). localAgentActive일 때는 이 필드가 서버에서 아예 읽히지
+    // 않으므로(agentRuntime.ts 주석) 값 자체는 의미가 없다 — ChatMessage
+    // 타입이 두 값만 허용해 placeholder로 "standard-agent"를 둔다(화면에는
+    // 이 필드를 직접 표시하지 않는다, localAgentLabelUsed가 실제 표시를
+    // 담당).
     const agentProfile: ChatMessage["agentProfile"] =
-      mcpDevActive || toolRouteActive ? "standard-db-agent" : "standard-agent";
+      mcpDevActive || turnMcpToolRouteForced ? "standard-db-agent" : "standard-agent";
     // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
     // `input.history`로 함께 보낸다(additive/optional, local-runtime-api.yaml
     // ConversationTurnInput). Electron 브릿지 유무와 무관하게 항상 동작한다
@@ -1475,7 +1562,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // 실사용 제보(2026-08-19) — 이번 턴이 명시적 MCP Tool 호출이면 전송
     // 시점의 Tool 이름+인자를 캡처해 둔다(다른 `*Used` 필드와 같은 이유,
     // startRun 호출 시 실제로 보내는 값과 동일한 계산). ollamaOnly/
-    // toolRouteActive/localAgentActive 턴은 명시적 호출이 아니므로 `null`.
+    // turnMcpToolRouteForced/localAgentActive 턴은 명시적 호출이 아니므로 `null`.
     const mcpToolCallUsed = mcpDevActive
       ? {
           toolName: bridge ? "calculator.add" : mcpDevTool,
@@ -1569,8 +1656,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         ...(history.length > 0 ? { history } : {}),
         // D-034 해석 경로 4 — 명시적으로 선택했을 때만 보낸다(기본은 항상
         // 표준 Agent, Task Brief 제약 D). localAgentActive는 위에서 이미
-        // mcpDevActive/toolRouteActive와 배타적으로 유지된다(선택 시 두
-        // 토글이 자동으로 꺼진다) — 셋이 동시에 보내지는 경로는 없다.
+        // mcpDevActive/unifiedToolRouteActive와 배타적으로 유지된다(선택 시
+        // 토글이 자동으로 비활성화된다) — 셋이 동시에 보내지는 경로는 없다.
         ...(localAgentActive && selectedLocalAgent
           ? { localAgentId: selectedLocalAgent.assetId }
           : mcpDevActive
@@ -1582,9 +1669,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
                 mcpConfirmed: false,
               }
-            : toolRouteActive
+            : turnMcpToolRouteForced
               ? // D-083: 명시적 mcpTool은 절대 함께 보내지 않는다 — 무엇을 부를지
                 // 사용자가 아니라 TOOL_ROUTE가 이번 질문에서 고르게 한다.
+                // D-089 후속 — 이 값은 통합 라우팅이 이번 턴 "mcp"를 골랐을
+                // 때만 참이다(위 통합 라우팅 판정 함수의 반환값, 정적 토글이
+                // 아니다).
                 { agentProfile: "standard-db-agent" as const, toolRoute: true }
               : {}),
       });
@@ -2364,31 +2454,49 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     activeLabel="허브"
                   />
 
-                  {/* D-083 TOOL_ROUTE 동의 — 허브 토글과 동일한 모양의 동의(기본
-                      꺼짐, 세션 간 영속하지 않음). 켜면 이번 질문에 맞는 MCP
-                      Tool을 AI가 하나 제안하고, 실행 전에는 항상 기존 확인
-                      Panel(승인/거부)을 거친다 — 이 토글 자체는 실행을
-                      허락하지 않고 "제안을 받아보겠다"만 허락한다. */}
-                  <ComposerToggle
-                    id="tool-route-toggle"
-                    label="필요하면 Tool 자동 제안"
-                    description={
-                      toolRouteApplicable
-                        ? `이 질문에 사내 시스템 조회가 필요해 보이면 AI가 호출할 Tool과 입력값을 제안합니다. 실행 전에는 항상 승인/거부를 다시 확인합니다.${describeToolRouteMcpToolsHint(mcpToolConnectionSummary)}`
-                        : "개발 확인용 MCP Tool 호출이 켜져 있는 동안에는 사용할 수 없습니다 — 그 입력이 항상 우선합니다."
-                    }
-                    icon={<Wrench size={15} aria-hidden="true" />}
-                    pressed={toolRouteEnabled}
-                    disabled={isRunning || !toolRouteApplicable}
-                    onChange={setToolRouteEnabled}
-                    activeLabel="Tool 제안"
-                  />
+                  {/* D-089 후속(통합 Tool 라우팅, 2026-08-20 승인 설계) — 옛
+                      "필요하면 Tool 자동 제안"(MCP)과 "로컬 Tool 인자 자동
+                      채우기"(로컬) 두 토글을 하나로 합쳤다. 어느 종류의
+                      Tool을 쓸지는 구현 세부사항이지 사용자가 미리 알아야
+                      할 선택이 아니다 — 후보(등록된 로컬 Tool + 연결된 MCP
+                      Tool)가 하나도 없으면 토글 자체를 그리지 않고
+                      (`unifiedToolRouteHasCandidates`, Task Brief E), 켜져
+                      있을 때는 두 종류 후보 이름을 그대로 보여준다(무엇이
+                      자동 실행될 수 있는지 모르는 상태를 만들지 않는다).
+                      기본 켜짐 + 사용자가 끄면 설정에 저장되어 유지된다
+                      (`unifiedToolRouteEnabledSetting`) — 실행을 막는 것은
+                      이 토글이 아니라 승인이다: MCP Tool은 실행 전 항상
+                      승인/거부 확인 Panel을 다시 거치고, 로컬 Tool은 미리
+                      허용해 둔 것만(`approval`, D-084 후속 3) 대화상자 없이
+                      실행된다. */}
+                  {unifiedToolRouteHasCandidates && (
+                    <ComposerToggle
+                      id="unified-tool-route-toggle"
+                      label="필요하면 Tool 자동 선택"
+                      description={
+                        unifiedToolRouteApplicable
+                          ? `이 질문에 맞는 Tool을 AI가 후보 중에서 하나 고릅니다 — 사내 등록 Tool과 겹치면 항상 사내 등록 Tool을 먼저 씁니다. 사내 Tool은 실행 전 항상 승인/거부를 다시 확인하고, 로컬 Tool은 '실행 허용됨' 표시가 있는 것만 승인 대화상자 없이 실행되며 나머지는 매번 다시 확인합니다. 후보: ${describeUnifiedToolRouteCandidates(registeredLocalTools, connectedMcpToolNames)}.${unifiedToolRouteSaveError ? ` (설정 저장 실패: ${unifiedToolRouteSaveError})` : ""}`
+                          : !bridge
+                            ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
+                            : "개발 확인용 Tool 호출/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
+                      }
+                      icon={<Wrench size={15} aria-hidden="true" />}
+                      pressed={unifiedToolRouteEnabledSetting}
+                      disabled={isRunning || !unifiedToolRouteApplicable}
+                      onChange={(next) => void handleUnifiedToolRouteToggle(next)}
+                      activeLabel="Tool 자동"
+                    />
+                  )}
+                  {unifiedToolRouteSaveError && (
+                    <p className="w-full basis-full text-caption text-danger">
+                      Tool 자동 선택 설정을 저장하지 못했습니다: {unifiedToolRouteSaveError}
+                    </p>
+                  )}
 
                   {/* D-084 — 로컬 Tool을 직접 골라 인자를 채우고 매번 새로
-                      승인해야만 실행되는 수동 경로. 아래 토글(D-084 후속 2)은
-                      같은 로컬 Tool을 대상으로 하지만 선택과 인자를 AI가
-                      대신하는 별도 경로다 — 이 버튼은 그대로 남긴다(대체가
-                      아니라 추가). */}
+                      승인해야만 실행되는 수동 경로. 위 통합 토글은 선택과
+                      인자를 AI가 대신하는 별도 경로다 — 이 버튼은 그대로
+                      남긴다(대체가 아니라 추가). */}
                   <LocalToolInvokePanel
                     bridge={bridge}
                     disabled={isRunning}
@@ -2399,42 +2507,6 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       installedNotConnectedCount: mcpToolConnectionSummary.installedNotConnectedCount,
                     }}
                   />
-
-                  {/* D-084 후속 2 — "채팅에 질문을 입력하면 로컬 Tool 인자가
-                      자동으로 채워지게" 요구(실사용 피드백, 의도적 예외로 두
-                      번 재확인받음). 등록된 로컬 Tool이 하나도 없으면 이
-                      토글 자체를 그리지 않는다 — 무엇을 켜는지 알 수 없는
-                      토글을 보여주지 않는다. 켜져 있을 때 후보로 쓰일 로컬
-                      Tool 이름을 그대로 보여준다(무엇이 자동 실행될 수
-                      있는지 모르는 상태를 만들지 않는다). 실행 전 네이티브
-                      승인 여부는 이 토글이 아니라 각 Tool의 `approval`(D-084
-                      후속 3, 자산 화면에서 내용 해시에 묶어 미리 허용)이
-                      정한다 — 허용해 둔 Tool은 AI가 정한 인자로도 대화상자
-                      없이 실행되므로, 후보 목록에 어느 쪽인지 표시한다. */}
-                  {registeredLocalTools.length > 0 && (
-                    <ComposerToggle
-                      id="local-tool-route-toggle"
-                      label="로컬 Tool 인자 자동 채우기"
-                      description={
-                        localToolRouteApplicable
-                          ? `이 질문에 맞는 로컬 Tool과 입력값을 AI가 스스로 골라 채웁니다(후보: ${registeredLocalTools
-                              .map((t) => (t.approval !== null ? `${t.toolName}(실행 허용됨)` : t.toolName))
-                              .join(", ")}). 검토되지 않은 내 PC 코드입니다. ${
-                              registeredLocalTools.some((t) => t.approval !== null)
-                                ? "'실행 허용됨' 표시가 있는 Tool은 자산 > 로컬 Tool에서 미리 허용해 두었으므로 승인 대화상자 없이 바로 실행됩니다 — AI가 정한 인자도 그대로 실행됩니다. 나머지는 실행 전 네이티브 승인을 다시 거칩니다."
-                                : "실행 전 Desktop 창의 네이티브 승인 대화상자를 매번 다시 거칩니다."
-                            }`
-                          : !bridge
-                            ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
-                            : "개발 확인용 Tool 호출/Tool 자동 제안/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
-                      }
-                      icon={<Sparkles size={15} aria-hidden="true" />}
-                      pressed={localToolRouteEnabled}
-                      disabled={isRunning || !localToolRouteApplicable}
-                      onChange={setLocalToolRouteEnabled}
-                      activeLabel="로컬 Tool 자동"
-                    />
-                  )}
 
                   {settingsBridge ? (
                     <div className="flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors hover:bg-slate-100">

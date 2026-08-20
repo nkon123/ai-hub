@@ -82,6 +82,17 @@ export const DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES = 5;
 export const MIN_LOCAL_TOOL_TIMEOUT_MINUTES = 1;
 export const MAX_LOCAL_TOOL_TIMEOUT_MINUTES = 60;
 
+// D-089 후속(통합 Tool 라우팅, 2026-08-20 승인 설계 E) — 기본값은 반드시
+// `true`다. 근거: 실행을 막는 것은 이 토글이 아니라 승인이다 — 승인해 둔
+// 로컬 Tool은 대화상자 없이 돌고(D-084 후속 3), 승인 안 한 Tool은 여전히
+// 매번 네이티브 승인이 뜬다. MCP Tool도 마찬가지로 D-083의 등록·승인·
+// READ_ONLY 검증 체인을 그대로 거친다 — 이 토글은 그 검증을 우회하지
+// 않고 "AI가 후보 중에서 고르게 해도 되는가"만 결정한다. Tool을 등록·연결
+// 까지 해 둔 사용자라면 그 답은 이미 예에 가깝다. 사용자가 끄면(비활성)
+// 그 선택은 세션을 넘어 유지되어야 한다 — 그래서 `useState`가 아니라 이
+// D10 설정 저장소에 둔다.
+export const DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED = true;
+
 interface DesktopSettingsFile {
   clientDisplayName: string | null;
   siteId: string | null;
@@ -94,6 +105,7 @@ interface DesktopSettingsFile {
   agentRuntimeBaseUrl: string;
   pythonInterpreterPath: string | null;
   localToolTimeoutMinutes: number;
+  unifiedToolRouteEnabled: boolean;
   setupCompletedAt: string | null;
   updatedAt: string | null;
 }
@@ -112,6 +124,7 @@ const DEFAULT_FILE: DesktopSettingsFile = {
   // 없으면 로컬 Tool 실행 자체가 막힌다(구현 원칙 7).
   pythonInterpreterPath: null,
   localToolTimeoutMinutes: DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
+  unifiedToolRouteEnabled: DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED,
   setupCompletedAt: null,
   updatedAt: null,
 };
@@ -149,6 +162,14 @@ export class DesktopSettingsStore {
           typeof parsed.localToolTimeoutMinutes === "number" && Number.isFinite(parsed.localToolTimeoutMinutes)
             ? parsed.localToolTimeoutMinutes
             : DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
+        // D-089 후속 — 이 필드 도입 이전 설정 파일에는 없다. 없으면(또는
+        // boolean이 아니면) 기본값 `true`로 채운다(위 상수 주석의 근거)  —
+        // "필드 없음"을 "꺼짐"으로 오해하지 않는다(다른 레거시 필드와 동일한
+        // 관례, `localToolTimeoutMinutes` 참고).
+        unifiedToolRouteEnabled:
+          typeof parsed.unifiedToolRouteEnabled === "boolean"
+            ? parsed.unifiedToolRouteEnabled
+            : DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED,
         setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
         updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
       };
@@ -177,6 +198,7 @@ export class DesktopSettingsStore {
       agentRuntimeBaseUrl: current.agentRuntimeBaseUrl,
       pythonInterpreterPath: current.pythonInterpreterPath,
       localToolTimeoutMinutes: current.localToolTimeoutMinutes,
+      unifiedToolRouteEnabled: current.unifiedToolRouteEnabled,
       maxConcurrentRuns: { value: MAX_CONCURRENT_RUNS_VALUE, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
       setupCompletedAt: current.setupCompletedAt,
       updatedAt: current.updatedAt,
@@ -259,6 +281,9 @@ export class DesktopSettingsStore {
         };
       }
       next.localToolTimeoutMinutes = minutes;
+    }
+    if (patch.unifiedToolRouteEnabled !== undefined) {
+      next.unifiedToolRouteEnabled = patch.unifiedToolRouteEnabled;
     }
 
     next.updatedAt = new Date().toISOString();

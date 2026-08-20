@@ -39,6 +39,9 @@ const MAX_CONCURRENT_RUNS_REASON =
 const DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES = 5;
 const MIN_LOCAL_TOOL_TIMEOUT_MINUTES = 1;
 const MAX_LOCAL_TOOL_TIMEOUT_MINUTES = 60;
+// D-089 후속 — `desktop-settings.ts`의 `DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED`와
+// 동일한 값(위 주석과 같은 이유로 다시 선언한다).
+const DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED = true;
 
 // 브라우저 개발 모드는 파일시스템/Electron IPC가 전혀 없어 실제로 수행할 수
 // 없는 동작에 공통으로 쓰는 안내 문구 — 항상 이 문구로 명시적으로 거부하고,
@@ -78,6 +81,12 @@ export function createDefaultBrowserPreviewSettings(): DesktopSettingsPublic {
     // 시작한다.
     pythonInterpreterPath: null,
     localToolTimeoutMinutes: DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
+    // D-089 후속 — 실제 저장소(desktop-settings.ts)와 같은 기본값(true)을
+    // 쓴다. 브라우저 개발 모드에서는 로컬 Tool 후보가 항상 비어 있으므로
+    // (위 pythonInterpreterPath 주석과 같은 이유) 이 값이 켜져 있어도 화면은
+    // MCP 후보만 있을 때만 토글을 그린다 — 기본값 자체를 다르게 둘 이유는
+    // 없다.
+    unifiedToolRouteEnabled: DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED,
     maxConcurrentRuns: { value: 1, enforced: false, reason: MAX_CONCURRENT_RUNS_REASON },
     setupCompletedAt: null,
     updatedAt: null,
@@ -152,6 +161,10 @@ export function applyBrowserPreviewSettingsPatch(
     next.localToolTimeoutMinutes = minutes;
   }
 
+  if (patch.unifiedToolRouteEnabled !== undefined) {
+    next.unifiedToolRouteEnabled = patch.unifiedToolRouteEnabled;
+  }
+
   next.updatedAt = new Date().toISOString();
   return { ok: true, error: null, settings: next };
 }
@@ -179,6 +192,10 @@ function readSettings(): DesktopSettingsPublic {
         typeof parsed.localToolTimeoutMinutes === "number" && Number.isFinite(parsed.localToolTimeoutMinutes)
           ? parsed.localToolTimeoutMinutes
           : defaults.localToolTimeoutMinutes,
+      unifiedToolRouteEnabled:
+        typeof parsed.unifiedToolRouteEnabled === "boolean"
+          ? parsed.unifiedToolRouteEnabled
+          : defaults.unifiedToolRouteEnabled,
       setupCompletedAt: typeof parsed.setupCompletedAt === "string" ? parsed.setupCompletedAt : null,
       updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : null,
     };

@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES,
+  DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED,
   DesktopSettingsStore,
   MAX_CONCURRENT_RUNS_VALUE,
   MAX_LOCAL_TOOL_TIMEOUT_MINUTES,
@@ -37,6 +38,37 @@ describe("DesktopSettingsStore", () => {
     expect(settings.searchRuntimeBaseUrl).toBe("http://127.0.0.1:8300");
     expect(settings.setupCompletedAt).toBeNull();
     expect(settings.localToolTimeoutMinutes).toBe(DEFAULT_LOCAL_TOOL_TIMEOUT_MINUTES);
+    expect(settings.unifiedToolRouteEnabled).toBe(true);
+  });
+
+  describe("D-089 후속 — 통합 Tool 자동 라우팅 동의(unifiedToolRouteEnabled)", () => {
+    it(`defaults to ${DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED} (기본 켜짐 — Task Brief E: 실행을 막는 것은 이 토글이 아니라 승인이다)`, () => {
+      const store = new DesktopSettingsStore(tmpDir);
+      expect(store.getPublic().unifiedToolRouteEnabled).toBe(DEFAULT_UNIFIED_TOOL_ROUTE_ENABLED);
+    });
+
+    it("normalizes a legacy settings file written before this field existed to the default (켜짐), not to false", () => {
+      fs.writeFileSync(
+        path.join(tmpDir, "desktop-settings.json"),
+        JSON.stringify({ chatModelAlias: "my-chat" }),
+        "utf-8",
+      );
+      const settings = new DesktopSettingsStore(tmpDir).getPublic();
+      expect(settings.unifiedToolRouteEnabled).toBe(true);
+    });
+
+    it("사용자가 끄면(false) 새 DesktopSettingsStore 인스턴스로 다시 읽어도 꺼짐 상태가 유지된다 — 세션 간 유지(Task Brief E)", () => {
+      new DesktopSettingsStore(tmpDir).update({ unifiedToolRouteEnabled: false });
+      const reopened = new DesktopSettingsStore(tmpDir).getPublic();
+      expect(reopened.unifiedToolRouteEnabled).toBe(false);
+    });
+
+    it("사용자가 다시 켜면(true) 그 값도 그대로 유지된다", () => {
+      new DesktopSettingsStore(tmpDir).update({ unifiedToolRouteEnabled: false });
+      new DesktopSettingsStore(tmpDir).update({ unifiedToolRouteEnabled: true });
+      const reopened = new DesktopSettingsStore(tmpDir).getPublic();
+      expect(reopened.unifiedToolRouteEnabled).toBe(true);
+    });
   });
 
   describe("실사용 제보(2026-08-19) — 대화형 로컬 Tool 실행 타임아웃", () => {

@@ -75,12 +75,33 @@ export function describeMcpToolsNoticeForEmptyState(
 ): string | null {
   if (summary.connectedNames.length > 0) {
     const names = summary.connectedNames.map((name) => `"${name}"`).join(", ");
-    return `참고: 설치하신 ${names}은(는) 이 기능과는 다릅니다 — 내 PC의 Python 파일이 아니라 사내에 등록된 Tool이며, 입력창의 렌치(Tool 자동 제안) 토글에서 사용합니다.`;
+    return `참고: 설치하신 ${names}은(는) 이 기능과는 다릅니다 — 내 PC의 Python 파일이 아니라 사내에 등록된 Tool이며, 입력창의 "Tool 자동 선택" 토글에서 사용합니다.`;
   }
   if (summary.installedNotConnectedCount > 0) {
-    return `참고: 자산 스토어에서 설치한 Tool ${summary.installedNotConnectedCount}개가 있습니다. 이 기능과는 다릅니다 — 설치된 자산 화면에서 연결하면 입력창의 렌치(Tool 자동 제안) 토글에서 사용할 수 있습니다.`;
+    return `참고: 자산 스토어에서 설치한 Tool ${summary.installedNotConnectedCount}개가 있습니다. 이 기능과는 다릅니다 — 설치된 자산 화면에서 연결하면 입력창의 "Tool 자동 선택" 토글에서 사용할 수 있습니다.`;
   }
   return null;
+}
+
+// --- D-089 후속(통합 Tool 라우팅, 2026-08-20) --------------------------------
+// 통합 토글("Tool 자동 선택")이 켜져 있을 때 무엇이 후보인지 보여주는 문구.
+// `ChatScreen.tsx`가 로컬 Tool 목록과 연결된 MCP Tool 이름을 그대로 넘긴다 —
+// 이 파일은 `chatTypes.ts`를 import하지 않으므로(위 `McpToolsSummaryForLocalToolEmptyState`
+// 주석과 같은 이유, `local-tool-isolation.test.ts`가 이 파일에 그 제약을
+// 두지는 않지만 같은 관례를 따른다) MCP 쪽 사실도 평범한 문자열 배열로만
+// 받는다.
+export function describeUnifiedToolRouteCandidates(localTools: LocalTool[], mcpConnectedNames: string[]): string {
+  const parts: string[] = [];
+  if (mcpConnectedNames.length > 0) {
+    parts.push(`사내 등록 Tool(우선): ${mcpConnectedNames.join(", ")}`);
+  }
+  if (localTools.length > 0) {
+    const names = localTools
+      .map((t) => (t.approval !== null ? `${t.toolName}(실행 허용됨)` : t.toolName))
+      .join(", ");
+    parts.push(`내 PC 로컬 Tool(검토되지 않음): ${names}`);
+  }
+  return parts.join(" · ");
 }
 
 export type InvocationOutcomeTone = "success" | "danger" | "warning" | "muted";

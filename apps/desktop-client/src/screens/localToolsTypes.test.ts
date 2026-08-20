@@ -6,6 +6,7 @@ import {
   classifyToolResultForDisplay,
   defaultSelectedFunctionNames,
   describeMcpToolsNoticeForEmptyState,
+  describeUnifiedToolRouteCandidates,
   fieldKindForSchemaType,
   formatArgsForConfirm,
   formatInvocationOutcome,
@@ -241,13 +242,13 @@ describe("describeMcpToolsNoticeForEmptyState (D-080/D-084 혼동 정정)", () =
     expect(notice).toBeNull();
   });
 
-  it("names the connected MCP Tool(s) and points at the wrench (Tool 자동 제안) toggle", () => {
+  it("names the connected MCP Tool(s) and points at the unified 'Tool 자동 선택' toggle (D-089 후속)", () => {
     const notice = describeMcpToolsNoticeForEmptyState({
       connectedNames: ["숫자 더하기"],
       installedNotConnectedCount: 0,
     });
     expect(notice).toContain("숫자 더하기");
-    expect(notice).toContain("렌치");
+    expect(notice).toContain("Tool 자동 선택");
   });
 
   it("lists every connected name, not just the first", () => {
@@ -487,5 +488,34 @@ describe("buildToolOnlyTurnPersistPayload", () => {
       const hasVisibleOutcome = payload.toolExecutions.length > 0 || payload.answer.length > 0;
       expect(hasVisibleOutcome).toBe(true);
     }
+  });
+});
+
+describe("describeUnifiedToolRouteCandidates (D-089 후속 — 통합 Tool 라우팅 토글의 후보 표시 문구)", () => {
+  it("returns an empty string when there are no candidates of either kind", () => {
+    expect(describeUnifiedToolRouteCandidates([], [])).toBe("");
+  });
+
+  it("lists MCP candidate names and marks them as priority when only MCP candidates exist", () => {
+    const text = describeUnifiedToolRouteCandidates([], ["숫자 더하기", "테이블 건수 조회"]);
+    expect(text).toContain("숫자 더하기");
+    expect(text).toContain("테이블 건수 조회");
+    expect(text).not.toContain("로컬 Tool");
+  });
+
+  it("lists local candidate names and marks approval status when only local candidates exist", () => {
+    const text = describeUnifiedToolRouteCandidates(
+      [tool({ toolName: "business_days_between", approval: null }), tool({ toolName: "approved_tool", approval: { approvedFileHash: "h", approvedAt: "2026-08-20T00:00:00.000Z" } })],
+      [],
+    );
+    expect(text).toContain("business_days_between");
+    expect(text).toContain("approved_tool(실행 허용됨)");
+    expect(text).not.toContain("사내 등록 Tool");
+  });
+
+  it("lists both kinds together when both exist, MCP section first", () => {
+    const text = describeUnifiedToolRouteCandidates([tool({ toolName: "local_only" })], ["mcp_only"]);
+    expect(text.indexOf("mcp_only")).toBeLessThan(text.indexOf("local_only"));
+    expect(text).toContain("우선");
   });
 });
