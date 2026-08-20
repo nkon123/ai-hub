@@ -31,6 +31,7 @@ Portal UI. Next.js 14.2.3 App Router, 포트 3000(`next dev --port 3000`). 자�
 ## 테스트
 
 - 이 모듈에는 유닛 테스트가 없다(`package.json`에 `test` 스크립트 없음, `.test.ts(x)` 파일 없음). 검증은 `pnpm --filter portal-web typecheck`와 `pnpm --filter portal-web lint`, 그리고 M12가 소유한 `tests/e2e/`(살아있는 스택 필요, 기본 실행에서 skip)로 이뤄진다.
+- `pnpm --filter portal-web lint`는 `.eslintrc.json`(`next/core-web-vitals` 확장)이 있어야 대화형 설정 프롬프트 없이 끝까지 돈다. 2026-08-20 기준 이 명령은 종료 코드 0으로 통과하되 경고 8건을 남긴다: `react/no-unescaped-entities`(따옴표 미이스케이프, 3개 파일 6건 — `assets/new/[type]`·`knowledge/[assetId]/quality`·`services/[versionId]`. 여러 파일에 걸쳐 있어 규칙을 error에서 warn으로 낮췄다)와 `react-hooks/exhaustive-deps`(기존 코드의 의도적 의존성 생략으로 보이는 2건, `versions/page.tsx`·`distributions/[id]/page.tsx`). 새 코드가 이 경고를 늘리지 않는지 확인한다.
 
 ## 이 모듈에서 반복해서 틀렸던 것
 
