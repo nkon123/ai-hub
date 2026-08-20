@@ -31,6 +31,27 @@ Every recurring mistake in this repo's history has the same shape: **tests passe
 - **Building a zero-results/empty state?** Prove which cause produced it, or say plainly that the code cannot tell. A policy/classification block, an ACL block, a not-yet-built index, and "genuinely no match" must never render as the same generic empty message — collapsing them presents a policy decision as a retrieval outcome.
 - **Modeling a refusal or rejection from a downstream system?** Check whether it actually means "already in the desired state, nothing to do" rather than "failed." A refusal that means "already fine" must be its own state (e.g. an `ALREADY_ACTIVE`-style value), not funneled into the same failure state as a real error — otherwise a working feature displays as broken.
 
+### Verification — run the script, don't re-derive the commands
+
+Do not assemble `pytest`/`vitest`/`typecheck`/`ruff` invocations yourself and eyeball
+counts out of thousands of lines. The repo has one command for this:
+
+```
+node scripts/agent/verify-change.mjs --suites <names> --save-baseline <path>   # BEFORE you start
+node scripts/agent/verify-change.mjs --suites <names> --baseline <path>        # after
+```
+
+Full contract (suite names, flags, exit codes) is in the root `CLAUDE.md`
+"에이전트용 스크립트 인벤토리" section. How to read the result:
+
+- `delta.passed` must equal the number of tests **you** added. If it is larger,
+  something else is mixed in — this repo often has another session's uncommitted
+  work in the tree, so a raw absolute count proves nothing about your change.
+- Exit code `3` means the numbers could not be parsed — the command did not run,
+  or its output format changed. **Never report "passed" when no number was found.**
+- The script reports counts. It does not decide whether the change is correct,
+  whether a failure is acceptable, or whether the delta is explained. That is yours.
+
 ### Before marking the task done
 
 - **Did you touch a compiled/generated artifact's source** (anything with a build step between the file you edited and what actually runs — `preload.ts` → `dist/electron/preload.js`, TS → build output, etc.)? Rebuild it, and confirm by inspection (not assumption) that the built artifact contains your change.

@@ -132,6 +132,27 @@
 - Portal API는 모델을 직접 호출하지 않으며 Preview/게시 실행은 별도 Hosted Agent Runtime을 사용한다.
 - Desktop은 Runtime 장애 시 종료되지 않고 복구 안내를 제공한다.
 
+## 에이전트용 스크립트 인벤토리
+
+에이전트는 **먼저 여기를 보고**, 없을 때만 명령을 직접 조합한다. 존재를 모르면
+매번 인라인으로 다시 짜게 되고, 그때마다 파싱이 조금씩 달라진다.
+
+| 명령 | 용도 | 입력 | 출력 |
+|---|---|---|---|
+| `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | JSON `{ok, suites:[{suite,exitCode,ok,counts,delta}], failed:[]}`. 전체 덤프 없음 |
+
+`verify-change` 사용 규율:
+
+1. **작업 시작 전에 기준선을 찍는다** — `--save-baseline <경로>`. 안 찍으면
+   나중에 증가분이 내 것인지 다른 세션 것인지 구분할 수 없다.
+2. 작업 후 같은 스위트를 `--baseline <경로>`로 돌린다.
+3. **판정은 여전히 사람/에이전트 몫이다**: `delta.passed`가 내가 추가한 테스트
+   수와 **일치하는가**. 일치하지 않으면 다른 변경이 섞인 것이다.
+4. 종료 코드 **3은 파싱 실패**다 — 명령이 아예 안 돌았거나 출력 형식이 바뀐
+   것이다. 조용히 0으로 넘어가지 않는다. 숫자가 안 나왔는데 통과로 보고하지 마라.
+5. 이 스크립트는 **의존성이 없다**(Node 내장만). 폐쇄망에서 그대로 돈다.
+   테스트: `node --test scripts/agent/verify-change.test.mjs`
+
 ## 완료 전 확인
 
 - 요구사항 ID 또는 명세 Section이 PR에 연결되어 있는가
