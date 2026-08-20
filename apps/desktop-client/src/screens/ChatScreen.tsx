@@ -1057,6 +1057,19 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const ollamaAbortRef = useRef<AbortController | null>(null);
   const cancelledOllamaMessageIdsRef = useRef<Set<string>>(new Set());
 
+  // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 1단계(통합
+  // Tool 라우팅, `handleLocalToolAutoRoute`)를 취소하기 위한 컨트롤러. 이번
+  // 턴의 라우팅이 진행 중일 때만 채워지고(id로 어느 턴의 라우팅인지 구분),
+  // 끝나면(성공/취소/오류 무관) 즉시 비운다 — 다음 턴이 엉뚱한 컨트롤러를
+  // 이어받지 않게 한다. `pendingCancelling`은 클릭 두 번을 막는 표시용
+  // 상태다(취소 요청 자체는 abort() 한 번으로 끝나 재시도할 것이 없다).
+  const routeAbortRef = useRef<{ id: string; controller: AbortController } | null>(null);
+  const [pendingCancelling, setPendingCancelling] = useState(false);
+  // 요구 C — 2단계(자동 선택된 로컬 Tool 실행) 취소 중인 `LocalToolAutoRouteEntry.id`.
+  // 한 번에 하나의 자동 실행만 진행되므로(handleSend가 isRunning으로
+  // 직렬화) 단일 값으로 충분하다.
+  const [autoToolCancellingId, setAutoToolCancellingId] = useState<string | null>(null);
+
   // 실사용 제보(2026-08-20) — 대화 스레드 자동 스크롤. "바닥 근처에 있을
   // 때만 따라간다"는 판정은 `chatTypes.ts`의 `isChatThreadNearBottom`(순수
   // 함수, 단위 테스트됨)에 맡기고 여기서는 스크롤 이벤트로 그 판정을
@@ -1466,13 +1479,25 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   //     재발 방지는 여기서 "정상 답변으로 이어짐"으로 지켜진다 — 로컬
   //     Tool만 다루던 예전 구현처럼 별도의 "실행 안 함" 턴을 새로 만들지
   //     않는다(그 질문은 실제로 knowledge/ollama 답변을 받는다).
+  //   - "cancelled"(실사용 제보 2026-08-20 "채팅 입력하고 취소할 수 있어야해") —
+  //     사용자가 라우팅 중 취소를 눌러 `routeUnifiedToolCall`이
+  //     `status: "cancelled"`를 돌려줬다. **"none"으로 흡수하지 않는다** —
+  //     "none"은 그대로 평소 대화(agent-runtime/Ollama)로 흘러가므로, 취소한
+  //     턴이 답변 생성을 시작하는 정반대 동작이 된다. `handleSend`는 이
+  //     값을 받으면 agent-runtime을 전혀 거치지 않고 이 턴을 즉시
+  //     "cancelled" 상태 ChatMessage로 끝낸다(질문은 스레드에 남되 후속
+  //     질문의 history로는 전송되지 않는다 — `buildHistoryFromMessages`가
+  //     "succeeded"만 본다).
   // 실사용 제보(2026-08-20) — `turn`은 handleSend가 라우팅을 시작하기 전에
   // 이미 만들어 스레드에 올린 placeholder(id/startedAt/질문)다. "local"로
   // 끝나면 그 id를 그대로 `LocalToolAutoRouteEntry`에 재사용해 placeholder가
   // 정확히 그 최종 항목으로 이어지게 한다(같은 id -> `shouldShowPendingItem`이
   // placeholder를 내린다, chatThreadMerge.ts) — 위치가 바뀌거나 질문이 두 번
   // 그려지는 일이 없다.
-  async function handleLocalToolAutoRoute(q: string, turn: PendingThreadItem): Promise<"local" | "mcp" | "none"> {
+  async function handleLocalToolAutoRoute(
+    q: string,
+    turn: PendingThreadItem,
+  ): Promise<"local" | "mcp" | "none" | "cancelled"> {
     if (!bridge || !unifiedToolRouteActive) return "none";
     const candidates = buildUnifiedToolCandidates(
       registeredLocalTools.map((t) => ({
@@ -1485,10 +1510,24 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     );
     if (candidates.length === 0) return "none";
     const settings = settingsBridge ? await settingsBridge.getDesktopSettings().catch(() => null) : null;
-    const route = await routeUnifiedToolCall(q, candidates, {
-      baseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
-      preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
-    });
+    // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 이번
+    // 턴(turn.id)의 라우팅 취소 컨트롤러를 등록한다. `handleCancelPendingSend`가
+    // 이 컨트롤러를 abort하면 `routeUnifiedToolCall`이 `"cancelled"`를
+    // 돌려준다(내부 20초 타임아웃과는 status로 구별됨, unified-tool-router.ts).
+    const controller = new AbortController();
+    routeAbortRef.current = { id: turn.id, controller };
+    let route: Awaited<ReturnType<typeof routeUnifiedToolCall>>;
+    try {
+      route = await routeUnifiedToolCall(q, candidates, {
+        baseUrl: settings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+        preferredModel: settings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+        signal: controller.signal,
+      });
+    } finally {
+      if (routeAbortRef.current?.id === turn.id) routeAbortRef.current = null;
+      setPendingCancelling(false);
+    }
+    if (route.status === "cancelled") return "cancelled";
     if (route.status === "ran_mcp") return "mcp";
     if (route.status !== "ran_local") return "none";
 
@@ -1552,6 +1591,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // (`chatThreadMerge.ts`, 요구 B).
     setSendError(null);
     setQuestion("");
+    // 새 턴을 시작하므로 이전 턴의 취소 표시 잔여물을 지운다(정상적으로는
+    // 이전 턴이 끝날 때 이미 리셋되지만, 방어적으로 한 번 더).
+    setPendingCancelling(false);
+    setAutoToolCancellingId(null);
     const id = crypto.randomUUID();
     const startedAt = new Date().toISOString();
     setPendingSend({ id, ts: startedAt, question: q });
@@ -1573,6 +1616,48 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       const outcome = await handleLocalToolAutoRoute(q, { id, ts: startedAt });
       if (outcome === "local") return;
       if (outcome === "mcp") turnMcpToolRouteForced = true;
+      // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 사용자가
+      // 1단계(라우팅) 중에 취소를 눌렀다. 요구 B: 질문은 스레드에서 사라지지
+      // 않되, 후속 질문의 history로는 보내지 않는다 — "cancelled" 상태의
+      // ChatMessage를 이 id로 바로 만들어 끝낸다(agent-runtime을 전혀
+      // 거치지 않는다. "none"으로 흘려보내면 취소했는데 답변 생성이 시작되는
+      // 정반대 동작이 된다).
+      if (outcome === "cancelled") {
+        setPendingSend(null);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id,
+            question: q,
+            knowledgeIdUsed: knowledgeId,
+            knowledgeLabelUsed: knowledgeLookupActive ? knowledgeLabel : "기본 Ollama 대화",
+            serviceId: `${SERVICE_ID_PREFIX}:ollama-default`,
+            agentProfile: "standard-agent",
+            localAgentIdUsed: null,
+            localAgentLabelUsed: null,
+            ollamaOnly: true,
+            status: "cancelled",
+            answer: "",
+            citations: [],
+            stages: ollamaChatStages("cancelled"),
+            eventLog: [],
+            pendingConfirmation: null,
+            runId: null,
+            traceId: null,
+            startedAt,
+            completedAt: new Date().toISOString(),
+            serverRun: null,
+            hubQueriesSent: [],
+            knowledgeCandidateNameById: {},
+            knowledgeRoute: null,
+            toolRoute: null,
+            mcpToolCallUsed: null,
+            toolExecutions: [],
+          },
+        ]);
+        setIsRunning(false);
+        return;
+      }
       // outcome === "none" — 아무것도 선택되지 않았다. 아래로 그대로
       // 흘러가 평소 대화(Knowledge/Ollama)로 이어진다. placeholder는 아직
       // 그대로 떠 있다 — 바로 아래에서 같은 id로 ChatMessage를 만들 때
@@ -1797,6 +1882,38 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // 토큰 스트리밍 루프 중에도 cancel_event를 확인하므로 별도 분기가
     // 필요 없다. UI는 run.cancelled 이벤트가 도착한 뒤 실제로 갱신된다.
     await cancelRun(message.runId);
+  }
+
+  // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" 요구 A/D —
+  // 1단계(통합 Tool 라우팅) 취소. `pendingSend` 카드의 "확인 중..." 옆에
+  // 배치되며, 클릭 즉시 표시를 "취소하는 중..."으로 바꿔 두 번 누르지
+  // 못하게 한다(다른 취소 버튼과 같은 규칙). 실제 결과 반영은
+  // `handleLocalToolAutoRoute`/`handleSend`가 `route.status === "cancelled"`를
+  // 받아 처리한다 — 여기서는 abort 신호만 보낸다.
+  function handleCancelPendingSend(): void {
+    if (!routeAbortRef.current || pendingCancelling) return;
+    setPendingCancelling(true);
+    routeAbortRef.current.controller.abort();
+  }
+
+  // 요구 C — 2단계(자동 선택된 로컬 Tool 실행) 취소. 수동 실행 패널의
+  // `requestCancel`과 동일한 계약(`bridge.cancelLocalToolInvocation`)을
+  // 쓴다 — `ok: false`는 조용히 무시하지 않고 사용자에게 알린다(이미
+  // 끝났거나 알 수 없는 실행). 실제 최종 결과는 `runResolvedLocalTool`의
+  // `onFinish`가 곧 반영한다.
+  async function handleCancelAutoToolInvocation(entry: LocalToolAutoRouteEntry): Promise<void> {
+    if (!bridge || !entry.invocationId || autoToolCancellingId) return;
+    setAutoToolCancellingId(entry.id);
+    try {
+      const result = await bridge.cancelLocalToolInvocation(entry.invocationId);
+      if (!result.ok) {
+        setSendError(result.error ?? "취소 요청이 실패했습니다 — 이미 끝났거나 알 수 없는 실행입니다.");
+      }
+    } catch (err) {
+      setSendError(err instanceof Error ? err.message : "취소 요청 중 오류가 발생했습니다.");
+    } finally {
+      setAutoToolCancellingId((cur) => (cur === entry.id ? null : cur));
+    }
   }
 
   function handleCopy(message: ChatMessage) {
@@ -2417,12 +2534,30 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     // 먼저 보이고, 그 아래 "확인 중" 표시로 진행 중임을
                     // 알린다(정상 상태 상시 배너가 아니라 이번 턴에 한해서만
                     // 보이는 표시 — 2026-08-14 D06 정리 원칙).
+                    // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수
+                    // 있어야해" 요구 D — 취소는 통합 라우팅이 실제로 진행 중일
+                    // 때만(`unifiedToolRouteActive`) 의미가 있으므로 그 때만
+                    // 보인다. 기존 메시지 카드의 취소 버튼과 같은 규칙: hover로
+                    // 숨기지 않고 실행 중에는 항상 보이며, 누르면 즉시
+                    // "취소하는 중..."으로 바뀌어 두 번 누르지 못한다(D06).
                     return (
                       <div key={item.id} className="space-y-2">
                         <QuestionBubble text={item.question} />
-                        <p className="flex items-center gap-1.5 text-caption text-text-muted">
-                          <Loader2 size={13} className="animate-spin" /> 어떤 방식으로 답할지 확인하는 중...
-                        </p>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="flex items-center gap-1.5 text-caption text-text-muted">
+                            <Loader2 size={13} className="animate-spin" /> 어떤 방식으로 답할지 확인하는 중...
+                          </p>
+                          {unifiedToolRouteActive && (
+                            <button
+                              type="button"
+                              onClick={handleCancelPendingSend}
+                              disabled={pendingCancelling}
+                              className="shrink-0 rounded-full border border-danger/30 bg-danger/5 px-2.5 py-1 text-caption font-semibold text-danger transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {pendingCancelling ? "취소하는 중..." : "취소"}
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   }
@@ -2444,7 +2579,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     return (
                       <div key={item.entry.id} className="space-y-2">
                         <QuestionBubble text={item.entry.question} />
-                        <LocalToolAutoRouteEntryCard entry={item.entry} />
+                        <LocalToolAutoRouteEntryCard
+                          entry={item.entry}
+                          onCancel={() => void handleCancelAutoToolInvocation(item.entry)}
+                          cancelling={autoToolCancellingId === item.entry.id}
+                        />
                       </div>
                     );
                   }

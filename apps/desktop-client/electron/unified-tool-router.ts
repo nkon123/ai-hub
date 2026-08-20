@@ -29,6 +29,13 @@
 // 모델에게 재시도시키지 않는다(LLM 호출은 정확히 한 번). 라우팅 프롬프트는
 // 이번 턴 질문과 후보 이름+(로컬만) 입력 Schema만 본다 — 대화 History,
 // Citation, 이전 Tool 결과는 절대 넣지 않는다.
+//
+// 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 사용자가
+// `options.signal`로 스스로 중단하는 것은 위 4종 fail-closed 사유와 성격이
+// 다르다(재시도로 성공할 수도 있는 실패가 아니라, 사용자가 멈춘 것). 그래서
+// 별도 `status: "cancelled"`로 갈라 돌려준다 — `"error_or_timeout"`에 합치지
+// 않는다(아래 `UnifiedToolRouteStatus` 문서 참고).
+
 import { selectOllamaChatModel } from "./ollama-chat";
 import { parseJsonObject, validateLocalToolArgs, type LocalToolRouteCandidate } from "./local-tool-router";
 
@@ -44,7 +51,14 @@ export type UnifiedToolRouteStatus =
   | "error_or_timeout"
   | "schema_invalid"
   | "ran_local"
-  | "ran_mcp";
+  | "ran_mcp"
+  // 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 사용자가
+  // `options.signal`을 abort해 이번 라우팅 호출 자체를 중단시킨 경우. 반드시
+  // `error_or_timeout`과 구별한다: 후자는 "다시 시도하면 성공할 수도 있는
+  // 실패"지만 이것은 "사용자가 스스로 멈췄다"는 정반대 사실이다 — 뭉뚱그리면
+  // 사용자의 중단을 오류로 보고하는 거짓말이 되고, 호출자가 "취소된 턴은
+  // 평소 대화로 흘려보내지 않는다"는 분기(`ChatScreen.tsx`)를 만들 수 없다.
+  | "cancelled";
 
 export interface UnifiedToolRouteResult {
   status: UnifiedToolRouteStatus;
@@ -157,12 +171,22 @@ export interface UnifiedToolRouteOptions {
   timeoutMs?: number;
   /** 테스트 전용 — 프로덕션 호출부는 절대 넘기지 않는다(실 fetch 사용). */
   fetchImpl?: typeof fetch;
+  /** 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" — 호출자가
+   * 사용자의 취소 조작을 이 signal의 abort로 전달한다. 내부 타임아웃
+   * 컨트롤러와 합쳐지므로(둘 중 무엇이 먼저 트리거되든 진행 중 fetch가 즉시
+   * 끊긴다), 어느 쪽이 원인인지는 `cancelledByCaller` 플래그로 구분해
+   * `status`를 `"cancelled"`(이 signal)와 `"error_or_timeout"`(내부 타임아웃/
+   * 그 외 오류)로 갈라 돌려준다. */
+  signal?: AbortSignal;
 }
 
 /** 이번 턴 질문에 맞는 Tool(로컬 또는 MCP)을 최대 하나 고른다(또는 아무것도
  * 고르지 않는다). LLM 호출은 정확히 한 번, 절대 재시도하지 않는다. 절대
- * throw하지 않는다 — 모든 실패는 `status !== "ran_local" && status !==
- * "ran_mcp"`인 결과로 돌아온다. */
+ * throw하지 않는다 — 모든 실패(사용자 취소 포함)는 `status !== "ran_local" &&
+ * "ran_mcp"`인 결과로 돌아온다. `options.signal`이 abort되면 `status:
+ * "cancelled"`로 돌아온다 — 이것은 오류가 아니라 사용자가 스스로 멈췄다는
+ * 별개의 사실이므로 `"error_or_timeout"`과 항상 구별된다(위 `UnifiedToolRouteStatus`
+ * 문서 참고). */
 export async function routeUnifiedToolCall(
   question: string,
   candidates: UnifiedToolCandidate[],
@@ -176,16 +200,29 @@ export async function routeUnifiedToolCall(
   const baseUrl = trimTrailingSlash(options.baseUrl);
 
   const controller = new AbortController();
+  let cancelledByCaller = false;
+  const onExternalAbort = () => {
+    cancelledByCaller = true;
+    controller.abort();
+  };
+  if (options.signal) {
+    if (options.signal.aborted) onExternalAbort();
+    else options.signal.addEventListener("abort", onExternalAbort);
+  }
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+  // 취소/타임아웃/그 외 실패를 한 곳에서 구별한다 — abort 자체가 반드시
+  // fetch의 reject(catch 블록)로만 나타난다는 보장이 없어(예: fetch가 이미
+  // 응답을 받은 직후 abort된 경우) `!ok` 분기에서도 같은 판정을 쓴다.
+  const errorStatus = (): "cancelled" | "error_or_timeout" => (cancelledByCaller ? "cancelled" : "error_or_timeout");
   try {
     const tagsRes = await fetchImpl(`${baseUrl}/api/tags`, { signal: controller.signal });
-    if (!tagsRes.ok) return { status: "error_or_timeout", kind: null, toolId: null, toolName: null, args: null };
+    if (!tagsRes.ok) return { status: errorStatus(), kind: null, toolId: null, toolName: null, args: null };
     const tags = (await tagsRes.json()) as { models?: Array<{ name?: string }> };
     const models = Array.isArray(tags.models)
       ? tags.models.map((m) => m.name).filter((n): n is string => typeof n === "string" && n.length > 0)
       : [];
     const model = selectOllamaChatModel(models, options.preferredModel);
-    if (!model) return { status: "error_or_timeout", kind: null, toolId: null, toolName: null, args: null };
+    if (!model) return { status: errorStatus(), kind: null, toolId: null, toolName: null, args: null };
 
     const chatRes = await fetchImpl(`${baseUrl}/api/chat`, {
       method: "POST",
@@ -203,7 +240,7 @@ export async function routeUnifiedToolCall(
         ],
       }),
     });
-    if (!chatRes.ok) return { status: "error_or_timeout", kind: null, toolId: null, toolName: null, args: null };
+    if (!chatRes.ok) return { status: errorStatus(), kind: null, toolId: null, toolName: null, args: null };
     const body = (await chatRes.json()) as { message?: { content?: string } };
     const raw = (body.message?.content ?? "").trim();
     const parsed = parseJsonObject(raw);
@@ -243,8 +280,9 @@ export async function routeUnifiedToolCall(
     }
     return { status: "ran_local", kind: "local", toolId: local.id, toolName: local.toolName, args: validated.args };
   } catch {
-    return { status: "error_or_timeout", kind: null, toolId: null, toolName: null, args: null };
+    return { status: errorStatus(), kind: null, toolId: null, toolName: null, args: null };
   } finally {
     clearTimeout(timer);
+    if (options.signal) options.signal.removeEventListener("abort", onExternalAbort);
   }
 }

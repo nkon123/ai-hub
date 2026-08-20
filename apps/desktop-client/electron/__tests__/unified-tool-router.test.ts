@@ -254,6 +254,52 @@ describe("routeUnifiedToolCall — fail-closed on every non-'ran_*' outcome (D-0
     expect(result.toolName).toBe("business_days_between");
   });
 
+  it("실사용 제보(2026-08-20) '채팅 입력하고 취소할 수 있어야해' — options.signal이 abort되면 status가 'cancelled'다, 'error_or_timeout'이 아니다", async () => {
+    // 내부 타임아웃(50ms)이 훨씬 먼저 도달하지 않도록 충분히 크게 두고,
+    // fetch 자체는 절대 스스로 끝나지 않는다 — 오직 signal abort로만
+    // 끝나야 이 테스트가 "취소로 인한 cancelled"만 검증한다(타임아웃과
+    // 뒤섞이면 이 테스트는 무효하다).
+    const hangingFetch = vi.fn((_url: unknown, init?: RequestInit) => {
+      return new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const err = new Error("Aborted");
+          err.name = "AbortError";
+          reject(err);
+        });
+      });
+    }) as unknown as typeof fetch;
+    const candidates = buildUnifiedToolCandidates(LOCAL_CANDIDATES, MCP_TOOL_NAMES);
+    const controller = new AbortController();
+    const resultPromise = routeUnifiedToolCall("질문", candidates, {
+      baseUrl: "http://127.0.0.1:11434",
+      preferredModel: "default-chat",
+      timeoutMs: 60_000,
+      signal: controller.signal,
+      fetchImpl: hangingFetch,
+    });
+    controller.abort();
+    const result = await resultPromise;
+    expect(result.status).toBe("cancelled");
+    expect(result.kind).toBeNull();
+    expect(result.toolId).toBeNull();
+    expect(result.toolName).toBeNull();
+    expect(result.args).toBeNull();
+  });
+
+  it("신뢰 대조 — 같은 abort raw가 signal 없이(내부 타임아웃만으로) 일어나면 여전히 'error_or_timeout'이지 'cancelled'가 아니다", async () => {
+    // 위 테스트가 정말 signal 유무를 보는지 확인하는 대조군 — 이 테스트가
+    // 실패하면 위 테스트가 signal과 무관하게 항상 'cancelled'를 내는
+    // 무효한 회귀 테스트라는 뜻이다.
+    global.fetch = vi.fn().mockRejectedValue(new Error("network down")) as unknown as typeof fetch;
+    const candidates = buildUnifiedToolCandidates(LOCAL_CANDIDATES, MCP_TOOL_NAMES);
+    const result = await routeUnifiedToolCall("질문", candidates, {
+      baseUrl: "http://127.0.0.1:11434",
+      preferredModel: "default-chat",
+      timeoutMs: 50,
+    });
+    expect(result.status).toBe("error_or_timeout");
+  });
+
   it("routing prompt sent to Ollama contains only this turn's question and candidate names/schema — never history, citations, or prior tool results", async () => {
     mockOllama(JSON.stringify({ pick: null, input: null }));
     const candidates = buildUnifiedToolCandidates(LOCAL_CANDIDATES, MCP_TOOL_NAMES);

@@ -146,6 +146,14 @@ export interface LocalToolAutoRouteEntry {
   startedAt: string;
   completedAt: string | null;
   display: InvocationOutcomeDisplay | null;
+  /** 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" 후속 —
+   * 실제 로컬 Tool 실행이 시작될 때만(`runResolvedLocalTool`이
+   * `bridge.invokeLocalTool`을 부르기 직전) 채워진다. `display === null`인
+   * 동안에만 의미가 있다 — `bridge.cancelLocalToolInvocation(invocationId)`에
+   * 그대로 넘기면 이 실행을 중단할 수 있다(수동 실행 패널의 `requestCancel`과
+   * 정확히 같은 메커니즘). `null`이면(Tool이 아직 선택되지 않았거나 이미
+   * 끝남) 취소 대상이 없다는 뜻이다. */
+  invocationId: string | null;
 }
 
 /** 자동 라우팅 카드 — 수동 실행 카드(`LocalToolChatEntryCard`)와 다른
@@ -155,8 +163,23 @@ export interface LocalToolAutoRouteEntry {
  * `runResolvedLocalTool`이 만든 `display.title`에 이미 담겨 있고, 이
  * 카드는 그것을 그대로 보여줄 뿐이다(같은 카드를 다른 오해로 재사용하지
  * 않는다). */
-export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRouteEntry }) {
+export function LocalToolAutoRouteEntryCard({
+  entry,
+  onCancel,
+  cancelling,
+}: {
+  entry: LocalToolAutoRouteEntry;
+  /** 실사용 제보(2026-08-20) 후속 — 실제 실행 중일 때(`display === null &&
+   * entry.invocationId`)만 호출 가능하게 부모(ChatScreen)가 넘긴다. 부모가
+   * 이 카드를 아직 지원하지 않으면(구조상 항상 넘기지만 방어적으로) 생략해도
+   * 카드는 깨지지 않고 그냥 버튼을 그리지 않는다 — D06 규칙(취소 버튼은
+   * hover로 숨기지 않고 항상 보인다)은 버튼이 존재할 때의 표시 방식에
+   * 적용되고, 존재 여부 자체는 이 prop이 결정한다. */
+  onCancel?: () => void;
+  cancelling?: boolean;
+}) {
   const { display } = entry;
+  const showCancel = display === null && Boolean(entry.invocationId) && Boolean(onCancel);
   return (
     <div className="max-w-full rounded-lg border border-dashed border-brand-200 bg-brand-50/40 px-3 py-2.5 text-[11px] text-text-secondary">
       <div className="flex flex-wrap items-center gap-1.5 font-medium text-text-primary">
@@ -172,9 +195,21 @@ export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRou
         </pre>
       )}
       {display === null ? (
-        <p className="mt-1.5 flex items-center gap-1.5 text-text-muted">
-          <Loader2 size={11} className="animate-spin" /> 어떤 Tool을 쓸지 확인하고, 필요하면 승인을 기다리는 중...
-        </p>
+        <div className="mt-1.5 flex flex-wrap items-center justify-between gap-2">
+          <p className="flex items-center gap-1.5 text-text-muted">
+            <Loader2 size={11} className="animate-spin" /> 어떤 Tool을 쓸지 확인하고, 필요하면 승인을 기다리는 중...
+          </p>
+          {showCancel && (
+            <button
+              type="button"
+              onClick={onCancel}
+              disabled={cancelling}
+              className="shrink-0 rounded-full border border-danger/30 bg-danger/5 px-2.5 py-1 text-[10px] font-semibold text-danger transition-colors hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {cancelling ? "중단하는 중..." : "실행 중단"}
+            </button>
+          )}
+        </div>
       ) : (
         <div className={`mt-1.5 rounded border px-2 py-1.5 ${OUTCOME_TONE_CLASS[display.tone]}`}>
           <p className="font-semibold">{display.title}</p>
@@ -201,7 +236,14 @@ export function LocalToolAutoRouteEntryCard({ entry }: { entry: LocalToolAutoRou
  * 새로 만든다. `ChatScreen.tsx`는 이제 라우팅을 시작하기 전에 이미 만든
  * placeholder의 id/전송 시각을 넘겨, 이 항목이 그 placeholder와 정확히
  * 같은 위치에서 이어지게 한다(질문이 두 번 그려지지 않게 하는 핵심 —
- * `chatThreadMerge.ts` 참고). */
+ * `chatThreadMerge.ts` 참고).
+ *
+ * 실사용 제보(2026-08-20) "채팅 입력하고 취소할 수 있어야해" 후속(취소) —
+ * 수동 실행 패널의 `execute()`와 정확히 같은 방식으로 `invocationId`를
+ * 스스로 만들어(`crypto.randomUUID()`) `bridge.invokeLocalTool`에 넘긴다.
+ * 이 id는 `onStart`가 받는 entry의 `invocationId` 필드로도 그대로 전달되어,
+ * 호출자가 `bridge.cancelLocalToolInvocation(invocationId)`로 이 실행을
+ * 중단할 수 있게 한다. */
 export async function runResolvedLocalTool(params: {
   bridge: DesktopBridge;
   question: string;
@@ -222,13 +264,16 @@ export async function runResolvedLocalTool(params: {
   const { bridge, question, toolId, toolName, args, onStart, onFinish } = params;
   const id = params.id ?? crypto.randomUUID();
   const startedAt = params.startedAt ?? new Date().toISOString();
-  onStart({ id, question, toolName, args, startedAt, completedAt: null, display: null });
+  const invocationId = crypto.randomUUID();
+  onStart({ id, question, toolName, args, startedAt, completedAt: null, display: null, invocationId });
   const finish = (display: InvocationOutcomeDisplay) => onFinish(id, new Date().toISOString(), toolName, args, display);
 
   try {
     // 사용자가 대화상자에서 거절하면 `formatInvocationOutcome`이
-    // "실행하지 않았습니다"로 정직하게 보여준다(실패가 아니다).
-    const invocation = await bridge.invokeLocalTool(toolId, args, { aiSelected: true });
+    // "실행하지 않았습니다"로, 실행 중 중단하면 "실행을 중단했습니다"로
+    // 정직하게 보여준다(둘 다 실패가 아니다 — `formatInvocationOutcome`의
+    // `user_denied`/`cancelled` 분기 참고).
+    const invocation = await bridge.invokeLocalTool(toolId, args, { aiSelected: true, invocationId });
     finish(formatInvocationOutcome(invocation));
   } catch (err) {
     finish({
