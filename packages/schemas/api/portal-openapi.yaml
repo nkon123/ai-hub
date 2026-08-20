@@ -92,7 +92,27 @@ paths:
               schema:
                 $ref: "#/components/schemas/AssetVersion"
         "400":
-          $ref: "#/components/responses/ValidationError"
+          description: >
+            `VALIDATION_ERROR` — the manifest does not satisfy its type's
+            schema (`error.details.errors` carries the validator messages).
+            Distinct from that, uploaded files are checked against
+            `GET /api/v1/assets/upload-policy`'s limits and rejected with one
+            of four upload-specific codes, checked in this order:
+            `ASSET_UPLOAD_TOO_MANY_FILES` (file count over
+            `max_file_count`, checked before any file is read),
+            `ASSET_UPLOAD_EXTENSION_REJECTED` (a file's extension is in
+            `rejected_extensions`, checked before any bytes of that file are
+            written), `ASSET_UPLOAD_FILE_TOO_LARGE` (bytes actually read for
+            one file exceed `max_single_file_bytes`), and
+            `ASSET_UPLOAD_REQUEST_TOO_LARGE` (cumulative bytes actually read
+            across all files exceed `max_total_request_bytes`). All four are
+            computed from bytes streamed off the wire, never from
+            `Content-Length` — a forged header cannot bypass them. None of
+            these four are retryable without changing the upload itself.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "409":

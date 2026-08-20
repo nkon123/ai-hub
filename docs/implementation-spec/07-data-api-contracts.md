@@ -398,6 +398,20 @@ Portal은 Polling으로 시작할 수 있으며 추후 SSE로 교체 가능하�
 - `DEPENDENCY_MISSING`
 - `DEPENDENCY_VERSION_CONFLICT`
 - `DEPENDENCY_CYCLE`
+- `ASSET_UPLOAD_TOO_MANY_FILES` — `POST /api/v1/assets`, HTTP 400. 업로드
+  파일 개수가 `GET /api/v1/assets/upload-policy`의 `max_file_count`를
+  초과. 어떤 파일도 읽기 전에 먼저 검사한다.
+- `ASSET_UPLOAD_EXTENSION_REJECTED` — `POST /api/v1/assets`, HTTP 400. 파일
+  확장자가 `rejected_extensions`에 포함. 그 파일의 바이트를 쓰기 전에
+  검사한다.
+- `ASSET_UPLOAD_FILE_TOO_LARGE` — `POST /api/v1/assets`, HTTP 400. 개별
+  파일에서 실제로 읽은 바이트 수가 `max_single_file_bytes`를 초과.
+- `ASSET_UPLOAD_REQUEST_TOO_LARGE` — `POST /api/v1/assets`, HTTP 400. 이번
+  요청에서 실제로 읽은 누적 바이트 수가 `max_total_request_bytes`를 초과.
+  네 코드 모두 `Content-Length`가 아니라 실제로 스트리밍된 바이트만
+  근거로 계산되어(위조된 헤더로 우회 불가), 재시도해도 업로드 자체를
+  바꾸지 않는 한 같은 코드가 다시 난다(2026-08-19 도입, 계약 문서화는
+  2026-08-20 소급).
 
 ### Service Composer
 
