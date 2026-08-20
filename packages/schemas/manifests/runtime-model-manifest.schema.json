@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "runtime-model-manifest",
+  "title": "Runtime Model Manifest",
+  "description": "Per-model manifest.json describing one Ollama-consumable model (GGUF weights + optional Modelfile) offered for closed-network download from Portal API (M02) at GET /api/v1/runtime-models. open-decisions.md D-093 explains why this is NOT an Asset Registry manifest type (no review/approval version chain — a runtime model is a platform component, like D-092's chat-model platform setting, not a reviewed business asset) and why it is a SEPARATE delivery path from packages/schemas/policies/bundle-install-policy.json (that policy's 500MB/2GB caps are a zip-bomb defense sized for small Knowledge/Agent/Prompt assets; a 5GB-class model physically cannot fit and must not be used to justify loosening those caps for every other asset type). One manifest.json lives next to its model file under portal-api's configured `runtime_model_root` directory, keyed by `model_id` (the directory name) — portal-api reads it directly, mirroring how it already reads office-profile.json/bundle-install-policy.json/asset-upload-policy.json without importing the owning module's code (root CLAUDE.md 원칙 2/3).",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "type",
+    "model_id",
+    "display_name",
+    "purpose",
+    "version",
+    "file_name",
+    "file_size_bytes",
+    "sha256",
+    "has_modelfile",
+    "upload_status",
+    "registered_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "type": {
+      "type": "string",
+      "const": "runtime_model",
+      "description": "Consistent with every other manifest in this directory (asset/knowledge/agent/...), so infer_schema_type() and generic tooling can route on the same discriminator field rather than needing model_id-specific structural sniffing."
+    },
+    "model_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$",
+      "description": "Must equal the manifest's own directory name under runtime_model_root. Deliberately narrow (lowercase alnum + internal hyphen, 1-64 chars, no '.', '/', or whitespace) because portal-api derives the on-disk path from this value — root CLAUDE.md code rule '사용자가 제공한 파일명으로 파일 경로를 만들지 않는다'. Registration is an out-of-band filesystem operation in this PoC (an operator places manifest.json + the model file here) precisely so no HTTP endpoint ever turns caller-supplied text into a path; this pattern is still enforced so a malformed manifest.json cannot be used to construct one indirectly."
+    },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "purpose": {
+      "type": "string",
+      "enum": ["chat", "embedding"],
+      "description": "Matches office-profile.json's model_aliases purposes (D-092) — a Desktop user picks a runtime model for the same two roles the platform already distinguishes."
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$",
+      "description": "Model artifact version, not a Registry AssetVersion — free-standing semver for this runtime model's own release history (e.g. re-quantization, updated Modelfile)."
+    },
+    "source_model": {
+      "type": "string",
+      "description": "Informational only — the Ollama model tag this GGUF+Modelfile pair was captured from (e.g. 'exaone3.5:7.8b' via `ollama show --modelfile`), so an operator can trace provenance. Never used by portal-api for path construction or access control."
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "file_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,255}\\.gguf$",
+      "description": "The GGUF weight file's name inside this model's directory. Restricted to a safe charset for the same path-safety reason as model_id — portal-api still resolves the actual path by rejoining this value under the already-validated model directory and verifying containment, never trusting it blindly."
+    },
+    "file_size_bytes": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Size of file_name in bytes, recorded at registration time. Portal-api's download endpoint reports the CURRENT on-disk size via Content-Length independently (via os.stat) — this field is the registrant's declared value, used for list/detail display and Desktop's pre-flight disk-space check, not as the transfer's source of truth."
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$",
+      "description": "Checksum of file_name computed ONCE against the original artifact at registration time (offline, by whoever produced the GGUF export) — this is corruption-at-rest / provenance integrity, not transit integrity. portal-api does not re-hash a multi-gigabyte file on every request (would make every list/download call O(file size)); it serves this stored value verbatim as both the JSON body field and the `X-Content-Sha256` download response header, and exposes it as this file's ETag (quoted) so HTTP Range resumption can detect a stale/replaced file (see the download endpoint's If-Range contract in api/portal-openapi.yaml). Transit corruption is caught downstream by the client re-hashing the fully assembled bytes and comparing to this value — that verification is intentionally out of scope for this contract (Desktop-side consumption, D-093 scope note)."
+    },
+    "has_modelfile": {
+      "type": "boolean",
+      "description": "Whether modelfile_name is present and readable. D-093 requires the Modelfile to carry the ORIGINAL model's TEMPLATE/PARAMETER directives verbatim (via `ollama show --modelfile`) — a model registered with has_modelfile=false is still downloadable as raw weights but callers should treat it as incomplete for `ollama create` (same generation behavior is not guaranteed without the original TEMPLATE/PARAMETER)."
+    },
+    "modelfile_name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]{1,255}$",
+      "description": "Required when has_modelfile is true. Plain-text Modelfile inside this model's directory, served separately (as text, not bundled into the GGUF response) via GET /api/v1/runtime-models/{model_id}/modelfile."
+    },
+    "upload_status": {
+      "type": "string",
+      "enum": ["PENDING", "READY"],
+      "description": "PENDING: this model_id has been registered (manifest.json exists) but the artifact copy is not yet complete/verified — download must be refused with a distinct error (RUNTIME_MODEL_NOT_READY), not the same RESOURCE_NOT_FOUND used for an unknown model_id, and not a silent empty/corrupt response. READY: file_name is expected to be present and complete at file_size_bytes/sha256. A READY manifest whose file is nonetheless absent from disk (operator error, partial copy, interrupted `rsync`) is a THIRD distinct state at request time — RUNTIME_MODEL_FILE_MISSING — because it means something is wrong with the deployment, not that the caller asked for something that doesn't exist or isn't finished yet."
+    },
+    "registered_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp this manifest.json was written, per root CLAUDE.md '모든 시간은 저장 시 UTC'."
+    }
+  }
+}

@@ -479,6 +479,24 @@ Portal은 Polling으로 시작할 수 있으며 추후 SSE로 교체 가능하�
 - `MCP_EXECUTION_TIMEOUT`
 - `MCP_RESULT_LIMIT_EXCEEDED`
 
+### Runtime Model (D-093)
+
+`GET /api/v1/runtime-models*` (`packages/schemas/api/portal-openapi.yaml`,
+`packages/schemas/manifests/runtime-model-manifest.schema.json`) — Ollama
+GGUF+Modelfile delivery for closed-network PCs. A separate delivery path
+from Asset/Bundle packages (D-093), so its states are not reused from the
+Asset/Package list above even where they look similar.
+
+- `RUNTIME_MODEL_NOT_READY` — HTTP 409. `model_id` is registered
+  (`manifest.json` exists) but `upload_status != READY` — the artifact copy
+  is still in progress. Distinct from `RESOURCE_NOT_FOUND` (unknown
+  `model_id`, no registration at all): this is a real registration the
+  caller should retry later, not a caller error.
+- `RUNTIME_MODEL_FILE_MISSING` — HTTP 500. `upload_status == READY` but the
+  file is absent from disk at request time (deployment defect — partial
+  copy, operator error). Not retryable by the caller; distinct from
+  `RUNTIME_MODEL_NOT_READY` because retrying changes nothing here.
+
 ## 9. API 보안 규칙
 
 - Object ID를 안다고 접근할 수 없어야 한다.

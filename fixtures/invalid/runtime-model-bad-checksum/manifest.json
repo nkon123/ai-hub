@@ -1,0 +1,14 @@
+{
+  "schema_version": "1.0",
+  "type": "runtime_model",
+  "model_id": "exaone3-5-7-8b-q4",
+  "display_name": "EXAONE 3.5 7.8B (Q4_K_M)",
+  "purpose": "chat",
+  "version": "1.0.0",
+  "file_name": "exaone3-5-7-8b-q4.gguf",
+  "file_size_bytes": 5203722240,
+  "sha256": "not-a-valid-sha256",
+  "has_modelfile": false,
+  "upload_status": "READY",
+  "registered_at": "2026-08-20T00:00:00Z"
+}

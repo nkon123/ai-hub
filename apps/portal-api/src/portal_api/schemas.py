@@ -1317,3 +1317,32 @@ class DistributionReadinessResponseOut(BaseModel):
     ready: bool
     checks: list[DistributionReadinessCheckOut]
     trace_id: str
+
+
+class RuntimeModelOut(BaseModel):
+    """`GET /api/v1/runtime-models*` (M02, open-decisions.md D-093).
+    Mirrors `packages/schemas/manifests/runtime-model-manifest.schema.json`
+    minus the on-disk `file_name`/`modelfile_name` fields — those are
+    filesystem-internal to `runtime_models.py`, never handed to a caller
+    (root code rule: never build a path from caller-supplied text; keeping
+    the actual on-disk names out of the response means there is nothing for
+    a client to even try feeding back in)."""
+
+    model_id: str
+    display_name: str
+    purpose: Literal["chat", "embedding"]
+    version: str
+    source_model: str | None = None
+    description: str | None = None
+    file_size_bytes: int
+    sha256: str
+    has_modelfile: bool
+    upload_status: Literal["PENDING", "READY"]
+    registered_at: datetime
+
+
+class RuntimeModelListResponse(BaseModel):
+    items: list[RuntimeModelOut]
+    page: int
+    page_size: int
+    total: int

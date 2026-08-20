@@ -154,6 +154,21 @@ class Settings(BaseSettings):
         _REPO_ROOT / "packages" / "schemas" / "policies" / "asset-upload-policy.json"
     )
 
+    # `routers/runtime_models.py` (M02, open-decisions.md D-093) — Ollama
+    # GGUF+Modelfile delivery for closed-network PCs. Deliberately NOT an
+    # Asset Repository path (`storage_root`) and NOT routed through
+    # `distribution-service`/Offline Bundle at all: D-093 requires this to be
+    # a separate delivery path from `bundle-install-policy.json` precisely
+    # so a 5GB model file is never used to justify loosening that policy's
+    # zip-bomb caps for every other asset type. Each subdirectory under this
+    # root is one `model_id`, containing `manifest.json` (validated against
+    # `packages/schemas/manifests/runtime-model-manifest.schema.json`) plus
+    # the GGUF weight file and an optional Modelfile. Registration is
+    # out-of-band in this PoC (an operator places the files here) — there is
+    # no `POST` endpoint in this contract slice, so no upload path here can
+    # ever turn a caller-supplied string into a filesystem write.
+    runtime_model_root: Path = _REPO_ROOT / "data" / "runtime-models"
+
     class Config:
         env_prefix = "PORTAL_"
 

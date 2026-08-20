@@ -27,6 +27,7 @@ class SchemaType(StrEnum):
     SOURCE_MANIFEST = "source_manifest"
     BUNDLE_INSTALL_POLICY = "bundle_install_policy"
     ASSET_UPLOAD_POLICY = "asset_upload_policy"
+    RUNTIME_MODEL = "runtime_model"
 
 
 _SCHEMA_PATHS: dict[SchemaType, Path] = {
@@ -48,6 +49,9 @@ _SCHEMA_PATHS: dict[SchemaType, Path] = {
     ),
     SchemaType.ASSET_UPLOAD_POLICY: (
         _SCHEMAS_DIR / "policies" / "asset-upload-policy.schema.json"
+    ),
+    SchemaType.RUNTIME_MODEL: (
+        _SCHEMAS_DIR / "manifests" / "runtime-model-manifest.schema.json"
     ),
 }
 
@@ -93,6 +97,7 @@ def infer_schema_type(manifest: dict) -> SchemaType:
         "evaluation_result": SchemaType.EVALUATION_RESULT,
         "knowledge_package": SchemaType.KNOWLEDGE_PACKAGE,
         "source_manifest": SchemaType.SOURCE_MANIFEST,
+        "runtime_model": SchemaType.RUNTIME_MODEL,
     }
     if asset_type in mapping:
         return mapping[asset_type]
@@ -107,6 +112,8 @@ def infer_schema_type(manifest: dict) -> SchemaType:
         return SchemaType.BUNDLE_INSTALL_POLICY
     if "max_single_file_bytes" in manifest and "rejected_extensions" in manifest:
         return SchemaType.ASSET_UPLOAD_POLICY
+    if "model_id" in manifest and "sha256" in manifest and "upload_status" in manifest:
+        return SchemaType.RUNTIME_MODEL
     raise ValidationError(f"Cannot infer schema type from manifest with type='{asset_type}'")
 
 

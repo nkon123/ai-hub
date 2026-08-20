@@ -26,6 +26,7 @@ from portal_api.routers.knowledge_metadata_suggest import (
 from portal_api.routers.knowledge_search import router as knowledge_search_router
 from portal_api.routers.knowledge_text_extract import router as knowledge_text_extract_router
 from portal_api.routers.reviews import router as reviews_router
+from portal_api.routers.runtime_models import router as runtime_models_router
 from portal_api.routers.services import router as services_router
 
 # Structured, Trace ID-carrying logs to stdout — see observability.logging_config
@@ -103,6 +104,9 @@ app.include_router(knowledge_metadata_suggest_router)
 # `/api/v1/knowledge/extract-text` — brand-new literal path segment, same
 # D-034 non-collision reasoning.
 app.include_router(knowledge_text_extract_router)
+# `/api/v1/runtime-models*` (D-093) — brand-new prefix, no existing route
+# under it, so no collision is possible regardless of registration order.
+app.include_router(runtime_models_router)
 
 
 @app.get("/health")

@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "type": "runtime_model",
+  "model_id": "exaone3-5-7-8b-q4",
+  "display_name": "EXAONE 3.5 7.8B (Q4_K_M)",
+  "purpose": "chat",
+  "version": "1.0.0",
+  "source_model": "exaone3.5:7.8b",
+  "description": "폐쇄망 PC 반입용 GGUF + Modelfile 샘플 (실제 가중치는 저장소에 포함하지 않음, 테스트는 소형 fixture 바이너리로 수행)",
+  "file_name": "exaone3-5-7-8b-q4.gguf",
+  "file_size_bytes": 5203722240,
+  "sha256": "92eabefac01bfa3a22aa4e95e6aacfc8b665c7c4d1a1b8487a77acfc2513842b",
+  "has_modelfile": true,
+  "modelfile_name": "Modelfile",
+  "upload_status": "READY",
+  "registered_at": "2026-08-20T00:00:00Z"
+}

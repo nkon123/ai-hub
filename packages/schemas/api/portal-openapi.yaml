@@ -19,6 +19,7 @@ tags:
   - name: audit
   - name: evaluations
   - name: knowledge-search
+  - name: runtime-models
 
 paths:
   /health:
@@ -2041,6 +2042,214 @@ paths:
         "401":
           $ref: "#/components/responses/Unauthorized"
 
+  /api/v1/runtime-models:
+    get:
+      tags: [runtime-models]
+      summary: List Ollama-consumable runtime models available for closed-network download
+      description: |
+        open-decisions.md D-093 — a "런타임 자산", NOT an Asset Registry
+        type: no review/approval version chain, listed here purely as a
+        platform component catalog (mirrors D-092 treating the chat model
+        as a platform setting, not a reviewed business asset). Registration
+        is out-of-band in this PoC (an operator places `manifest.json` +
+        the GGUF/Modelfile under portal-api's `runtime_model_root`
+        directory per `runtime-model-manifest.schema.json`) — there is
+        deliberately no `POST` here in this contract slice; Desktop-side
+        consumption (`ollama create`) is a separate, later piece of work.
+        `USER`/`CREATOR` (anyone with `DOWNLOAD_READ`, same permission as
+        `GET /api/v1/distributions/{id}/download`) may list — Desktop
+        downloads with the user's own token, not an admin-only one.
+      operationId: list_runtime_models
+      parameters:
+        - name: purpose
+          in: query
+          schema:
+            type: string
+            enum: [chat, embedding]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeModelListResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+
+  /api/v1/runtime-models/{model_id}:
+    get:
+      tags: [runtime-models]
+      summary: Runtime model detail
+      operationId: get_runtime_model
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RuntimeModel"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: >
+            `RESOURCE_NOT_FOUND` — no `model_id` directory/manifest.json
+            under `runtime_model_root` at all. Distinct from the 409 below,
+            which means the model IS registered but not yet ready.
+          $ref: "#/components/responses/NotFound"
+
+  /api/v1/runtime-models/{model_id}/download:
+    get:
+      tags: [runtime-models]
+      summary: Download the GGUF weight file (HTTP Range resume supported)
+      description: |
+        Streams the model file — never buffered fully in memory
+        (`FileResponse`, chunked reads). Supports standard HTTP `Range`
+        requests for interrupted-transfer resume (root spec: "sha256
+        체크섬 + HTTP Range 이어받기 + 진행률·취소").
+
+        **Checksum timing**: `sha256` (exposed as both the JSON body field
+        on `GET /api/v1/runtime-models/{model_id}` and the
+        `X-Content-Sha256` response header here) is computed once, offline,
+        against the original artifact at registration time — this proves
+        the file wasn't corrupted *at rest* since registration. It is
+        NOT recomputed by the server on every request (hashing a 5GB file
+        per call would make every request O(file size)). The caller is
+        responsible for re-hashing the fully assembled bytes after
+        download/resume completes and comparing against this value to
+        catch transit corruption — that verification step lives in the
+        consumer (Desktop, out of scope for this contract slice), not here.
+
+        **Stale-file-during-resume safety**: this endpoint's `ETag` is the
+        file's `sha256` (not a size+mtime tag), so a resuming client MUST
+        send `If-Range: <etag-from-the-earlier-response>` on its follow-up
+        Range request. If the file on disk was replaced in between (new
+        sha256 → new ETag), the mismatched `If-Range` makes the server
+        return a fresh **200 with the full file** instead of a `206`
+        partial slice of the NEW file stitched onto previously-downloaded
+        bytes of the OLD file — this is standard HTTP semantics
+        (RFC 9110 §13.1.5), relied on deliberately here instead of
+        reinvented. A client that ignores `If-Range` and blindly appends
+        bytes can still produce a corrupted file; the sha256 comparison
+        after completion is the backstop for that case.
+
+        **Ready vs missing vs not-yet-uploaded**: three distinct outcomes,
+        never collapsed —
+          - unknown `model_id` → 404 `RESOURCE_NOT_FOUND`
+          - `manifest.json` exists but `upload_status != READY` → 409
+            `RUNTIME_MODEL_NOT_READY` (registered, still being copied in —
+            retry later, this is not a client error)
+          - `upload_status == READY` but the file is absent from disk at
+            request time → 500 `RUNTIME_MODEL_FILE_MISSING` (deployment
+            defect, not something the caller can fix by retrying)
+
+        Range errors (malformed `Range` header, out-of-bounds range) return
+        standard HTTP Range semantics (`400`/`416` with a `Content-Range`
+        header) rather than the common JSON `ErrorEnvelope` — a deliberate,
+        documented exception: Range-aware HTTP clients (resumable
+        downloaders, browsers) act on the status code and `Content-Range`
+        header, not a JSON body, for this class of error.
+      operationId: download_runtime_model
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+        - name: Range
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Standard HTTP byte-range, e.g. `bytes=1048576-`
+        - name: If-Range
+          in: header
+          required: false
+          schema:
+            type: string
+          description: Must be the ETag (quoted sha256) obtained from a prior response, to safely resume across a possible file replacement.
+      responses:
+        "200":
+          description: Full file, streamed
+          headers:
+            X-Content-Sha256:
+              schema: { type: string }
+            ETag:
+              schema: { type: string }
+            Accept-Ranges:
+              schema: { type: string }
+        "206":
+          description: Partial content for the requested byte range
+          headers:
+            Content-Range:
+              schema: { type: string }
+            X-Content-Sha256:
+              schema: { type: string }
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`RUNTIME_MODEL_NOT_READY` — registered but upload not yet complete"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "416":
+          description: Range Not Satisfiable (standard HTTP semantics, not ErrorEnvelope — see summary)
+        "500":
+          description: "`RUNTIME_MODEL_FILE_MISSING` — manifest says READY but the file is absent on disk"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
+  /api/v1/runtime-models/{model_id}/modelfile:
+    get:
+      tags: [runtime-models]
+      summary: Fetch the Ollama Modelfile as plain text
+      description: |
+        Separate from the GGUF download — D-093 requires the Modelfile to
+        carry the original model's TEMPLATE/PARAMETER verbatim
+        (`ollama show --modelfile`); shipping it as its own small text
+        response (not bundled inside the GGUF, not zipped) lets Desktop
+        fetch/display/diff it independently and cheaply. Same
+        not-found/not-ready/missing-file 3-way distinction as the GGUF
+        download applies here, plus one more: `has_modelfile: false` on the
+        manifest returns 404 even when the model itself is READY.
+      operationId: get_runtime_model_modelfile
+      parameters:
+        - $ref: "#/components/parameters/ModelId"
+      responses:
+        "200":
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Unknown model_id, or this model has no Modelfile (`has_modelfile=false`)
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: "`RUNTIME_MODEL_NOT_READY`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          description: "`RUNTIME_MODEL_FILE_MISSING`"
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
 components:
   parameters:
     AssetId:
@@ -2092,6 +2301,13 @@ components:
       schema:
         type: string
         format: uuid
+    ModelId:
+      name: model_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$"
 
   responses:
     Unauthorized:
@@ -4628,6 +4844,47 @@ components:
           $ref: "#/components/schemas/IndexingEmbeddingModelSection"
         chat_model:
           $ref: "#/components/schemas/ChatModelSection"
+
+    RuntimeModel:
+      type: object
+      description: Mirrors `packages/schemas/manifests/runtime-model-manifest.schema.json` (D-093) minus internal file-path fields.
+      required:
+        - model_id
+        - display_name
+        - purpose
+        - version
+        - file_size_bytes
+        - sha256
+        - has_modelfile
+        - upload_status
+        - registered_at
+      properties:
+        model_id: { type: string }
+        display_name: { type: string }
+        purpose: { type: string, enum: [chat, embedding] }
+        version: { type: string }
+        source_model: { type: string }
+        description: { type: string }
+        file_size_bytes: { type: integer }
+        sha256: { type: string, pattern: "^[a-f0-9]{64}$" }
+        has_modelfile: { type: boolean }
+        upload_status:
+          type: string
+          enum: [PENDING, READY]
+          description: PENDING — registered but the artifact copy isn't complete yet; download/modelfile endpoints answer 409 RUNTIME_MODEL_NOT_READY while in this state.
+        registered_at: { type: string, format: date-time }
+
+    RuntimeModelListResponse:
+      type: object
+      required: [items, page, page_size, total]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RuntimeModel"
+        page: { type: integer }
+        page_size: { type: integer }
+        total: { type: integer }
 
   securitySchemes:
     BearerAuth:
