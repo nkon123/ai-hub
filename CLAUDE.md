@@ -141,20 +141,13 @@
 |---|---|---|---|
 | `node scripts/agent/verify-change.mjs --suites <a,b>` | 검증 스위트 실행 + 기준선 대비 증감 | `--suites`(python/desktop/ruff/contract/typecheck-desktop/typecheck-portal-web/all), `--baseline`, `--save-baseline`, `--verbose` | 압축 JSON 한 줄 `{ok, <suite>:{pass,d,err,exit,parseFailed}, failed:[], parseFailed:[]}`. `--verbose` 로만 라벨·원본 출력 |
 
-`verify-change` 사용 규율:
+검증 절차 전체(기준선 → 작업 → 비교 → 무엇을 보고할 것인가)는 `verify-change`
+**스킬**에 있다. 이 표는 스킬이 로드되지 않아도 명령의 존재를 알 수 있게 남긴
+최소 정보다 — 인벤토리가 없으면 에이전트가 매번 인라인으로 다시 짠다.
 
-1. **작업 시작 전에 기준선을 찍는다** — `--save-baseline <경로>`. 안 찍으면
-   나중에 증가분이 내 것인지 다른 세션 것인지 구분할 수 없다.
-2. 작업 후 같은 스위트를 `--baseline <경로>`로 돌린다.
-3. **판정은 여전히 사람/에이전트 몫이다**: `delta.passed`가 내가 추가한 테스트
-   수와 **일치하는가**. 일치하지 않으면 다른 변경이 섞인 것이다.
-4. 종료 코드 **3은 파싱 실패**다 — 명령이 아예 안 돌았거나 출력 형식이 바뀐
-   것이다. 조용히 0으로 넘어가지 않는다. 숫자가 안 나왔는데 통과로 보고하지 마라.
-5. 이 스크립트는 **의존성이 없다**(Node 내장만). 폐쇄망에서 그대로 돈다.
-   테스트: `node --test scripts/agent/verify-change.test.mjs`
-6. 기본 출력은 **압축 JSON 한 줄**이다(실측 98 bytes). 명령문까지 합쳐 195 bytes 로,
-   같은 일을 수동 3회로 하던 367 bytes 의 **약 절반**이다. 사람이 읽을 일이 있을 때만
-   `--verbose` 를 쓴다 — 그 출력은 6배 크다.
+핵심만: **작업 시작 전에 `--save-baseline` 을 찍는다**(안 찍으면 증가분이 내 것인지
+알 수 없다 — 이 저장소에는 다른 세션의 미커밋 변경이 상시 존재한다). 종료 코드
+**3은 파싱 실패**이며 숫자를 못 찾은 것이니 통과로 보고하지 않는다.
 
 ## 완료 전 확인
 
