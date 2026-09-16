@@ -63,6 +63,56 @@ Default `qwen3-embedding:0.6b` matches
 `SEARCH_QUERY_INSTRUCT_PREFIX`'s Qwen3-tuned default (see that module) — all
 three must be considered together when switching model families."""
 
+EMBED_BATCH_SIZE: int = max(1, int(os.environ.get("INDEXING_EMBED_BATCH_SIZE", "64")))
+"""How many chunk texts `embedders.embed_batch` sends to Ollama's `/api/embed`
+in ONE request.
+
+Measured 2026-09-17 on the 41,954 real chunks (avg 427 chars, Korean) of the
+document that exposed this, against local Ollama / `qwen3-embedding:0.6b`:
+
+| texts per request | concurrency | ms per embedding |
+|---|---|---|
+| 1 (the old `/api/embeddings` path) | 1 | 18-29 |
+| 64 | 1 | 12.4 |
+| 128 | 1 | 12.1 |
+| 64 | 2 | 11.7 |
+| 64 | 4 | 11.7 |
+| 128 | 4 | 11.8 |
+
+Two things that table settles, both of which contradicted a first, careless
+benchmark run against 1,200 copies of the SAME string (that one reported
+3.9ms and was simply measuring Ollama not re-doing identical work — real
+chunks are all different):
+
+* Batching is worth roughly 1.5-2.4x, not the 5x the synthetic figure
+  suggested. Useful, but it does not turn a slow job into a fast one.
+* Issuing batches concurrently buys ~6%, i.e. nothing. Ollama serializes
+  embedding work for one model, so the bottleneck is the model, not the round
+  trips, once the per-text request overhead is gone. Do not add a concurrency
+  knob expecting a speedup; it was tried and measured.
+
+64 is the default because throughput is flat from 64 upward while the
+per-request payload and the blast radius of one failed request keep growing.
+At 128 with concurrency 8 Ollama started returning 400s.
+
+Consequence for callers: this document's embedding leg is ~510s, which is
+LONGER than portal-api's old 300s `indexing_runtime_timeout_seconds`. Batching
+alone did not make it fit — the budget had to move too (see that setting's
+comment). Indexing throughput on this hardware is a floor, not something a
+knob here can tune away."""
+
+EMBED_REQUEST_TIMEOUT_SECONDS: float = float(
+    os.environ.get("INDEXING_EMBED_REQUEST_TIMEOUT_SECONDS", "120")
+)
+"""httpx timeout for a SINGLE embedding request (one batch of up to
+`EMBED_BATCH_SIZE` texts), not for the whole indexing job.
+
+The old code hardcoded `timeout=60` for a one-text request. A batch is bigger
+work per request, so this is both extracted into a setting and raised — at the
+measured 3.9ms/embedding a 64-text batch lands near 0.25s, leaving this as a
+generous ceiling for a cold model load or a slower host rather than a bound
+anyone should normally reach."""
+
 EXTRACT_TEXT_EXCERPT_MAX_CHARS: int = int(
     os.environ.get("INDEXING_EXTRACT_TEXT_EXCERPT_MAX_CHARS", "4000")
 )
