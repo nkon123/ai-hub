@@ -51,7 +51,46 @@ indexing_runtime.main:app --reload --port 8200`)
 Loader(`test_loaders.py`/`test_pdf_docx_loaders.py`), `test_profile.py`, `test_bm25_store.py`,
 `test_convert_bm25_format.py`, `test_chroma_client_cache.py`, `test_classification_stamp.py`,
 `test_stamp_classification.py`, `test_main_index_base.py`, `test_models_endpoint.py`,
-`test_embed_model_setting.py`, `test_pipeline_heading_metadata.py`, `test_ids.py`로 나뉜다.
+`test_embed_model_setting.py`, `test_pipeline_heading_metadata.py`, `test_ids.py`,
+`test_embedders.py`, `test_pipeline_chroma_batching.py`로 나뉜다.
+
+## 큰 문서에서만 드러나는 것 (2026-09-17)
+
+이 저장소의 Knowledge 자산은 전부 청크 수십 개짜리였다. 21MB Markdown 참조 문서
+(child 청크 **41,954개**)를 처음 등록하면서 **작은 문서에서는 절대 나타나지 않는**
+한계 세 개가 한꺼번에 드러났다. 새 문서 크기를 다룰 때 여기부터 본다.
+
+**실측 (로컬 Ollama + `qwen3-embedding:0.6b`, 평균 427자 한국어 청크):**
+
+| 단계 | 시간 |
+|---|---|
+| load | 0.1s |
+| chunk | 0.4s |
+| **embed** | **509.3s** |
+| chroma add | 24.1s |
+| bm25 | 0.5s |
+| parents.json | 0.2s |
+| 합계 | **534.6s** |
+
+1. **`embed_batch`는 배치가 아니었다.** `batch_size`를 받아 리스트를 자른 뒤, 여전히
+   텍스트 하나당 HTTP 요청 하나를 보내는 함수를 호출했다 — 요청 수가 전혀 줄지 않아
+   파라미터가 아무것도 바꾸지 않았다. 지금은 Ollama의 `/api/embed`(배열 입력)를 쓴다.
+   **효과는 1.5~2.4배지 극적이지 않다**(18~29ms → 12.4ms/건). 동시 요청은 ~6%로
+   사실상 무효다(Ollama가 한 모델의 임베딩을 직렬화한다 — 측정표는
+   `settings.EMBED_BATCH_SIZE` docstring). 임베딩 시간은 이 하드웨어의 바닥이다.
+2. **Chroma는 `add()` 한 번에 5461개까지만 받는다**(`get_max_batch_size()`).
+   초과하면 `InternalError: ValueError: Batch size of N is greater than max batch
+   size of 5461`으로 **임베딩을 전부 계산한 뒤에** 죽는다 — 가장 비싼 실패 지점이다.
+   `pipeline.run_pipeline`이 이제 이 한계로 쪼개 넣으며, 값은 클라이언트에서 읽는다
+   (하드코딩 복사본은 업그레이드 때 조용히 틀려진다).
+3. **portal-api의 색인 예산 300초로는 이 문서를 영원히 등록할 수 없었다.**
+   534초짜리 작업이 매번 ReadTimeout → FAILED로 기록됐다. 1800초로 올렸다
+   (`portal_api.config.Settings.indexing_runtime_timeout_seconds` 주석에 근거).
+   **이 값을 바꿀 때 portal-web `knowledge/new`의 `INDEXING_WATCH_BUDGET_MS`도 같이 본다
+   — 화면 감시 예산이 서버 예산보다 짧으면 화면이 실패를 표시할 수 없다.**
+
+구조적으로는 `/indexing/v1/jobs`가 동기 실행이라 "예산"이 곧 "등록 가능한 최대 문서
+크기"가 된다. 202 + 상태 폴링으로 바꾸기 전까지 이 결합은 그대로다.
 
 ## 이 모듈에서 반복해서 틀렸던 것
 
