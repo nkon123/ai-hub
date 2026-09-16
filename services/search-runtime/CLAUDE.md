@@ -48,15 +48,19 @@ search_runtime.main:app --reload --port 8300`)
 
 ## 이 모듈에서 반복해서 틀렸던 것
 
-- **`INDEX_BASE` 기본값이 아직 개발자 개인 절대경로로 하드코딩되어 있다**
-  (`settings.py`로 옮겨졌고 `hybrid.py`가 그대로 re-export한다 — D-079에서
-  `local_index_registry.py`가 순환 import 없이 읽을 수 있게 하려고 위치만 바꿨을 뿐,
-  값·env 이름·기본값은 동일하다).
-  indexing-runtime의 `main.py`는 동일한 문제를 저장소 루트 기준 상대경로 계산으로 이미 고쳤지만,
-  이 서비스의 `INDEX_BASE`는 아직 그 패턴을 따르지 않는다. `INDEX_BASE` env var 없이 다른 머신에서
-  실행하면(특히 Windows 대상 PC) 조용히 잘못된 경로를 보게 된다 — 이 서비스를 만질 때는
-  `INDEX_BASE`를 항상 명시적으로 설정하거나, 고칠 때는 indexing-runtime의 `_REPO_ROOT` 계산
-  패턴을 그대로 따른다.
+- **`INDEX_BASE` 기본값이 개발자 개인 macOS 절대경로였다(2026-09-16 해소).** 이 서비스는 형제
+  셋(`indexing_runtime.main`, `portal_api.config`, `distribution_service.config`)이 모두
+  저장소 루트 기준 경로로 이미 고친 값을 마지막까지 하드코딩된 채로 들고 있었다. Windows에서는
+  그 경로가 존재하지 않으므로 **모든 조회가 빗나가고 `hybrid_search`가 오류 없이
+  `total_chunks_searched: 0`을 돌려줬다** — 색인은 멀쩡히 만들어졌는데 검색에서만 통째로 안 보이고,
+  사용자 눈에는 "내용이 없는 Knowledge"와 구분되지 않는다(이 저장소가 반복해서 경고하는 '조용한
+  0건'의 가장 나쁜 형태다). 지금은 `settings.py`의 `_REPO_ROOT` 계산을 따른다. 색인 트리가
+  저장소 밖인 배포는 예전처럼 `INDEX_BASE`를 명시적으로 설정한다.
+- **`SEARCH_LOCAL_INDEX_ROOTS`가 비어 있으면 Desktop이 설치한 Knowledge는 영원히 활성화되지
+  않는다.** 기본값이 비어 있는 것은 의도이며(중앙 배포에 새 파일시스템 표면을 주지 않는다),
+  search-runtime이 Desktop과 같은 PC에서 도는 배포에서만 운영자가 의도적으로 지정한다. 거절
+  사유는 `local_indexes_disabled`로 명확히 나가지만 **재시도로는 절대 풀리지 않는다** — Desktop
+  쪽이 이 사유를 "관리자에게 요청" 분기로 다루는 이유다(`knowledge-activation.ts`).
 - **ACL은 fail-closed다** — `classification` 메타데이터가 없거나 미인식 값이면
   `Classification.UNKNOWN`으로 파싱되고, `settings.ALLOW_UNKNOWN_CLASSIFICATION`(기본 `False`)이
   꺼져 있는 한 어떤 clearance로도 보이지 않는다(`access_control.forced_allowed_classifications`).

@@ -31,6 +31,13 @@
 - 검증 27개 추가, 전체 1447 passed(작업 전 1420, +27), 실패 49개는 기준선과 동일 집합. 변이 테스트로 중첩 마스킹·content 블록 마스킹·최상위 리스트 상한·마스킹 순서 네 가지가 실제로 잡히는지 확인했다.
 - **아직 안 한 것**: office-mcp-server 의 프로토콜 재노출, agent-runtime 라우터·레지스트리(`/local/v1/mcp-servers`), 디스패치 파이프라인 배선(판정→호출→필터→감사를 한 경로로), Desktop/Portal UI, 기존 `mcp_tool` 자산 마이그레이션. 영향 범위는 MCP 관련 59개 파일.
 
+## 2026-09-16 M08 검색이 Windows에서 통째로 안 되고 있었다 (INDEX_BASE + 활성화 판정 순서)
+
+- 증상은 Desktop의 "활성화 실패"(`local_indexes_disabled`)였지만 그건 바깥 껍질이었다. 안쪽은 **`INDEX_BASE` 기본값이 개발자 개인 macOS 절대경로**(`/Users/victory/...`)라 Windows에서는 존재하지 않는 경로를 보고 있던 것 — 형제 셋(`indexing_runtime.main`, `portal_api.config`, `distribution_service.config`)이 모두 저장소 루트 기준으로 이미 고친 값을 이 서비스만 들고 있었다. 오류 없이 `citations: 0`이라 "내용 없는 Knowledge"와 구분되지 않는, 이 저장소가 반복해 경고하는 '조용한 0건'의 가장 나쁜 형태다. `settings.py`에 `_REPO_ROOT` 패턴을 적용해 해소. 확인: `embed_model_source`가 `fallback_default` → `index_meta`로 바뀌고 실제 질의에 유사도 0.555로 Citation 1건.
+- M08 `local_index_registry._validated_path`: `central_index_exists` 판정을 `_require_enabled()`보다 **앞으로** 옮겼다. 두 사유는 사용자에게 정반대를 말한다 — 전자는 "이미 검색되고 있다(할 일 없음)", 후자는 "관리자에게 요청하라(재시도로 안 풀림)". 순서 때문에 중앙 색인으로 멀쩡히 검색되는 Knowledge가 Desktop에 '활성화 실패'로 뜨고, 사용자는 필요도 없는 설정을 관리자에게 요청하게 됐다. Desktop 쪽(`knowledge-activation.ts`)은 이미 `central_index_exists`를 `ALREADY_ACTIVE`/`ok: true`로 다루고 있었으므로 M04 변경 없음. 중앙 색인 우선(precedence rule)은 판정 지점만 앞으로 옮겼을 뿐 성질은 불변.
+- `scripts/windows/start-search-runtime.ps1`이 `SEARCH_LOCAL_INDEX_ROOTS`를 Desktop 설치 경로로 지정한다(이미 설정돼 있으면 건드리지 않는다). 개발 실행(`%APPDATA%\desktop-client\assets`)과 패키징 설치(`%APPDATA%\AI Asset Hub 데스크톱\assets`)의 userData 이름이 달라 둘 다 허용한다. **코드 기본값은 비운 채로 둔다** — 빈 기본값은 의도이며(중앙 배포에 새 파일시스템 표면을 주지 않는다), Desktop과 같은 PC에서 도는 배포만 명시적으로 지정한다는 성질을 기동 스크립트 계층에서 지킨다.
+- 검증: `-X utf8` 전체 1309 passed / 49 failed — 실패 49개는 작업 전 기준선과 **동일한 집합**이고(다른 세션의 Ollama 공통 설정 미커밋 변경, Windows 심볼릭 링크 권한, knowledge_packager 임시 디렉터리), passed 는 신규 회귀 테스트 `test_central_index_beats_disabled_registration` 만큼 +1. 그 테스트는 순서를 되돌리면 실패함을 확인했다. 실서비스 종단 확인: `POST /search/v1/local-indexes` 가 `local_indexes_disabled` → `central_index_exists` 로 바뀌는 것까지 실제 Desktop 설치 경로로 재현.
+
 ## 2026-09-16 Ollama 공통 설정
 
 - 후속: Windows doctor의 Ollama 점검도 공통 JSON 및 AIHUB_OLLAMA_CONFIG를 사용. 실제 점검 주소를 표시하고 설정 오류/연결 실패를 구분한다. PowerShell 구문 검사와 HTTP mock 기반 원격 주소·연결 실패·잘못된 설정·파일 누락 4가지 확인 통과.

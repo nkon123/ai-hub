@@ -340,6 +340,33 @@ def test_registering_an_id_that_exists_centrally_is_refused(
     )
 
 
+def test_central_index_beats_disabled_registration(tmp_path: Path) -> None:
+    """등록이 꺼진 배포에서도, 그 Knowledge가 이미 중앙 색인에 있으면 사유는
+    `central_index_exists`여야 한다(2026-09-16 실사용 회귀).
+
+    두 사유는 사용자에게 정반대의 것을 말한다: `local_indexes_disabled`는
+    "관리자에게 요청하라"(재시도로 절대 안 풀림)이고 `central_index_exists`는
+    "이미 검색되고 있다"(할 일 없음)이다. 예전에는 `_require_enabled()`가 먼저
+    돌아서, 멀쩡히 검색되는 Knowledge가 Desktop 화면에 '활성화 실패'로 뜨고
+    사용자는 필요도 없는 설정을 관리자에게 요청하게 됐다."""
+    installed = tmp_path / "installed"
+    central = tmp_path / "central"
+    installed.mkdir()
+    central.mkdir()
+    (central / KNOWLEDGE_ID).mkdir()
+    index_dir = make_index_dir(installed)
+    registry = LocalIndexRegistry(
+        registry_path=tmp_path / "local-indexes.json",
+        allowed_roots=(),
+        central_index_base=central,
+    )
+    assert registry.enabled is False
+
+    expect_refusal(
+        lambda: registry.register(KNOWLEDGE_ID, str(index_dir), SOURCE), "central_index_exists"
+    )
+
+
 def test_central_index_wins_if_it_appears_after_registration(
     tmp_path: Path, roots: tuple[Path, Path]
 ) -> None:

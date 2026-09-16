@@ -242,14 +242,33 @@ class LocalIndexRegistry:
     def _validated_path(self, knowledge_id: str, index_path: str) -> Path:
         """Full registration-time validation. Returns the resolved directory,
         or raises `LocalIndexError` naming exactly one refusal reason."""
-        self._require_enabled()
-
         if not _UUID_PATTERN.match(knowledge_id):
             raise LocalIndexError(
                 ErrorCode.VALIDATION_ERROR,
                 "knowledge_id_invalid",
                 "knowledge_id는 AssetVersion UUID여야 합니다.",
             )
+
+        # 순서가 중요하다(2026-09-16 실사용): 이 검사는 `_require_enabled()`보다
+        # **먼저** 온다. 중앙 색인에 이미 있는 Knowledge 는 등록 여부와 무관하게
+        # 지금 이 순간 검색 가능하므로, 등록이 꺼진 배포에서 "이 배포는 등록을
+        # 허용하지 않습니다"(관리자에게 요청하라는 뜻)를 돌려주면 이미 해결된 일을
+        # 두고 사용자를 관리자에게 보내고, Desktop 화면에는 멀쩡히 검색되는
+        # Knowledge 가 "활성화 실패"로 뜬다. UUID 검사만 통과하면 이 판정에
+        # 필요한 것은 다 있다 — 경로 검증은 아래에서 계속한다.
+        if (self._central_index_base / knowledge_id).exists():
+            # 실패가 아니라 사실 안내: 이 knowledge_id는 이미 이 배포의 기본
+            # 색인 경로(INDEX_BASE)에서 검색 가능하다(module docstring의
+            # precedence rule) — 등록이 "거부"되는 것은 맞지만, 호출자
+            # 입장에서는 검색이 이미 되고 있으니 실패로 읽혀서는 안 된다.
+            raise LocalIndexError(
+                ErrorCode.VALIDATION_ERROR,
+                "central_index_exists",
+                "이 Knowledge는 이미 이 배포의 기본 색인 경로에 등록되어 있어 "
+                "바로 검색 가능합니다 — 별도의 외부 색인 등록은 필요하지 않습니다.",
+            )
+
+        self._require_enabled()
 
         raw = index_path.strip()
         if not raw or not Path(raw).is_absolute():
@@ -282,22 +301,9 @@ class LocalIndexRegistry:
                 "색인 경로가 디렉터리가 아닙니다.",
             )
 
-        # Refuse before we can ever shadow locally-built content. This is what
-        # makes the whole feature incapable of changing an existing search
-        # result — see this module's docstring (precedence rule).
-        if (self._central_index_base / knowledge_id).exists():
-            # 실패가 아니라 사실 안내: 이 knowledge_id는 이미 이 배포의 기본
-            # 색인 경로(INDEX_BASE)에서 검색 가능하다(module docstring의
-            # precedence rule) — 등록이 "거부"되는 것은 맞지만, 호출자
-            # 입장에서는 검색이 이미 되고 있으니 실패로 읽혀서는 안 된다.
-            # 메시지 문구만 바꾼다 — code/reason("central_index_exists")과
-            # 동작(등록 거부)은 그대로다.
-            raise LocalIndexError(
-                ErrorCode.VALIDATION_ERROR,
-                "central_index_exists",
-                "이 Knowledge는 이미 이 배포의 기본 색인 경로에 등록되어 있어 "
-                "바로 검색 가능합니다 — 별도의 외부 색인 등록은 필요하지 않습니다.",
-            )
+        # 중앙 색인 우선(precedence rule, module docstring)은 위 UUID 검사 바로
+        # 다음에서 이미 판정했다 — 등록된 디렉터리가 로컬 빌드 콘텐츠를 가릴 수
+        # 없다는 성질은 그대로이고, 판정 지점만 앞으로 옮겼다.
 
         meta_path = candidate / INDEX_META_FILENAME
         if not meta_path.is_file():

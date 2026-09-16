@@ -28,6 +28,11 @@ every out-of-scope question tested. DEFAULT_MIN_RELEVANCE_SCORE sits in the
 from __future__ import annotations
 
 import os
+from pathlib import Path
+
+# `.../services/search-runtime/src/search_runtime/settings.py` -> parents:
+# search_runtime(1) -> src(2) -> search-runtime(3) -> services(4) -> repo root(5).
+_REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
 
 BUILD_VERSION: str = os.environ.get("SEARCH_BUILD_VERSION", "0.1.0")
 """Deployment identity, exposed by `/health` and logged once at startup —
@@ -55,9 +60,7 @@ would make Git metadata a runtime dependency of a service that otherwise has
 none) — an un-injected local/dev process reports `"unknown"` honestly rather
 than guessing."""
 
-INDEX_BASE: str = os.environ.get(
-    "INDEX_BASE", "/Users/victory/Dev/ai/miracom/enterprise-ai-asset-hub/data/indexes"
-)
+INDEX_BASE: str = os.environ.get("INDEX_BASE", str(_REPO_ROOT / "data" / "indexes"))
 """Root of the index tree this service builds every `knowledge_id` lookup path
 from (`INDEX_BASE/<knowledge_id>/`). Written exclusively by
 `services/indexing-runtime` (M07) — a trusted local writer, which is what
@@ -69,13 +72,18 @@ Relocated here from `hybrid.py` (which re-exports it, so
 imports the registry — the value, the env var name and the default are
 byte-for-byte unchanged.
 
-Known defect, deliberately not fixed in that move: the default is still a
-developer's personal absolute path. `services/indexing-runtime` already
-solved this by computing a repo-root-relative default; this service has not
-adopted that pattern yet, so **always set `INDEX_BASE` explicitly** when
-running search-runtime anywhere but that one machine (see this module's
-CLAUDE.md). Changing the default is a behavior change for every existing
-deployment and belongs in its own change."""
+The default is repo-root-relative, matching what the three sibling services
+that hold this identical value already do (`indexing_runtime.main.INDEX_BASE`,
+`portal_api.config.Settings.index_base`,
+`distribution_service.config.Settings.index_base`). It used to be a
+developer's personal macOS absolute path, which this service was the last
+one to carry — on any other machine that path does not exist, so every
+lookup missed and `hybrid_search` returned `total_chunks_searched: 0` with
+no error at all. That is the worst shape this failure can take: a Knowledge
+that indexed fine and is simply invisible, indistinguishable from one with
+no relevant content (2026-09-16 실사용 — Windows에서 중앙 색인이 통째로
+안 보였다). A deployment whose index tree is not the repo's still sets
+`INDEX_BASE` explicitly; nothing about that path changes."""
 
 LOCAL_INDEX_ROOTS: tuple[str, ...] = tuple(
     part.strip()
