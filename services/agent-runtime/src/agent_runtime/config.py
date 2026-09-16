@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
+
 from pydantic import Field
 from pydantic_settings import BaseSettings
 
@@ -254,6 +256,38 @@ class AgentRuntimeSettings(BaseSettings):
     local_agent_registry_path: Path = (
         _REPO_ROOT / "data" / "agent-runtime" / "local-agent-registry.json"
     )
+
+    # --- D-094 MCP 서버 (프로토콜 클라이언트) --------------------------------
+    #
+    # 이 서비스가 두 모드로 돈다는 사실은 그동안 `main.py` docstring 에만 있고
+    # 코드에는 없었다(바인딩 주소만 달랐다). D-094 가 이 값을 **판정에** 쓰기
+    # 시작하므로 명시적 설정으로 올린다.
+    #
+    # 기본값이 `hosted` 인 것은 의도다. 이 값이 결정하는 것은 "stdio MCP 서버를
+    # 자식 프로세스로 띄울 수 있는가" 하나인데, 두 방향의 실수가 대칭이 아니다:
+    # hosted 인데 `local` 로 잘못 두면 공유 서버에서 서드파티 코드가 **지금
+    # 대화 중인 사용자의 감사 컨텍스트로** 실행된다. 반대로 local 인데
+    # `hosted` 로 두면 stdio 서버가 안 뜰 뿐이고, 거부 사유가 무엇을 설정해야
+    # 하는지 그대로 알려준다. 위험한 쪽이 명시적 선택을 요구하게 둔다.
+    #
+    # stdio 를 켜는 **별도 스위치는 없다**. hosted 에서 stdio 를 허용하는 설정을
+    # 만들면 그것은 언젠가 켜지는 스위치이고, D-094 가 막으려던 것이 정확히
+    # 그것이다.
+    runtime_mode: Literal["local", "hosted"] = "hosted"
+    # 외부에서 설치된 MCP 서버 Bundle 을 등록할 수 있는 루트 목록. 비어 있으면
+    # 등록이 전면 거부된다(`mcp_server_registration_disabled`) — D-079 의
+    # `SEARCH_LOCAL_INDEX_ROOTS`, 위의 `local_agent_roots` 와 같은 모양이다.
+    # Bundle 설치가 서버를 실행 가능하게 만들지 않는다는 성질이 여기서 나온다.
+    mcp_server_install_roots: tuple[str, ...] = ()
+    # stdio 서버를 실행할 인터프리터의 **절대 경로**. PATH 탐색으로 대체하지
+    # 않는다(D-084 의 `pythonInterpreterPath` 와 같은 이유 — PATH 는 검토된 적
+    # 없는 런타임으로 조용히 해석된다). 비어 있으면 그 interpreter 를 요구하는
+    # 매니페스트는 `interpreter_not_configured` 로 거부된다.
+    mcp_node_interpreter_path: str | None = None
+    mcp_python_interpreter_path: str | None = None
+    # 핸드셰이크와 `tools/list` 에 허용하는 시간. 응답하지 않는 서버 때문에
+    # 등록 요청이 매달려 있지 않게 한다.
+    mcp_connect_timeout_seconds: float = 20.0
 
     class Config:
         env_prefix = "AGENT_RUNTIME_"

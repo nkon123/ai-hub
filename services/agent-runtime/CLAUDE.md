@@ -49,6 +49,32 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
   "제안"하는 선택적 LLM 호출 하나, 실패/거절/스키마 불일치 시 **아무 Tool도
   호출하지 않는 fail-closed** — knowledge_router.py와 정반대 방향, 이유는
   그 모듈 자신의 docstring 참고).
+- `mcp_client/`(D-094, 신규) — **진짜 MCP 프로토콜 클라이언트**. 공식 `mcp` SDK
+  위에 얹혀 JSON-RPC·`initialize` 협상·`tools/list`·`tools/call` 을 말한다.
+  이 저장소의 기존 "MCP"(`adapters/mcp.py` + office-mcp-server 의
+  `/mcp/v1/tools/...`)는 이름만 MCP 인 자체 REST 라는 것이 2026-09-16 에
+  확인됐다 — 저장소 전체에 `jsonrpc` 가 한 건도 없었다. 세 파일로 나뉜다:
+  `connection.py`(**이 기능의 보안 경계 전부**), `client.py`(프로토콜 왕복),
+  `policy.py`(Policy Enforcement Point — "이 호출을 해도 되는가"),
+  `errors.py`(이름 있는 거부 사유). **`policy.py` 는 05-mcp-security-governance.md
+  의 통제를 office-mcp-server 안에서 클라이언트로 옮긴 것이다** — 서버 안에
+  있으면 우리가 만든 서버만 지키지만 클라이언트에 있으면 서드파티 서버에도
+  적용된다. 옮기면서 느슨해지기 쉬운 네 가지는 회귀 테스트로 고정돼 있다:
+  Default Deny(`allowed_roles`/`allowed_orgs` 가 비면 전원 거부, `allowed_sites`
+  만 선택 차원), 거부가 정책을 누설하지 않음(차원은 감사에만, 사용자 메시지는
+  전부 동일), `llm_routable` 은 `risk_level` 에서 **유도**(WRITE 는 모델 후보에서
+  구조적 제외 — D-083 전제 보존), 확인 정책을 낮추지 않음. Rate Limit 검사는
+  **인가보다 뒤**에 둔다 — 앞에 두면 어차피 거부될 호출이 정상 호출의 예산을
+  갉아먹고, 권한 없는 호출 반복으로 남의 예산을 고갈시킬 수 있다.
+  `ON_PARAMETER` 는 현재 `ALWAYS` 와 같게 동작한다(계약에 '어느 인자가 확인을
+  유발하는가'를 적을 자리가 없어 일반 Tool 에 대해 알 수 없다 — D-049 와 같이
+  엄격한 쪽으로 반올림). **연결 대상을 정하는 판단은 전부
+  `connection.resolve_connection_target` 한 곳에만 둔다** — 두 곳에서 정하면
+  한 곳만 고쳐진다. `client._build_sdk_target` 은 그 결정을 SDK 형태로 옮길
+  뿐 아무것도 결정하지 않으며, 테스트 편의를 위해 받는 타입을 넓히지 않는다
+  (그래서 프로토콜 테스트는 SDK `Client` 를 직접 열고 `discover()` 에 세션을
+  넘긴다). SDK `Tool` 의 필드는 `input_schema` 이지 wire 형식의 `inputSchema`
+  가 아니다 — 2.x 에서 바뀌었고, SDK 를 mock 했다면 못 잡았을 실수다.
 - `mcp_tools.py` — office-mcp-server Tool 계약의 **손으로 복사한 정적 사본**
   (`MCP_TOOL_SPECS`) — M10이 Tool을 바꾸면 이 파일도 수동 갱신해야 한다
   (drift risk, open-decisions.md 기록). `list_candidate_tools`(D-083)가

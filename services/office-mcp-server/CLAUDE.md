@@ -110,6 +110,16 @@ uvicorn office_mcp_server.main:app --reload --port 8500`.
   API를 지켜주는 보안 장치가 **아니다**: cross-origin 단순 요청은 이 목록과 무관하게 서버에
   도달한다. 실제 보호는 §8 권한 검사·READ_ONLY 강제와 loopback 배포 형태다.
 
+- **`output_filter.py`의 순서(상한 → 마스킹)에 누출이 있다(2026-09-17 실측, 미수정).**
+  상한이 이메일 중간을 자르면 남은 조각이 정규식에 걸리지 않아 로컬 파트가 그대로
+  남는다 — `"x"*90 + "someone@example.com"`을 `max_field_length=100`으로 처리하면
+  결과에 `...someone@ex…`가 남는다. 이 순서를 고른 근거로 적혀 있는 "마스킹은 항상
+  길이를 줄이거나 같게 한다"도 사실이 아니다: 짧은 주소는 마스킹이 **늘린다**
+  (`a@b.co` 6자 → `[MASKED_EMAIL]` 14자), 그런데 마스킹 뒤에 상한을 다시 걸지 않는다.
+  D-094로 옮겨 간 클라이언트 쪽(`agent_runtime.mcp_client.result_filter`)은
+  **마스킹 → 상한** 순서로 고쳤고 회귀 테스트로 고정했다. 이 서버 쪽은 아직 그대로다 —
+  고칠 때 `tests/unit/office_mcp_server/test_output_filter.py`에 같은 케이스를 추가한다.
+
 ## 완료 전 확인
 
 - 새/변경 Tool이 `risk_level="READ_ONLY"`인가 —
