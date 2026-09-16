@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import {
   CheckCircle2,
+  Clock,
   Loader2,
   MessageSquare,
   Package,
@@ -120,31 +121,95 @@ interface IndexingJob {
   error_message: string | null;
 }
 
+/**
+ * 등록은 색인이 끝나기를 기다리지 않는다. 등록이 성공한 순간 화면은 이미
+ * "등록됨 + 색인은 백그라운드 진행 중"이고, 페이지를 떠나도 된다. 화면을 열어
+ * 둔 동안에는 상태를 따라가다가 끝나면 완료/실패로 바뀐다.
+ *
+ * 이전 구현은 `60회 * 3초 = 180초`를 기다린 뒤 **아무 표시 없이** 루프를
+ * 끝냈다. 그런데 portal-api가 색인 실패를 확정하는 예산은 그보다 길다
+ * (`Settings.indexing_runtime_timeout_seconds`). 감시 예산이 서버의 실패 예산보다
+ * 짧으면 타임아웃으로 실패하는 작업의 결과를 이 화면은 **절대** 표시할 수 없고,
+ * 스피너와 "RUNNING..."만 영원히 남는다 — 실제로 2026-09-17에 21MB 문서를
+ * 등록하다 그 상태에 빠졌고, 등록자는 다른 창을 띄워서야 FAILED를 알았다.
+ *
+ * 그래서 감시 예산은 서버 예산(현재 1800초)보다 **길게** 잡는다. 두 값은 각자의
+ * 저장소에 있어 코드로 묶을 수 없으니, 서버 쪽을 바꿀 때 이 상수도 같이 본다
+ * — `apps/portal-api/src/portal_api/config.py`의 같은 설명이 짝이다.
+ * 예산이 끝나도 스피너가 아니라 "확인을 멈췄다 + 어디서 보면 된다"를 명시한다.
+ *
+ * 간격에 backoff를 두는 이유: 35분을 3초로 나누면 700회 요청인데, 대부분의 색인은
+ * 처음 1분 안에 끝난다. 짧은 작업은 빠르게 반영하고 긴 작업은 조용히 기다리게 한다.
+ */
+const INDEXING_POLL_FAST_INTERVAL_MS = 3000;
+const INDEXING_POLL_SLOW_INTERVAL_MS = 10000;
+const INDEXING_POLL_FAST_WINDOW_MS = 60 * 1000;
+const INDEXING_WATCH_BUDGET_MS = 35 * 60 * 1000;
+const INDEXING_POLL_FAILURE_TOLERANCE = 3;
+
+type IndexingWatch =
+  | { phase: "queued" }
+  | { phase: "running"; job: IndexingJob }
+  | { phase: "completed"; job: IndexingJob }
+  | { phase: "failed"; job: IndexingJob }
+  | { phase: "unwatched"; reason: "budget_exhausted" | "unreachable" };
+
+// `tech`/`params`는 화면에 그대로 보여 주는 값이다. 업무 목적(label/description)을
+// 먼저 두고 기술명을 덧붙인다(루트 CLAUDE.md UI 규칙). 값은 실제 구현에서 확인한
+// 것만 적는다 — indexing-runtime `chunkers/{parent_child,markdown,recursive}.py`와
+// search-runtime `hybrid.py`("Vector (Chroma) + BM25 + RRF fusion"). 아래 profile
+// 숫자를 바꾸면 params 문구도 같이 고친다.
 const INDEXING_PRESETS = {
   parent_child: {
     label: "문맥 보존",
+    tech: "Parent-Child Chunking",
     description: "긴 규정·업무 문서에 적합합니다. 작은 검색 조각과 넓은 문맥을 함께 만듭니다.",
+    params: "제목(#/##/###) 경계로 먼저 끊고, 문맥 2048자 → 검색 조각 512자 · 겹침 64자",
     ref: "balanced-parent-child",
     profile: { chunking_strategy: "parent_child", chunk_size: 512, chunk_overlap: 64, parent_chunk_size: 2048, minimum_size: 64, language: "ko" },
   },
   markdown: {
     label: "문서 구조 우선",
+    tech: "Markdown Header Splitting",
     description: "제목과 절 구성이 중요한 매뉴얼·가이드에 적합합니다.",
+    params: "제목(#/##/###)으로 절 분리, 768자를 넘는 절만 재분할 · 겹침 80자",
     ref: "structured-markdown",
     profile: { chunking_strategy: "markdown", chunk_size: 768, chunk_overlap: 80, parent_chunk_size: 2048, minimum_size: 80, language: "ko" },
   },
   recursive: {
     label: "짧은 조각",
+    tech: "Recursive Character Splitting",
     description: "형식이 일정하지 않은 메모·텍스트를 촘촘하게 나눕니다.",
+    params: "문단 → 줄 → 문장 → 공백 → 문자 순 분할, 384자 · 겹침 48자",
     ref: "compact-recursive",
     profile: { chunking_strategy: "recursive", chunk_size: 384, chunk_overlap: 48, parent_chunk_size: 1536, minimum_size: 48, language: "ko" },
   },
 } as const;
 
+// 세 가지 모두 같은 Hybrid 검색이며 Vector와 BM25의 가중치(α)만 다르다.
+// hybrid.py 기준 α는 Vector 쪽 가중치다(0이면 BM25만, 1이면 Vector만).
 const RETRIEVAL_PRESETS = {
-  balanced_hybrid: { label: "균형 검색", description: "의미와 키워드를 같은 비중으로 찾습니다.", profile: { strategy: "balanced_hybrid", top_k: 5, hybrid_alpha: 0.5, min_relevance_score: 0.42, enable_parent_expansion: true } },
-  keyword_priority: { label: "키워드 우선", description: "제품명·규정 번호처럼 정확한 용어 일치를 더 중시합니다.", profile: { strategy: "keyword_priority", top_k: 8, hybrid_alpha: 0.25, min_relevance_score: 0.42, enable_parent_expansion: true } },
-  semantic_priority: { label: "의미 우선", description: "표현이 달라도 의미가 가까운 문장을 더 중시합니다.", profile: { strategy: "semantic_priority", top_k: 5, hybrid_alpha: 0.8, min_relevance_score: 0.45, enable_parent_expansion: true } },
+  balanced_hybrid: {
+    label: "균형 검색",
+    tech: "Hybrid Search (Vector + BM25, RRF 융합)",
+    description: "의미와 키워드를 같은 비중으로 찾습니다.",
+    params: "α=0.5 (의미 50 : 키워드 50) · 상위 5건 · 최소 관련도 0.42 · 부모 문맥 확장",
+    profile: { strategy: "balanced_hybrid", top_k: 5, hybrid_alpha: 0.5, min_relevance_score: 0.42, enable_parent_expansion: true },
+  },
+  keyword_priority: {
+    label: "키워드 우선",
+    tech: "Hybrid Search — BM25 가중",
+    description: "제품명·규정 번호처럼 정확한 용어 일치를 더 중시합니다.",
+    params: "α=0.25 (의미 25 : 키워드 75) · 상위 8건 · 최소 관련도 0.42 · 부모 문맥 확장",
+    profile: { strategy: "keyword_priority", top_k: 8, hybrid_alpha: 0.25, min_relevance_score: 0.42, enable_parent_expansion: true },
+  },
+  semantic_priority: {
+    label: "의미 우선",
+    tech: "Hybrid Search — Vector 가중",
+    description: "표현이 달라도 의미가 가까운 문장을 더 중시합니다.",
+    params: "α=0.8 (의미 80 : 키워드 20) · 상위 5건 · 최소 관련도 0.45 · 부모 문맥 확장",
+    profile: { strategy: "semantic_priority", top_k: 5, hybrid_alpha: 0.8, min_relevance_score: 0.45, enable_parent_expansion: true },
+  },
 } as const;
 
 export default function NewKnowledgePage() {
@@ -156,7 +221,7 @@ export default function NewKnowledgePage() {
   const [files, setFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ assetVersionId: string; assetId: string } | null>(null);
-  const [jobStatus, setJobStatus] = useState<IndexingJob | null>(null);
+  const [watch, setWatch] = useState<IndexingWatch>({ phase: "queued" });
   const [error, setError] = useState<ServerErrorInfo | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -390,10 +455,9 @@ export default function NewKnowledgePage() {
         return;
       }
       const version = await res.json();
+      // 등록은 여기서 끝난다. 색인 감시는 아래 useEffect가 이어받고,
+      // 사용자는 기다릴 의무가 없다.
       setResult({ assetVersionId: version.id, assetId: version.asset_id });
-
-      // Poll indexing job status
-      pollJobStatus(version.asset_id);
     } catch (e: unknown) {
       setError({ message: e instanceof Error ? e.message : String(e) });
     } finally {
@@ -401,23 +465,70 @@ export default function NewKnowledgePage() {
     }
   }
 
-  async function pollJobStatus(assetId: string) {
-    for (let i = 0; i < 60; i++) {
-      await new Promise((r) => setTimeout(r, 3000));
-      try {
-        const res = await fetch(`/api/v1/assets/${assetId}/indexing-jobs`, {
-          headers: { Authorization: "Bearer dev-user-token" },
-        });
-        const jobs = await res.json();
-        if (jobs.length > 0) {
-          setJobStatus(jobs[0]);
-          if (jobs[0].status === "COMPLETED" || jobs[0].status === "FAILED") break;
+  // 등록된 자산의 색인 상태를 화면이 열려 있는 동안만 따라간다. 언마운트하면
+  // 즉시 멈춘다(예전 루프는 페이지를 떠난 뒤에도 계속 돌며 사라진 컴포넌트에
+  // setState를 호출했다). 이 감시가 멈추는 것과 색인이 멈추는 것은 무관하다 —
+  // 색인은 서버에서 계속 진행된다.
+  const assetId = result?.assetId;
+  useEffect(() => {
+    if (!assetId) return;
+
+    let cancelled = false;
+    let consecutiveFailures = 0;
+    const startedAt = Date.now();
+    const deadline = startedAt + INDEXING_WATCH_BUDGET_MS;
+
+    async function tick() {
+      while (!cancelled) {
+        if (Date.now() > deadline) {
+          if (!cancelled) setWatch({ phase: "unwatched", reason: "budget_exhausted" });
+          return;
         }
-      } catch {
-        break;
+        try {
+          const res = await fetch(`${API_BASE}/api/v1/assets/${assetId}/indexing-jobs`, {
+            headers: { Authorization: "Bearer dev-user-token" },
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const jobs: IndexingJob[] = await res.json();
+          if (cancelled) return;
+          consecutiveFailures = 0;
+          const job = jobs[0];
+          if (job) {
+            if (job.status === "COMPLETED") {
+              setWatch({ phase: "completed", job });
+              return;
+            }
+            if (job.status === "FAILED") {
+              setWatch({ phase: "failed", job });
+              return;
+            }
+            setWatch({ phase: "running", job });
+          }
+        } catch {
+          // 조회 실패는 색인 실패가 **아니다** — 서버는 멀쩡히 색인하는 중인데
+          // 브라우저 쪽이 잠깐 끊긴 것일 수 있으므로 실패로 단정하지 않는다.
+          // 한 번의 딸꾹질로 감시를 포기하지도 않는다(수 분짜리 작업에서
+          // 일시적 실패는 흔하다). 연속으로 실패할 때만 확인을 멈춘다.
+          if (cancelled) return;
+          consecutiveFailures += 1;
+          if (consecutiveFailures >= INDEXING_POLL_FAILURE_TOLERANCE) {
+            setWatch({ phase: "unwatched", reason: "unreachable" });
+            return;
+          }
+        }
+        const interval =
+          Date.now() - startedAt < INDEXING_POLL_FAST_WINDOW_MS
+            ? INDEXING_POLL_FAST_INTERVAL_MS
+            : INDEXING_POLL_SLOW_INTERVAL_MS;
+        await new Promise((r) => setTimeout(r, interval));
       }
     }
-  }
+
+    tick();
+    return () => {
+      cancelled = true;
+    };
+  }, [assetId]);
 
   return (
     <div className="max-w-xl">
@@ -435,19 +546,15 @@ export default function NewKnowledgePage() {
 
           <div className="rounded-card border border-border bg-surface p-5 shadow-card">
             <div className="mb-3 text-card-title font-semibold text-text-primary">인덱싱 상태</div>
-            {!jobStatus ? (
-              <div className="flex items-center gap-2 text-body text-text-secondary">
-                <Loader2 size={15} className="animate-spin" />
-                인덱싱 서버에 요청 중...
-              </div>
-            ) : jobStatus.status === "COMPLETED" ? (
+
+            {watch.phase === "completed" ? (
               <div>
                 <div className="flex items-center gap-2 font-semibold text-success">
                   <CheckCircle2 size={16} />
                   인덱싱 완료
                 </div>
                 <div className="mt-1 text-caption text-text-secondary">
-                  청크 수: {jobStatus.chunk_count ?? "-"}
+                  청크 수: {watch.job.chunk_count ?? "-"}
                 </div>
                 <div className="mt-4 flex gap-3">
                   <Button href="/assets">
@@ -460,15 +567,72 @@ export default function NewKnowledgePage() {
                   </Button>
                 </div>
               </div>
-            ) : jobStatus.status === "FAILED" ? (
-              <div className="flex items-center gap-2 text-danger">
-                <XCircle size={16} />
-                인덱싱 실패: {jobStatus.error_message ?? "인덱싱 서버를 확인하세요."}
+            ) : watch.phase === "failed" ? (
+              <div>
+                <div className="flex items-start gap-2 text-danger">
+                  <XCircle size={16} className="mt-0.5 shrink-0" />
+                  <span>
+                    인덱싱 실패: {watch.job.error_message ?? "인덱싱 서버를 확인하세요."}
+                  </span>
+                </div>
+                {/* 재색인 버튼을 두지 않는다 — 색인은 `POST /api/v1/assets`
+                    (등록) 시점에만 시작되고 기존 버전을 다시 색인하는 API가
+                    없다. 없는 기능을 가리키는 버튼은 만들지 않는다. */}
+                <p className="mt-2 text-caption text-text-secondary">
+                  문서는 등록되어 있지만 이 버전은 검색에 사용할 수 없습니다. 원인을 해결한 뒤
+                  문서를 다시 등록해 주세요.
+                </p>
+                <div className="mt-4 flex gap-3">
+                  <Button href={`/assets/${result.assetId}`}>
+                    <Package size={16} />
+                    자산 상세 보기
+                  </Button>
+                  {/* 같은 라우트로의 링크는 화면을 초기화하지 못한다
+                      (Next.js가 같은 페이지를 다시 마운트하지 않는다).
+                      입력값은 남겨 둔 채 결과 화면만 되돌린다. */}
+                  <Button
+                    variant="secondary"
+                    onClick={() => {
+                      setResult(null);
+                      setWatch({ phase: "queued" });
+                      setError(null);
+                    }}
+                  >
+                    다시 등록
+                  </Button>
+                </div>
               </div>
             ) : (
-              <div className="flex items-center gap-2 text-warning">
-                <Loader2 size={15} className="animate-spin" />
-                {jobStatus.status}... 잠시 기다려 주세요.
+              /* 진행 중 또는 감시 종료. 어느 쪽이든 "기다리세요"가 아니라
+                 "나중에 확인하세요"다 — 큰 문서는 색인에 수 분이 걸리고,
+                 사용자가 이 화면을 붙잡고 있을 이유가 없다. */
+              <div>
+                <div className="flex items-center gap-2 text-body text-text-secondary">
+                  {watch.phase === "unwatched" ? (
+                    <Clock size={15} className="shrink-0 text-text-muted" />
+                  ) : (
+                    <Loader2 size={15} className="shrink-0 animate-spin text-warning" />
+                  )}
+                  {watch.phase === "unwatched"
+                    ? "이 화면에서의 상태 확인을 멈췄습니다."
+                    : "색인이 백그라운드에서 진행 중입니다."}
+                </div>
+
+                <p className="mt-2 text-caption text-text-secondary">
+                  {watch.phase === "unwatched" && watch.reason === "unreachable"
+                    ? "상태를 조회하지 못했습니다. 색인은 계속 진행 중일 수 있습니다 — 아래에서 현재 상태를 확인하세요."
+                    : "이 페이지를 닫아도 됩니다. 문서가 크면 수 분이 걸릴 수 있으며, 완료 여부는 아래에서 다시 확인할 수 있습니다."}
+                </p>
+
+                <div className="mt-4 flex gap-3">
+                  <Button href={`/assets/${result.assetId}`}>
+                    <Package size={16} />
+                    자산 상세에서 확인
+                  </Button>
+                  <Button href="/my/assets" variant="secondary">
+                    내 자산 목록
+                  </Button>
+                </div>
               </div>
             )}
           </div>
@@ -658,10 +822,14 @@ export default function NewKnowledgePage() {
                   className={inputClass}
                 >
                   {Object.entries(INDEXING_PRESETS).map(([value, preset]) => (
-                    <option key={value} value={value}>{preset.label}</option>
+                    <option key={value} value={value}>{preset.label} — {preset.tech}</option>
                   ))}
                 </select>
                 <p className="mt-1.5 text-caption text-text-muted">{INDEXING_PRESETS[indexingStrategy].description}</p>
+                <p className="mt-1 text-caption text-text-secondary">
+                  {INDEXING_PRESETS[indexingStrategy].tech}
+                  <span className="text-text-muted"> · {INDEXING_PRESETS[indexingStrategy].params}</span>
+                </p>
               </FormField>
               <FormField label="검색 방법" required>
                 <select
@@ -670,10 +838,14 @@ export default function NewKnowledgePage() {
                   className={inputClass}
                 >
                   {Object.entries(RETRIEVAL_PRESETS).map(([value, preset]) => (
-                    <option key={value} value={value}>{preset.label}</option>
+                    <option key={value} value={value}>{preset.label} — {preset.tech}</option>
                   ))}
                 </select>
                 <p className="mt-1.5 text-caption text-text-muted">{RETRIEVAL_PRESETS[retrievalStrategy].description}</p>
+                <p className="mt-1 text-caption text-text-secondary">
+                  {RETRIEVAL_PRESETS[retrievalStrategy].tech}
+                  <span className="text-text-muted"> · {RETRIEVAL_PRESETS[retrievalStrategy].params}</span>
+                </p>
               </FormField>
             </div>
 
