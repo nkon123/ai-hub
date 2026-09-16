@@ -42,6 +42,7 @@
 
 - 증상: P12 Knowledge 등록의 AI 추천이 "AI 추천을 생성하지 못했습니다"만 표시. 실제 원인은 office-profile 기본값 `exaone3.5:7.8b`가 이 PC의 Ollama에 미설치(설치된 채팅 가능 모델은 `gemma4:latest` 하나). Portal 관리자 설정(P15)에 `gemma4:latest`를 저장해 해소 — D-091/D-092대로 자동 대체는 하지 않았다.
 - M02: `routers/knowledge_metadata_suggest.py`가 agent-runtime의 오류 메시지를 고정 문구로 덮어쓰고 있었다. D-091이 만든 조치 안내(`ollama pull <model>`)가 이 경로에서만 사용자에게 도달하지 못했다. 4xx/5xx 양쪽에서 downstream `error.message`를 전달하고, JSON이 아니면 기존 문구로 폴백한다. 감사 `reason`도 실제 downstream code를 기록한다. portal-web은 이미 `error.message`를 렌더링하므로 M01 변경 없음. 오류코드 계약 불변.
+- **`scripts/agent/verify-change.mjs`가 Windows에서 한 번도 동작한 적이 없다.** 진입 가드가 `import.meta.url === \`file://${process.argv[1]}\``라 Windows에서 절대 일치하지 않고, `main()`이 안 돌아 **출력 없이 exit 0**으로 끝났다 — 호출한 에이전트가 "전부 통과"로 오독하는 형태다(바로 위 Ollama 설정 세션도 "verify-change 실행은 출력이 없어 증거로 사용하지 않음"으로 우회하고 지나갔다). `pathToFileURL`로 수정. 기존 단위 테스트 22개가 전부 통과하는 동안 살아 있었던 이유는 테스트가 `import`만 해서 그 가드를 지나지 않기 때문 — 실제로 `spawn`하는 회귀 테스트 2개를 추가했고, 옛 코드에서 실패함을 확인했다.
 - 검증: `tests/integration/portal_api` 366 passed(0 failed), 신규 회귀 테스트 4개 포함. `node --test scripts/agent/verify-change.test.mjs` 24 passed. 전체는 `-X utf8`로 1308 passed / 49 failed이며, 49개는 전부 (a) 위 Ollama 공통 설정 작업의 미커밋 변경(`test_manifests_chat_model_override`가 하드코딩 `127.0.0.1`을 기대), (b) Windows 심볼릭 링크 권한(WinError 1314), (c) knowledge_packager의 임시 디렉터리 제약이다.
 - 이 환경 주의: pytest 기본 임시 루트(`%TEMP%\pytest-of-*`)에 쓰지 못하는 세션에서는 `--basetemp`을 줘야 하고, `-X utf8` 없이는 스키마 로더가 CP949로 실패한다. 둘 다 저장소 결함이 아니라 실행 환경 제약이다.
 

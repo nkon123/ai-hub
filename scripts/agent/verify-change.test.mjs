@@ -2,7 +2,31 @@
 // 의존성 0개 — Node 내장 test runner 를 쓴다(폐쇄망 전제).
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolveSuites, diffCounts, runSuite } from "./verify-change.mjs";
+
+const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), "verify-change.mjs");
+
+// --- 직접 실행 ----------------------------------------------------------
+// 아래 테스트들은 전부 import 만 하므로 파일 끝의 "직접 실행인가" 가드를
+// 한 번도 지나지 않는다. 그래서 그 가드가 Windows 에서 절대 참이 되지 않아
+// main() 이 안 돌고 출력 없이 exit 0 으로 끝나는 동안에도(2026-09-16 실측)
+// 이 파일의 테스트는 전부 초록불이었다 — 호출한 에이전트 입장에서는 exit 0 +
+// 무출력이라 "전부 통과" 로 오독하기 딱 좋은 형태다. 실제로 spawn 해서 막는다.
+
+test("직접 실행하면 실제로 출력을 낸다 (플랫폼 무관)", () => {
+  const res = spawnSync(process.execPath, [SCRIPT, "--help"], { encoding: "utf-8" });
+  assert.equal(res.status, 0);
+  assert.match(res.stdout, /--suites/);
+});
+
+test("직접 실행: 잘못된 인자는 조용히 성공하지 않는다", () => {
+  const res = spawnSync(process.execPath, [SCRIPT, "--suites", "nope"], { encoding: "utf-8" });
+  assert.equal(res.status, 2);
+  assert.match(res.stdout, /알 수 없는 스위트/);
+});
 
 // --- 정상 ---------------------------------------------------------------
 test("resolveSuites: 이름 목록을 그대로 돌려준다", () => {

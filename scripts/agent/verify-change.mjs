@@ -14,7 +14,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** 실패 발췌 상한 — 대량 실패 시 전체 덤프로 되돌아가지 않게 한다. */
 const MAX_FAIL_LINES = 5;
@@ -265,4 +265,8 @@ function main() {
   process.exit(failures.length ? 1 : 0);
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) main();
+// `file://${process.argv[1]}` 로 비교하면 Windows 에서 절대 일치하지 않는다
+// (argv[1] 은 `C:\...` 이고 import.meta.url 은 `file:///C:/...`). 그러면
+// main() 이 안 돌고 출력 없이 exit 0 이 되어, 호출한 에이전트가 "전부 통과"로
+// 오독한다 — 검증 도구가 낼 수 있는 최악의 실패 방식이라 pathToFileURL 로 맞춘다.
+if (import.meta.url === pathToFileURL(process.argv[1]).href) main();
