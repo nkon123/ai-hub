@@ -64,7 +64,11 @@ class ValidationError(Exception):
 
 def _load_schema(schema_type: SchemaType) -> dict:
     path = _SCHEMA_PATHS[schema_type]
-    with path.open() as f:
+    # JSON은 UTF-8이다(RFC 8259). 인코딩을 생략하면 Python이 로캘 기본값을 쓰므로
+    # 한국어 Windows(cp949)에서는 한글이 든 스키마·매니페스트가 통째로
+    # UnicodeDecodeError로 죽는다 — `make validate-schemas`가 fixture 6개에서
+    # 실패하던 실제 원인이다(2026-09-16).
+    with path.open(encoding="utf-8") as f:
         return json.load(f)
 
 
@@ -119,7 +123,7 @@ def infer_schema_type(manifest: dict) -> SchemaType:
 
 def validate_file(path: Path, schema_type: SchemaType | None = None) -> None:
     """Load a JSON file and validate it."""
-    with path.open() as f:
+    with path.open(encoding="utf-8") as f:
         manifest = json.load(f)
     if schema_type is None:
         schema_type = infer_schema_type(manifest)
