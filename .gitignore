@@ -69,3 +69,9 @@ uv.toml
 # verify-change 기준선 스냅샷 (scripts/agent/verify-change.mjs --save-baseline)
 # 세션·작업별 로컬 산출물이라 공유하지 않는다.
 .agent-baseline*.json
+
+# 성능 작업(2026-09-17 대용량 색인)에서 쓴 서드파티 제품 매뉴얼 원본과 변환
+# 결과물. 74MB이고 이 저장소가 배포하는 것이 아니라 재현용 입력일 뿐이라
+# 소스 관리 대상이 아니다 — 필요하면 각자 받아서 같은 경로에 둔다.
+/tmp/
+/output/
