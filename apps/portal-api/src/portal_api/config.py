@@ -40,7 +40,35 @@ class Settings(BaseSettings):
     # 리터럴이 그것을 가림)이다. `_trigger_indexing`의 실패 메시지
     # (`describe_indexing_failure`)도 이 값을 그대로 읽어, "타임아웃 예산이
     # 몇 초였다"는 안내와 실제 동작이 절대 어긋나지 않게 한다.
-    indexing_runtime_timeout_seconds: float = 300.0
+    #
+    # 300초 -> 1800초 (2026-09-17). 이 값은 "색인이 이만큼 걸려도 된다"가 아니라
+    # "이만큼 지나면 indexing-runtime이 응답하지 않는다고 본다"는 판정 기준인데,
+    # 300초는 정상적으로 끝나는 작업조차 실패로 찍는 값이었다. 실측(21MB Markdown
+    # 참조 문서 -> child 청크 41,954개, 로컬 Ollama + qwen3-embedding:0.6b):
+    #
+    #   load 0.1s / chunk 0.4s / embed 509.3s / chroma add 24.1s /
+    #   bm25 0.5s / parents.json 0.2s  =  합계 534.6s
+    #
+    # 임베딩이 95%이고 그것이 이 하드웨어의 바닥이다(배치 크기를 키워도, 요청을
+    # 동시에 보내도 더 빨라지지 않는다 — `indexing_runtime.settings.
+    # EMBED_BATCH_SIZE` 문서의 측정표 참고). 즉 300초로는 이 문서를 영원히 등록할
+    # 수 없었고, 실제로 매번 ReadTimeout -> FAILED 로 기록됐다.
+    #
+    # 1800초는 실측치의 약 3배 여유다. 이 대기는 사용자를 붙잡지 않는다 —
+    # `_trigger_indexing`은 BackgroundTask이고, 등록 화면(P12)은 2026-09-17부터
+    # 색인 완료를 기다리지 않고 "나중에 확인" 안내를 바로 띄운다. 그래서 예산을
+    # 늘리는 비용은 백그라운드 태스크 하나가 더 오래 사는 것뿐이다.
+    #
+    # 같이 움직여야 하는 값: portal-web `knowledge/new`의 감시 예산
+    # (`INDEXING_WATCH_BUDGET_MS`)은 이 값보다 **길어야** 한다. 짧으면 화면이
+    # 서버의 실패 판정을 보기 전에 감시를 끝내게 되고, 그게 바로 이 변경을
+    # 촉발한 증상(화면은 영원히 "진행 중", 실제로는 FAILED)이었다.
+    #
+    # 근본적으로는 indexing-runtime이 Job을 받고 즉시 202로 응답한 뒤 상태를
+    # 폴링하게 만드는 것이 맞다(지금은 동기 실행 — services/indexing-runtime/
+    # CLAUDE.md에 PoC 단순화로 명시). 그 전까지는 이 예산이 "얼마나 큰 문서까지
+    # 등록되는가"를 실질적으로 결정한다.
+    indexing_runtime_timeout_seconds: float = 1800.0
     distribution_service_url: str = "http://localhost:8400"
     secret_key: str = "dev-secret-key-change-in-production"
     base_url: str = "http://localhost:8000"
