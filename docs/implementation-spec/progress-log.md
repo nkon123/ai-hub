@@ -38,6 +38,13 @@
 - `scripts/windows/start-search-runtime.ps1`이 `SEARCH_LOCAL_INDEX_ROOTS`를 Desktop 설치 경로로 지정한다(이미 설정돼 있으면 건드리지 않는다). 개발 실행(`%APPDATA%\desktop-client\assets`)과 패키징 설치(`%APPDATA%\AI Asset Hub 데스크톱\assets`)의 userData 이름이 달라 둘 다 허용한다. **코드 기본값은 비운 채로 둔다** — 빈 기본값은 의도이며(중앙 배포에 새 파일시스템 표면을 주지 않는다), Desktop과 같은 PC에서 도는 배포만 명시적으로 지정한다는 성질을 기동 스크립트 계층에서 지킨다.
 - 검증: `-X utf8` 전체 1309 passed / 49 failed — 실패 49개는 작업 전 기준선과 **동일한 집합**이고(다른 세션의 Ollama 공통 설정 미커밋 변경, Windows 심볼릭 링크 권한, knowledge_packager 임시 디렉터리), passed 는 신규 회귀 테스트 `test_central_index_beats_disabled_registration` 만큼 +1. 그 테스트는 순서를 되돌리면 실패함을 확인했다. 실서비스 종단 확인: `POST /search/v1/local-indexes` 가 `local_indexes_disabled` → `central_index_exists` 로 바뀌는 것까지 실제 Desktop 설치 경로로 재현.
 
+## 2026-09-16 AI 추천 실패 진단 + 검증 도구 Windows 무력화 수정
+
+- 증상: P12 Knowledge 등록의 AI 추천이 "AI 추천을 생성하지 못했습니다"만 표시. 실제 원인은 office-profile 기본값 `exaone3.5:7.8b`가 이 PC의 Ollama에 미설치(설치된 채팅 가능 모델은 `gemma4:latest` 하나). Portal 관리자 설정(P15)에 `gemma4:latest`를 저장해 해소 — D-091/D-092대로 자동 대체는 하지 않았다.
+- M02: `routers/knowledge_metadata_suggest.py`가 agent-runtime의 오류 메시지를 고정 문구로 덮어쓰고 있었다. D-091이 만든 조치 안내(`ollama pull <model>`)가 이 경로에서만 사용자에게 도달하지 못했다. 4xx/5xx 양쪽에서 downstream `error.message`를 전달하고, JSON이 아니면 기존 문구로 폴백한다. 감사 `reason`도 실제 downstream code를 기록한다. portal-web은 이미 `error.message`를 렌더링하므로 M01 변경 없음. 오류코드 계약 불변.
+- 검증: `tests/integration/portal_api` 366 passed(0 failed), 신규 회귀 테스트 4개 포함. `node --test scripts/agent/verify-change.test.mjs` 24 passed. 전체는 `-X utf8`로 1308 passed / 49 failed이며, 49개는 전부 (a) 위 Ollama 공통 설정 작업의 미커밋 변경(`test_manifests_chat_model_override`가 하드코딩 `127.0.0.1`을 기대), (b) Windows 심볼릭 링크 권한(WinError 1314), (c) knowledge_packager의 임시 디렉터리 제약이다.
+- 이 환경 주의: pytest 기본 임시 루트(`%TEMP%\pytest-of-*`)에 쓰지 못하는 세션에서는 `--basetemp`을 줘야 하고, `-X utf8` 없이는 스키마 로더가 CP949로 실패한다. 둘 다 저장소 결함이 아니라 실행 환경 제약이다.
+
 ## 2026-09-16 Ollama 공통 설정
 
 - 후속: Windows doctor의 Ollama 점검도 공통 JSON 및 AIHUB_OLLAMA_CONFIG를 사용. 실제 점검 주소를 표시하고 설정 오류/연결 실패를 구분한다. PowerShell 구문 검사와 HTTP mock 기반 원격 주소·연결 실패·잘못된 설정·파일 누락 4가지 확인 통과.

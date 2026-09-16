@@ -108,6 +108,122 @@ async def test_suggest_metadata_model_unavailable_relays_503(client: httpx.Async
     assert resp.json()["error"]["code"] == "KNOWLEDGE_METADATA_SUGGEST_UNAVAILABLE"
 
 
+# --- Downstream message propagation ---
+#
+# 2026-09-16 실사용: 등록 화면의 AI 추천이 "AI 추천을 생성하지 못했습니다"만
+# 띄웠는데, 실제 원인은 설정된 채팅 모델이 Ollama 에 설치돼 있지 않은 것이었다.
+# agent-runtime 은 D-091 이후 `ollama pull <model>` 한 줄로 끝나는 안내를
+# 돌려주고 있었지만 이 라우터가 고정 문구로 덮어써서 사용자에게 도달하지 못했다.
+
+
+async def test_suggest_metadata_relays_downstream_actionable_message(
+    client: httpx.AsyncClient,
+) -> None:
+    actionable = (
+        "AI 모델 'exaone3.5:7.8b'이(가) Ollama에 설치되어 있지 않습니다. "
+        "터미널에서 `ollama pull exaone3.5:7.8b`를 실행해 주세요."
+    )
+
+    async def fake_caller(payload: dict) -> httpx.Response:
+        return _fake_response(503, {"error": {"code": "MODEL_UNAVAILABLE", "message": actionable}})
+
+    app.dependency_overrides[get_suggest_caller] = lambda: fake_caller
+
+    resp = await client.post(
+        "/api/v1/knowledge/suggest-metadata",
+        json={"excerpt": "내용", "filename": "a.md"},
+        headers=auth_header(),
+    )
+
+    assert resp.status_code == 503, resp.text
+    assert resp.json()["error"]["message"] == actionable
+
+
+async def test_suggest_metadata_relays_downstream_message_on_rejection(
+    client: httpx.AsyncClient,
+) -> None:
+    async def fake_caller(payload: dict) -> httpx.Response:
+        return _fake_response(
+            400,
+            {"error": {"code": "VALIDATION_ERROR", "message": "문서에서 추출한 내용이 비어 있습니다."}},
+        )
+
+    app.dependency_overrides[get_suggest_caller] = lambda: fake_caller
+
+    resp = await client.post(
+        "/api/v1/knowledge/suggest-metadata",
+        json={"excerpt": "내용", "filename": "a.md"},
+        headers=auth_header(),
+    )
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "KNOWLEDGE_METADATA_SUGGEST_REJECTED"
+    assert body["error"]["message"] == "문서에서 추출한 내용이 비어 있습니다."
+
+
+async def test_suggest_metadata_falls_back_when_downstream_body_is_not_json(
+    client: httpx.AsyncClient,
+) -> None:
+    """프로세스 경계라 실제로 일어난다 — 중간 프록시의 502 HTML 등. 이때는
+    고정 문구로 되돌아가되 등록은 계속 진행 가능해야 한다."""
+
+    async def fake_caller(payload: dict) -> httpx.Response:
+        return httpx.Response(
+            502, text="<html>Bad Gateway</html>", request=httpx.Request("POST", "http://x")
+        )
+
+    app.dependency_overrides[get_suggest_caller] = lambda: fake_caller
+
+    resp = await client.post(
+        "/api/v1/knowledge/suggest-metadata",
+        json={"excerpt": "내용", "filename": "a.md"},
+        headers=auth_header(),
+    )
+
+    assert resp.status_code == 503, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "KNOWLEDGE_METADATA_SUGGEST_UNAVAILABLE"
+    assert body["error"]["message"] == (
+        "AI 추천을 생성하지 못했습니다. 직접 입력해 등록을 진행할 수 있습니다."
+    )
+
+
+async def test_suggest_metadata_error_audit_records_reason_without_excerpt(
+    client: httpx.AsyncClient, db
+) -> None:
+    """오류 경로의 감사 metadata 는 이제 downstream 이 보낸 값(`reason`)을 담는다
+    — 성공 경로와 같은 규칙(발췌문 미저장)이 이 경로에도 그대로 적용되어야 한다."""
+
+    async def fake_caller(payload: dict) -> httpx.Response:
+        return _fake_response(
+            503, {"error": {"code": "MODEL_UNAVAILABLE", "message": "모델이 설치되어 있지 않습니다."}}
+        )
+
+    app.dependency_overrides[get_suggest_caller] = lambda: fake_caller
+
+    resp = await client.post(
+        "/api/v1/knowledge/suggest-metadata",
+        json={"excerpt": _DISTINCTIVE_EXCERPT, "filename": "a.md"},
+        headers=auth_header(),
+    )
+    assert resp.status_code == 503, resp.text
+
+    events = (
+        (
+            await db.execute(
+                select(AuditEvent).where(AuditEvent.event_type == "KNOWLEDGE_METADATA_SUGGEST")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(events) == 1
+    assert events[0].result == "ERROR"
+    assert events[0].metadata_["reason"] == "MODEL_UNAVAILABLE"
+    assert _DISTINCTIVE_EXCERPT not in str(events[0].metadata_)
+
+
 # --- Authentication / Permission ---
 
 

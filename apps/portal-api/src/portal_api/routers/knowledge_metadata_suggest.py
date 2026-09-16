@@ -65,6 +65,33 @@ def _trace_id() -> str:
     return get_trace_id() or str(uuid.uuid4())
 
 
+def _downstream_error(resp: httpx.Response) -> tuple[str | None, str | None]:
+    """agent-runtime이 보낸 `{"error": {"code", "message"}}`에서 code/message를
+    꺼낸다. 없으면 `(None, None)`.
+
+    이걸 꺼내 쓰는 이유(2026-09-16 실사용): agent-runtime은 D-091 이후
+    "모델 'X'가 Ollama에 설치되어 있지 않습니다 — `ollama pull X`" 처럼 한 줄로
+    끝나는 조치를 알려주는데, 여기서 고정 문구로 덮어쓰면 그 안내가 사용자에게
+    도달하지 못하고 화면에는 원인도 조치도 없는 막다른 메시지만 남는다.
+    downstream이 JSON이 아닐 수 있는 것은 프로세스 경계라 실제로 가능하다
+    (중간 프록시의 502 HTML 등) — 그때는 기존 고정 문구로 되돌아간다."""
+    try:
+        payload = resp.json()
+    except ValueError:
+        return None, None
+    if not isinstance(payload, dict):
+        return None, None
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None, None
+
+    def _text(key: str) -> str | None:
+        value = error.get(key)
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    return _text("code"), _text("message")
+
+
 @router.post("/knowledge/suggest-metadata", response_model=SuggestKnowledgeMetadataResponseOut)
 async def suggest_knowledge_metadata(
     body: SuggestKnowledgeMetadataRequest,
@@ -108,11 +135,13 @@ async def suggest_knowledge_metadata(
             trace_id,
         )
 
-    if resp.status_code >= 500 or resp.status_code == 503:
+    if resp.status_code >= 500:
+        downstream_code, downstream_message = _downstream_error(resp)
         logger.warning(
-            "knowledge_metadata_suggest.downstream_failed trace_id=%s status=%d",
+            "knowledge_metadata_suggest.downstream_failed trace_id=%s status=%d code=%s",
             trace_id,
             resp.status_code,
+            downstream_code,
         )
         await record_audit(
             db,
@@ -122,25 +151,27 @@ async def suggest_knowledge_metadata(
             resource_id="-",
             result="ERROR",
             trace_id=trace_id,
-            metadata={"reason": "MODEL_UNAVAILABLE"},
+            metadata={"reason": downstream_code or "MODEL_UNAVAILABLE"},
         )
         return error_response(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "KNOWLEDGE_METADATA_SUGGEST_UNAVAILABLE",
-            "AI 추천을 생성하지 못했습니다. 직접 입력해 등록을 진행할 수 있습니다.",
+            downstream_message or "AI 추천을 생성하지 못했습니다. 직접 입력해 등록을 진행할 수 있습니다.",
             trace_id,
         )
 
     if resp.status_code != 200:
+        downstream_code, downstream_message = _downstream_error(resp)
         logger.warning(
-            "knowledge_metadata_suggest.downstream_rejected trace_id=%s status=%d",
+            "knowledge_metadata_suggest.downstream_rejected trace_id=%s status=%d code=%s",
             trace_id,
             resp.status_code,
+            downstream_code,
         )
         return error_response(
             status.HTTP_400_BAD_REQUEST,
             "KNOWLEDGE_METADATA_SUGGEST_REJECTED",
-            "AI 추천 요청이 거부되었습니다. 직접 입력해 등록을 진행할 수 있습니다.",
+            downstream_message or "AI 추천 요청이 거부되었습니다. 직접 입력해 등록을 진행할 수 있습니다.",
             trace_id,
         )
 
