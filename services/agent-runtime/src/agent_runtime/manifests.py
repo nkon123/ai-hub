@@ -84,6 +84,9 @@ def _load_default_office_profile(config_dir: Path) -> dict[str, Any]:
     Registry-resolved Agent/Prompt still runs against this one static
     Office Profile rather than a per-Service one."""
     office_profile = _load_json(config_dir / "office-profile-default" / "office-profile.json")
+    for alias in office_profile.get("model_aliases", {}).values():
+        if alias.get("provider") == "ollama":
+            alias["endpoint"] = settings.ollama_endpoint
 
     # AGENT_RUNTIME_CHAT_MODEL_ID (settings.chat_model_id_override) — 실사용
     # 제보(2026-08-20): 테스트 PC마다 설치된 Ollama 모델이 다를 때

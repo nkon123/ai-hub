@@ -14,6 +14,7 @@ from search_runtime.bm25_cache import get_cached_bm25
 from search_runtime.bm25_store import BM25_JSON_FILENAME, BM25_PICKLE_FILENAME
 from search_runtime.chroma_client_cache import get_chroma_client
 from search_runtime.local_index_registry import get_registry
+from search_runtime.ollama_config import load_ollama_endpoint
 from search_runtime.settings import (
     ALLOW_LEGACY_PICKLE_BM25,
     DEFAULT_MIN_RELEVANCE_SCORE,
@@ -27,7 +28,7 @@ from search_runtime.settings import INDEX_BASE as INDEX_BASE
 # re-exported here unchanged — `from search_runtime.hybrid import INDEX_BASE`
 # remains the way the rest of this service and its tests get at it.
 
-OLLAMA_ENDPOINT = "http://127.0.0.1:11434"
+OLLAMA_ENDPOINT = load_ollama_endpoint()
 
 _logger = logging.getLogger("search_runtime")
 

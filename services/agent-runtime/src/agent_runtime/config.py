@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-
+from pydantic import Field
 from pydantic_settings import BaseSettings
+
+from agent_runtime.ollama_config import load_ollama_endpoint
 
 _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-asset-hub/
 
@@ -211,17 +213,10 @@ class AgentRuntimeSettings(BaseSettings):
     # 않았다.
     chat_model_id_override: str | None = None
 
-    # D-092: portal-api가 소유한 Ollama 엔드포인트가 아니라 이 서비스가
-    # 직접 Ollama와 통신하는 모든 경로(채팅 완성 `adapters/ollama.py`,
-    # `GET /local/v1/models` 모델 목록 조회 `ollama_models.py`)가 공유하는
-    # 기본 엔드포인트. office-profile.json의 각 model_alias에도 자체
-    # `endpoint` 필드가 있지만(현재는 둘 다 동일한 값), `/local/v1/models`는
-    # 특정 alias에 종속되지 않은 "이 배포에서 Ollama가 어디 있는가"라는
-    # 별도 질문이라 자체 설정값을 둔다 — indexing-runtime의
-    # `embedders.OLLAMA_ENDPOINT`(모듈 상수)와 같은 역할이지만, 이 파일의
-    # 기존 규율(CORS 하드코딩 사고, 위 참고)에 따라 상수가 아니라 설정으로
-    # 둔다.
-    ollama_endpoint: str = "http://127.0.0.1:11434"
+    # Shared config/ollama.json endpoint for chat and model discovery.
+    # manifests applies this to Ollama aliases; the existing environment
+    # override AGENT_RUNTIME_OLLAMA_ENDPOINT retains precedence.
+    ollama_endpoint: str = Field(default_factory=load_ollama_endpoint)
 
     # D-092: Portal 관리자 화면(P15)의 채팅 모델 설정을 이 런타임이 매 LLM
     # 호출/모델 목록 조회마다 portal-api에 물어보면 portal-api 지연이 모든

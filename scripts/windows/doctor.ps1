@@ -94,17 +94,38 @@ Show-Result "portal-web 의존성" $hasNext $(if ($hasNext) { "설치됨" } else
 
 Write-Host ""
 Write-Host "=== Ollama ===" -ForegroundColor Cyan
+$ollamaConfigPath = if ($env:AIHUB_OLLAMA_CONFIG) { $env:AIHUB_OLLAMA_CONFIG } else { Join-Path $RepoRoot "config\ollama.json" }
+$ollamaEndpoint = $null
 try {
-    $tags = Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 3 -ErrorAction Stop
-    Show-Result "Ollama 서버" $true "응답함" $null
+    $ollamaConfig = Get-Content -LiteralPath $ollamaConfigPath -Raw -Encoding UTF8 -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    if ($ollamaConfig.endpoint -isnot [string]) { throw "endpoint 문자열이 필요합니다." }
+    $candidate = $ollamaConfig.endpoint.Trim().TrimEnd('/')
+    $uri = $null
+    if (-not [Uri]::TryCreate($candidate, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -notin @('http', 'https') -or -not $uri.Host -or
+        $uri.UserInfo -or $uri.Query -or $uri.Fragment -or
+        $uri.AbsolutePath -ne '/' -or $candidate -match '\s') {
+        throw "endpoint는 HTTP/HTTPS 서버 기본 주소여야 합니다."
+    }
+    $ollamaEndpoint = $candidate
+    Show-Result "Ollama 설정" $true "$ollamaConfigPath → $ollamaEndpoint" $null
+} catch {
+    Show-Result "Ollama 설정" $false "설정 파일 오류: $ollamaConfigPath" `
+        "파일의 endpoint를 확인하세요. 예: http://192.168.0.10:11434"
+}
+if ($ollamaEndpoint) {
+try {
+    $tags = Invoke-RestMethod -Uri "$ollamaEndpoint/api/tags" -TimeoutSec 3 -ErrorAction Stop
+    Show-Result "Ollama 서버" $true "$ollamaEndpoint 응답함" $null
     $names = @($tags.models | ForEach-Object { $_.name })
     foreach ($want in @("exaone3.5:7.8b", "qwen3-embedding:0.6b")) {
         $found = $names -contains $want
         Show-Result "모델 $want" $found $(if ($found) { "설치됨" } else { "없음" }) `
-            "ollama pull $want 를 실행하세요."
+            "$ollamaEndpoint 서버에 $want 모델을 설치하세요."
     }
 } catch {
-    Show-Result "Ollama 서버" $false "127.0.0.1:11434 응답 없음" "ollama serve 가 실행 중인지 확인하세요."
+    Show-Result "Ollama 서버" $false "$ollamaEndpoint 응답 없음" "설정한 서버의 Ollama 실행 상태와 네트워크 연결을 확인하세요."
+}
 }
 
 Write-Host ""
