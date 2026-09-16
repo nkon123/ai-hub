@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-server-manifest",
+  "title": "MCP Server Package Manifest",
+  "description": "D-094: an MCP server is the registrable asset, not a single tool. Replaces mcp-tool-manifest, whose unit (one manifest = one tool) could not express a server at all — the server alias and endpoint lived only in a hand-edited office-profile.json, so tools were governed by review and audit while the server they ran on was not. The declared_tools[] entries here are the approval-time snapshot of the server's own `tools/list` response, annotated with the governance metadata the protocol does not carry (MCP has no authorization model: no roles, no classification, no rate limit, no audit). Those annotations are assigned by the reviewer at approval time and are never read from the server, which is untrusted by construction.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "id",
+    "type",
+    "name",
+    "version",
+    "owner",
+    "classification",
+    "server_alias",
+    "provenance",
+    "protocol_version",
+    "transport",
+    "declared_tools"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "id": { "type": "string", "format": "uuid" },
+    "type": { "type": "string", "const": "mcp_server" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "version": {
+      "type": "string",
+      "pattern": "^(0|[1-9]\\d*)\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$"
+    },
+    "owner": {
+      "type": "object",
+      "required": ["org", "creator_id"],
+      "additionalProperties": false,
+      "properties": {
+        "org": { "type": "string" },
+        "team": { "type": "string" },
+        "creator_id": { "type": "string" }
+      }
+    },
+    "classification": {
+      "type": "string",
+      "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    },
+    "description": { "type": "string", "maxLength": 1024 },
+    "tags": { "type": "array", "items": { "type": "string" } },
+    "manifest_hash": { "type": "string" },
+    "changelog": { "type": "string" },
+    "created_at": { "type": "string", "format": "date-time" },
+
+    "server_alias": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{0,62}[a-z0-9]$",
+      "description": "Stable identifier for this server within the deployment. Lowercase kebab-case so it is safe as a log field, an audit key and a UI label without escaping. Replaces the hand-written alias in office-profile.json's allowed_mcp_servers — that list becomes a value derived from approved assets rather than an independently edited file."
+    },
+    "provenance": {
+      "type": "string",
+      "enum": ["INTERNAL", "THIRD_PARTY"],
+      "description": "INTERNAL: built in this organization, source reviewable here. THIRD_PARTY: obtained from outside. This is not a trust level the runtime acts on by itself — every server passes the same Policy Enforcement Point — but it is shown to the reviewer and the end user, who are entitled to know whose code is answering.",
+      "$comment": "Deliberately not used to relax any check. A THIRD_PARTY server is not given fewer privileges than an INTERNAL one by this field alone; privileges come from declared_tools[].permissions, which a human assigns."
+    },
+    "protocol_version": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+      "description": "MCP protocolVersion this manifest was validated against, as returned by the server's `initialize` handshake (date-based, e.g. '2025-06-18'). Recorded so a client that negotiates a different version can say so instead of failing opaquely."
+    },
+
+    "transport": {
+      "type": "object",
+      "description": "How the client reaches this server. Exactly one of the two shapes below.",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": ["kind", "endpoint"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": { "type": "string", "const": "HTTP" },
+            "endpoint": {
+              "type": "string",
+              "format": "uri",
+              "pattern": "^https?://",
+              "description": "Streamable HTTP endpoint. The only transport permitted in agent-runtime's `hosted` mode, because nothing is executed to reach it."
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": ["kind", "interpreter", "entrypoint"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "type": "string",
+              "const": "STDIO",
+              "description": "D-094: permitted only in agent-runtime's `local` mode. Spawning a stdio child in `hosted` mode would run third-party code on a shared server under the audit context of whoever is currently chatting — a different risk class from D-084 (a file the user picked on their own PC). The client refuses STDIO registration in hosted mode structurally, not by configuration."
+            },
+            "interpreter": {
+              "type": "string",
+              "enum": ["node", "python"],
+              "description": "Which configured interpreter runs the entrypoint. The absolute path comes from deployment settings, never from PATH lookup — the D-084 rule (`pythonInterpreterPath`, no `python`/`python3` guessing) applies here for the same reason: PATH resolution silently picks a different runtime than the one that was reviewed."
+            },
+            "entrypoint": {
+              "type": "string",
+              "maxLength": 512,
+              "pattern": "^(?!/)(?!\\.\\.?(?:/|$))(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\:])[^\\u0000]+$",
+              "description": "Path to the server's entry module, relative to the installed bundle root. Must stay inside the bundle: no absolute path, no '..' segment, no backslash or drive letter. There is no package-manager invocation here on purpose — `npx`, `uvx`, `pip install` and friends fetch and execute code at run time, which 구현 원칙 7 forbids and a closed network cannot do anyway. Dependencies are vendored into the bundle on a connected build machine."
+            },
+            "args": {
+              "type": "array",
+              "maxItems": 32,
+              "items": { "type": "string", "maxLength": 512 },
+              "description": "Arguments passed to the entrypoint as an argv array — never a shell string, so no quoting or metacharacter interpretation exists to get wrong."
+            },
+            "vendored_dependencies": {
+              "type": "boolean",
+              "default": true,
+              "description": "Asserts that every runtime dependency ships inside the bundle. false means the server would need to reach a package registry at run time, which this deployment does not permit."
+            }
+          }
+        }
+      ]
+    },
+
+    "declared_tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "description": "Approval-time snapshot of the server's `tools/list`, annotated with governance metadata. Replaces the hand-copied MCP_TOOL_SPECS in agent-runtime: `tools/list` is the authoritative source for names and input schemas, so the copy that used to drift (and needed 16 contract tests to hold it in place) no longer exists.",
+      "items": {
+        "type": "object",
+        "required": ["tool_name", "risk_level", "permissions"],
+        "additionalProperties": false,
+        "properties": {
+          "tool_name": {
+            "type": "string",
+            "pattern": "^[a-zA-Z_][a-zA-Z0-9_]*(\\.[a-zA-Z_][a-zA-Z0-9_]*){0,4}$",
+            "maxLength": 128,
+            "description": "Identifier-style name as reported by `tools/list`. Dot-separated namespacing allowed (05-mcp-security-governance.md §5); each segment is identifier-only — no path separators, no leading digit or dot."
+          },
+          "label": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "Short human-readable purpose, shown in confirmation dialogs and used as TOOL_ROUTE candidate context (D-083)."
+          },
+          "input_schema": {
+            "type": "object",
+            "description": "JSON Schema for tool input, as reported by `tools/list`. Validated before dispatch; a tool whose input cannot be validated is not callable."
+          },
+          "risk_level": {
+            "type": "string",
+            "enum": ["READ_ONLY", "WRITE"],
+            "description": "READ_ONLY has no side effects. WRITE does. D-094 relaxes 구현 원칙 8 to admit WRITE, because most third-party servers have write tools — but a WRITE tool is never offered to the LLM as a TOOL_ROUTE candidate and always requires explicit user confirmation.",
+            "$comment": "There is deliberately no `llm_routable` field. Whether a tool can be selected by the model is derived from risk_level by the Policy Enforcement Point, so 'WRITE but auto-routable' is not a state this contract can express. D-083's fail-closed design assumes a READ_ONLY-only surface; deriving rather than declaring is what keeps that assumption true."
+          },
+          "permissions": {
+            "type": "object",
+            "required": ["allowed_roles", "allowed_orgs"],
+            "additionalProperties": false,
+            "description": "05-mcp-security-governance.md §7. Assigned by the reviewer, never read from the server. Default Deny: an empty allowed_roles or allowed_orgs denies everyone — it does not mean 'unrestricted'. allowed_sites is the one optional dimension; omitted or empty means 'not site-restricted'.",
+            "properties": {
+              "allowed_roles": { "type": "array", "items": { "type": "string" } },
+              "allowed_orgs": { "type": "array", "items": { "type": "string" } },
+              "allowed_sites": { "type": "array", "items": { "type": "string" } }
+            }
+          },
+          "data_classification": {
+            "type": "string",
+            "enum": ["PUBLIC_INTERNAL", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"],
+            "description": "Highest classification this tool's results may carry. Omitted means the server manifest's own classification applies."
+          },
+          "confirmation_policy": {
+            "type": "string",
+            "enum": ["NEVER", "ON_PARAMETER", "ALWAYS"],
+            "default": "ALWAYS",
+            "description": "When the user must confirm before dispatch. Three values, not a boolean — the previous manifest had only `requires_user_confirmation`, which could not express office-mcp-server's actual ON_PARAMETER policy and forced a lossy round-up (D-049). A WRITE tool may not declare NEVER.",
+            "$comment": "Enforced by the PEP, which never lowers a policy below what the server itself declares."
+          },
+          "execution_guards": {
+            "type": "object",
+            "additionalProperties": false,
+            "description": "05-mcp-security-governance.md §8. Applied by the client, so they hold even for a server that ignores its own limits.",
+            "properties": {
+              "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 },
+              "max_rows": { "type": "integer", "minimum": 1 },
+              "max_bytes": { "type": "integer", "minimum": 1 },
+              "rate_limit_per_minute": { "type": "integer", "minimum": 1 }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "$comment": "A WRITE tool cannot be dispatched without asking. NEVER would let a side-effecting call happen with no human in the loop, which is the specific thing 구현 원칙 8 existed to prevent before D-094 relaxed it.",
+            "if": {
+              "properties": { "risk_level": { "const": "WRITE" } },
+              "required": ["risk_level"]
+            },
+            "then": {
+              "properties": {
+                "confirmation_policy": { "enum": ["ON_PARAMETER", "ALWAYS"] }
+              }
+            }
+          }
+        ]
+      }
+    },
+
+    "tools_snapshot_hash": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "description": "Hash of the `tools/list` response as seen at approval time. A server may legitimately change its tool list at run time (the protocol allows it), so the client re-hashes on connect and can tell 'the approved server' from 'a server that now offers something nobody reviewed'."
+    }
+  },
+
+  "allOf": [
+    {
+      "$comment": "A stdio server is code this deployment will execute, so it must ship its dependencies. Leaving this to run time means a package fetch, which is both forbidden (구현 원칙 7) and impossible on a closed network.",
+      "if": {
+        "properties": {
+          "transport": {
+            "properties": { "kind": { "const": "STDIO" } },
+            "required": ["kind"]
+          }
+        },
+        "required": ["transport"]
+      },
+      "then": {
+        "properties": {
+          "transport": {
+            "properties": { "vendored_dependencies": { "const": true } }
+          }
+        }
+      }
+    }
+  ]
+}

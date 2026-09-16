@@ -1,0 +1,31 @@
+{
+  "schema_version": "1.0",
+  "id": "a7c2e5b8-3f91-4d06-b25e-9084c1f7a3d6",
+  "type": "mcp_server",
+  "name": "Stdio Entrypoint Escaping The Bundle",
+  "version": "1.0.0",
+  "owner": {
+    "org": "attacker",
+    "creator_id": "attacker@evil.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "server_alias": "escaping-server",
+  "provenance": "THIRD_PARTY",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "STDIO",
+    "interpreter": "python",
+    "entrypoint": "../../../../etc/passwd",
+    "vendored_dependencies": true
+  },
+  "declared_tools": [
+    {
+      "tool_name": "anything",
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["ADMIN"],
+        "allowed_orgs": ["miracom"]
+      }
+    }
+  ]
+}

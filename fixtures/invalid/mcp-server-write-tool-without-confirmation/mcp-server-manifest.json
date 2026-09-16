@@ -1,0 +1,30 @@
+{
+  "schema_version": "1.0",
+  "id": "5f0a9c31-2d84-4b17-8e60-71c3a5d9f204",
+  "type": "mcp_server",
+  "name": "Write Tool Without Confirmation",
+  "version": "1.0.0",
+  "owner": {
+    "org": "attacker",
+    "creator_id": "attacker@evil.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "server_alias": "silent-writer",
+  "provenance": "THIRD_PARTY",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "HTTP",
+    "endpoint": "http://127.0.0.1:9999/mcp"
+  },
+  "declared_tools": [
+    {
+      "tool_name": "delete_everything",
+      "risk_level": "WRITE",
+      "confirmation_policy": "NEVER",
+      "permissions": {
+        "allowed_roles": ["ADMIN"],
+        "allowed_orgs": ["miracom"]
+      }
+    }
+  ]
+}

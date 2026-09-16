@@ -1,5 +1,17 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-16 D-094 MCP 재설계 — 1단계: 서버 매니페스트 계약
+
+- **먼저 확인된 사실**: 이 저장소에는 MCP 프로토콜 구현이 **없다**. `MCP`는 이름과 URL 경로에만 있고 실제로는 자체 REST(`GET /mcp/v1/tools`, `POST /mcp/v1/tools/{name}/call`)다. 저장소 전체에서 `jsonrpc`/`tools/list`/`initialize`가 한 건도 없다. 따라서 "외부 MCP 서버를 쓴다"는 매니페스트 추가 문제가 아니라 **MCP 클라이언트를 처음부터 만드는 문제**다. 상세와 결정 셋은 open-decisions.md D-094.
+- M06: `mcp-server-manifest.schema.json` 신설 — 등록 단위가 Tool에서 **Server**로 바뀐다. `declared_tools[]`는 승인 시점 `tools/list` 스냅샷에 **프로토콜이 담지 않는 거버넌스 메타데이터**(Role/Org/Site 인가, Classification, 확인 정책, 실행 가드)를 검토자가 붙인 것이다 — 서버는 신뢰 대상이 아니므로 이 값들을 서버에서 읽지 않는다. `validator.py`에 `SchemaType.MCP_SERVER` 등록.
+- **계약이 표현조차 할 수 없게 만든 것들**(금지 목록이 아니라 구조로): (a) `llm_routable` 류 필드를 **두지 않아** "WRITE인데 모델이 자동 선택 가능"이 표현 불가 — 라우팅 가능 여부는 PEP가 `risk_level`에서 유도한다(D-083 fail-closed 전제 보존). (b) WRITE + `confirmation_policy: NEVER` 조합을 스키마 조건으로 거부. (c) stdio `entrypoint`는 Bundle 내부 상대경로만 — 절대경로·`..`·역슬래시·드라이브 문자 거부. (d) `transport`가 `additionalProperties: false`라 **`npx`/`uvx`/`pip install`을 담을 필드가 아예 없다**(금지 목록이었다면 `npx.cmd`나 래퍼로 우회된다). (e) stdio는 `vendored_dependencies: true` 강제.
+- 검증: Fixture 4개(valid 2 = office-connector HTTP / 서드파티 stdio, invalid 2) + 계약 테스트 21개 신설. **invalid fixture가 의도한 이유로 거부되는지 양방향으로 확인했다** — 문제 필드만 정상으로 되돌리면 통과함을 각 테스트가 함께 검사한다(tests/CLAUDE.md의 "통과한 assertion이 정말 그 취약점을 때리는가" 규율). 전체 1334 passed(작업 전 1309, +25), 실패 49개는 기준선과 동일 집합.
+- **덤으로 고친 것**: `ai_asset_schemas.validator`가 JSON 파일을 열 때 인코딩을 지정하지 않아 한국어 Windows(cp949)에서 한글이 든 매니페스트가 전부 `UnicodeDecodeError`로 죽었다 — `make validate-schemas`가 **기존 fixture 6개**(mcp-readonly-oracle, mcp-table-count-query, office-profile-default, runtime-model-sample, standard-agent, standard-prompt)에서 실패하고 있었다. `encoding="utf-8"` 명시(JSON은 RFC 8259상 UTF-8)로 오류 0건.
+- **2단계: 서버 등록·연결 계약** (`api/mcp-server-registration.schema.json` + `local-runtime-api.yaml`의 `POST/GET /local/v1/mcp-servers`, `DELETE /local/v1/mcp-servers/{server_alias}`). D-080의 안전 경계("Office Profile이 이미 허용한 것만 기술할 수 있다")는 더 이상 이 무게를 못 견딘다 — Office Profile의 `allowed_mcp_servers`가 독립적인 관문이 아니라 승인된 자산에서 **파생되는 값**이 되기 때문이다. 대신 네 겹으로 대체했다: (1) 승인이 곧 권한(체크섬 검증된 Bundle을 Desktop이 검증해 설치한 매니페스트를 신뢰 — D-079가 색인 디렉터리에 대해 하는 것과 동일), (2) 운영자 opt-in(`mcp_server_install_roots` 기본 비어 있음 — Bundle 설치가 서버를 실행 가능하게 만들지 않는다), (3) hosted 모드에서 stdio를 **코드로** 거부(설정이면 언젠가 켜진다), (4) 명령줄이 이 wire를 건너지 않음(`endpoint`/`command`/`args`/`interpreter_path`/`env` 필드 부재 + `additionalProperties: false`).
+- `MCPToolDispatchDecision`을 계약에 넣었다 — PEP가 **매 dispatch마다** 내는 결정(허용 여부, 이름 있는 거부 사유 9종, 확인 필요 여부, `llm_routable`, `ai_derived_arguments`). `llm_routable`은 **결정 출력에만 있고 입력(매니페스트·등록 요청)에는 없다** — 입력에 두면 "WRITE인데 자동 선택 가능"을 설정할 수 있게 되고 D-083의 fail-closed 전제가 거기서 끝난다. D-094 미결 항목 (b)는 `tools_snapshot_mismatch` → 409 **fail-closed**로 확정(승인은 특정 Tool 집합에 대한 것이므로 조용히 새 집합을 받으면 검토가 무의미해진다). `FAILED`/`UNREACHABLE`을 분리 유지한 것은 D-079에서 배운 것 — 재시도로 풀리는 상태와 안 풀리는 상태를 뭉개면 반드시 실패하는 행동을 사용자에게 안내하게 된다.
+- 계약 테스트 25개 추가(누적 신규 46개). **대부분이 필드의 존재가 아니라 부재를 검사한다** — D-094가 막으려는 것들은 "그런 필드가 있으면 언젠가 채워진다" 형태라 존재 금지가 유일하게 안 무너지는 방법이다. 두 가지 위반(등록 요청에 `endpoint` 추가, 매니페스트 Tool에 `llm_routable` 추가)을 실제로 넣어 테스트가 잡는 것과 원복 후 통과를 확인했다. OpenAPI `$ref` 28개 전부 해소 확인.
+- 검증: 전체 1359 passed(작업 전 1309, +50), 실패 49개는 기준선과 동일 집합. `make validate-schemas` 오류 0건.
+
 ## 2026-09-16 Ollama 공통 설정
 
 - 후속: Windows doctor의 Ollama 점검도 공통 JSON 및 AIHUB_OLLAMA_CONFIG를 사용. 실제 점검 주소를 표시하고 설정 오류/연결 실패를 구분한다. PowerShell 구문 검사와 HTTP mock 기반 원격 주소·연결 실패·잘못된 설정·파일 누락 4가지 확인 통과.

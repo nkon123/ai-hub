@@ -17,6 +17,7 @@ class SchemaType(StrEnum):
     AGENT = "agent"
     PROMPT = "prompt"
     MCP_TOOL = "mcp_tool"
+    MCP_SERVER = "mcp_server"
     SERVICE = "service"
     INDEXING_PROFILE = "indexing_profile"
     RETRIEVAL_PROFILE = "retrieval_profile"
@@ -36,6 +37,7 @@ _SCHEMA_PATHS: dict[SchemaType, Path] = {
     SchemaType.AGENT: _SCHEMAS_DIR / "manifests" / "agent-manifest.schema.json",
     SchemaType.PROMPT: _SCHEMAS_DIR / "manifests" / "prompt-manifest.schema.json",
     SchemaType.MCP_TOOL: _SCHEMAS_DIR / "manifests" / "mcp-tool-manifest.schema.json",
+    SchemaType.MCP_SERVER: _SCHEMAS_DIR / "manifests" / "mcp-server-manifest.schema.json",
     SchemaType.SERVICE: _SCHEMAS_DIR / "manifests" / "service-definition.schema.json",
     SchemaType.INDEXING_PROFILE: _SCHEMAS_DIR / "profiles" / "indexing-profile.schema.json",
     SchemaType.RETRIEVAL_PROFILE: _SCHEMAS_DIR / "profiles" / "retrieval-profile.schema.json",
@@ -96,6 +98,7 @@ def infer_schema_type(manifest: dict) -> SchemaType:
         "agent": SchemaType.AGENT,
         "prompt": SchemaType.PROMPT,
         "mcp_tool": SchemaType.MCP_TOOL,
+        "mcp_server": SchemaType.MCP_SERVER,
         "service": SchemaType.SERVICE,
         "evaluation_dataset": SchemaType.EVALUATION_DATASET,
         "evaluation_result": SchemaType.EVALUATION_RESULT,

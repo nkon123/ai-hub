@@ -215,6 +215,96 @@ paths:
               schema:
                 $ref: "#/components/schemas/DeregisterMcpToolResponse"
 
+  /local/v1/mcp-servers:
+    post:
+      summary: >
+        D-094 — activate an installed MCP Server asset: validate its
+        manifest, complete the MCP `initialize` handshake, compare
+        `tools/list` against the approved snapshot, and register the
+        reviewer-assigned governance metadata the Policy Enforcement Point
+        applies to every later dispatch. Supersedes
+        `POST /local/v1/mcp-tools` (D-080), whose unit was one tool inside a
+        server the Office Profile already named. Full contract — the
+        complete refusal reason list and the four layers that replace
+        D-080's safety boundary — is in
+        `packages/schemas/api/mcp-server-registration.schema.json`.
+      operationId: register_mcp_server
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterMcpServerRequest"
+      responses:
+        "200":
+          description: >
+            Handshake succeeded, the approved tool set matched, and at least
+            one tool survived the approved-vs-offered intersection.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RegisterMcpServerResponse"
+        "400":
+          description: >
+            Malformed manifest, or a path/entrypoint/interpreter problem
+            (VALIDATION_ERROR) — see the schema file's reason list.
+        "403":
+          description: >
+            Refused by deployment policy (PERMISSION_DENIED):
+            `mcp_server_registration_disabled` (no install root named by the
+            operator — installing a Bundle never activates a server by
+            itself), `install_path_outside_allowed_roots`, and
+            `stdio_not_allowed_in_hosted_mode` — the last one is refused in
+            code rather than by configuration, because a stdio child on a
+            shared host would run third-party code under the audit context
+            of whoever is currently chatting.
+        "409":
+          description: >
+            `tools_snapshot_mismatch` — the server now offers a tool set
+            that differs from the approved snapshot. Fail-closed on purpose:
+            the fix is re-approval, not retry.
+        "502":
+          description: >
+            The server could not be spoken to: `handshake_failed`,
+            `protocol_version_unsupported`, or `tools_list_failed`.
+    get:
+      summary: >
+        List MCP Server registrations with state re-checked at read time.
+        Also reports whether registration is available on this deployment at
+        all and whether stdio is supported here, so a caller can disable an
+        impossible choice with a reason instead of letting the user discover
+        it at activation.
+      operationId: list_mcp_servers
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ListMcpServersResponse"
+
+  /local/v1/mcp-servers/{server_alias}:
+    delete:
+      summary: >
+        Deregister an MCP Server (safe to call unconditionally on
+        uninstall). Terminates a running stdio child first — an orphaned
+        child would keep a revoked server alive with no record of it.
+        Never deletes installed files.
+      operationId: deregister_mcp_server
+      parameters:
+        - name: server_alias
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK (removed=false when nothing was registered)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DeregisterMcpServerResponse"
+
   /local/v1/knowledge-metadata-suggest:
     post:
       summary: >
@@ -672,6 +762,127 @@ components:
       required: [tool_name, removed, trace_id]
       properties:
         tool_name:
+          type: string
+        removed:
+          type: boolean
+        trace_id:
+          type: string
+
+    MCPTransportKind:
+      type: string
+      enum: [HTTP, STDIO]
+      description: >
+        D-094. STDIO is local-mode only — refused in hosted mode in code,
+        not by configuration.
+
+    MCPServerState:
+      type: string
+      enum: [ACTIVE, FAILED, UNREACHABLE]
+      description: >
+        FAILED and UNREACHABLE are kept apart because they justify
+        different advice: FAILED will not work until something changes,
+        UNREACHABLE is worth retrying. Collapsing them sends the user to
+        perform an action that must fail (D-079's lesson).
+
+    MCPServerRegistrationEntry:
+      type: object
+      required: [server_alias, transport_kind, state, protocol_version, tool_names, registered_at]
+      properties:
+        server_alias:
+          type: string
+        transport_kind:
+          $ref: "#/components/schemas/MCPTransportKind"
+        state:
+          $ref: "#/components/schemas/MCPServerState"
+        protocol_version:
+          type: string
+          description: The version `initialize` actually negotiated, not the expected one.
+        tool_names:
+          type: array
+          items:
+            type: string
+          description: >
+            Intersection of approved `declared_tools[]` and what
+            `tools/list` returned — never a union.
+        provenance:
+          type: string
+          enum: [INTERNAL, THIRD_PARTY]
+        reason:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+        registered_at:
+          type: string
+          format: date-time
+        last_checked_at:
+          type: string
+          format: date-time
+          nullable: true
+
+    RegisterMcpServerRequest:
+      type: object
+      description: >
+        D-094. Deliberately has no endpoint/command/args/interpreter_path/
+        env field — the HTTP endpoint and stdio entrypoint come only from
+        the approved manifest, and the interpreter's absolute path only
+        from deployment settings (never a PATH lookup). See
+        mcp-server-registration.schema.json for the full refusal list.
+      required: [manifest, source]
+      properties:
+        manifest:
+          type: object
+          description: The approved mcp-server-manifest as installed.
+        install_path:
+          type: string
+          nullable: true
+          description: >
+            Bundle root; required for STDIO, must be null for HTTP.
+            Containment is checked after path resolution, so a symlink
+            inside an allowed root pointing out does not pass.
+        source:
+          type: string
+          enum: [DESKTOP_OFFLINE_BUNDLE]
+        trace_id:
+          type: string
+          nullable: true
+
+    RegisterMcpServerResponse:
+      type: object
+      required: [entry, trace_id]
+      properties:
+        entry:
+          $ref: "#/components/schemas/MCPServerRegistrationEntry"
+        trace_id:
+          type: string
+
+    ListMcpServersResponse:
+      type: object
+      required: [entries, mcp_server_registration_enabled, stdio_supported, trace_id]
+      properties:
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/MCPServerRegistrationEntry"
+        mcp_server_registration_enabled:
+          type: boolean
+          description: >
+            False when the operator has named no install root. Lets a
+            caller tell "nothing registered yet" from "not available here".
+        stdio_supported:
+          type: boolean
+          description: >
+            False in hosted mode, so the UI can disable stdio servers with
+            a reason up front rather than at activation time.
+        trace_id:
+          type: string
+
+    DeregisterMcpServerResponse:
+      type: object
+      required: [server_alias, removed, trace_id]
+      properties:
+        server_alias:
           type: string
         removed:
           type: boolean

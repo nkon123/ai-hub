@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "mcp-server-registration",
+  "title": "MCP Server Activation (agent-runtime, M05)",
+  "description": "D-094: replaces `mcp-tool-registration` (D-080), whose unit was a single tool inside a server the Office Profile already named. Here the SERVER is the unit, because the goal is to run servers nobody wrote here. THE SAFETY BOUNDARY, restated for that goal — D-080's boundary ('registration may only describe permission office-profile.json already granted') cannot carry this weight any more, since office-profile.json's `allowed_mcp_servers` becomes a value derived from approved assets rather than the independent gate it used to be. What replaces it, in layers: (1) **Approval is the grant.** The manifest in a registration payload is the one that travelled inside a checksum-verified Offline Bundle that Desktop verified on install; agent-runtime does not re-contact Portal in `local` mode, so it trusts that verification exactly as `knowledge-local-index` (D-079) trusts it for an index directory. (2) **The operator still opts in.** `AgentRuntimeSettings.mcp_server_install_roots` is empty by default and every registration is refused until an operator names a root — installing a Bundle never makes a server runnable as a side effect (D-079's `SEARCH_LOCAL_INDEX_ROOTS` shape, same reason). (3) **stdio cannot reach a shared host.** A `STDIO` transport is refused outright when agent-runtime runs in `hosted` mode, in code and not by configuration — a configuration switch is a switch someone eventually flips, and flipping this one would run third-party code on a shared server under the audit context of whoever is chatting. (4) **No command line crosses this wire.** As in D-080 there is no `endpoint`/`command`/`args` field a caller can set: HTTP endpoints and stdio entrypoints come only from the approved manifest, and the interpreter's absolute path comes only from deployment settings (never a PATH lookup — D-084's rule, for the same reason: PATH silently resolves to a runtime nobody reviewed). (5) **Governance is applied by the client, not asked of the server.** MCP carries no authorization model, so every dispatch passes agent-runtime's Policy Enforcement Point (authorization §7, output filter §9, execution control §8, audit §10, kill switch §11 of 05-mcp-security-governance.md) using the reviewer-assigned metadata in `declared_tools[]`. A server is never asked what it is allowed to do. Consequence stated plainly: a registered server is a server this runtime knows how to reach and police — it is not a grant of execution permission to any caller, which continues to be decided per call by the PEP.",
+  "definitions": {
+    "MCPRegistrationRefusalReason": {
+      "type": "string",
+      "description": "`details.reason` 이 가질 수 있는 값 전부. 이 열거가 권위 있는 정의이고, 산문 설명은 각각이 무슨 뜻인지를 덧붙일 뿐이다 — 목록을 산문에만 두면 구현과 갈라져도 아무것도 깨지지 않는다(이 저장소에서 손복사 계약이 실제로 드리프트한 전례가 있다). `tests/contract/test_mcp_server_registration.py` 가 이 열거와 `agent_runtime.mcp_client.MCPRegistrationReason` 의 동일성을 양방향으로 고정한다.",
+      "enum": [
+        "mcp_server_registration_disabled",
+        "stdio_not_allowed_in_hosted_mode",
+        "manifest_invalid",
+        "server_alias_invalid",
+        "unsupported_source",
+        "install_path_required",
+        "install_path_not_absolute",
+        "install_path_outside_allowed_roots",
+        "install_path_not_a_directory",
+        "entrypoint_outside_bundle",
+        "entrypoint_not_found",
+        "interpreter_not_configured",
+        "handshake_failed",
+        "protocol_version_unsupported",
+        "tools_list_failed",
+        "tools_snapshot_mismatch",
+        "no_approved_tool_available"
+      ]
+    },
+    "MCPTransportKind": {
+      "type": "string",
+      "enum": ["HTTP", "STDIO"],
+      "description": "Mirrors `mcp-server-manifest`'s transport. STDIO is `local`-mode only (see this file's boundary, point 3)."
+    },
+    "MCPServerState": {
+      "type": "string",
+      "enum": ["ACTIVE", "FAILED", "UNREACHABLE"],
+      "description": "ACTIVE: handshake succeeded and the approved tool set matched. FAILED: refused — a named `reason` says why, and re-trying without changing something will be refused identically. UNREACHABLE: was ACTIVE, and the server has since stopped answering. The split matters for what the UI may tell the user to do: FAILED means 'this will not work until something changes', UNREACHABLE means 'try again / check the server' — the same distinction D-079 draws between `local_indexes_disabled` and `not_registered_on_server`, which existed because collapsing them sends the user to perform an action that must fail."
+    },
+    "MCPServerRegistrationEntry": {
+      "type": "object",
+      "required": ["server_alias", "transport_kind", "state", "protocol_version", "tool_names", "registered_at"],
+      "additionalProperties": false,
+      "properties": {
+        "server_alias": { "type": "string" },
+        "transport_kind": { "$ref": "#/definitions/MCPTransportKind" },
+        "state": { "$ref": "#/definitions/MCPServerState" },
+        "protocol_version": {
+          "type": "string",
+          "description": "The MCP protocolVersion actually negotiated by `initialize`, which may differ from the manifest's recorded value — this field reports what is in force, not what was expected."
+        },
+        "tool_names": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tools this runtime will police and may dispatch: the intersection of the approved `declared_tools[]` and what `tools/list` actually returned. Intersection, never union — a tool the server offers but nobody approved is not callable, and an approved tool the server no longer offers cannot be conjured."
+        },
+        "provenance": { "type": "string", "enum": ["INTERNAL", "THIRD_PARTY"] },
+        "reason": {
+          "type": ["string", "null"],
+          "description": "Set when `state` is FAILED or UNREACHABLE — one of the named reasons listed on RegisterMcpServerResponse."
+        },
+        "message": {
+          "type": ["string", "null"],
+          "maxLength": 512,
+          "description": "Korean sentence safe to display verbatim. Never contains a filesystem path (07-data-api-contracts.md §10.2)."
+        },
+        "registered_at": { "type": "string", "format": "date-time" },
+        "last_checked_at": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "RegisterMcpServerRequest": {
+      "type": "object",
+      "required": ["manifest", "source"],
+      "additionalProperties": false,
+      "properties": {
+        "manifest": {
+          "type": "object",
+          "description": "The full approved `mcp-server-manifest` as installed. Validated against that schema before anything else happens; the transport, the entrypoint and every tool's governance metadata are read from here and from nowhere else. Sent inline rather than by id because agent-runtime does not reach Portal in `local` mode — the same reason D-079 has Desktop name an index directory instead of asking the hub."
+        },
+        "install_path": {
+          "type": ["string", "null"],
+          "description": "Absolute path of the installed bundle root. Required for STDIO (it is what `transport.entrypoint` is resolved against) and must be null for HTTP, which executes nothing. Containment is checked after `Path.resolve()` against the operator's allowed roots, so a symlink inside an allowed root pointing out does not pass — D-079's rule, reused rather than reinvented."
+        },
+        "source": {
+          "type": "string",
+          "enum": ["DESKTOP_OFFLINE_BUNDLE"],
+          "description": "How this server arrived. A closed enum: a value this runtime does not know is refused rather than accepted as unclassified."
+        },
+        "trace_id": { "type": ["string", "null"] }
+      },
+      "description": "POST /local/v1/mcp-servers. Idempotent per `server_alias`: re-registering replaces the entry, so reinstalling the same asset version needs no delete first. Deliberately has NO `endpoint`, `command`, `args`, `interpreter_path` or `env` field — see this file's boundary, point (4)."
+    },
+    "RegisterMcpServerResponse": {
+      "type": "object",
+      "required": ["entry", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entry": { "$ref": "#/definitions/MCPServerRegistrationEntry" },
+        "trace_id": { "type": "string" }
+      },
+      "description": "200 only when the handshake succeeded AND the approved tool set matched AND at least one tool survived the intersection. Refusals use the common Error Envelope (07-data-api-contracts.md §10.2) with `details.reason` naming exactly one cause. The complete reason list — a caller may switch on these and the service raises no others. Deployment gate: `mcp_server_registration_disabled` (403 PERMISSION_DENIED — the operator has named no install root, so registration is off entirely; not a fault and not retryable by the user), `stdio_not_allowed_in_hosted_mode` (403 PERMISSION_DENIED — this runtime is hosted; no configuration makes this succeed here). Manifest: `manifest_invalid` (400), `server_alias_invalid` (400), `unsupported_source` (400). Path (STDIO only): `install_path_required` (400 — STDIO without one), `install_path_not_absolute` (400), `install_path_outside_allowed_roots` (403 PERMISSION_DENIED), `install_path_not_a_directory` (400), `entrypoint_outside_bundle` (400 — the manifest's entrypoint resolves outside the install root; the schema already rejects the shapes that cause this, so reaching it means the resolved path escaped some other way, e.g. a symlink), `entrypoint_not_found` (400), `interpreter_not_configured` (400 — the deployment has not set an absolute interpreter path for this manifest's `interpreter`; the runtime does not fall back to a PATH lookup, D-084). Protocol: `handshake_failed` (502 — the server did not complete `initialize`), `protocol_version_unsupported` (502 — it negotiated a version this client cannot speak), `tools_list_failed` (502), `tools_snapshot_mismatch` (409 CONFLICT — `tools/list` no longer matches the approved `tools_snapshot_hash`; the server is offering a tool set nobody reviewed, so this is refused rather than accepted-with-a-warning, and the fix is re-approval, not retry), `no_approved_tool_available` (400 — the intersection of approved and offered tools is empty, so activating would register a server that can do nothing). Every refusal leaves no entry stored and starts no process.",
+      "$comment": "tools_snapshot_mismatch resolves D-094's open item (b) in favour of fail-closed. The protocol permits a server to change its tool list at run time, so this WILL fire in normal operation for a server that updates itself — that is intended: approval is of a specific tool set, and silently accepting a new one would make the review meaningless."
+    },
+    "ListMcpServersResponse": {
+      "type": "object",
+      "required": ["entries", "mcp_server_registration_enabled", "stdio_supported", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/MCPServerRegistrationEntry" }
+        },
+        "mcp_server_registration_enabled": {
+          "type": "boolean",
+          "description": "False when the operator has named no install root, i.e. every registration would be refused. Exposed so a caller can tell 'nothing registered yet' from 'not available on this deployment' without attempting one and reading the error."
+        },
+        "stdio_supported": {
+          "type": "boolean",
+          "description": "False in `hosted` mode. Lets the UI disable stdio servers with a reason up front (루트 UI 규칙: 호환되지 않는 선택지는 이유와 함께 비활성화한다) instead of letting the user install one and discover at activation that it can never run here."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "GET /local/v1/mcp-servers. Returns entries with their state re-checked at read time — an operator narrowing the allowed roots after registration takes effect immediately, and such an entry is reported FAILED with its reason rather than listed as if it still worked."
+    },
+    "DeregisterMcpServerResponse": {
+      "type": "object",
+      "required": ["server_alias", "removed", "trace_id"],
+      "additionalProperties": false,
+      "properties": {
+        "server_alias": { "type": "string" },
+        "removed": {
+          "type": "boolean",
+          "description": "False when no entry existed. A 200 with an explicit `false` rather than a 404, so deregistration on asset uninstall is safe to call unconditionally."
+        },
+        "trace_id": { "type": "string" }
+      },
+      "description": "DELETE /local/v1/mcp-servers/{server_alias}. Terminates a running stdio child before removing the entry — an orphaned child would keep a reviewed-then-revoked server alive with no record that it is running. Never deletes installed files (D-079's rule: unregistering is not uninstalling)."
+    },
+    "MCPToolDispatchDecision": {
+      "type": "object",
+      "required": ["tool_name", "server_alias", "allowed", "confirmation_required", "llm_routable"],
+      "additionalProperties": false,
+      "description": "What the Policy Enforcement Point concluded for one prospective call. Contract-visible because Desktop renders it (what will run, whether it must be confirmed, why it was refused) and because the audit record must be able to state the decision, not just the outcome. The PEP produces this for EVERY dispatch — including one the model proposed via TOOL_ROUTE (D-083), which is converted into an ordinary request and passes the same checkpoints rather than around them.",
+      "properties": {
+        "tool_name": { "type": "string" },
+        "server_alias": { "type": "string" },
+        "allowed": { "type": "boolean" },
+        "denial_reason": {
+          "type": ["string", "null"],
+          "enum": [
+            null,
+            "server_not_active",
+            "tool_not_approved",
+            "role_not_permitted",
+            "org_not_permitted",
+            "site_not_permitted",
+            "classification_above_clearance",
+            "tool_suspended",
+            "rate_limited",
+            "input_schema_violation"
+          ],
+          "description": "§7's Default Deny in named form. `role_not_permitted` and friends are distinct values so the runtime can audit precisely; the Korean message shown to the user does NOT reveal which dimension failed (§7/§12.1: a denial must not leak the policy)."
+        },
+        "confirmation_required": {
+          "type": "boolean",
+          "description": "Derived from the tool's `confirmation_policy` and, for ON_PARAMETER, the actual arguments. The PEP never lowers a policy below what the manifest declares."
+        },
+        "llm_routable": {
+          "type": "boolean",
+          "description": "Whether TOOL_ROUTE (D-083) may offer this tool to the model as a candidate. DERIVED from `risk_level`, never declared: a WRITE tool is never routable. The manifest has no field for this on purpose, so 'WRITE but auto-selectable' is a state the system cannot be configured into — D-083's fail-closed design rests on the tool surface being safe to propose, and this is what keeps that true once WRITE tools exist."
+        },
+        "ai_derived_arguments": {
+          "type": "boolean",
+          "default": false,
+          "description": "True when the arguments came from TOOL_ROUTE rather than an explicit caller. Does not change the decision — it changes what the confirmation dialog says, so a user approving a call knows a model wrote the values (D-083)."
+        }
+      }
+    }
+  }
+}

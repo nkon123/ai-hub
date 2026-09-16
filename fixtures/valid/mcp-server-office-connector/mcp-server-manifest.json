@@ -1,0 +1,104 @@
+{
+  "schema_version": "1.0",
+  "id": "c1e6b0a4-4a2b-4f6e-9c1d-2f7a8b3e5d10",
+  "type": "mcp_server",
+  "name": "사내 Office 커넥터",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "platform-owner@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "services/office-mcp-server(M10)를 MCP 프로토콜로 재노출한 서버. 읽기 전용 Oracle 메타데이터 조회를 제공한다.",
+  "tags": ["oracle", "read-only", "internal"],
+  "server_alias": "office-connector",
+  "provenance": "INTERNAL",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "HTTP",
+    "endpoint": "http://127.0.0.1:8500/mcp"
+  },
+  "declared_tools": [
+    {
+      "tool_name": "db_metadata.get_tables",
+      "label": "접근 가능한 테이블 목록을 조회합니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "schema_name": { "type": "string" }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "TECH_REVIEWER", "ADMIN"],
+        "allowed_orgs": ["miracom"],
+        "allowed_sites": []
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "NEVER",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_rows": 200,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "db_metadata.get_columns",
+      "label": "지정한 테이블의 컬럼 구성을 조회합니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table_name"],
+        "properties": {
+          "table_name": { "type": "string" },
+          "schema_name": { "type": "string" }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "TECH_REVIEWER", "ADMIN"],
+        "allowed_orgs": ["miracom"],
+        "allowed_sites": []
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "NEVER",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_rows": 500,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "table_count.query",
+      "label": "지정한 테이블의 행 수를 셉니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["table_name"],
+        "properties": {
+          "table_name": { "type": "string" },
+          "where_clause": { "type": "string" }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "TECH_REVIEWER", "ADMIN"],
+        "allowed_orgs": ["miracom"],
+        "allowed_sites": []
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ON_PARAMETER",
+      "execution_guards": {
+        "timeout_seconds": 15,
+        "max_rows": 1,
+        "max_bytes": 4096,
+        "rate_limit_per_minute": 20
+      }
+    }
+  ],
+  "tools_snapshot_hash": "sha256:9f2c4e1b7a05d3860c4b1f8e2a6d90731c5b4e8f2a17d0c93b6e5f4a8271d0c3"
+}

@@ -1,0 +1,79 @@
+{
+  "schema_version": "1.0",
+  "id": "8d4f1c02-6b73-4e58-91a0-3c5e7f2b9d41",
+  "type": "mcp_server",
+  "name": "파일 읽기 도우미 (외부)",
+  "version": "0.7.2",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "platform-owner@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "외부에서 반입한 stdio MCP 서버. 승인된 폴더의 파일을 읽고 쓴다. 의존성은 연결된 빌드 머신에서 Bundle 안에 동봉했다.",
+  "tags": ["filesystem", "third-party", "stdio"],
+  "server_alias": "fs-helper",
+  "provenance": "THIRD_PARTY",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "STDIO",
+    "interpreter": "node",
+    "entrypoint": "server/dist/index.js",
+    "args": ["--root", "workspace"],
+    "vendored_dependencies": true
+  },
+  "declared_tools": [
+    {
+      "tool_name": "read_file",
+      "label": "승인된 폴더 안의 파일 하나를 읽습니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path"],
+        "properties": {
+          "path": { "type": "string" }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "ADMIN"],
+        "allowed_orgs": ["miracom"],
+        "allowed_sites": ["headquarters"]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ON_PARAMETER",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 20
+      }
+    },
+    {
+      "tool_name": "write_file",
+      "label": "승인된 폴더 안의 파일 하나를 씁니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string" },
+          "content": { "type": "string" }
+        }
+      },
+      "risk_level": "WRITE",
+      "permissions": {
+        "allowed_roles": ["ADMIN"],
+        "allowed_orgs": ["miracom"],
+        "allowed_sites": ["headquarters"]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 5
+      }
+    }
+  ],
+  "tools_snapshot_hash": "sha256:3b81d6047e5a2f9c08b1e4a7d35fc6290b8e1f7a4c2d95e0637fa8b1c4d20e59"
+}
