@@ -41,6 +41,10 @@ let resolvedAgentRuntimeBaseUrl: string = DEFAULT_AGENT_RUNTIME_BASE_URL;
 /** The address every call in this module actually uses. Read it (never the
  * default constant) anywhere the current endpoint matters — connection
  * checks, diagnostics, error messages. */
+import type { McpServerEntry, McpServersListResponse } from "./screens/mcpServersTypes";
+
+export type { McpServerEntry, McpServersListResponse };
+
 export function getAgentRuntimeBaseUrl(): string {
   return resolvedAgentRuntimeBaseUrl;
 }
@@ -290,6 +294,68 @@ export async function getRun(runId: string): Promise<RunResponse> {
     throw new Error(await parseErrorBody(res));
   }
   return (await res.json()) as RunResponse;
+}
+
+// --- D-094 MCP 서버 -------------------------------------------------------
+// 화면(McpServersScreen.tsx)이 쓰는 세 호출. 등록 요청에 연결 방법을 담는
+// 필드가 없는 것은 서버 계약과 같은 이유다 — 요청자가 실행 명령을 정할 수
+// 있으면 매니페스트 승인과 설치 루트 제한이 한꺼번에 우회된다.
+
+export async function listMcpServers(): Promise<McpServersListResponse> {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/mcp-servers`);
+  if (!res.ok) {
+    throw new Error(await parseErrorBody(res));
+  }
+  return (await res.json()) as McpServersListResponse;
+}
+
+export interface RegisterMcpServerParams {
+  manifest: Record<string, unknown>;
+  installPath?: string | null;
+  source: "PORTAL_DISTRIBUTION" | "DESKTOP_INSTALL" | "OFFLINE_BUNDLE";
+}
+
+export interface RegisterMcpServerResult {
+  ok: boolean;
+  entry?: McpServerEntry;
+  /** 실패했을 때의 기계용 사유 — 화면은 `describeRefusal`로 조치 문구를
+   * 만든다. 사유 자체를 그대로 보여 주지 않는다. */
+  reason?: string;
+}
+
+export async function registerMcpServer(
+  params: RegisterMcpServerParams,
+): Promise<RegisterMcpServerResult> {
+  const res = await fetch(`${getAgentRuntimeBaseUrl()}/local/v1/mcp-servers`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      manifest: params.manifest,
+      install_path: params.installPath ?? null,
+      source: params.source,
+    }),
+  });
+  const body = (await res.json().catch(() => null)) as
+    | { entry?: McpServerEntry; error?: { code?: string } }
+    | null;
+  if (!res.ok) {
+    return { ok: false, reason: body?.error?.code };
+  }
+  return { ok: true, entry: body?.entry };
+}
+
+/** 등록 해제. 없던 것을 해제해도 오류가 아니다 — 자산을 지우는 시점에
+ * 조건 없이 부를 수 있어야 "설치는 지웠는데 등록은 남은" 상태가 안 생긴다. */
+export async function deregisterMcpServer(serverAlias: string): Promise<boolean> {
+  const res = await fetch(
+    `${getAgentRuntimeBaseUrl()}/local/v1/mcp-servers/${encodeURIComponent(serverAlias)}`,
+    { method: "DELETE" },
+  );
+  if (!res.ok) {
+    throw new Error(await parseErrorBody(res));
+  }
+  const body = (await res.json()) as { removed?: boolean };
+  return Boolean(body.removed);
 }
 
 export async function cancelRun(runId: string): Promise<void> {

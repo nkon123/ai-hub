@@ -6,6 +6,7 @@ import { ConnectionsScreen } from "./screens/ConnectionsScreen";
 import { ChatScreen } from "./screens/ChatScreen";
 import { AssetsScreen } from "./screens/AssetsScreen";
 import { LocalToolsScreen } from "./screens/LocalToolsScreen";
+import { McpServersScreen } from "./screens/McpServersScreen";
 import { ScheduleScreen } from "./screens/ScheduleScreen";
 import { UpdateScreen } from "./screens/UpdateScreen";
 import { LogsScreen } from "./screens/LogsScreen";
@@ -23,7 +24,7 @@ import { getDesktopBridge, getMissingBridgeMethods } from "./bridge";
 // 채팅과 인접한 자리(자산 허브 앞)에 둔다 — 자산 허브의 하위 탭이나 설정
 // 아래에 넣지 않는다(별도 최상위 화면으로 요청됨).
 type MainTab = "chat" | "schedule" | "hub" | "settings" | "detail" | "setup";
-type HubSubTab = "store" | "import" | "assets" | "localTools" | "update";
+type HubSubTab = "store" | "import" | "assets" | "localTools" | "mcpServers" | "update";
 type SettingsSubTab = "general" | "connections" | "logs" | "info";
 
 const MAIN_TABS: Array<{ id: MainTab; label: string; icon: typeof MessageSquare }> = [
@@ -38,6 +39,7 @@ const HUB_TABS: Array<{ id: HubSubTab; label: string }> = [
   { id: "import", label: "ZIP 가져오기" },
   { id: "assets", label: "설치된 자산" },
   { id: "localTools", label: "로컬 Tool" },
+  { id: "mcpServers", label: "MCP 서버" },
   { id: "update", label: "복구" },
 ];
 
@@ -192,6 +194,7 @@ export default function App() {
                 />
               )}
               {hubTab === "localTools" && <LocalToolsScreen />}
+              {hubTab === "mcpServers" && <McpServersScreen />}
               {hubTab === "update" && <UpdateScreen onGoToImport={goToImport} />}
             </div>
           )}
