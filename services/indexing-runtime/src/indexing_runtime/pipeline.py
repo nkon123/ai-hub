@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 
 from security_policy import parse_classification
@@ -13,8 +14,11 @@ from indexing_runtime.chunkers import chunk_documents
 from indexing_runtime.chunkers.ids import make_document_id
 from indexing_runtime.embedders import embed_batch
 from indexing_runtime.loaders import LOADED_SUFFIXES, load_document
+from indexing_runtime import progress
 from indexing_runtime.profile import resolve_profile
 from indexing_runtime.settings import EMBED_MODEL
+
+_logger = logging.getLogger("indexing_runtime")
 
 
 #: Fallback when the Chroma client does not expose its own limit. Chroma's
@@ -50,6 +54,7 @@ async def run_pipeline(
     embed_model: str = EMBED_MODEL,
     profile: dict | None = None,
     classification: str | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """Full indexing pipeline for a Knowledge package.
 
@@ -73,8 +78,13 @@ async def run_pipeline(
     (`search_runtime.settings.ALLOW_UNKNOWN_CLASSIFICATION`), not this
     function's concern.
 
+    `job_id` (optional) turns on progress reporting
+    (`indexing_runtime.progress`), which `GET /indexing/v1/jobs/{job_id}`
+    serves. Omitting it — the CLI path does — changes nothing else.
+
     Returns: {chunk_count, parent_count, index_path, status}
     """
+    progress.start(job_id)
     resolved_classification = parse_classification(classification).value
     resolved_profile = resolve_profile(profile)
 
@@ -96,6 +106,7 @@ async def run_pipeline(
         return {"status": "FAILED", "error": "No indexable documents found", "chunk_count": 0}
 
     # 2. Chunk per the resolved strategy (recursive / markdown / parent_child)
+    progress.report(job_id, "chunk", 0, len(documents))
     parents, children = chunk_documents(documents, knowledge_id, resolved_profile)
 
     if not children:
@@ -116,9 +127,27 @@ async def run_pipeline(
     for child in children:
         child["metadata"]["classification"] = resolved_classification
 
-    # 3. Embed child chunks (smaller, used for retrieval)
+    # 3. Embed child chunks (smaller, used for retrieval).
+    # 큰 문서에서 전체 시간의 ~95%가 여기다 — 진행률이 의미를 갖는 유일한 단계라
+    # 배치마다 보고한다. 로그는 5%마다만 남긴다(청크 4만 개면 배치가 600번이고
+    # 그때마다 로그를 찍으면 진짜 오류가 묻힌다).
     child_texts = [c["text"] for c in children]
-    embeddings = await embed_batch(child_texts, model=embed_model)
+    _last_logged = 0
+
+    def _on_embed_progress(done: int, total: int) -> None:
+        nonlocal _last_logged
+        progress.report(job_id, "embed", done, total)
+        pct = int(100 * done / total) if total else 0
+        if pct >= _last_logged + 5 or done == total:
+            _last_logged = pct
+            _logger.info(
+                "indexing.embed.progress job_id=%s %d/%d (%d%%)", job_id, done, total, pct
+            )
+
+    progress.report(job_id, "embed", 0, len(child_texts))
+    embeddings = await embed_batch(
+        child_texts, model=embed_model, on_progress=_on_embed_progress
+    )
 
     # 4. Store in Chroma (child chunks with embeddings)
     chroma_client = get_chroma_client(index_path / "chroma")
@@ -150,8 +179,10 @@ async def run_pipeline(
     max_batch = _chroma_max_batch_size(chroma_client)
     child_ids = [c["id"] for c in children]
     child_metadatas = [c["metadata"] for c in children]
+    progress.report(job_id, "store", 0, len(children))
     for start in range(0, len(children), max_batch):
         stop = start + max_batch
+        progress.report(job_id, "store", min(stop, len(children)), len(children))
         collection.add(
             ids=child_ids[start:stop],
             embeddings=embeddings[start:stop],
@@ -164,6 +195,7 @@ async def run_pipeline(
     # pickle. Only the tokenized corpus is persisted; `rank_bm25.BM25Okapi`
     # is rebuilt deterministically at query time by search-runtime, so no
     # executable object is ever written to disk.
+    progress.report(job_id, "index", 0, len(children))
     write_bm25_json(
         index_path / BM25_JSON_FILENAME,
         chunk_ids=[c["id"] for c in children],
@@ -173,6 +205,7 @@ async def run_pipeline(
 
     # 6. Save parent map for parent expansion (empty for recursive/markdown —
     # those strategies have no Parent Store, see chunkers/recursive.py).
+    progress.report(job_id, "finalize", 0, len(parents))
     parent_map = {p["id"]: p for p in parents}
     with open(index_path / "parents.json", "w", encoding="utf-8") as f:
         json.dump(parent_map, f, ensure_ascii=False, indent=2)
@@ -191,6 +224,7 @@ async def run_pipeline(
     with open(index_path / "index-meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
+    progress.finish(job_id)
     return {
         "status": "COMPLETED",
         "chunk_count": len(children),

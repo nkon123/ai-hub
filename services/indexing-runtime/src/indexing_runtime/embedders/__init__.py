@@ -23,6 +23,7 @@ same document's embedding leg takes ~165s. See
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 import httpx
 
@@ -94,7 +95,10 @@ async def embed_texts(texts: list[str], model: str = DEFAULT_EMBED_MODEL) -> lis
 
 
 async def embed_batch(
-    texts: list[str], model: str = DEFAULT_EMBED_MODEL, batch_size: int = EMBED_BATCH_SIZE
+    texts: list[str],
+    model: str = DEFAULT_EMBED_MODEL,
+    batch_size: int = EMBED_BATCH_SIZE,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> list[list[float]]:
     """Embed every text, in input order, `batch_size` texts per HTTP request.
 
@@ -104,6 +108,13 @@ async def embed_batch(
     fallback logs a warning naming the consequence, because a silent drop back
     to sequential embedding is precisely the "it just hangs" failure this
     module exists to remove.
+
+    `on_progress(done, total)` is called after each batch. Embedding is ~95% of
+    a large document's indexing time, so this callback is the only place that
+    can honestly answer "how far along is it" — everything else in the pipeline
+    finishes in under a second. It must never raise: a progress reporter
+    breaking an indexing job would be a strictly worse outcome than having no
+    progress at all.
     """
     if not texts:
         return []
@@ -111,11 +122,20 @@ async def embed_batch(
     batch_size = max(1, batch_size)
     all_embeddings: list[list[float]] = []
 
+    def _tick() -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(len(all_embeddings), len(texts))
+        except Exception:  # noqa: BLE001 — 진행률 보고가 색인을 깨뜨리면 안 된다
+            _logger.warning("indexing.embed.progress_callback_failed", exc_info=True)
+
     async with httpx.AsyncClient(timeout=EMBED_REQUEST_TIMEOUT_SECONDS) as client:
         for i in range(0, len(texts), batch_size):
             batch = texts[i : i + batch_size]
             try:
                 all_embeddings.extend(await _embed_one_batch(client, batch, model))
+                _tick()
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 404:
                     raise

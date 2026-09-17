@@ -27,6 +27,7 @@ from indexing_runtime.loaders import (
     MissingLoaderDependencyError,
     load_text_from_bytes,
 )
+from indexing_runtime import progress
 from indexing_runtime.pipeline import run_pipeline
 from indexing_runtime.settings import (
     BUILD_VERSION,
@@ -299,6 +300,7 @@ async def create_indexing_job(req: IndexJobRequest) -> JSONResponse:
         embed_model=req.embed_model,
         profile=req.profile,
         classification=req.classification,
+        job_id=req.job_id,
     )
 
     _logger.info(
@@ -307,6 +309,29 @@ async def create_indexing_job(req: IndexJobRequest) -> JSONResponse:
         result.get("status") if isinstance(result, dict) else None,
     )
     return JSONResponse(result)
+
+
+@app.get("/indexing/v1/jobs/{job_id}/progress")
+async def get_indexing_job_progress(job_id: str) -> JSONResponse:
+    """지금 돌고 있는 색인 Job 이 어디까지 갔는지.
+
+    `POST /indexing/v1/jobs` 가 동기라서 그 응답을 기다리는 쪽(portal-api)은
+    끝나기 전까지 아무것도 알 수 없다. 큰 문서는 그 사이가 몇 분이고, 등록자
+    화면에는 "진행 중"과 "멈춤"이 똑같이 보인다 — 700만자 문서를 올린 사내
+    테스트에서 실제로 나온 보고다(2026-09-17).
+
+    진행률은 메모리에만 있다(`indexing_runtime.progress` 모듈 docstring 참고).
+    그래서 추적 정보가 없다는 것과 Job 이 없다는 것을 구분하지 않고 404 를
+    돌려준다 — 프로세스가 재시작되면 그 Job 은 어차피 죽은 것이다.
+    """
+    state = progress.get(job_id)
+    if state is None:
+        return JSONResponse(
+            {"error": {"code": "PROGRESS_NOT_AVAILABLE",
+                       "message": "진행 정보를 찾을 수 없습니다."}},
+            status_code=404,
+        )
+    return JSONResponse(state.to_dict())
 
 
 @click.command()

@@ -87,8 +87,14 @@ def patch_embed_batch(monkeypatch: Any, pipeline_module: Any, dim: int = 3) -> l
     existing tests) can simply ignore the return value."""
     calls: list[dict[str, Any]] = []
 
-    async def fake_embed_batch(texts: list[str], model: str = "") -> list[list[float]]:
+    async def fake_embed_batch(
+        texts: list[str], model: str = "", on_progress=None, **_: Any
+    ) -> list[list[float]]:
         calls.append({"model": model, "text_count": len(texts)})
+        # 진행률 콜백은 실제 구현처럼 한 번은 호출해 준다 — 파이프라인이
+        # 진행률을 보고하는 경로도 테스트에서 실제로 실행되게 하려는 것이다.
+        if on_progress is not None:
+            on_progress(len(texts), len(texts))
         return [[0.1, 0.2, 0.3][:dim] for _ in texts]
 
     monkeypatch.setattr(pipeline_module, "embed_batch", fake_embed_batch)

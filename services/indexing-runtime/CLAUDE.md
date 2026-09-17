@@ -92,6 +92,26 @@ Loader(`test_loaders.py`/`test_pdf_docx_loaders.py`), `test_profile.py`, `test_b
 구조적으로는 `/indexing/v1/jobs`가 동기 실행이라 "예산"이 곧 "등록 가능한 최대 문서
 크기"가 된다. 202 + 상태 폴링으로 바꾸기 전까지 이 결합은 그대로다.
 
+## 진행 상황 보기
+
+`GET /indexing/v1/jobs/{job_id}/progress` 가 지금 돌고 있는 Job 의 단계와
+처리량을 돌려준다(`progress.py`). portal-api 는 `GET /assets/{id}/indexing-jobs`
+에서 RUNNING 인 Job 에만 이 값을 얹어 주고, 등록 화면이 진행률 막대와 남은
+시간을 그린다.
+
+진행률은 **메모리에만** 있다 — `portal.db` 는 M02 소유이고, 진행률은 Job 이
+살아 있는 동안만 의미가 있다(프로세스가 죽으면 Job 도 죽는다). 그래서
+프로세스를 재시작하면 진행 정보는 사라지고 404 가 된다.
+
+**`--reload` 로 띄운 개발 서버는 색인 중 파일이 저장되면 Job 을 죽인다.**
+`make dev-indexing-runtime` 과 `scripts/windows/start-indexing-runtime.ps1` 은
+둘 다 `--reload` 를 쓴다. 큰 문서는 색인이 몇 분씩 걸리므로, 그 사이 누군가
+저장소의 파일을 저장하면 uvicorn 이 워커를 재시작하고 진행 중이던 색인이
+HTTP 500 으로 끊긴다(portal-api 는 그것을 FAILED 로 기록한다). 2026-09-17 에
+실제로 이렇게 41,954 청크짜리 Job 을 21% 지점에서 잃었다 — 같은 시각에 테스트
+파일을 하나 만든 것이 원인이었다. 큰 문서를 색인해 볼 때는 `--reload` 없이
+띄우거나, 색인이 끝날 때까지 저장소를 건드리지 않는다.
+
 ## 이 모듈에서 반복해서 틀렸던 것
 
 - **Chroma는 메타데이터에 빈 리스트를 거부한다** — `collection.add()`에 `title_path: []`를 넣으면
