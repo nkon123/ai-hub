@@ -308,6 +308,57 @@ async def test_upload_policy_endpoint_tells_the_screen_about_the_exception(clien
     assert "agent" not in body["source_code_exception"]
 
 
+# --- 자산 상세가 "이 서버가 무엇을 실행하는가"를 말할 수 있어야 한다 -------
+
+
+async def test_source_files_endpoint_lists_names_checksums_and_the_entrypoint(client) -> None:
+    created = await _post_asset(client, _mcp_server_manifest(), files=_source_file())
+    assert created.status_code == 201, created.text
+
+    resp = await client.get(
+        f"/api/v1/asset-versions/{created.json()['id']}/source-files", headers=auth_header()
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["declared_entrypoint"] == "server.py"
+    [entry] = body["files"]
+    assert entry["name"] == "server.py"
+    assert entry["is_entrypoint"] is True
+    assert entry["size_bytes"] == len(_SERVER_PY)
+    assert len(entry["sha256"]) == 64
+    # 내용은 절대 나가지 않는다 — 목록과 체크섬이면 충분하다.
+    assert "content" not in entry
+
+
+async def test_source_files_endpoint_is_scoped_to_mcp_server_assets(client) -> None:
+    """Knowledge/Agent 자산의 파일 목록까지 같은 문으로 나가지 않는다."""
+    created = await _post_asset(client, _agent_manifest())
+    resp = await client.get(
+        f"/api/v1/asset-versions/{created.json()['id']}/source-files", headers=auth_header()
+    )
+    assert resp.status_code == 404, resp.text
+
+
+async def test_source_files_endpoint_reports_a_manifest_without_its_code(client) -> None:
+    """코드 없이 등록한 경우 빈 목록 + 선언된 시작 파일을 함께 돌려준다 —
+    화면이 "코드가 등록되지 않았다"를 말할 수 있어야 한다."""
+    created = await _post_asset(client, _mcp_server_manifest())
+    resp = await client.get(
+        f"/api/v1/asset-versions/{created.json()['id']}/source-files", headers=auth_header()
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"files": [], "declared_entrypoint": "server.py"}
+
+
+async def test_source_files_endpoint_requires_read_permission(client) -> None:
+    created = await _post_asset(client, _mcp_server_manifest(), files=_source_file())
+    resp = await client.get(
+        f"/api/v1/asset-versions/{created.json()['id']}/source-files",
+        headers=auth_header("dev-nobody-token"),
+    )
+    assert resp.status_code in (401, 403), resp.text
+
+
 async def test_invalid_mcp_server_manifest_rejected_with_field_errors(client) -> None:
     """종류를 받아준다고 검증까지 느슨해지지 않는다."""
     manifest = _mcp_server_manifest(transport={"kind": "STDIO"})  # entrypoint 누락

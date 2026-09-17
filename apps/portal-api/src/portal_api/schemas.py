@@ -158,6 +158,29 @@ class PromptTemplateOut(BaseModel):
     content: str
 
 
+class AssetSourceFileOut(BaseModel):
+    """D-096. MCP 서버 자산에 함께 등록된 파일 하나.
+
+    **내용은 절대 담지 않는다** — 이름·크기·체크섬뿐이다. 실행될 코드가
+    무엇인지 화면이 말할 수 있어야 하지만("어떤 파일로 뭘 하겠다는 건지
+    모르겠다"), 그렇다고 `storage_path` 를 파일명으로 읽어 주는 범용 파일
+    서버가 되어서는 안 된다(`get_prompt_template` 의 docstring 이 같은 이유로
+    스스로를 prompt 한 종류에 묶어 두었다).
+    """
+
+    name: str
+    size_bytes: int
+    sha256: str
+    #: 매니페스트가 실행하겠다고 선언한 그 파일인가.
+    is_entrypoint: bool
+
+
+class AssetSourceFilesOut(BaseModel):
+    files: list[AssetSourceFileOut]
+    #: 매니페스트가 선언한 시작 파일. 업로드에 없으면 화면이 그 사실을 말한다.
+    declared_entrypoint: str | None = None
+
+
 class IndexingJobOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

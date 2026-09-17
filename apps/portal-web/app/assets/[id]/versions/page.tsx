@@ -389,6 +389,261 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   );
 }
 
+// --- MCP 서버 자산 상세 (D-094/D-096) ---------------------------------------
+// 실 사용자 피드백: "자산상세 가도 어떤 툴이 활성화 되어 있는지... 어떤 파일로
+// 뭘 하겠다는건지 모르겠어." 등록은 되는데 화면에는 버전/검토 상태만 보여서,
+// 승인하는 사람이 **무엇을** 승인하는지 알 수 없었다. 이 화면이 답해야 하는
+// 질문은 셋이다: 어떻게 실행되는가 / 어떤 기능을 누구에게 허용하는가 /
+// 어떤 파일이 실행되는가.
+
+interface SourceFile {
+  name: string;
+  size_bytes: number;
+  sha256: string;
+  is_entrypoint: boolean;
+}
+
+interface DeclaredTool {
+  tool_name?: string;
+  label?: string;
+  risk_level?: string;
+  confirmation_policy?: string;
+  data_classification?: string;
+  permissions?: { allowed_roles?: string[]; allowed_orgs?: string[]; allowed_sites?: string[] };
+}
+
+const RISK_LABEL: Record<string, string> = {
+  READ_ONLY: "읽기 전용",
+  WRITE: "쓰기",
+  ADMIN: "관리",
+};
+
+const CONFIRMATION_LABEL: Record<string, string> = {
+  NEVER: "확인 없이 실행",
+  ON_PARAMETER: "인자에 따라 확인",
+  ALWAYS: "항상 확인",
+};
+
+function formatBytes(n: number): string {
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)}MB`;
+  if (n >= 1024) return `${(n / 1024).toFixed(1)}KB`;
+  return `${n}B`;
+}
+
+function McpServerDetail({ manifest, versionId }: { manifest: Record<string, any>; versionId: string }) {
+  const { role } = useRole();
+  const [sourceFiles, setSourceFiles] = useState<
+    { status: "loading" } | { status: "ok"; files: SourceFile[]; declaredEntrypoint: string | null } | { status: "error"; message: string }
+  >({ status: "loading" });
+
+  const transport = (manifest.transport ?? {}) as Record<string, any>;
+  const isStdio = transport.kind === "STDIO";
+  const tools: DeclaredTool[] = Array.isArray(manifest.declared_tools) ? manifest.declared_tools : [];
+
+  useEffect(() => {
+    let cancelled = false;
+    setSourceFiles({ status: "loading" });
+    fetch(`${API_BASE}/api/v1/asset-versions/${versionId}/source-files`, {
+      headers: { Authorization: `Bearer ${role.token}` },
+    })
+      .then(async (res) => {
+        if (cancelled) return;
+        const body = await safeJson(res);
+        if (!res.ok) {
+          // 조회 실패를 "파일 없음"으로 뭉개지 않는다 — 없는 것과 모르는 것은
+          // 승인 판단에서 전혀 다른 사실이다.
+          setSourceFiles({
+            status: "error",
+            message: body?.error?.message ?? `파일 목록을 불러오지 못했습니다. (HTTP ${res.status})`,
+          });
+          return;
+        }
+        setSourceFiles({
+          status: "ok",
+          files: body.files ?? [],
+          declaredEntrypoint: body.declared_entrypoint ?? null,
+        });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSourceFiles({ status: "error", message: "파일 목록을 불러오지 못했습니다. 네트워크 상태를 확인해 주세요." });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [versionId, role.token]);
+
+  return (
+    <div className="space-y-5">
+      <div>
+        <h3 className="text-body font-semibold text-text-primary">실행 방식</h3>
+        <dl className="mt-2 grid gap-x-6 gap-y-1.5 text-body sm:grid-cols-[10rem_1fr]">
+          <dt className="text-text-secondary">연결 이름</dt>
+          <dd className="text-text-primary">
+            <code>{manifest.server_alias ?? "(없음)"}</code>
+          </dd>
+          <dt className="text-text-secondary">방식</dt>
+          <dd className="text-text-primary">
+            {isStdio ? "내 PC에서 직접 실행 (STDIO)" : `주소로 연결 (${transport.kind ?? "?"})`}
+          </dd>
+          {isStdio ? (
+            <>
+              <dt className="text-text-secondary">실행 명령</dt>
+              <dd className="text-text-primary">
+                <code>
+                  {transport.interpreter ?? "?"} {transport.entrypoint ?? "?"}
+                  {Array.isArray(transport.args) && transport.args.length > 0
+                    ? ` ${transport.args.join(" ")}`
+                    : ""}
+                </code>
+                <span className="mt-0.5 block text-caption text-text-muted">
+                  실제 실행 파일의 경로는 매니페스트가 정하지 않습니다 — 설치된 PC의 설정이 정합니다.
+                </span>
+              </dd>
+              <dt className="text-text-secondary">라이브러리 동봉</dt>
+              <dd className="text-text-primary">
+                {transport.vendored_dependencies === true ? "예" : "아니오"}
+              </dd>
+            </>
+          ) : (
+            <>
+              <dt className="text-text-secondary">주소</dt>
+              <dd className="text-text-primary">
+                <code>{transport.endpoint ?? "(없음)"}</code>
+              </dd>
+            </>
+          )}
+          <dt className="text-text-secondary">출처</dt>
+          <dd className="text-text-primary">
+            {manifest.provenance === "INTERNAL" ? "사내 (INTERNAL)" : `외부 (${manifest.provenance ?? "?"})`}
+            {manifest.provenance === "INTERNAL" && (
+              <span className="mt-0.5 block text-caption text-text-muted">
+                사내 서버이므로 호출자 신원이 함께 전달됩니다.
+              </span>
+            )}
+          </dd>
+          <dt className="text-text-secondary">프로토콜 버전</dt>
+          <dd className="text-text-primary">{manifest.protocol_version ?? "(없음)"}</dd>
+        </dl>
+      </div>
+
+      <div>
+        <h3 className="text-body font-semibold text-text-primary">
+          사용을 승인한 기능 {tools.length > 0 && `(${tools.length}개)`}
+        </h3>
+        <p className="mt-0.5 text-caption text-text-secondary">
+          여기 없는 기능은 서버가 제공하더라도 사용되지 않습니다.
+        </p>
+        {tools.length === 0 ? (
+          <p className="mt-2 text-body text-text-muted">승인된 기능이 없습니다.</p>
+        ) : (
+          <div className="mt-2 overflow-x-auto">
+            <table className="w-full min-w-[40rem] text-left text-body">
+              <thead className="border-b border-border text-caption text-text-secondary">
+                <tr>
+                  <th className="py-2 pr-3 font-medium">기능</th>
+                  <th className="py-2 pr-3 font-medium">위험도</th>
+                  <th className="py-2 pr-3 font-medium">실행 확인</th>
+                  <th className="py-2 font-medium">사용할 수 있는 역할 · 조직</th>
+                </tr>
+              </thead>
+              <tbody>
+                {tools.map((tool, i) => {
+                  const roles = tool.permissions?.allowed_roles ?? [];
+                  const orgs = tool.permissions?.allowed_orgs ?? [];
+                  const denyAll = roles.length === 0 || orgs.length === 0;
+                  return (
+                    <tr key={tool.tool_name ?? i} className="border-b border-border/60 align-top">
+                      <td className="py-2 pr-3">
+                        <code className="text-text-primary">{tool.tool_name ?? "(이름 없음)"}</code>
+                        {tool.label && (
+                          <span className="mt-0.5 block text-caption text-text-secondary">{tool.label}</span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3">
+                        <Badge tone={tool.risk_level === "READ_ONLY" ? "neutral" : "warning"}>
+                          {RISK_LABEL[tool.risk_level ?? ""] ?? tool.risk_level ?? "?"}
+                        </Badge>
+                      </td>
+                      <td className="py-2 pr-3 text-text-primary">
+                        {CONFIRMATION_LABEL[tool.confirmation_policy ?? ""] ?? tool.confirmation_policy ?? "?"}
+                      </td>
+                      <td className="py-2 text-text-primary">
+                        {denyAll ? (
+                          // 빈 목록은 "전원 허용"이 아니라 "전원 거부"다
+                          // (Default Deny). 빈 칸으로 두면 정반대로 읽힌다.
+                          <span className="text-warning">아무도 사용할 수 없음 (목록이 비어 있음)</span>
+                        ) : (
+                          <>
+                            {roles.join(", ")}
+                            <span className="block text-caption text-text-secondary">{orgs.join(", ")}</span>
+                          </>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {isStdio && (
+        <div>
+          <h3 className="text-body font-semibold text-text-primary">함께 등록된 파일</h3>
+          {sourceFiles.status === "loading" && <LoadingState label="파일 목록을 불러오는 중..." />}
+          {sourceFiles.status === "error" && <ErrorBanner message={sourceFiles.message} />}
+          {sourceFiles.status === "ok" && sourceFiles.files.length === 0 && (
+            <div className="mt-2 rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-body text-warning">
+              코드가 함께 등록되지 않았습니다. 이 서버는 실행할 파일이 이미 설치된 PC에 있어야 합니다.
+            </div>
+          )}
+          {sourceFiles.status === "ok" && sourceFiles.files.length > 0 && (
+            <>
+              <table className="mt-2 w-full text-left text-body">
+                <thead className="border-b border-border text-caption text-text-secondary">
+                  <tr>
+                    <th className="py-2 pr-3 font-medium">파일</th>
+                    <th className="py-2 pr-3 font-medium">크기</th>
+                    <th className="py-2 font-medium">체크섬 (sha256)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sourceFiles.files.map((file) => (
+                    <tr key={file.name} className="border-b border-border/60">
+                      <td className="py-2 pr-3">
+                        <code className="text-text-primary">{file.name}</code>
+                        {file.is_entrypoint && (
+                          <span className="ml-2 inline-block align-middle">
+                            <Badge tone="info">실행되는 파일</Badge>
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 pr-3 text-text-secondary">{formatBytes(file.size_bytes)}</td>
+                      <td className="py-2 font-mono text-caption text-text-muted">
+                        {file.sha256.slice(0, 16)}…
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {sourceFiles.declaredEntrypoint &&
+                !sourceFiles.files.some((f) => f.is_entrypoint) && (
+                  <div className="mt-2 rounded-lg border border-danger/30 bg-danger/5 px-3 py-2.5 text-body text-danger">
+                    시작 파일로 선언한 <code>{sourceFiles.declaredEntrypoint}</code> 이(가) 등록된 파일에
+                    없습니다.
+                  </div>
+                )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AssetVersionsPage() {
   const params = useParams();
   const router = useRouter();
@@ -944,6 +1199,12 @@ export default function AssetVersionsPage() {
               </div>
             </div>
           </Section>
+
+          {selected.manifest?.type === "mcp_server" && (
+            <Section title="이 MCP 서버가 하는 일">
+              <McpServerDetail manifest={selected.manifest} versionId={selected.id} />
+            </Section>
+          )}
 
           <Section title="자동검증">
             <div className="space-y-3">

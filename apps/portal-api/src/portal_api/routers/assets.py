@@ -58,6 +58,8 @@ from portal_api.schemas import (
     AssetListResponse,
     DeleteAssetRequest,
     AssetOut,
+    AssetSourceFileOut,
+    AssetSourceFilesOut,
     AssetUploadPolicyOut,
     AssetVersionOut,
     AssetVersionRevocationSummaryOut,
@@ -643,6 +645,81 @@ async def get_prompt_template(
     if not path.exists():
         return not_found("템플릿 파일을 찾을 수 없습니다.", trace_id)
     return PromptTemplateOut(content=path.read_text(encoding="utf-8"))
+
+
+@router.get("/asset-versions/{version_id}/source-files", response_model=AssetSourceFilesOut)
+async def get_asset_source_files(
+    version_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> AssetSourceFilesOut | JSONResponse:
+    """D-096: MCP 서버 자산과 함께 등록된 파일 목록(이름·크기·체크섬).
+
+    자산 상세 화면이 "이 서버가 어떤 파일로 무엇을 실행하는가"를 말할 수
+    있어야 한다는 실 사용자 피드백에 대한 응답 — 등록은 됐는데 화면에서는
+    Tool 도 파일도 보이지 않아, 승인하는 사람이 무엇을 승인하는지 알 수
+    없었다.
+
+    **내용은 돌려주지 않는다.** `get_prompt_template` 과 같은 자세다: 파일명을
+    받아 아무 파일이나 읽어 주는 범용 경로를 만들지 않고, 의도가 드러나는 좁은
+    endpoint 하나를 둔다. 여기는 그보다 더 좁아서 내용 자체를 아예 내보내지
+    않는다 — 실행될 코드가 무엇인지 아는 데 필요한 것은 목록과 체크섬이지
+    본문이 아니다.
+
+    `type == "mcp_server"` 에만 열려 있다. 다른 종류는 404 — Knowledge 자산의
+    원문 파일 목록까지 같은 문으로 나가게 하지 않기 위해서다.
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_READ, trace_id=trace_id, resource_type="ASSET"
+    )
+    if denial:
+        return denial
+
+    version = (
+        await db.execute(select(AssetVersion).where(AssetVersion.id == version_id))
+    ).scalar_one_or_none()
+    if version is None:
+        return not_found("자산 버전을 찾을 수 없습니다.", trace_id)
+
+    manifest = version.manifest or {}
+    if manifest.get("type") != "mcp_server":
+        return not_found("MCP 서버 자산 버전만 파일 목록을 조회할 수 있습니다.", trace_id)
+
+    transport = manifest.get("transport")
+    transport = transport if isinstance(transport, dict) else {}
+    raw_entrypoint = transport.get("entrypoint")
+    declared_entrypoint = (
+        Path(raw_entrypoint).name if isinstance(raw_entrypoint, str) and raw_entrypoint else None
+    )
+
+    if not version.storage_path:
+        return AssetSourceFilesOut(files=[], declared_entrypoint=declared_entrypoint)
+
+    # 체크섬은 등록 시점에 기록해 둔 `checksums.sha256` 에서 읽는다 — 여기서
+    # 다시 계산하면 "지금 디스크에 있는 것"을 보여주게 되어, 등록된 것과
+    # 달라졌을 때 그 사실이 조용히 사라진다.
+    root = Path(version.storage_path)
+    checksums: dict[str, str] = {}
+    checksums_file = root / "checksums.sha256"
+    if checksums_file.is_file():
+        for line in checksums_file.read_text(encoding="utf-8").splitlines():
+            digest, _, relpath = line.partition("  ")
+            if digest and relpath:
+                checksums[relpath] = digest
+
+    files: list[AssetSourceFileOut] = []
+    for name in sorted(checksums):
+        path = root / Path(name).name
+        files.append(
+            AssetSourceFileOut(
+                name=name,
+                size_bytes=path.stat().st_size if path.is_file() else 0,
+                sha256=checksums[name],
+                is_entrypoint=name == declared_entrypoint,
+            )
+        )
+    return AssetSourceFilesOut(files=files, declared_entrypoint=declared_entrypoint)
 
 
 @router.post("/manifests/validate", response_model=ManifestValidateResponseOut)
