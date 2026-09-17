@@ -8,11 +8,18 @@
   "prompt": {
     "sourceFixture": "standard-prompt",
     "manifest": "valid/standard-prompt/prompt-manifest.json",
-    "companionFiles": ["valid/standard-prompt/template.md"]
+    "companionFiles": [
+      "valid/standard-prompt/template.md"
+    ]
   },
   "mcp_tool": {
     "sourceFixture": "mcp-readonly-oracle",
     "manifest": "valid/mcp-readonly-oracle/mcp-tool-manifest.json",
+    "companionFiles": []
+  },
+  "mcp_server": {
+    "sourceFixture": "mcp-server-thirdparty-filesystem",
+    "manifest": "valid/mcp-server-thirdparty-filesystem/mcp-server-manifest.json",
     "companionFiles": []
   }
 }

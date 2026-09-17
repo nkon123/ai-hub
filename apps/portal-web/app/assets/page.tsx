@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, Bot, Inbox, Lightbulb, Plus, Search, Settings, Wrench } from "lucide-react";
+import { BookOpen, Bot, Inbox, Lightbulb, Plus, Search, Server, Settings, Wrench } from "lucide-react";
 import {
   Button,
   Card,
@@ -37,6 +37,7 @@ const TYPE_ICON: Record<string, typeof BookOpen> = {
   agent: Bot,
   prompt: Lightbulb,
   mcp_tool: Wrench,
+  mcp_server: Server,
   service: Settings,
 };
 
@@ -45,12 +46,14 @@ const TYPE_LABEL: Record<string, string> = {
   agent: "Agent",
   prompt: "Prompt",
   mcp_tool: "MCP Tool",
+  mcp_server: "MCP 서버",
   service: "AI Service",
 };
 
 const TYPE_TONE: Record<string, string> = {
   knowledge: "bg-asset-knowledge/10 text-asset-knowledge",
   mcp_tool: "bg-asset-tool/10 text-asset-tool",
+  mcp_server: "bg-asset-tool/10 text-asset-tool",
   agent: "bg-asset-agent/10 text-asset-agent",
   prompt: "bg-asset-prompt/10 text-asset-prompt",
   service: "bg-asset-workflow/10 text-asset-workflow",

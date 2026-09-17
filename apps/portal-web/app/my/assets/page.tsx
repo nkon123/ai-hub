@@ -76,6 +76,7 @@ const ASSET_TYPE_LABEL: Record<string, string> = {
   agent: "Agent",
   prompt: "Prompt",
   mcp_tool: "MCP 도구",
+  mcp_server: "MCP 서버",
   service: "서비스",
 };
 

@@ -33,6 +33,7 @@ _SCHEMA_TYPE_BY_WIZARD_TYPE = {
     "agent": SchemaType.AGENT,
     "prompt": SchemaType.PROMPT,
     "mcp_tool": SchemaType.MCP_TOOL,
+    "mcp_server": SchemaType.MCP_SERVER,
 }
 
 

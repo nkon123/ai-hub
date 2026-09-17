@@ -177,9 +177,9 @@ function useUploadPolicy(token: string): UploadPolicyState {
 const MAX_PYTHON_SOURCE_CHARS = 20_000;
 const MAX_PYTHON_FILE_BYTES = 200_000; // 텍스트로 읽기 전 1차 크기 방어(대략치)
 
-type WizardType = "agent" | "prompt" | "mcp_tool";
+type WizardType = "agent" | "prompt" | "mcp_tool" | "mcp_server";
 
-const WIZARD_TYPES: WizardType[] = ["agent", "prompt", "mcp_tool"];
+const WIZARD_TYPES: WizardType[] = ["agent", "prompt", "mcp_tool", "mcp_server"];
 
 // RESTRICTED exists in every manifest schema's classification enum but is
 // intentionally not offered here, mirroring `/knowledge/new`'s own
@@ -226,6 +226,18 @@ const TYPE_FIELD_NOTES: Record<WizardType, FieldNote[]> = {
     { field: "template.file", desc: "3단계에서 업로드할 Template 파일명 — 이 이름과 정확히 일치하는 파일을 올려야 합니다(예: template.md)." },
     { field: "variables[]", desc: "Prompt가 사용하는 변수 목록. 각 항목은 name과 type(string/integer/boolean/array)이 필수입니다." },
   ],
+  // D-094: 서버 단위 등록. Manifest JSON 모드로 받는다 — transport·
+  // declared_tools[]·permissions 가 중첩 구조라 전용 폼으로 받으면 스키마가
+  // 바뀔 때마다 폼이 따라가지 못하고, 그 차이는 등록 시점에야 드러난다.
+  mcp_server: [
+    { field: "server_alias", desc: "이 서버를 가리키는 고유 이름(설치·연결·감사에서 이 이름으로 식별)." },
+    { field: "provenance", desc: "INTERNAL(사내 제작) 또는 THIRD_PARTY(외부 반입). 외부 서버에는 호출자 신원을 보내지 않습니다." },
+    { field: "protocol_version", desc: "서버가 말하는 MCP 프로토콜 버전(예: 2025-06-18)." },
+    { field: "transport", desc: "연결 방식. HTTP(endpoint) 또는 STDIO(interpreter·entrypoint·vendored_dependencies)." },
+    { field: "declared_tools[]", desc: "승인할 Tool 목록. 각 항목에 tool_name·risk_level·permissions 가 필수이며, 여기 없는 Tool 은 서버가 제공해도 사용되지 않습니다." },
+    { field: "declared_tools[].permissions", desc: "이 Tool 을 쓸 수 있는 allowed_roles·allowed_orgs. 비워 두면 전원 거부입니다(Default Deny)." },
+    { field: "tools_snapshot_hash", desc: "선택. 승인 시점의 Tool 구성 해시 — 연결 시 서버 구성이 달라졌으면 등록을 거부합니다." },
+  ],
   mcp_tool: [
     { field: "server_alias", desc: "Office Profile에 등록된 MCP 서버 식별자." },
     { field: "tool_name", desc: "식별자 형식(점으로 구분한 네임스페이스 허용, 예: db_metadata.get_tables)." },
@@ -265,6 +277,7 @@ const SCHEMA_DOC_BY_TYPE: Record<WizardType, string> = {
   agent: "packages/schemas/manifests/agent-manifest.schema.json",
   prompt: "packages/schemas/manifests/prompt-manifest.schema.json",
   mcp_tool: "packages/schemas/manifests/mcp-tool-manifest.schema.json",
+  mcp_server: "packages/schemas/manifests/mcp-server-manifest.schema.json",
 };
 
 interface WizardExample {

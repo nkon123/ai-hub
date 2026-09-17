@@ -23,9 +23,9 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { NextResponse } from "next/server";
 
-type WizardType = "agent" | "prompt" | "mcp_tool";
+type WizardType = "agent" | "prompt" | "mcp_tool" | "mcp_server";
 
-const WIZARD_TYPES: WizardType[] = ["agent", "prompt", "mcp_tool"];
+const WIZARD_TYPES: WizardType[] = ["agent", "prompt", "mcp_tool", "mcp_server"];
 
 // apps/portal-web is `next dev`'s cwd — repo root is two levels up.
 const FIXTURES_ROOT = path.resolve(process.cwd(), "..", "..", "fixtures");

@@ -27,6 +27,7 @@ import {
   Lock,
   MessageSquareCode,
   Puzzle,
+  Server,
   Wrench,
   type LucideIcon,
 } from "lucide-react";
@@ -75,13 +76,27 @@ const ASSET_TYPES: AssetTypeRow[] = [
     ctaLabel: "Prompt 등록 시작",
   },
   {
+    key: "mcp_server",
+    label: "MCP 서버",
+    icon: Server,
+    description: "사내·외부 MCP 서버를 통째로 등록",
+    prep: "사전 준비: 서버 연결 방식(HTTP/STDIO)·제공 Tool 목록·Tool별 권한 정의 · 예상 파일: 선택 · 검토 범위: 보안 검토",
+    href: "/assets/new/mcp_server",
+    ctaLabel: "MCP 서버 등록 시작",
+  },
+  {
     key: "mcp_tool",
-    label: "MCP Tool",
+    label: "MCP Tool (이전 방식)",
     icon: Wrench,
-    description: "사내 시스템 기능",
-    prep: "사전 준비: 연결 서버·입력 Schema 정의(읽기 전용만 가능) · 예상 파일: 선택 · 검토 범위: 보안 검토",
+    description: "사내 시스템 기능 하나",
+    // D-094: 등록 단위가 "서버"로 바뀌었다. 이 방식은 Office Profile 이 이미
+    // 이름을 아는 서버 안의 Tool 하나만 다룰 수 있어, 외부 MCP 서버를 반입해
+    // 쓰는 경우를 표현하지 못한다. 기존 자산을 위해 남겨 두되 새 등록은
+    // 권하지 않는다 — 목록에서 빼면 기존 자산의 유형 표시가 설명 없는
+    // 코드가 되고, 그냥 두면 새 자산이 계속 이 방식으로 만들어진다.
+    prep: "MCP 서버 등록으로 대체되었습니다. 새 자산은 위의 \"MCP 서버\"를 사용하세요 — 이 방식은 서버 하나 안의 Tool 하나만 다룰 수 있어 외부 MCP 서버를 반입해 쓸 수 없습니다.",
     href: "/assets/new/mcp_tool",
-    ctaLabel: "MCP Tool 등록 시작",
+    ctaLabel: "이전 방식으로 등록",
   },
   {
     key: "service",
