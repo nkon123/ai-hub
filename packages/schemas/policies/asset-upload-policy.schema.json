@@ -38,6 +38,30 @@
       "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
       "description": "Lowercase, dot-prefixed extensions rejected outright for inbound asset registration uploads, checked case-insensitively against the filename before any bytes are written to disk. Deliberately reuses the same executable+archive extension set as bundle-install-policy.json's executable_extensions/archive_extensions (duplicated here as plain data, not imported, since this is a separate contract for a separate enforcement point) rather than inventing a narrower list: a registered Knowledge/Agent/Prompt/MCP Tool asset is always a small text/PDF/docx document or a manifest-referenced template file, never an executable or a nested archive, so there is no legitimate use case this would block, and rejecting the same shapes both inbound (registration) and outbound (Desktop Bundle install) closes the gap this contract exists to close instead of leaving the inbound side narrower than the outbound side for no reason."
     },
+    "source_code_exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_types", "allowed_extensions"],
+      "description": "D-096. A narrow, per-asset-type carve-out from rejected_extensions, and the ONLY way executable text enters the Hub. It exists because an MCP server that runs on the user's own PC (transport.kind=STDIO) is useless without its code, while rejected_extensions blocks every form that code can take — the schema allowed a shape the delivery path forbade. The carve-out is deliberately narrow in three ways. (1) It re-allows SOURCE ONLY: text a human reviewer can actually read. Compiled or opaque forms (.pyc, .exe, .dll, .so) and shell scripts (.sh, .bat, .ps1, .cmd) stay rejected, because 'the Hub reviewed this' has to mean somebody could read it. (2) It applies only to the listed asset_types — every other type keeps the full rejected_extensions list. (3) create_asset applies it only when the manifest actually needs local code (transport.kind=STDIO) and the manifest's declared transport.entrypoint is among the uploaded files, so code cannot be attached to an asset that will never run it, and the file that WILL be run is always one of the reviewed, checksummed files. Archives (.zip and friends) are never re-allowed: a nested archive is exactly the shape that hides what review is supposed to see.",
+      "properties": {
+        "asset_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "manifest.type values this exception applies to. Anything not listed here keeps the full rejected_extensions list."
+        },
+        "allowed_extensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+          "description": "Lowercase, dot-prefixed extensions removed from rejected_extensions for the listed asset_types. Must be a subset of rejected_extensions — this field only ever SUBTRACTS from a denial, so it can never widen uploads beyond what the base policy already contemplated, and reading the base list still tells you the worst case."
+        },
+        "_why": {
+          "type": "string",
+          "description": "Optional free-text justification for the concrete extensions chosen, so narrowing/widening this list requires updating the stated reasoning."
+        }
+      }
+    },
     "_rationale": {
       "type": "string",
       "description": "Optional free-text justification for the concrete values chosen in the instance file (asset-upload-policy.json), so future changes to these numbers require updating the stated reasoning, not just the numbers."

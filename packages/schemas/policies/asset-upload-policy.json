@@ -8,5 +8,10 @@
     ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi",
     ".sh", ".ps1", ".vbs", ".scr", ".app", ".py", ".pyc", ".js", ".cjs", ".mjs"
   ],
+  "source_code_exception": {
+    "asset_types": ["mcp_server"],
+    "allowed_extensions": [".py", ".js", ".cjs", ".mjs"],
+    "_why": "D-096. stdio MCP 서버는 코드 없이는 아무것도 아닌데 rejected_extensions 가 코드가 될 수 있는 모든 형태를 막고 있었다 — 스키마는 STDIO 를 허용하는데 배포 경로가 금지하는 상태였다. 되살리는 것은 **사람이 읽을 수 있는 소스뿐**이다: .py/.js/.cjs/.mjs. .pyc 는 되살리지 않는다(컴파일된 바이트코드는 검토자가 읽을 수 없고, 같은 폴더의 .py 와 다른 내용일 수도 있다). .sh/.bat/.ps1/.cmd 도 되살리지 않는다 — 매니페스트의 interpreter 는 node/python 뿐이라 셸 스크립트는 애초에 진입점이 될 수 없고, 있다면 그것은 서버가 아니라 설치 스크립트다. .exe/.dll/.so 는 논외다. 압축 파일도 되살리지 않는다 — 중첩 압축은 검토가 보아야 할 것을 가리는 바로 그 형태다."
+  },
   "_rationale": "max_single_file_bytes = 50MB: tests/fixtures/valid/** knowledge/manifest fixtures are all under 4KB and docs/implementation-spec/04-knowledge-platform.md describes the PoC corpus as small text/PDF/docx documents (tens of KB to low tens of MB) — 50MB comfortably covers a large scanned PDF while still bounding memory used per file during the streaming read in create_asset. max_total_request_bytes = 150MB (3x the single-file cap): lets a registration attach a few large files (e.g. a source doc + supporting attachments) without effectively re-allowing an unbounded request via many files, and stays far below what would risk exhausting portal-api process memory or disk in one request. max_file_count = 20: registrations in this repo (P05 wizard, fixtures) attach at most a handful of files (a manifest-referenced template plus source docs); 20 gives headroom for a knowledge asset with a spreadsheet of supporting attachments while still making an accidental or abusive bulk-upload attempt fail fast on count before any bytes are read. rejected_extensions reuses bundle-install-policy.json's executable_extensions + archive_extensions verbatim (see schema description for why: no legitimate inbound asset registration needs an executable or nested archive, and matching the outbound Desktop Bundle install policy avoids leaving registration as the weaker of the two checkpoints)."
 }

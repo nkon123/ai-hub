@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import uuid
+from pathlib import Path
 
 import pytest
 from portal_api.models import AssetVersion
@@ -205,6 +206,106 @@ async def test_register_mcp_server_asset_end_to_end(client, db) -> None:
         await db.execute(select(AssetVersion).where(AssetVersion.id == body["id"]))
     ).scalar_one()
     assert stored.manifest["transport"]["kind"] == "STDIO"
+
+
+# --- D-096: mcp_server 자산만 소스 코드를 함께 받는다 ----------------------
+# 이 예외가 조용히 넓어지는 것이 이 기능의 유일한 실패 방식이다. 넓어지는
+# 방향은 셋뿐이라(다른 자산 종류로, 다른 확장자로, 실행하지 않는 transport로)
+# 셋 다 여기서 막아 둔다.
+
+_SERVER_PY = b"# test server\nprint('hi')\n"
+
+
+def _source_file(name: str = "server.py", content: bytes = _SERVER_PY) -> dict:
+    return {"files": (name, content, "text/plain")}
+
+
+async def test_mcp_server_asset_accepts_its_own_source_code(client, db) -> None:
+    resp = await _post_asset(client, _mcp_server_manifest(), files=_source_file())
+    assert resp.status_code == 201, resp.text
+
+    stored = (
+        await db.execute(
+            select(AssetVersion).where(AssetVersion.id == resp.json()["id"])
+        )
+    ).scalar_one()
+    saved = Path(stored.storage_path) / "server.py"
+    assert saved.is_file(), f"소스가 저장되지 않았다: {stored.storage_path}"
+    assert saved.read_bytes() == _SERVER_PY
+
+    # 실행될 파일이 체크섬 대상에 들어 있어야 한다 — 이 예외의 전제다.
+    checksums = (Path(stored.storage_path) / "checksums.sha256").read_text(encoding="utf-8")
+    assert "server.py" in checksums
+
+
+async def test_source_code_is_rejected_for_every_other_asset_type(client) -> None:
+    """예외는 `mcp_server` 에만 붙는다 — Agent 에 코드를 붙일 수는 없다."""
+    resp = await _post_asset(client, _agent_manifest(), files=_source_file())
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "ASSET_UPLOAD_EXTENSION_REJECTED"
+
+
+@pytest.mark.parametrize("name", ["x.pyc", "run.bat", "run.sh", "run.ps1", "a.zip", "x.exe"])
+async def test_only_readable_source_is_excepted(client, name: str) -> None:
+    """되살린 것은 사람이 읽을 수 있는 소스뿐이다.
+
+    컴파일본(.pyc)·셸 스크립트·압축·바이너리는 `mcp_server` 에서도 거부된다 —
+    "허브가 검토했다"가 성립하려면 누군가 읽을 수 있어야 하고, 중첩 압축은
+    검토가 보아야 할 것을 가리는 형태다.
+    """
+    resp = await _post_asset(client, _mcp_server_manifest(), files=_source_file(name, b"\x00"))
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "ASSET_UPLOAD_EXTENSION_REJECTED"
+
+
+async def test_code_cannot_be_attached_to_a_server_that_never_runs_it(client) -> None:
+    """HTTP 서버는 남의 PC 에서 이미 돌고 있다 — 코드를 받아 봐야 실행할 곳이
+    없고 검토 대상만 늘어난다."""
+    manifest = _mcp_server_manifest(
+        transport={"kind": "HTTP", "endpoint": "http://localhost:8500/mcp"}
+    )
+    resp = await _post_asset(client, manifest, files=_source_file())
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT"
+
+
+async def test_declared_entrypoint_must_be_among_the_uploaded_files(client) -> None:
+    """실행될 파일이 검토·체크섬 대상 안에 있다는 것이 이 예외의 전제다."""
+    manifest = _mcp_server_manifest(
+        transport={
+            "kind": "STDIO",
+            "interpreter": "python",
+            "entrypoint": "main.py",
+            "args": [],
+            "vendored_dependencies": True,
+        }
+    )
+    resp = await _post_asset(client, manifest, files=_source_file("server.py"))
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "ASSET_SOURCE_ENTRYPOINT_MISSING"
+
+
+async def test_rejected_source_upload_leaves_no_files_behind(client, db) -> None:
+    """거부는 부분 업로드를 남기지 않는다 — 실행 코드라면 더더욱."""
+    manifest = _mcp_server_manifest(
+        transport={"kind": "HTTP", "endpoint": "http://localhost:8500/mcp"}
+    )
+    resp = await _post_asset(client, manifest, files=_source_file())
+    assert resp.status_code == 400
+
+    rows = (await db.execute(select(AssetVersion))).scalars().all()
+    assert all(r.manifest.get("server_alias") != "test-hello-mcp" for r in rows)
+
+
+async def test_upload_policy_endpoint_tells_the_screen_about_the_exception(client) -> None:
+    """화면이 서버가 받아 줄 파일을 미리 거절하지 않으려면 예외도 함께 봐야
+    한다 — 이 필드가 빠지면 위저드는 `.py` 를 선택 단계에서 막는다."""
+    resp = await client.get("/api/v1/assets/upload-policy", headers=auth_header())
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert ".py" in body["rejected_extensions"]
+    assert ".py" in body["source_code_exception"]["mcp_server"]
+    assert "agent" not in body["source_code_exception"]
 
 
 async def test_invalid_mcp_server_manifest_rejected_with_field_errors(client) -> None:

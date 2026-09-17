@@ -78,7 +78,10 @@ interface UploadPolicy {
   maxSingleFileBytes: number;
   maxTotalRequestBytes: number;
   maxFileCount: number;
+  /** 이 자산 종류에 실제로 적용되는 거부 목록 — 종류별 예외를 이미 뺀 것. */
   rejectedExtensions: string[];
+  /** 그렇게 빠진 확장자들(D-096). 화면이 "코드를 올릴 수 있다"를 말할 근거. */
+  sourceCodeExtensions: string[];
 }
 
 type UploadPolicyState =
@@ -124,7 +127,12 @@ function checkFilesAgainstPolicy(files: File[], policy: UploadPolicy): string[] 
   return problems;
 }
 
-function useUploadPolicy(token: string): UploadPolicyState {
+/** `type` 을 받는 이유(D-096): 서버의 거부 목록에는 자산 종류별 예외가 있다
+ * (MCP 서버는 `.py`/`.js` 같은 소스를 함께 올릴 수 있다). 여기서 **한 번**
+ * 빼 두면 이후의 검사와 화면 표시가 모두 같은 목록을 본다 — 두 곳에서 각자
+ * 빼면 한 곳만 고쳐진다. 서버가 받아 줄 파일을 화면이 미리 거절하는 것은
+ * 사용자에게는 그냥 "안 되는 것"으로 보인다. */
+function useUploadPolicy(token: string, type: WizardType): UploadPolicyState {
   const [state, setState] = useState<UploadPolicyState>({ status: "loading" });
   useEffect(() => {
     let cancelled = false;
@@ -145,13 +153,19 @@ function useUploadPolicy(token: string): UploadPolicyState {
           return;
         }
         const body = await res.json();
+        const allowedForThisType: string[] = (
+          body.source_code_exception?.[type] ?? []
+        ).map((e: string) => e.toLowerCase());
         setState({
           status: "ok",
           policy: {
             maxSingleFileBytes: body.max_single_file_bytes,
             maxTotalRequestBytes: body.max_total_request_bytes,
             maxFileCount: body.max_file_count,
-            rejectedExtensions: (body.rejected_extensions ?? []).map((e: string) => e.toLowerCase()),
+            rejectedExtensions: (body.rejected_extensions ?? [])
+              .map((e: string) => e.toLowerCase())
+              .filter((e: string) => !allowedForThisType.includes(e)),
+            sourceCodeExtensions: allowedForThisType,
           },
         });
       })
@@ -548,7 +562,7 @@ function Wizard({ type }: { type: WizardType }) {
   const [manifestGenerated, setManifestGenerated] = useState(false);
 
   const [files, setFiles] = useState<File[]>([]);
-  const uploadPolicyState = useUploadPolicy(role.token);
+  const uploadPolicyState = useUploadPolicy(role.token, type);
   const fileViolations =
     uploadPolicyState.status === "ok" && files.length > 0
       ? checkFilesAgainstPolicy(files, uploadPolicyState.policy)
@@ -641,6 +655,24 @@ function Wizard({ type }: { type: WizardType }) {
   const templateFileMatched =
     !expectedTemplateFileName || files.some((f) => f.name === expectedTemplateFileName);
 
+  // D-096: MCP 서버가 "내 PC에서 직접 실행"이면 시작 파일이 업로드에 있어야
+  // 서버가 그 자산을 받는다. 그 판정을 제출까지 미루지 않고 3단계에서 한다 —
+  // 4단계 검증은 매니페스트만 보므로 통과하고, 5단계에서야 거절당한다.
+  const mcpServerTransport = (() => {
+    if (type !== "mcp_server" || !parsed.ok) return { kind: null, entrypoint: null };
+    const t = parsed.value.transport;
+    if (typeof t !== "object" || t === null) return { kind: null, entrypoint: null };
+    const raw = t as Record<string, unknown>;
+    return {
+      kind: typeof raw.kind === "string" ? raw.kind : null,
+      entrypoint: typeof raw.entrypoint === "string" ? raw.entrypoint : null,
+    };
+  })();
+  const mcpServerEntrypointMissing =
+    mcpServerTransport.kind === "STDIO" &&
+    files.length > 0 &&
+    !files.some((f) => f.name === mcpServerTransport.entrypoint);
+
   const isValidationStale = validateState.validatedText !== null && validateState.validatedText !== manifestText;
   const validationPassed = validateState.status === "ok" && !isValidationStale;
 
@@ -667,7 +699,7 @@ function Wizard({ type }: { type: WizardType }) {
           parsed.value.tool_name.trim().length > 0
         );
       case 3:
-        return templateFileMatched && fileViolations.length === 0;
+        return templateFileMatched && fileViolations.length === 0 && !mcpServerEntrypointMissing;
       case 4:
         return validationPassed;
       default:
@@ -687,6 +719,8 @@ function Wizard({ type }: { type: WizardType }) {
           : "Manifest JSON을 입력하세요.";
       case 3:
         if (fileViolations.length > 0) return fileViolations[0];
+        if (mcpServerEntrypointMissing)
+          return `시작 파일로 선언한 "${mcpServerTransport.entrypoint ?? ""}" 이(가) 업로드한 파일에 없습니다.`;
         return expectedTemplateFileName
           ? `업로드한 파일 중 "${expectedTemplateFileName}" 이름과 일치하는 파일이 없습니다.`
           : undefined;
@@ -898,6 +932,8 @@ function Wizard({ type }: { type: WizardType }) {
             example={example}
             uploadPolicyState={uploadPolicyState}
             fileViolations={fileViolations}
+            mcpServerTransportKind={mcpServerTransport.kind}
+            mcpServerEntrypoint={mcpServerTransport.entrypoint}
           />
         )}
 
@@ -2482,6 +2518,8 @@ function StepFiles({
   example,
   uploadPolicyState,
   fileViolations,
+  mcpServerTransportKind,
+  mcpServerEntrypoint,
 }: {
   type: WizardType;
   files: File[];
@@ -2492,6 +2530,8 @@ function StepFiles({
   example: ExampleState;
   uploadPolicyState: UploadPolicyState;
   fileViolations: string[];
+  mcpServerTransportKind: string | null;
+  mcpServerEntrypoint: string | null;
 }) {
   const exampleTemplate =
     example.status === "ok"
@@ -2503,6 +2543,33 @@ function StepFiles({
   return (
     <div className="space-y-4">
       <h2 className="text-card-title font-semibold text-text-primary">파일 업로드</h2>
+
+      {/* D-096: MCP 서버는 이 단계가 선택이 아니라 본론일 수 있다 — 내 PC 에서
+          직접 실행하는 서버는 코드가 없으면 아무것도 아니다. 반대로 주소로
+          연결하는 서버는 올릴 것이 없다. 무엇을 올려야 하는지는 사용자가
+          고른 연결 방식이 이미 정하므로, 그것을 여기서 그대로 말해 준다. */}
+      {type === "mcp_server" && uploadPolicyState.status === "ok" && (
+        <div className="rounded-lg border border-border bg-white px-3 py-2.5 text-caption text-text-secondary">
+          {mcpServerTransportKind === "STDIO" ? (
+            <>
+              <span className="font-semibold text-text-primary">
+                서버 코드를 함께 올려야 실행됩니다.
+              </span>{" "}
+              시작 파일로 선언한{" "}
+              <code>{mcpServerEntrypoint || "(시작 파일 미지정)"}</code> 을(를) 반드시 포함하세요.
+              {uploadPolicyState.policy.sourceCodeExtensions.length > 0 && (
+                <> 허용 확장자: {uploadPolicyState.policy.sourceCodeExtensions.join(", ")}.</>
+              )}{" "}
+              폴더 구조는 유지되지 않으니 파일을 평평하게 올리세요.
+            </>
+          ) : (
+            <>
+              주소로 연결하는 서버라 올릴 파일이 없습니다. 이 단계는 건너뛰세요 — 서버는 이미 그쪽에서
+              돌고 있어야 합니다.
+            </>
+          )}
+        </div>
+      )}
 
       {/* 파일을 고르기 "전"에 한도를 먼저 보여준다 — 다 올리고 나서 서버가
           거절하는 것을 막지는 못하지만(서버가 최종 판정), 사용자가 미리

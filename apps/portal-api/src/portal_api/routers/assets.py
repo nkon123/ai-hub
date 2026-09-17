@@ -139,11 +139,30 @@ _DEFAULT_ASSET_UPLOAD_REJECTED_EXTENSIONS = frozenset(
 _ASSET_UPLOAD_CHUNK_SIZE = 1024 * 1024  # 1MB read chunks — bounds peak memory per file
 
 
+# D-096. 예외는 기본값에 **없다** — 정책 파일을 못 읽어 내장 기본값으로
+# 떨어지면 소스 업로드는 그냥 거부된다. 예외를 기본값에 넣으면 "정책 파일이
+# 깨졌을 때 실행 코드가 들어오는" 조합이 생긴다.
+_DEFAULT_ASSET_UPLOAD_SOURCE_CODE_EXCEPTION: dict[str, frozenset[str]] = {}
+
+
 class _AssetUploadPolicy(NamedTuple):
     max_single_file_bytes: int
     max_total_request_bytes: int
     max_file_count: int
     rejected_extensions: frozenset[str]
+    # asset_type -> 그 종류에 한해 거부 목록에서 빼 주는 확장자들.
+    source_code_exception: dict[str, frozenset[str]]
+
+    def rejects(self, extension: str, asset_type: str) -> bool:
+        """이 확장자를 이 종류의 자산 등록에서 거부하는가.
+
+        예외는 `rejected_extensions` 에서 **빼기만** 한다 — 거부 목록에 없던
+        것을 새로 허용하지 않는다. 그래서 기본 목록만 읽어도 최악의 경우를
+        알 수 있다.
+        """
+        if extension not in self.rejected_extensions:
+            return False
+        return extension not in self.source_code_exception.get(asset_type, frozenset())
 
 
 def _read_asset_upload_policy() -> _AssetUploadPolicy:
@@ -153,13 +172,13 @@ def _read_asset_upload_policy() -> _AssetUploadPolicy:
             data = json.load(f)
         if not isinstance(data, dict):
             raise ValueError("policy file does not contain a JSON object")
+        rejected = frozenset(str(ext).lower() for ext in data["rejected_extensions"])
         return _AssetUploadPolicy(
             max_single_file_bytes=int(data["max_single_file_bytes"]),
             max_total_request_bytes=int(data["max_total_request_bytes"]),
             max_file_count=int(data["max_file_count"]),
-            rejected_extensions=frozenset(
-                str(ext).lower() for ext in data["rejected_extensions"]
-            ),
+            rejected_extensions=rejected,
+            source_code_exception=_parse_source_code_exception(data, rejected),
         )
     except (
         FileNotFoundError,
@@ -177,7 +196,31 @@ def _read_asset_upload_policy() -> _AssetUploadPolicy:
             max_total_request_bytes=_DEFAULT_ASSET_UPLOAD_MAX_TOTAL_REQUEST_BYTES,
             max_file_count=_DEFAULT_ASSET_UPLOAD_MAX_FILE_COUNT,
             rejected_extensions=_DEFAULT_ASSET_UPLOAD_REJECTED_EXTENSIONS,
+            source_code_exception=_DEFAULT_ASSET_UPLOAD_SOURCE_CODE_EXCEPTION,
         )
+
+
+def _parse_source_code_exception(
+    data: dict, rejected_extensions: frozenset[str]
+) -> dict[str, frozenset[str]]:
+    """D-096 예외를 읽는다. 없거나 모양이 틀리면 **예외 없음**으로 떨어진다.
+
+    허용 목록은 `rejected_extensions` 와 교집합을 취한다. 거부 목록에 없던
+    확장자를 예외에 적어도 아무 효과가 없다는 뜻이다 — 이 필드로는 업로드를
+    넓힐 수 없고 좁혀진 것을 되돌릴 수만 있다.
+    """
+    raw = data.get("source_code_exception")
+    if not isinstance(raw, dict):
+        return {}
+    asset_types = raw.get("asset_types")
+    allowed = raw.get("allowed_extensions")
+    if not isinstance(asset_types, list) or not isinstance(allowed, list):
+        logger.warning("asset_upload_policy.source_code_exception.malformed_ignored")
+        return {}
+    allowed_set = frozenset(str(ext).lower() for ext in allowed) & rejected_extensions
+    if not allowed_set:
+        return {}
+    return {str(asset_type): allowed_set for asset_type in asset_types}
 
 
 def _render_asset_checksums_file(sha256_by_relative_path: dict[str, str]) -> str:
@@ -448,6 +491,10 @@ async def get_asset_upload_policy(
         max_total_request_bytes=policy.max_total_request_bytes,
         max_file_count=policy.max_file_count,
         rejected_extensions=sorted(policy.rejected_extensions),
+        source_code_exception={
+            asset_type: sorted(exts)
+            for asset_type, exts in policy.source_code_exception.items()
+        },
     )
 
 
@@ -770,7 +817,7 @@ async def create_asset(
         # Prevent path traversal
         safe_name = Path(upload.filename).name
         extension = Path(safe_name).suffix.lower()
-        if extension in upload_policy.rejected_extensions:
+        if upload_policy.rejects(extension, asset_type):
             _cleanup_partial_upload()
             return error_response(
                 status.HTTP_400_BAD_REQUEST,
@@ -824,6 +871,48 @@ async def create_asset(
         written_paths.append(dest)
         saved_files.append(safe_name)
         checksums_by_relpath[safe_name] = hasher.hexdigest()
+
+    # --- D-096: 소스 코드를 받았다면 그것이 정말 이 서버의 코드인지 ---------
+    # 확장자 예외만으로는 "이 자산 종류는 코드를 가질 수 있다"까지만 말한다.
+    # 여기서 두 가지를 더 본다: (1) 그 코드를 실제로 실행할 서버인가
+    # (HTTP 서버는 남의 PC 에서 이미 돌고 있으므로 코드를 나를 이유가 없다 —
+    # 실행하지 않을 코드를 받으면 검토는 늘고 얻는 것은 없다), (2) 매니페스트가
+    # 실행하겠다고 선언한 파일이 실제로 올라왔는가. (2)가 없으면 진입점이
+    # 어디서 오는지 아무도 모르는 채로 "코드가 든 자산"이 만들어진다.
+    source_exts = upload_policy.source_code_exception.get(asset_type, frozenset())
+    uploaded_source = sorted(f for f in saved_files if Path(f).suffix.lower() in source_exts)
+    if uploaded_source:
+        transport = manifest_dict.get("transport")
+        transport = transport if isinstance(transport, dict) else {}
+        if transport.get("kind") != "STDIO":
+            _cleanup_partial_upload()
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT",
+                "이 서버는 주소로 연결하는 방식이라 코드를 함께 등록할 수 없습니다. "
+                "코드를 등록하려면 연결 방식이 '내 PC에서 직접 실행'이어야 합니다.",
+                trace_id,
+                details={"files": uploaded_source},
+            )
+        entrypoint = transport.get("entrypoint")
+        entrypoint = Path(entrypoint).name if isinstance(entrypoint, str) else ""
+        if entrypoint not in saved_files:
+            _cleanup_partial_upload()
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_SOURCE_ENTRYPOINT_MISSING",
+                f"시작 파일로 선언한 '{entrypoint or '(없음)'}'이(가) 업로드한 파일에 없습니다. "
+                "실행할 파일은 반드시 함께 등록되어야 합니다.",
+                trace_id,
+                details={"declared_entrypoint": entrypoint, "uploaded": sorted(saved_files)},
+            )
+        logger.info(
+            "asset.source_code_accepted trace_id=%s type=%s files=%d entrypoint=%s",
+            trace_id,
+            asset_type,
+            len(uploaded_source),
+            entrypoint,
+        )
 
     # sha256 per saved file, computed from the same streamed chunks
     # used to write the file (no re-read). Same on-disk line format as the

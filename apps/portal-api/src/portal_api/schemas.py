@@ -104,6 +104,10 @@ class AssetUploadPolicyOut(BaseModel):
     max_total_request_bytes: int
     max_file_count: int
     rejected_extensions: list[str]
+    # D-096. asset_type -> 그 종류에 한해 위 거부 목록에서 빠지는 확장자들.
+    # 화면이 자기 유형에 맞게 거부 목록을 좁혀 보여줄 수 있도록 함께 내려준다
+    # — 이것이 없으면 화면은 서버가 받아 줄 파일을 미리 거절하게 된다.
+    source_code_exception: dict[str, list[str]] = {}
 
 
 class ManifestValidateRequest(BaseModel):
