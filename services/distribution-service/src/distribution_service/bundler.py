@@ -60,6 +60,12 @@ _ASSET_TYPE_FOLDER: dict[str, str] = {
     "knowledge": "knowledge",
     "prompt": "prompts",
     "mcp_tool": "mcp-config",
+    # D-096: `mcp_server` 는 자기 폴더를 가져야 한다. 없으면 아래 `.get(...,
+    # "agents")` 기본값 때문에 MCP 서버의 실행 코드가 `assets/agents/` 로
+    # 들어가고, Desktop 의 실행 코드 예외는 "그 자산 자신의 폴더 안"에서만
+    # 적용되므로 설치가 거부된다 — 혹은 더 나쁘게, 예외를 폴더와 무관하게
+    # 만들면 Agent 자산 옆의 코드까지 통과하게 된다.
+    "mcp_server": "mcp-servers",
     "service": "services",
 }
 
@@ -373,6 +379,7 @@ def build_zip_bytes(
         "assets/knowledge",
         "assets/prompts",
         "assets/mcp-config",
+        "assets/mcp-servers",
         "profiles",
         "policies",
     )

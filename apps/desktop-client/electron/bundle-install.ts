@@ -28,6 +28,8 @@ import {
   checkRevocationList,
   checkRuntimeCompatibility,
   checkSignatureTrust,
+  BUNDLE_INSTALL_POLICY,
+  type SourceCodeAllowance,
   type ZipEntryMeta,
   type ParsedManifest,
   type RevocationEntry,
@@ -44,6 +46,12 @@ export const ASSET_TYPE_FOLDER: Record<string, string> = {
   knowledge: "knowledge",
   prompt: "prompts",
   mcp_tool: "mcp-config",
+  // 이 줄은 `services/distribution-service/src/distribution_service/bundler.py`
+  // 의 `_ASSET_TYPE_FOLDER` 와 **손으로** 맞춘 것이다(위 주석의 drift 위험).
+  // 두 곳이 갈라지면 MCP 서버 코드가 Bundle 에서는 `assets/mcp-servers/` 에
+  // 들어가고 여기서는 `assets/agents/` 를 보게 되어, 설치는 되는데 파일을
+  // 못 찾는 형태로 조용히 깨진다.
+  mcp_server: "mcp-servers",
   service: "services",
 };
 
@@ -54,6 +62,65 @@ function folderFor(item: { role: string; asset_type: string }): string {
 
 function yieldToEventLoop(): Promise<void> {
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+/** D-096. 실행 코드 검사는 압축을 풀기 **전**에 돌아야 하는데(안전하지 않은
+ * 것을 디스크에 쓰지 않기 위해), 그 예외는 "이 Bundle 이 어떤 자산을 담고
+ * 있는가"를 알아야 판단할 수 있다 — 그 정보는 `bundle-manifest.yaml` 에만
+ * 있다. 그래서 그 파일 **하나만** 미리 푼다.
+ *
+ * 이 한 항목을 미리 푸는 것이 왜 안전한가: PATH_SAFETY 는 이미 통과했고,
+ * 이름이 고정이라 공격자가 무엇을 풀지 고를 수 없으며, 선언 크기와 실제
+ * 크기를 둘 다 상한으로 막는다(zip bomb 은 둘 중 하나는 반드시 크다).
+ * 실패하면 예외 없음으로 떨어진다 — 여기서 판정을 내리지 않는다. 진짜
+ * manifest 검증(MANIFEST_SCHEMA)은 압축 해제 후 원래 자리에서 그대로 한다.
+ */
+const _MAX_PREREAD_MANIFEST_BYTES = 256 * 1024;
+
+export function readBundleManifestEarly(zip: AdmZip): unknown | null {
+  const entry = zip.getEntry("bundle-manifest.yaml");
+  if (!entry || entry.isDirectory) return null;
+  if (entry.header.size > _MAX_PREREAD_MANIFEST_BYTES) return null;
+  try {
+    const data = entry.getData();
+    if (data.length > _MAX_PREREAD_MANIFEST_BYTES) return null;
+    return YAML.parse(data.toString("utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+/** 이 Bundle 안에서 실행 코드가 놓일 수 있는 폴더들.
+ *
+ * Bundle 이 스스로 신고한 `included_assets` 를 근거로 삼는다. 그 신고는
+ * 신뢰의 근거가 아니라 **범위를 좁히는 근거**다 — 거짓말을 해도 얻는 것은
+ * "내 코드를 내 폴더에 둘 수 있다"뿐이고, 그 파일들은 어차피
+ * `checksums.sha256` 과 서명/취소 검사를 그대로 통과해야 한다.
+ */
+export function sourceCodeAllowanceFor(
+  manifestRaw: unknown,
+  policy: { asset_types: string[]; allowed_subdirectory: string } | undefined,
+): SourceCodeAllowance {
+  if (!policy || typeof manifestRaw !== "object" || manifestRaw === null) {
+    return { allowedPrefixes: [] };
+  }
+  const included = (manifestRaw as Record<string, unknown>).included_assets;
+  if (!Array.isArray(included)) return { allowedPrefixes: [] };
+
+  const prefixes: string[] = [];
+  for (const raw of included) {
+    if (typeof raw !== "object" || raw === null) continue;
+    const item = raw as Record<string, unknown>;
+    const assetType = typeof item.asset_type === "string" ? item.asset_type : "";
+    const role = typeof item.role === "string" ? item.role : "";
+    const assetId = typeof item.asset_id === "string" ? item.asset_id : "";
+    if (!policy.asset_types.includes(assetType) || !assetId) continue;
+    // 경로는 `folderFor` 로 만든다 — 설치할 때 파일을 찾는 것과 같은 함수여야
+    // "검사한 폴더"와 "설치하는 폴더"가 갈라지지 않는다.
+    const folder = folderFor({ role, asset_type: assetType });
+    prefixes.push(`assets/${folder}/${assetId}/${policy.allowed_subdirectory}/`);
+  }
+  return { allowedPrefixes: prefixes };
 }
 
 /** Unix S_IFLNK bit test on a ZIP central-directory external file attribute. */
@@ -213,7 +280,19 @@ export async function importBundle(
     }
 
     record("NESTED_ARCHIVE", checkNoNestedArchives(entryMetas));
-    record("EXECUTABLE_POLICY", checkExecutablePolicy(entryMetas));
+    // D-096: 실행 코드 예외는 이 Bundle 이 담은 자산 종류를 알아야 판단할 수
+    // 있으므로 manifest 를 한 항목만 미리 읽는다(위 함수 주석 참고). 읽지
+    // 못하면 예외 없음 — 예전 동작 그대로 전부 거부다.
+    record(
+      "EXECUTABLE_POLICY",
+      checkExecutablePolicy(
+        entryMetas,
+        sourceCodeAllowanceFor(
+          readBundleManifestEarly(zip),
+          BUNDLE_INSTALL_POLICY.source_code_exception,
+        ),
+      ),
+    );
 
     const sizeCap = checkSizeCaps(entryMetas);
     record("SIZE_CAP", sizeCap);

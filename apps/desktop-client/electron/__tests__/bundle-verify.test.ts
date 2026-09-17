@@ -121,6 +121,66 @@ describe("checkExecutablePolicy", () => {
       checkExecutablePolicy([entry("manifest.json"), entry("index/chroma.sqlite3"), entry("source/doc.md")]).status,
     ).toBe("PASS");
   });
+
+  // --- D-096: MCP 서버 소스 예외 -------------------------------------------
+  // 이 예외가 조용히 넓어지는 방식은 넷뿐이다: 허용 폴더 밖으로, 다른
+  // 확장자로, 자격 없는 자산으로, 허용 목록이 비었는데도. 넷 다 고정한다.
+  const allowance = {
+    allowedPrefixes: ["assets/mcp-servers/abc-123/source/"],
+  };
+
+  it("allows an mcp_server's own source under its source/ directory", () => {
+    const result = checkExecutablePolicy(
+      [entry("assets/mcp-servers/abc-123/source/server.py")],
+      allowance,
+    );
+    expect(result.status).toBe("PASS");
+    // 통과시킨 사실이 검사 목록에 보여야 한다 — 조용히 넘어가지 않는다.
+    expect(result.message).toContain("MCP 서버 소스");
+  });
+
+  it("still rejects the same file one directory up", () => {
+    expect(
+      checkExecutablePolicy([entry("assets/mcp-servers/abc-123/server.py")], allowance).status,
+    ).toBe("FAIL");
+  });
+
+  it("still rejects code belonging to a different asset", () => {
+    expect(
+      checkExecutablePolicy([entry("assets/knowledge/other/source/evil.py")], allowance).status,
+    ).toBe("FAIL");
+  });
+
+  it("does not re-allow compiled or shell forms even in the allowed directory", () => {
+    for (const name of ["x.pyc", "run.sh", "run.bat", "run.ps1", "tool.exe", "lib.dll"]) {
+      expect(
+        checkExecutablePolicy(
+          [entry(`assets/mcp-servers/abc-123/source/${name}`)],
+          allowance,
+        ).status,
+      ).toBe("FAIL");
+    }
+  });
+
+  it("rejects everything when no allowance is given (the pre-D-096 behavior)", () => {
+    expect(
+      checkExecutablePolicy([entry("assets/mcp-servers/abc-123/source/server.py")]).status,
+    ).toBe("FAIL");
+    expect(
+      checkExecutablePolicy([entry("assets/mcp-servers/abc-123/source/server.py")], {
+        allowedPrefixes: [],
+      }).status,
+    ).toBe("FAIL");
+  });
+
+  it("one excepted file does not license another executable elsewhere", () => {
+    expect(
+      checkExecutablePolicy(
+        [entry("assets/mcp-servers/abc-123/source/server.py"), entry("setup.exe")],
+        allowance,
+      ).status,
+    ).toBe("FAIL");
+  });
 });
 
 describe("checkSizeCaps (Zip Bomb 방어)", () => {

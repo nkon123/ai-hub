@@ -404,3 +404,25 @@ def test_revocation_list_includes_deprecated_and_known_system_wide_entries(
     ids = {r["asset_version_id"] for r in revocation_list}
     assert "asset-version-1" in ids  # the DEPRECATED knowledge dependency
     assert "other-version" in ids  # system-wide known revocation
+
+
+def test_mcp_server_assets_get_their_own_directory():
+    """D-096. `mcp_server` 가 폴더 맵에 없으면 `.get(..., "agents")` 기본값
+    때문에 MCP 서버의 실행 코드가 `assets/agents/` 로 들어간다. Desktop 의
+    실행 코드 예외는 **그 자산 자신의 폴더 안**에서만 적용되므로, 그러면
+    번들은 만들어지는데 설치가 거부된다 — 만드는 쪽과 검사하는 쪽이 다른
+    경로를 보는, 조용한 형태의 실패다.
+    """
+    from distribution_service.bundler import _ASSET_TYPE_FOLDER
+
+    assert _ASSET_TYPE_FOLDER["mcp_server"] == "mcp-servers"
+    # `apps/desktop-client/electron/bundle-install.ts` 의 `ASSET_TYPE_FOLDER`
+    # 가 이 맵의 손으로 맞춘 사본이다. 한쪽을 바꾸면 반드시 다른 쪽도 바꾼다.
+    assert set(_ASSET_TYPE_FOLDER) == {
+        "agent",
+        "knowledge",
+        "prompt",
+        "mcp_tool",
+        "mcp_server",
+        "service",
+    }

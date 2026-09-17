@@ -7,6 +7,12 @@
     ".exe", ".dll", ".so", ".dylib", ".bat", ".cmd", ".com", ".msi",
     ".sh", ".ps1", ".vbs", ".scr", ".app", ".py", ".pyc", ".js", ".cjs", ".mjs"
   ],
+  "source_code_exception": {
+    "asset_types": ["mcp_server"],
+    "allowed_extensions": [".py", ".js", ".cjs", ".mjs"],
+    "allowed_subdirectory": "source",
+    "_why": "D-096. asset-upload-policy.json 의 같은 이름 필드와 짝이다 — 반입(M02)과 반출(M04) 중 한쪽만 열면 코드는 허브에 들어왔다가 나가지 못하거나(지금 상태), 검토 없이 나간다. 되살리는 것은 반입 쪽과 똑같이 **읽을 수 있는 소스뿐**이며, 게다가 **그 자산 자신의 source/ 폴더 안**에서만이다: mcp_server 자산이 번들에 있다는 이유로 Knowledge 색인 옆의 .py 가 통과해서는 안 된다. 번들 안의 모든 파일은 이미 checksums.sha256 에 잡혀 있으므로, 여기를 통과한 파일은 '검토자가 읽을 수 있었고 바이트가 고정된' 파일이다. 중첩 압축 금지(checkNoNestedArchives)는 이 필드와 무관하게 그대로다."
+  },
   "size_caps": {
     "max_total_uncompressed_bytes": 2147483648,
     "max_single_file_uncompressed_bytes": 524288000,

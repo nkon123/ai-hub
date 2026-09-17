@@ -23,6 +23,34 @@
       "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
       "description": "Lowercase, dot-prefixed extensions classified as executable/code and forbidden inside an Offline Bundle."
     },
+    "source_code_exception": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["asset_types", "allowed_extensions", "allowed_subdirectory"],
+      "description": "D-096. The outbound mirror of asset-upload-policy.json's field of the same name, and the ONLY way an executable_extensions entry may survive inside a Bundle. It exists because a stdio MCP server is nothing without its code, while executable_extensions forbids every form that code can take. Three conditions must hold together, and bundle-install.ts enforces all three: (1) the Bundle's own manifest declares an included asset of one of the listed asset_types; (2) the flagged entry sits under THAT asset's own directory, in allowed_subdirectory — code belonging to an mcp_server asset cannot license a .py sitting next to a Knowledge index; (3) its extension is in allowed_extensions, which re-allows readable source only, never compiled or shell forms. Because the Bundle manifest is read before this check, and every file in a Bundle is already covered by checksums.sha256, a file that passes here is one a reviewer could have read and whose bytes are pinned. Archives are never re-allowed — checkNoNestedArchives is untouched by this field.",
+      "properties": {
+        "asset_types": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" },
+          "description": "included_assets[].asset_type values that can carry code. An asset of any other type never licenses an executable entry."
+        },
+        "allowed_extensions": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "pattern": "^\\.[a-z0-9]+$" },
+          "description": "Lowercase, dot-prefixed extensions exempted from executable_extensions inside a qualifying asset's directory. Must be a subset of executable_extensions — this field only ever SUBTRACTS from a denial, so reading executable_extensions alone still tells you the worst case."
+        },
+        "allowed_subdirectory": {
+          "type": "string",
+          "description": "The single subdirectory, directly under the asset's own directory, where code may live (the bundler writes an asset's uploaded files to `assets/{folder}/{asset_id}/source/`). Anything executable elsewhere in the Bundle — including elsewhere inside the same asset's directory, such as its index/ — still fails."
+        },
+        "_why": {
+          "type": "string",
+          "description": "Optional free-text justification, so narrowing/widening this requires updating the stated reasoning."
+        }
+      }
+    },
     "size_caps": {
       "type": "object",
       "required": [

@@ -9,8 +9,15 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
+import AdmZip from "adm-zip";
+import YAML from "yaml";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { importBundle, resolveInstallRoot, type InstallRootLayout } from "../bundle-install";
+import {
+  ASSET_TYPE_FOLDER,
+  importBundle,
+  resolveInstallRoot,
+  type InstallRootLayout,
+} from "../bundle-install";
 import { InstalledAssetsStore } from "../installed-assets-store";
 import type { ImportProgressEvent } from "../types";
 
@@ -165,5 +172,126 @@ describe("importBundle — D-060 AssetVersion id fix (real post-fix Bundle)", ()
     expect(record).toBeDefined();
     expect(record?.assetVersionId).toBe(knowledgeItem.asset_version_id);
     expect(record?.assetVersionId).not.toBe(record?.assetId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// D-096: MCP 서버 소스 코드 반출
+// ---------------------------------------------------------------------------
+// 실행 코드 검사는 압축을 풀기 전에 돌고, 그 예외는 Bundle 자신의 manifest 를
+// 읽어야 판단할 수 있다. 그래서 순수 함수만 보지 않고 실제 ZIP 을
+// `importBundle` 에 먹여, EXECUTABLE_POLICY 단계가 어떤 판정을 냈는지 본다.
+// (그 뒤 단계에서 실패하는 것은 상관없다 — 여기서 보려는 것은 그 단계다.)
+
+const MCP_ASSET_ID = "11111111-2222-3333-4444-555555555555";
+
+function bundleManifestWith(includedAssets: unknown[]): string {
+  return YAML.stringify({
+    bundle_id: "b-test",
+    created_at: new Date().toISOString(),
+    requested_by: null,
+    target_site_id: null,
+    root_type: "mcp_server",
+    root_id: MCP_ASSET_ID,
+    included_assets: includedAssets,
+    runtime_requirements: { os: "Windows 10/11 x64", python: ">=3.11", model_aliases: [] },
+    install_order: [],
+    forbidden_or_suspended_versions_present: false,
+    total_installed_size_bytes: 0,
+  });
+}
+
+function writeZip(name: string, files: Record<string, string>): string {
+  const zip = new AdmZip();
+  for (const [arcname, content] of Object.entries(files)) {
+    zip.addFile(arcname, Buffer.from(content, "utf-8"));
+  }
+  const dest = path.join(tmpRoot, name);
+  zip.writeZip(dest);
+  return dest;
+}
+
+async function executablePolicyCheckFor(zipPath: string) {
+  const result = await importBundle(zipPath, layout, () => {});
+  return result.checks.find((c) => c.id === "EXECUTABLE_POLICY");
+}
+
+describe("importBundle — D-096 MCP 서버 소스", () => {
+  const mcpItem = {
+    asset_id: MCP_ASSET_ID,
+    asset_version_id: "v-1",
+    asset_type: "mcp_server",
+    role: "root",
+    name: "예제 서버",
+    version: "1.0.0",
+    required: true,
+    status: "OK",
+    size_bytes: 10,
+  };
+
+  it("lets an mcp_server asset carry its own source", async () => {
+    const zipPath = writeZip("mcp-source.zip", {
+      "bundle-manifest.yaml": bundleManifestWith([mcpItem]),
+      [`assets/mcp-servers/${MCP_ASSET_ID}/manifest.json`]: "{}",
+      [`assets/mcp-servers/${MCP_ASSET_ID}/source/server.py`]: "print('hi')\n",
+    });
+    const check = await executablePolicyCheckFor(zipPath);
+    expect(check?.status).toBe("PASS");
+    expect(check?.message).toContain("MCP 서버 소스");
+  });
+
+  it("rejects the same source when the Bundle declares no mcp_server asset", async () => {
+    // 같은 파일, 같은 경로 — manifest 의 신고만 다르다.
+    const zipPath = writeZip("mcp-source-undeclared.zip", {
+      "bundle-manifest.yaml": bundleManifestWith([{ ...mcpItem, asset_type: "knowledge" }]),
+      [`assets/mcp-servers/${MCP_ASSET_ID}/source/server.py`]: "print('hi')\n",
+    });
+    expect((await executablePolicyCheckFor(zipPath))?.status).toBe("FAIL");
+  });
+
+  it("rejects source that sits outside the declared asset's own directory", async () => {
+    const zipPath = writeZip("mcp-source-elsewhere.zip", {
+      "bundle-manifest.yaml": bundleManifestWith([mcpItem]),
+      "assets/knowledge/other/source/evil.py": "print('hi')\n",
+    });
+    expect((await executablePolicyCheckFor(zipPath))?.status).toBe("FAIL");
+  });
+
+  it("rejects an unreadable bundle manifest rather than falling open", async () => {
+    const zipPath = writeZip("mcp-source-bad-manifest.zip", {
+      "bundle-manifest.yaml": ":\n  not: [valid",
+      [`assets/mcp-servers/${MCP_ASSET_ID}/source/server.py`]: "print('hi')\n",
+    });
+    expect((await executablePolicyCheckFor(zipPath))?.status).toBe("FAIL");
+  });
+
+  it("still rejects a compiled or shell file inside the allowed directory", async () => {
+    for (const [i, name] of ["x.pyc", "run.bat", "run.sh"].entries()) {
+      const zipPath = writeZip(`mcp-source-bad-${i}.zip`, {
+        "bundle-manifest.yaml": bundleManifestWith([mcpItem]),
+        [`assets/mcp-servers/${MCP_ASSET_ID}/source/${name}`]: "x",
+      });
+      expect((await executablePolicyCheckFor(zipPath))?.status).toBe("FAIL");
+    }
+  });
+});
+
+describe("ASSET_TYPE_FOLDER", () => {
+  it("keeps mcp_server on its own folder, matching the bundler (D-096)", () => {
+    // 이 맵은 `services/distribution-service/.../bundler.py` 의
+    // `_ASSET_TYPE_FOLDER` 를 손으로 맞춘 사본이다(양쪽 주석 참고). 갈라지면
+    // MCP 서버 코드가 Bundle 에서는 한 폴더에, 여기서는 다른 폴더에 있게 되어
+    // 설치는 되는데 파일을 못 찾는 형태로 조용히 깨진다. 같은 내용을 pin 하는
+    // Python 쪽 테스트: tests/unit/distribution_service/test_bundler.py
+    // ::test_mcp_server_assets_get_their_own_directory
+    expect(ASSET_TYPE_FOLDER.mcp_server).toBe("mcp-servers");
+    expect(Object.keys(ASSET_TYPE_FOLDER).sort()).toEqual([
+      "agent",
+      "knowledge",
+      "mcp_server",
+      "mcp_tool",
+      "prompt",
+      "service",
+    ]);
   });
 });
