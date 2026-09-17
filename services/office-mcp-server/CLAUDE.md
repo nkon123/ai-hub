@@ -65,6 +65,33 @@ Limit/Result Limit), 사용자 확인 정책, Output Filter, Audit 로그를
 | `db_metadata.get_columns` | NEVER | Default Value 미반환, 금지 Column 제거 |
 | `table_count.query` | ON_PARAMETER | 건수만 반환, 임의 SQL 미입력, 필터 없는 전체 카운트는 확인 필요 |
 
+## MCP 프로토콜 표면 (D-094, 2026-09-17)
+
+`mcp_protocol.py` 가 같은 Tool 을 **진짜 MCP 프로토콜**로 내놓고 `main.py` 가
+`/mcp` 에 마운트한다(Streamable HTTP). 기존 `/mcp/v1/tools*` REST 는 그대로
+둔다 — 게시된 챗봇 4개가 그 경로로 돌고 있고, 두 표면이 **같은
+`ToolCallPipeline`** 을 통과하므로 통제가 갈라지지 않는다. 마이그레이션이 끝나면
+REST 쪽만 걷어낸다.
+
+- **신원은 `_meta["aihub/audit_context"]` 로만 온다**(D-095). Tool 인자에서는
+  절대 읽지 않는다 — `request_context.py` 가 `audit_context` 에서만 파싱하는 것과
+  같은 이유이고, 프로토콜로 옮기면서 잃으면 안 되는 장치다. 신원이 없으면
+  거부한다(익명 호출을 허용하면 §7 인가가 통째로 사라진다).
+- **lowlevel `Server` 를 쓴다.** 상위 `MCPServer.add_tool` 은 파이썬 함수
+  시그니처에서 `input_schema` 를 유도하는데, 그러면 검토자가 승인한 스키마가
+  아니라 래퍼 함수의 모양이 계약으로 나간다.
+- Kill Switch 로 내린 Tool 은 `tools/list` 에서도 뺀다. 목록에 두고 호출만
+  막으면 클라이언트가 그것을 승인 스냅샷에 담아 `tools_snapshot_mismatch` 를
+  일으킨다.
+- **선언 `output_schema` 와 전송 모양이 다르다(실측 2026-09-17).**
+  `output_filter` 는 업무 출력에 `classification` 을 덧붙여 내보내는데
+  `output_schema` 는 붙이기 **전**의 모양을 기술한다(그 검증이 Handler 버그를
+  잡는 장치이므로 그쪽이 맞다). REST 에서는 아무도 응답을 스키마로 검증하지
+  않아 드러나지 않았고, MCP 클라이언트는 검증하므로 정상 응답이 매번
+  `Additional properties are not allowed ('classification')` 로 거부됐다.
+  `_wire_output_schema` 가 전송 모양을 정직하게 기술한다 — **Tool 출력에
+  래퍼 필드를 새로 추가하면 이 함수도 같이 고친다.**
+
 ## 이 모듈의 경계
 
 - `pyproject.toml` 의존성: `fastapi`, `uvicorn`, `pydantic`, `jsonschema`,

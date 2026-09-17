@@ -15,6 +15,16 @@ dependencies = [
   "ai-asset-schemas",
   "security-policy",
   "observability",
+  # D-094: 이 서버를 진짜 MCP 프로토콜로도 내놓기 위해(`mcp_protocol.py`).
+  # 직접 구현하지 않는 이유는 목적이 **남이 만든 클라이언트와의 상호운용**이고,
+  # JSON-RPC 프레이밍과 lifecycle 을 손으로 재구현하면 바로 거기서 어긋나기
+  # 때문이다. agent-runtime 이 쓰는 것과 같은 패키지·같은 버전이다.
+  #
+  # 폐쇄망 설치: 연결된 머신에서
+  #   pip download mcp -d vendor/wheels --platform win_amd64   #     --python-version 3.11 --only-binary=:all:
+  # 로 받아 옮긴 뒤
+  #   pip install --no-index --find-links vendor/wheels mcp
+  "mcp>=2.2.0",
 ]
 
 [tool.hatch.build.targets.wheel]

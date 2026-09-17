@@ -22,6 +22,7 @@ from observability import configure_logging
 from office_mcp_server.audit import InMemoryAuditSink, LoggingAuditSink, MultiAuditSink
 from office_mcp_server.connector import MockOracleConnector
 from office_mcp_server.errors import ErrorCode, McpError, error_response, mcp_error_response
+from office_mcp_server.mcp_protocol import build_mcp_server
 from office_mcp_server.pipeline import ToolCallPipeline
 from office_mcp_server.tool_registry import ToolRegistry
 from office_mcp_server.tools_setup import register_poc_tools
@@ -84,7 +85,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         BUILD_VERSION,
         COMMIT_SHA,
     )
-    yield
+    # Streamable HTTP 세션 매니저는 자체 수명주기를 갖는다 — FastAPI lifespan 에
+    # 물리지 않으면 `/mcp` 요청이 "Task group is not initialized" 로 죽는다.
+    async with mcp_server.session_manager.run():
+        yield
 
 
 app = FastAPI(
@@ -115,6 +119,12 @@ connector = MockOracleConnector()
 in_memory_audit_sink = InMemoryAuditSink()
 audit_sink = MultiAuditSink([in_memory_audit_sink, LoggingAuditSink()])
 pipeline = ToolCallPipeline(registry=registry, connector=connector, audit_sink=audit_sink)
+
+# D-094 — 같은 Tool 을 **진짜 MCP 프로토콜**로도 내놓는다(`/mcp`).
+# 기존 `/mcp/v1/tools*` REST 는 그대로 둔다: 게시된 챗봇 4개가 그 경로로 돌고
+# 있고, 두 표면이 같은 `pipeline` 을 통과하므로 통제가 갈라지지 않는다.
+# 마이그레이션이 끝나면 REST 쪽만 걷어내면 된다.
+mcp_server = build_mcp_server(registry, pipeline, version=BUILD_VERSION)
 
 ADMIN_ROLE = "ADMIN"
 
@@ -264,3 +274,8 @@ async def admin_list_audit_events(
     events = events[-limit:] if limit > 0 else []
     dumped = [e.model_dump(mode="json") for e in events]
     return JSONResponse({"events": dumped, "count": len(dumped)})
+
+
+# MCP Streamable HTTP 표면. 경로가 `/mcp` 인 것은 MCP 관례이고, 기존 REST 의
+# `/mcp/v1/...` 과 겹치지 않는다(FastAPI 라우트가 mount 보다 먼저 매칭된다).
+app.mount("/mcp", mcp_server.streamable_http_app())
