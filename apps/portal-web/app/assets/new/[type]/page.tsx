@@ -363,6 +363,27 @@ function buildSkeleton(type: WizardType, id: string, basic: BasicInfo): Record<s
     };
   }
 
+  if (type === "mcp_server") {
+    // D-094. 기본값은 가장 흔한 경우(사내 HTTP 서버 하나, 읽기 전용 Tool 하나)다 —
+    // 빈 매니페스트로 시작하면 사용자가 무엇을 채워야 하는지 알 수 없고, stdio
+    // 기본값으로 시작하면 설치 루트·해석기까지 맞춰야 등록이 된다.
+    return {
+      ...common,
+      server_alias: "",
+      provenance: "INTERNAL",
+      protocol_version: "2025-06-18",
+      transport: { kind: "HTTP", endpoint: "" },
+      declared_tools: [
+        {
+          tool_name: "",
+          risk_level: "READ_ONLY",
+          permissions: { allowed_roles: ["CREATOR"], allowed_orgs: ["miracom"] },
+          confirmation_policy: "NEVER",
+        },
+      ],
+    };
+  }
+
   // mcp_tool
   return {
     ...common,
@@ -624,6 +645,11 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return basic.name.trim().length > 0;
       case 2:
+        if (type === "mcp_server") {
+          // 스키마가 거부할 것을 다음 단계에서 알게 하지 않는다 — 여기서
+          // 막고 아래 `nextDisabledReason` 이 무엇이 비었는지 말해 준다.
+          return mcpServerFormProblem(parsed) === null;
+        }
         if (type !== "mcp_tool") return manifestText.trim().length > 0;
         return (
           parsed.ok &&
@@ -647,6 +673,7 @@ function Wizard({ type }: { type: WizardType }) {
       case 1:
         return "자산 이름을 입력하세요.";
       case 2:
+        if (type === "mcp_server") return mcpServerFormProblem(parsed) ?? undefined;
         return type === "mcp_tool"
           ? "MCP 서버 연결 이름과 Tool 호출 이름을 입력하세요."
           : "Manifest JSON을 입력하세요.";
@@ -1085,6 +1112,47 @@ function StepManifest({
               rows={18}
               spellCheck={false}
               aria-label="Prompt Manifest JSON"
+              className={`${inputClass} font-mono text-caption resize-y`}
+            />
+            {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
+          </div>
+        </details>
+      </div>
+    );
+  }
+
+  if (type === "mcp_server") {
+    return (
+      <div className="space-y-5">
+        <div>
+          <h2 className="text-card-title font-semibold text-text-primary">MCP 서버 연결</h2>
+          <p className="mt-1 text-body text-text-secondary">
+            서버 주소와 사용을 승인할 기능을 고르면 됩니다. JSON 을 직접 다룰 필요는 없습니다.
+          </p>
+        </div>
+
+        {structuredBlocked ? (
+          structuredBlockedBanner
+        ) : (
+          <McpServerManifestFields parsed={parsed} onChange={onChange} />
+        )}
+
+        <details className="rounded-lg border border-border bg-white">
+          <summary className="cursor-pointer px-4 py-3 text-body font-semibold text-text-secondary">
+            고급 설정 · Manifest 직접 편집
+          </summary>
+          <div className="space-y-4 border-t border-border p-4">
+            <p className="text-caption text-text-secondary">
+              입력 Schema 나 세부 실행 제한(시간·행 수 상한)이 필요할 때만 수정하세요. 기본
+              등록에는 펼칠 필요가 없습니다.
+            </p>
+            <ExamplePanel type={type} example={example} onFill={onChange} />
+            <textarea
+              value={manifestText}
+              onChange={(e) => onChange(e.target.value)}
+              rows={18}
+              spellCheck={false}
+              aria-label="MCP 서버 Manifest JSON"
               className={`${inputClass} font-mono text-caption resize-y`}
             />
             {!parsed.ok && manifestText.trim().length > 0 && <ErrorBanner message={parsed.error} />}
@@ -1674,6 +1742,373 @@ function PromptManifestFields({
     </div>
   );
 }
+
+/** MCP 서버 폼에서 아직 비어 있는 것 하나를 사람이 읽는 문장으로 돌려준다.
+ *  없으면 `null`. 스키마가 거부할 값을 다음 단계에서 알게 하는 대신 여기서
+ *  막는다 — 특히 권한을 비워 두면 "제한 없음"이 아니라 전원 거부라, 모르고
+ *  넘어가면 등록은 되는데 아무도 못 쓰는 서버가 된다. */
+function mcpServerFormProblem(parsed: ParseResult): string | null {
+  if (!parsed.ok) return "Manifest 형식이 올바르지 않습니다.";
+  const m = parsed.value;
+  const alias = typeof m.server_alias === "string" ? m.server_alias.trim() : "";
+  if (!alias) return "서버 이름(별명)을 입력하세요.";
+
+  const transport =
+    typeof m.transport === "object" && m.transport !== null
+      ? (m.transport as Record<string, unknown>)
+      : {};
+  if (transport.kind === "STDIO") {
+    if (!(typeof transport.entrypoint === "string" && transport.entrypoint.trim()))
+      return "시작 파일을 입력하세요.";
+    if (transport.vendored_dependencies !== true)
+      return "내 PC에서 직접 실행하려면 라이브러리 동봉을 확인해 주세요.";
+  } else if (!(typeof transport.endpoint === "string" && transport.endpoint.trim())) {
+    return "서버 주소를 입력하세요.";
+  }
+
+  const tools = Array.isArray(m.declared_tools) ? (m.declared_tools as DeclaredToolDraft[]) : [];
+  if (tools.length === 0) return "사용을 승인할 기능을 하나 이상 추가하세요.";
+  for (let i = 0; i < tools.length; i += 1) {
+    const tool = tools[i];
+    const label = tools.length > 1 ? `${i + 1}번째 기능: ` : "";
+    if (!(tool.tool_name ?? "").trim()) return `${label}기능 이름을 입력하세요.`;
+    if ((tool.permissions?.allowed_roles ?? []).length === 0)
+      return `${label}사용할 수 있는 역할을 하나 이상 고르세요.`;
+    if ((tool.permissions?.allowed_orgs ?? []).length === 0)
+      return `${label}사용할 수 있는 조직을 입력하세요.`;
+  }
+  return null;
+}
+
+// --- D-094 MCP 서버 구조화 폼 ------------------------------------------------
+// JSON 을 직접 쓰게 하지 않는다. `McpManifestFields` 와 같은 방식이다 —
+// **매니페스트 JSON 이 여전히 진실의 원천**이고 이 폼은 그 위의 뷰다. 덕분에
+// "고급 설정 · Manifest 직접 편집" 이 계속 동작하고, 검증 경로도 그대로다
+// (폼이 별도 상태를 들면 둘이 갈라지고, 갈라진 쪽은 아무도 모른다).
+
+const MCP_SERVER_ROLE_OPTIONS = [
+  { value: "CREATOR", label: "자산 제작자" },
+  { value: "TECH_REVIEWER", label: "기술 검토자" },
+  { value: "SECURITY_REVIEWER", label: "보안 검토자" },
+  { value: "RELEASE_MANAGER", label: "릴리스 담당자" },
+  { value: "AUDITOR", label: "감사자" },
+  { value: "ADMIN", label: "관리자" },
+  { value: "USER", label: "일반 사용자" },
+] as const;
+
+interface DeclaredToolDraft {
+  tool_name?: string;
+  risk_level?: string;
+  permissions?: { allowed_roles?: string[]; allowed_orgs?: string[]; allowed_sites?: string[] };
+  confirmation_policy?: string;
+  label?: string;
+}
+
+function McpServerManifestFields({
+  parsed,
+  onChange,
+}: {
+  parsed: ParseResult;
+  onChange: (value: string) => void;
+}) {
+  const manifest = parsed.ok ? parsed.value : {};
+  const transport =
+    typeof manifest.transport === "object" && manifest.transport !== null
+      ? (manifest.transport as Record<string, unknown>)
+      : {};
+  const tools: DeclaredToolDraft[] = Array.isArray(manifest.declared_tools)
+    ? (manifest.declared_tools as DeclaredToolDraft[])
+    : [];
+  const kind = typeof transport.kind === "string" ? transport.kind : "HTTP";
+
+  function update(patch: Record<string, unknown>) {
+    onChange(JSON.stringify({ ...manifest, ...patch }, null, 2));
+  }
+
+  function updateTransport(patch: Record<string, unknown>) {
+    update({ transport: { ...transport, ...patch } });
+  }
+
+  function updateTool(index: number, patch: DeclaredToolDraft) {
+    const next = tools.map((t, i) => (i === index ? { ...t, ...patch } : t));
+    update({ declared_tools: next });
+  }
+
+  function updatePermissions(index: number, patch: Record<string, unknown>) {
+    const current = tools[index]?.permissions ?? {};
+    updateTool(index, { permissions: { ...current, ...patch } });
+  }
+
+  function toggleRole(index: number, role: string) {
+    const current = tools[index]?.permissions?.allowed_roles ?? [];
+    const next = current.includes(role)
+      ? current.filter((r) => r !== role)
+      : [...current, role];
+    updatePermissions(index, { allowed_roles: next });
+  }
+
+  function addTool() {
+    update({
+      declared_tools: [
+        ...tools,
+        {
+          tool_name: "",
+          risk_level: "READ_ONLY",
+          permissions: { allowed_roles: ["CREATOR"], allowed_orgs: ["miracom"] },
+          confirmation_policy: "NEVER",
+        },
+      ],
+    });
+  }
+
+  function removeTool(index: number) {
+    update({ declared_tools: tools.filter((_, i) => i !== index) });
+  }
+
+  return (
+    <div className="space-y-5">
+      {/* --- 서버 --- */}
+      <div className="grid gap-4 sm:grid-cols-2">
+        <FormField label="서버 이름(별명)" required>
+          <input
+            value={typeof manifest.server_alias === "string" ? manifest.server_alias : ""}
+            onChange={(e) => update({ server_alias: e.target.value })}
+            placeholder="office-connector"
+            className={inputClass}
+          />
+          <p className="mt-1 text-caption text-text-secondary">
+            감사 기록과 화면에서 이 이름으로 표시됩니다.
+          </p>
+        </FormField>
+
+        <FormField label="출처" required>
+          <select
+            value={typeof manifest.provenance === "string" ? manifest.provenance : "INTERNAL"}
+            onChange={(e) => update({ provenance: e.target.value })}
+            className={inputClass}
+          >
+            <option value="INTERNAL">사내에서 만든 서버</option>
+            <option value="THIRD_PARTY">외부에서 반입한 서버</option>
+          </select>
+          <p className="mt-1 text-caption text-text-secondary">
+            외부 서버에는 호출자의 사번·역할을 보내지 않습니다.
+          </p>
+        </FormField>
+      </div>
+
+      {/* --- 연결 --- */}
+      <div className="rounded-lg border border-border bg-white p-4">
+        <p className="text-body font-semibold text-text-primary">연결 방법</p>
+
+        <div className="mt-3 grid gap-4 sm:grid-cols-2">
+          <FormField label="방식" required>
+            <select
+              value={kind}
+              onChange={(e) =>
+                updateTransport(
+                  e.target.value === "HTTP"
+                    ? { kind: "HTTP", endpoint: "", interpreter: undefined, entrypoint: undefined, vendored_dependencies: undefined }
+                    : { kind: "STDIO", endpoint: undefined, interpreter: "node", entrypoint: "", vendored_dependencies: true }
+                )
+              }
+              className={inputClass}
+            >
+              <option value="HTTP">네트워크로 연결 (주소만 있으면 됩니다)</option>
+              <option value="STDIO">내 PC에서 직접 실행 (설치 파일이 필요합니다)</option>
+            </select>
+          </FormField>
+
+          {kind === "HTTP" ? (
+            <FormField label="서버 주소" required>
+              <input
+                value={typeof transport.endpoint === "string" ? transport.endpoint : ""}
+                onChange={(e) => updateTransport({ endpoint: e.target.value })}
+                placeholder="http://127.0.0.1:8500/mcp"
+                className={inputClass}
+              />
+            </FormField>
+          ) : (
+            <FormField label="실행할 프로그램" required>
+              <select
+                value={typeof transport.interpreter === "string" ? transport.interpreter : "node"}
+                onChange={(e) => updateTransport({ interpreter: e.target.value })}
+                className={inputClass}
+              >
+                <option value="node">Node.js</option>
+                <option value="python">Python</option>
+              </select>
+            </FormField>
+          )}
+        </div>
+
+        {kind === "STDIO" && (
+          <div className="mt-3">
+            <FormField label="시작 파일" required>
+              <input
+                value={typeof transport.entrypoint === "string" ? transport.entrypoint : ""}
+                onChange={(e) => updateTransport({ entrypoint: e.target.value })}
+                placeholder="server/dist/index.js"
+                className={inputClass}
+              />
+              <p className="mt-1 text-caption text-text-secondary">
+                설치 폴더 기준 상대 경로입니다. 폴더 밖을 가리키면 등록이 거부됩니다.
+              </p>
+            </FormField>
+            <label className="mt-3 flex items-start gap-2 text-caption text-text-secondary">
+              <input
+                type="checkbox"
+                checked={transport.vendored_dependencies === true}
+                onChange={(e) => updateTransport({ vendored_dependencies: e.target.checked })}
+                className="mt-0.5"
+              />
+              <span>
+                필요한 라이브러리가 설치 파일 안에 모두 들어 있습니다(폐쇄망에서 추가로 내려받지
+                않습니다). 이 방식은 체크되어 있어야 등록됩니다.
+              </span>
+            </label>
+          </div>
+        )}
+      </div>
+
+      {/* --- Tool --- */}
+      <div className="rounded-lg border border-border bg-white p-4">
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="text-body font-semibold text-text-primary">사용을 승인할 기능</p>
+            <p className="mt-0.5 text-caption text-text-secondary">
+              여기 적은 것만 사용됩니다. 서버가 나중에 기능을 추가해도 자동으로 늘어나지 않습니다.
+            </p>
+          </div>
+          <Button variant="secondary" size="sm" onClick={addTool}>
+            기능 추가
+          </Button>
+        </div>
+
+        <div className="mt-4 space-y-4">
+          {tools.length === 0 && (
+            <p className="rounded-lg bg-warning/5 px-3 py-2.5 text-caption text-warning">
+              승인한 기능이 하나도 없으면 이 서버는 아무 일도 할 수 없습니다.
+            </p>
+          )}
+
+          {tools.map((tool, index) => {
+            const roles = tool.permissions?.allowed_roles ?? [];
+            const isWrite = tool.risk_level === "WRITE";
+            return (
+              <div key={index} className="rounded-lg border border-border p-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <FormField label="기능 이름" required>
+                    <input
+                      value={tool.tool_name ?? ""}
+                      onChange={(e) => updateTool(index, { tool_name: e.target.value })}
+                      placeholder="db_metadata.get_tables"
+                      className={inputClass}
+                    />
+                  </FormField>
+
+                  <FormField label="위험도" required>
+                    <select
+                      value={tool.risk_level ?? "READ_ONLY"}
+                      onChange={(e) =>
+                        updateTool(index, {
+                          risk_level: e.target.value,
+                          // WRITE 는 확인 없이 둘 수 없다(스키마가 거부한다).
+                          // 사용자가 저장 후에야 알게 되는 대신 여기서 올린다.
+                          ...(e.target.value === "WRITE" &&
+                          (tool.confirmation_policy ?? "NEVER") === "NEVER"
+                            ? { confirmation_policy: "ALWAYS" }
+                            : {}),
+                        })
+                      }
+                      className={inputClass}
+                    >
+                      <option value="READ_ONLY">읽기만 함</option>
+                      <option value="WRITE">데이터를 바꿈</option>
+                    </select>
+                  </FormField>
+                </div>
+
+                <div className="mt-3">
+                  <FormField label="사용자 확인" required>
+                    <select
+                      value={tool.confirmation_policy ?? "NEVER"}
+                      onChange={(e) =>
+                        updateTool(index, { confirmation_policy: e.target.value })
+                      }
+                      className={inputClass}
+                    >
+                      {/* 데이터를 바꾸는 기능은 확인 없이 실행할 수 없다 —
+                          고를 수 없는 선택지를 남겨 두면 저장 시점에야 거부된다. */}
+                      {!isWrite && <option value="NEVER">매번 바로 실행</option>}
+                      <option value="ON_PARAMETER">입력값에 따라 확인</option>
+                      <option value="ALWAYS">실행 전 항상 확인</option>
+                    </select>
+                    {isWrite && (
+                      <p className="mt-1 text-caption text-warning">
+                        데이터를 바꾸는 기능은 확인 없이 실행할 수 없습니다.
+                      </p>
+                    )}
+                  </FormField>
+                </div>
+
+                <div className="mt-3">
+                  <p className="text-caption font-medium text-text-primary">사용할 수 있는 역할</p>
+                  <div className="mt-1.5 flex flex-wrap gap-x-4 gap-y-1.5">
+                    {MCP_SERVER_ROLE_OPTIONS.map((option) => (
+                      <label key={option.value} className="flex items-center gap-1.5 text-caption">
+                        <input
+                          type="checkbox"
+                          checked={roles.includes(option.value)}
+                          onChange={() => toggleRole(index, option.value)}
+                        />
+                        <span>{option.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {roles.length === 0 && (
+                    <p className="mt-1 text-caption text-warning">
+                      하나도 고르지 않으면 아무도 이 기능을 쓸 수 없습니다(제한 없음이 아닙니다).
+                    </p>
+                  )}
+                </div>
+
+                <div className="mt-3">
+                  <FormField label="사용할 수 있는 조직" required>
+                    <input
+                      value={(tool.permissions?.allowed_orgs ?? []).join(", ")}
+                      onChange={(e) =>
+                        updatePermissions(index, {
+                          allowed_orgs: e.target.value
+                            .split(",")
+                            .map((s) => s.trim())
+                            .filter(Boolean),
+                        })
+                      }
+                      placeholder="miracom"
+                      className={inputClass}
+                    />
+                    <p className="mt-1 text-caption text-text-secondary">
+                      쉼표로 구분합니다. 비워 두면 아무도 쓸 수 없습니다.
+                    </p>
+                  </FormField>
+                </div>
+
+                {tools.length > 1 && (
+                  <div className="mt-3 flex justify-end">
+                    <Button variant="secondary" size="sm" onClick={() => removeTool(index)}>
+                      이 기능 빼기
+                    </Button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 function McpManifestFields({
   parsed,
