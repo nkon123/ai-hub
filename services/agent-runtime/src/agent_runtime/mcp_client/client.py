@@ -184,14 +184,26 @@ class RawToolResult:
     is_error: bool
 
 
-async def call_tool(client: Any, tool_name: str, arguments: dict | None) -> RawToolResult:
+async def call_tool(
+    client: Any,
+    tool_name: str,
+    arguments: dict | None,
+    *,
+    meta: dict | None = None,
+) -> RawToolResult:
     """열린 세션에서 `tools/call` 한 번.
 
     "호출해도 되는가"는 **여기서 판단하지 않는다** — 그것은
     `policy.decide` 의 몫이고, 이 함수는 판정을 통과한 뒤에만 불린다.
     두 곳에서 판단하면 한 곳만 고쳐진다.
+
+    `meta` 는 MCP 요청의 `_meta` 로 나간다(D-095). 호출자 신원을 보낼 유일한
+    경로이며, **무엇을 보낼지 정하는 것은 이 함수가 아니다** —
+    `dispatch` 가 서버 출처를 보고 정한다. 여기서 신원을 조립하면 모든 호출에
+    무조건 붙게 되고, 서드파티 서버에 사내 사용자 정보가 새는 것을 막을 자리가
+    없어진다.
     """
-    result = await client.call_tool(tool_name, arguments or {})
+    result = await client.call_tool(tool_name, arguments or {}, meta=meta)
     return RawToolResult(
         content=content_blocks_to_dicts(getattr(result, "content", None)),
         structured_content=getattr(result, "structured_content", None),

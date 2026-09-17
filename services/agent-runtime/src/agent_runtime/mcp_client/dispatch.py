@@ -141,7 +141,13 @@ async def dispatch_tool_call(
         )
         async with open_session(target, timeout_seconds=timeout) as session:
             raw = await asyncio.wait_for(
-                call_tool(session, tool_name, arguments), timeout=timeout
+                call_tool(
+                    session,
+                    tool_name,
+                    arguments,
+                    meta=build_identity_meta(server, context, trace_id=trace_id, run_id=run_id),
+                ),
+                timeout=timeout,
             )
     except TimeoutError:
         event = _audit(MCPAuditResult.TIMEOUT)
@@ -184,6 +190,42 @@ async def dispatch_tool_call(
         truncated=filtered.truncated,
     )
     return DispatchOutcome(decision=decision, audit_event=event, result=filtered)
+
+
+def build_identity_meta(
+    server, context: DispatchContext, *, trace_id: str, run_id: str
+) -> dict | None:
+    """호출자 신원을 MCP `_meta` 로 보낼지 정하고, 보낸다면 무엇을 담을지 정한다.
+
+    **`provenance=INTERNAL` 인 서버에만 보낸다(D-095).** 서드파티 서버에 사내
+    사용자 ID·역할·조직을 보내는 것은 그 자체가 데이터 공유다 — 파일을 읽어
+    주는 서버가 누가 요청했는지 알 필요는 없다. 서드파티 호출의 인가는
+    클라이언트 PEP(`policy.decide`)가 이미 전부 수행했고, 서버는 그 판정을
+    다시 하지 않는다.
+
+    MCP `tools/call` 에는 신원을 담을 표준 자리가 없어서 `_meta` 를 쓴다.
+    Tool `arguments` 에 넣는 선택지는 처음부터 제외했다 — 우리 서버는 신원을
+    `audit_context` 에서만 읽고 Tool 입력에서는 절대 읽지 않는데, 그것이
+    Prompt Injection 으로 role 을 위조하지 못하게 하는 구조적 장치이기 때문이다.
+    신원을 인자에 섞으면 그 장치가 사라진다.
+
+    보내지 않기로 한 경우 `None` 이다 — 빈 dict 를 보내면 "신원이 없는 호출"과
+    "신원을 일부러 빼고 보낸 호출"이 서버 쪽에서 같아 보인다.
+    """
+    if getattr(server, "provenance", None) != "INTERNAL":
+        return None
+    return {
+        "aihub/audit_context": {
+            "trace_id": trace_id,
+            "run_id": run_id,
+            "user": {
+                "id": context.user_id,
+                "organization_id": context.organization_id,
+                "site_id": context.site_id,
+                "roles": list(context.roles),
+            },
+        }
+    }
 
 
 def _declared(server, tool_name: str) -> dict:

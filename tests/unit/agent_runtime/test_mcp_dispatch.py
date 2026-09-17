@@ -79,9 +79,9 @@ def _patch_call(monkeypatch, result=None, raises=None, record=None):
     async def _open(target, *, timeout_seconds=20.0):  # noqa: ARG001
         yield object()
 
-    async def _call(session, tool_name, arguments):  # noqa: ARG001
+    async def _call(session, tool_name, arguments, *, meta=None):  # noqa: ARG001
         if record is not None:
-            record.append((tool_name, arguments))
+            record.append((tool_name, arguments, meta))
         if raises is not None:
             raise raises
         return result or RawToolResult(content=[], structured_content=None, is_error=False)
@@ -186,7 +186,7 @@ async def test_a_confirmed_call_goes_through(monkeypatch) -> None:
     outcome = await _dispatch(registry, confirmed=True)
 
     assert outcome.called is True
-    assert calls == [("read_file", {"path": "a.txt"})]
+    assert calls == [("read_file", {"path": "a.txt"}, None)]
 
 
 # --- 결과는 반드시 필터를 지난다 ---------------------------------------------
@@ -338,3 +338,63 @@ def test_a_manifest_cannot_raise_the_timeout_above_the_deployment_ceiling() -> N
 def test_a_shorter_declared_timeout_is_honored() -> None:
     server = _Server(guards={"timeout_seconds": 2})
     assert dispatch_module._timeout_seconds(server, "read_file", _Settings()) == 2.0
+
+
+# --- D-095 신원 전달 ---------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_identity_is_not_sent_to_a_third_party_server(monkeypatch) -> None:
+    """서드파티 서버에 사내 사용자 ID·역할·조직을 보내는 것은 그 자체가 데이터
+    공유다 — 파일을 읽어 주는 서버가 누가 요청했는지 알 필요는 없다."""
+    calls: list = []
+    _patch_call(monkeypatch, record=calls)
+    registry = _Registry(_policy(), _Server())  # provenance = THIRD_PARTY
+
+    await _dispatch(registry)
+
+    assert calls[0][2] is None, "서드파티 서버에 신원이 나갔다"
+
+
+@pytest.mark.asyncio
+async def test_identity_is_sent_to_an_internal_server(monkeypatch) -> None:
+    """우리 서버는 신원을 받아야 자기 §7 인가와 §10 감사를 할 수 있다."""
+    calls: list = []
+    _patch_call(monkeypatch, record=calls)
+    server = _Server()
+    server.provenance = "INTERNAL"
+    registry = _Registry(_policy(), server)
+
+    await _dispatch(registry)
+
+    meta = calls[0][2]
+    assert meta is not None
+    assert meta["aihub/audit_context"]["user"]["id"] == "u@miracom.com"
+    assert meta["aihub/audit_context"]["user"]["roles"] == ["ADMIN"]
+
+
+@pytest.mark.asyncio
+async def test_identity_never_travels_in_the_tool_arguments(monkeypatch) -> None:
+    """우리 서버는 신원을 `audit_context` 에서만 읽고 Tool 입력에서는 절대
+    읽지 않는다 — Prompt Injection 으로 role 을 위조하지 못하게 하는 구조적
+    장치다. 인자에 섞으면 그 장치가 사라진다."""
+    calls: list = []
+    _patch_call(monkeypatch, record=calls)
+    server = _Server()
+    server.provenance = "INTERNAL"
+
+    await _dispatch(_Registry(_policy(), server))
+
+    arguments = calls[0][1]
+    flat = str(arguments)
+    assert "u@miracom.com" not in flat
+    assert "ADMIN" not in flat
+
+
+def test_not_sending_identity_is_none_not_an_empty_dict() -> None:
+    """빈 dict 를 보내면 "신원이 없는 호출"과 "일부러 빼고 보낸 호출"이 서버
+    쪽에서 같아 보인다."""
+    server = _Server()  # THIRD_PARTY
+    assert (
+        dispatch_module.build_identity_meta(server, ADMIN, trace_id="t", run_id="r") is None
+    )
