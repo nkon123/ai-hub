@@ -22,6 +22,8 @@ from agent_runtime.adapters import (
 )
 from agent_runtime.adapters.hub_search import HttpHubSearchAdapter
 from agent_runtime.adapters.mcp import HttpMCPAdapter
+from agent_runtime.adapters.mcp_protocol import RoutingMCPAdapter
+from agent_runtime.mcp_server_registry import get_registry as get_mcp_server_registry
 from agent_runtime.adapters.ollama import OllamaLLMAdapter
 from agent_runtime.adapters.registry import HttpAssetRegistryResolver
 from agent_runtime.adapters.search import HttpKnowledgeAdapter
@@ -138,8 +140,29 @@ def get_knowledge_adapter() -> KnowledgeAdapter:
     return HttpKnowledgeAdapter(search_runtime_url=settings.search_runtime_url)
 
 
+#: Rate Limit 창과 프로토콜 클라이언트 상태는 요청마다 새로 만들면 의미가
+#: 없어서(상한이 사실상 사라진다) 프로세스 수명 동안 하나를 재사용한다.
+_routing_mcp_adapter: RoutingMCPAdapter | None = None
+
+
 def get_mcp_adapter() -> MCPAdapter:
-    return HttpMCPAdapter(office_mcp_url=settings.office_mcp_url)
+    """D-094 — 등록된 MCP 서버는 프로토콜로, 나머지는 기존 REST 로.
+
+    Tool 마다 `RoutingMCPAdapter` 가 고른다. 기능 플래그가 아니라 **실제 등록
+    상태**로 고르는 것이 핵심이다 — 플래그는 누군가 켜야 하고, 켜는 것을 잊으면
+    새 경로는 영원히 죽은 코드가 된다.
+
+    게시된 챗봇 4개가 쓰는 office-mcp-server Tool 들은 아직 레지스트리에 없으므로
+    기존 경로로 그대로 간다.
+    """
+    global _routing_mcp_adapter
+    if _routing_mcp_adapter is None:
+        _routing_mcp_adapter = RoutingMCPAdapter(
+            registry=get_mcp_server_registry(),
+            settings=settings,
+            legacy=HttpMCPAdapter(office_mcp_url=settings.office_mcp_url),
+        )
+    return _routing_mcp_adapter
 
 
 def get_asset_registry_resolver() -> AssetRegistryResolver:

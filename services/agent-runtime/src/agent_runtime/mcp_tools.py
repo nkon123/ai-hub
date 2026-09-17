@@ -135,6 +135,21 @@ def resolve_allowed_alias(office_profile: dict[str, Any], tool_name: str) -> str
     for server in office_profile.get("allowed_mcp_servers", []):
         if tool_name in server.get("allowed_tools", []):
             return str(server["alias"])
+
+    # D-094: Office Profile 이 모르는 Tool 이라도 **등록된 MCP 서버**가 제공하면
+    # 허용한다. Office Profile 목록은 D-080 시절의 안전 경계였는데, 서드파티
+    # 서버를 설치해 쓰는 순간 그 목록은 더 이상 전체를 담을 수 없다.
+    #
+    # 경계가 느슨해지는 것이 아니다 — 등록 자체가 네 겹의 검사를 통과해야 하고
+    # (매니페스트 승인, 연결 경계, 핸드셰이크 대조, 검토자가 부여한 거버넌스
+    # 메타데이터), 실제 호출은 `mcp_client.dispatch_tool_call` 의 PEP 를 그대로
+    # 지난다. 여기서 alias 를 돌려주는 것은 "그 PEP 까지 갈 수 있다"는 뜻이지
+    # "호출해도 된다"는 뜻이 아니다.
+    from agent_runtime.mcp_server_registry import get_registry as _get_server_registry
+
+    for server in _get_server_registry().list_servers():
+        if server.state == "ACTIVE" and tool_name in server.tool_names:
+            return server.server_alias
     return None
 
 
@@ -151,15 +166,41 @@ def _spec_for(tool_name: str) -> dict[str, Any] | None:
     from agent_runtime.mcp_tool_registry import get_registry
 
     entry = get_registry().resolve(tool_name)
-    if entry is None:
-        return None
-    return {
-        "input_schema": entry.input_schema,
-        "confirmation_policy": entry.confirmation_policy,
-        # D-080's `label` is the description-shaped field a registered
-        # (non-built-in) tool actually carries — see `list_candidate_tools`.
-        "label": entry.label,
-    }
+    if entry is not None:
+        return {
+            "input_schema": entry.input_schema,
+            "confirmation_policy": entry.confirmation_policy,
+            # D-080's `label` is the description-shaped field a registered
+            # (non-built-in) tool actually carries — see `list_candidate_tools`.
+            "label": entry.label,
+        }
+
+    # D-094: 마지막으로 등록된 MCP 서버의 매니페스트를 본다. 스키마와 확인
+    # 정책은 **검토자가 승인한 매니페스트**에서 오지 서버가 말하는 것에서
+    # 오지 않는다 — 서버가 자기 확인 정책을 NEVER 라고 주장할 수 있으면
+    # 확인 정책은 의미가 없다.
+    return _spec_from_mcp_server_registry(tool_name)
+
+
+def _spec_from_mcp_server_registry(tool_name: str) -> dict[str, Any] | None:
+    """D-094 로 등록된 서버의 매니페스트에서 이 Tool 의 선언을 찾는다."""
+    from agent_runtime.mcp_server_registry import get_registry as _get_server_registry
+
+    for server in _get_server_registry().list_servers():
+        if server.state != "ACTIVE" or tool_name not in server.tool_names:
+            continue
+        for declared in (server.manifest or {}).get("declared_tools") or []:
+            if isinstance(declared, dict) and declared.get("tool_name") == tool_name:
+                return {
+                    # 스키마를 선언하지 않은 Tool 은 "아무 입력이나 허용"이 아니라
+                    # 빈 객체만 허용한다 — 검증할 수 없는 입력을 통과시키면
+                    # 입력 검사가 있다는 사실 자체가 거짓이 된다.
+                    "input_schema": declared.get("input_schema")
+                    or {"type": "object", "additionalProperties": False},
+                    "confirmation_policy": declared.get("confirmation_policy") or ALWAYS,
+                    "label": declared.get("label") or tool_name,
+                }
+    return None
 
 
 def validate_tool_input(tool_name: str, raw_input: dict[str, Any]) -> list[str]:
