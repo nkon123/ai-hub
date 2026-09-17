@@ -27,6 +27,7 @@ from typing import Any
 
 from agent_runtime.mcp_client.connection import ConnectionTarget, HttpTarget, StdioTarget
 from agent_runtime.mcp_client.errors import MCPRegistrationError, MCPRegistrationReason
+from agent_runtime.mcp_client.result_filter import content_blocks_to_dicts
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,37 @@ async def handshake(
     """연결 → `initialize` → `tools/list` 까지 한 번에 수행한다."""
     async with open_session(target, timeout_seconds=timeout_seconds) as client:
         return await discover(client)
+
+
+@dataclass(frozen=True)
+class RawToolResult:
+    """서버가 돌려준 것. **아직 아무 필터도 지나지 않았다.**
+
+    SDK 타입을 그대로 내보내지 않는다(루트 코드 규칙: 외부 Library 타입을 모듈
+    공개 계약으로 직접 노출하지 않는다). 이름에 `Raw` 를 넣은 것은 의도다 —
+    이것을 그대로 사용자나 모델에게 건네면 §9(마스킹)와 §8.3(결과 상한)을
+    통째로 건너뛰게 되고, 그 사실이 호출부에서 보이지 않으면 언젠가 그렇게 된다.
+    `dispatch.dispatch_tool_call` 만이 이것을 만들고 곧바로 필터에 넘긴다.
+    """
+
+    content: list[dict]
+    structured_content: Any
+    is_error: bool
+
+
+async def call_tool(client: Any, tool_name: str, arguments: dict | None) -> RawToolResult:
+    """열린 세션에서 `tools/call` 한 번.
+
+    "호출해도 되는가"는 **여기서 판단하지 않는다** — 그것은
+    `policy.decide` 의 몫이고, 이 함수는 판정을 통과한 뒤에만 불린다.
+    두 곳에서 판단하면 한 곳만 고쳐진다.
+    """
+    result = await client.call_tool(tool_name, arguments or {})
+    return RawToolResult(
+        content=content_blocks_to_dicts(getattr(result, "content", None)),
+        structured_content=getattr(result, "structured_content", None),
+        is_error=bool(getattr(result, "is_error", False)),
+    )
 
 
 def approved_tool_intersection(

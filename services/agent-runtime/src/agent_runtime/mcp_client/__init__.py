@@ -7,6 +7,8 @@ import하지 않는다(루트 구현 원칙 2, 3).
 from agent_runtime.mcp_client.client import (
     DiscoveredTool,
     HandshakeResult,
+    RawToolResult,
+    call_tool,
     approved_tool_intersection,
     compute_tools_snapshot_hash,
     discover,
@@ -25,6 +27,7 @@ from agent_runtime.mcp_client.audit import (
     event_from_decision,
     now_iso,
 )
+from agent_runtime.mcp_client.dispatch import DispatchOutcome, dispatch_tool_call
 from agent_runtime.mcp_client.errors import MCPRegistrationError, MCPRegistrationReason
 from agent_runtime.mcp_client.policy import (
     DispatchContext,
@@ -56,12 +59,16 @@ __all__ = [
     "ResultLimits",
     "ToolPolicy",
     "DiscoveredTool",
+    "DispatchOutcome",
+    "RawToolResult",
     "HandshakeResult",
     "HttpTarget",
     "MCPRegistrationError",
     "MCPRegistrationReason",
     "StdioTarget",
     "approved_tool_intersection",
+    "call_tool",
+    "dispatch_tool_call",
     "compute_tools_snapshot_hash",
     "content_blocks_to_dicts",
     "decide",
