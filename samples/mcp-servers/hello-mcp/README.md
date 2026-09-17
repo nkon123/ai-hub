@@ -44,8 +44,14 @@ curl -X POST http://localhost:8100/local/v1/mcp-servers ^
   -d "{\"manifest\": <mcp-server-manifest.json 내용>, \"install_path\": \"C:\\Dev\\ai-hub\\samples\\mcp-servers\\hello-mcp\", \"source\": \"DESKTOP_INSTALL\"}"
 ```
 
-Portal 위저드(`/assets/new/mcp_server`)로 등록할 때는 `mcp-server-manifest.json`
-내용을 그대로 쓰면 됩니다.
+Portal 위저드(`/assets/new/mcp_server`)에서는 2단계 맨 위 예시 중
+**"내 PC에서 직접 실행 (예제 서버)"** 의 `이걸로 채우기` 를 누르면 됩니다 —
+그 예시가 바로 이 폴더의 `mcp-server-manifest.json` 이라 붙여넣을 것이 없습니다
+(`fixtures/wizard-examples-index.json` 이 이 파일을 직접 가리킵니다).
+
+단, Portal 등록은 **카탈로그에 자산을 만드는 것**이고 이 서버가 뜨는 것과는
+별개입니다. `server.py` 는 업로드할 수 없습니다(`.py` 는 거부됩니다) — 코드를
+허브가 나르는 문제는 D-096 의 열린 항목입니다.
 
 ## 확인
 

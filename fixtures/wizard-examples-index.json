@@ -1,25 +1,51 @@
 {
-  "$comment": "Single source of truth mapping each P05 registration wizard type (apps/portal-web/app/assets/new/[type]/) to the real fixtures/valid/* files it serves as an example. Read by two places that must stay in agreement: apps/portal-web/app/assets/new/[type]/examples/route.ts (serves the example to the browser) and tests/contract/test_wizard_examples.py (proves the served example still validates against packages/schemas). All paths are relative to this file's directory (fixtures/).",
-  "agent": {
-    "sourceFixture": "standard-agent",
-    "manifest": "valid/standard-agent/agent-manifest.json",
-    "companionFiles": []
-  },
-  "prompt": {
-    "sourceFixture": "standard-prompt",
-    "manifest": "valid/standard-prompt/prompt-manifest.json",
-    "companionFiles": [
-      "valid/standard-prompt/template.md"
-    ]
-  },
-  "mcp_tool": {
-    "sourceFixture": "mcp-readonly-oracle",
-    "manifest": "valid/mcp-readonly-oracle/mcp-tool-manifest.json",
-    "companionFiles": []
-  },
-  "mcp_server": {
-    "sourceFixture": "mcp-server-office-connector",
-    "manifest": "valid/mcp-server-office-connector/mcp-server-manifest.json",
-    "companionFiles": []
-  }
+  "$comment": "Single source of truth mapping each P05 registration wizard type (apps/portal-web/app/assets/new/[type]/) to the real, already-validating manifest files it offers as examples. Read by two places that must stay in agreement: apps/portal-web/app/assets/new/[type]/examples/route.ts (serves them to the browser) and tests/contract/test_wizard_examples.py (proves they still validate against packages/schemas). Each type maps to a LIST because one type can have genuinely different starting points — an mcp_server reached over HTTP and one launched on the user's own PC share a schema but almost no fields. Paths are relative to the REPOSITORY ROOT, not to this file, so an example can point at a real sample project (samples/**) instead of a copy that silently drifts from it.",
+  "agent": [
+    {
+      "id": "standard-agent",
+      "label": "표준 Agent",
+      "summary": "지식 검색으로 답하는 기본 Agent.",
+      "sourceFixture": "standard-agent",
+      "manifest": "fixtures/valid/standard-agent/agent-manifest.json",
+      "companionFiles": []
+    }
+  ],
+  "prompt": [
+    {
+      "id": "standard-prompt",
+      "label": "표준 Prompt",
+      "summary": "템플릿 파일을 함께 올리는 기본 Prompt.",
+      "sourceFixture": "standard-prompt",
+      "manifest": "fixtures/valid/standard-prompt/prompt-manifest.json",
+      "companionFiles": ["fixtures/valid/standard-prompt/template.md"]
+    }
+  ],
+  "mcp_tool": [
+    {
+      "id": "mcp-readonly-oracle",
+      "label": "읽기 전용 Oracle 조회",
+      "summary": "Oracle 메타데이터를 읽기만 하는 Tool.",
+      "sourceFixture": "mcp-readonly-oracle",
+      "manifest": "fixtures/valid/mcp-readonly-oracle/mcp-tool-manifest.json",
+      "companionFiles": []
+    }
+  ],
+  "mcp_server": [
+    {
+      "id": "hello-mcp-stdio",
+      "label": "내 PC에서 직접 실행 (예제 서버)",
+      "summary": "samples/mcp-servers/hello-mcp 를 그대로 등록합니다. 연결이 되는지 확인할 때 쓰세요.",
+      "sourceFixture": "samples/mcp-servers/hello-mcp",
+      "manifest": "samples/mcp-servers/hello-mcp/mcp-server-manifest.json",
+      "companionFiles": []
+    },
+    {
+      "id": "mcp-server-office-connector",
+      "label": "사내 서버에 연결 (HTTP)",
+      "summary": "이미 떠 있는 office-mcp-server 에 주소로 연결합니다.",
+      "sourceFixture": "mcp-server-office-connector",
+      "manifest": "fixtures/valid/mcp-server-office-connector/mcp-server-manifest.json",
+      "companionFiles": []
+    }
+  ]
 }

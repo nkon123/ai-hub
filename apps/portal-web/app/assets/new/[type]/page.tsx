@@ -281,14 +281,19 @@ const SCHEMA_DOC_BY_TYPE: Record<WizardType, string> = {
 };
 
 interface WizardExample {
+  id: string;
+  label: string;
+  summary: string;
   sourceFixture: string;
   manifest: Record<string, unknown>;
   companionFiles: { name: string; content: string }[];
 }
 
+// 한 유형이 예시를 여럿 가질 수 있다 — 같은 스키마라도 출발점이 전혀 다른
+// 경우가 있기 때문이다(MCP 서버: HTTP 연결 vs 내 PC 에서 직접 실행).
 type ExampleState =
   | { status: "loading" }
-  | { status: "ok"; data: WizardExample }
+  | { status: "ok"; data: WizardExample[] }
   | { status: "error"; message: string };
 
 function downloadTextFile(name: string, content: string) {
@@ -562,7 +567,7 @@ function Wizard({ type }: { type: WizardType }) {
       .then(async (res) => {
         const body = await safeJson(res);
         if (cancelled) return;
-        if (!res.ok || !body?.manifest) {
+        if (!res.ok || !Array.isArray(body?.examples) || body.examples.length === 0) {
           setExample({
             status: "error",
             message: body?.error?.message ?? "예시를 불러오지 못했습니다.",
@@ -571,11 +576,14 @@ function Wizard({ type }: { type: WizardType }) {
         }
         setExample({
           status: "ok",
-          data: {
-            sourceFixture: body.sourceFixture,
-            manifest: body.manifest,
-            companionFiles: body.companionFiles ?? [],
-          },
+          data: (body.examples as WizardExample[]).map((e) => ({
+            id: e.id,
+            label: e.label,
+            summary: e.summary,
+            sourceFixture: e.sourceFixture,
+            manifest: e.manifest,
+            companionFiles: e.companionFiles ?? [],
+          })),
         });
       })
       .catch(() => {
@@ -1127,9 +1135,16 @@ function StepManifest({
         <div>
           <h2 className="text-card-title font-semibold text-text-primary">MCP 서버 연결</h2>
           <p className="mt-1 text-body text-text-secondary">
-            서버 주소와 사용을 승인할 기능을 고르면 됩니다. JSON 을 직접 다룰 필요는 없습니다.
+            아래 예시 중 가까운 것으로 채운 뒤 값만 바꾸는 것이 가장 빠릅니다. JSON 을 직접 다룰
+            필요는 없습니다.
           </p>
         </div>
+
+        {/* MCP 서버만 예시를 "고급 설정" 안이 아니라 맨 위에 둔다 — HTTP 로
+            붙는 서버와 내 PC 에서 직접 실행하는 서버는 채워야 할 값이 거의
+            겹치지 않아서, 빈 폼에서 시작하면 어느 칸이 자기 경우에
+            해당하는지 알 수 없다(실 사용자 피드백: "복잡해"). */}
+        <ExamplePanel type={type} example={example} onFill={onChange} />
 
         {structuredBlocked ? (
           structuredBlockedBanner
@@ -1144,9 +1159,8 @@ function StepManifest({
           <div className="space-y-4 border-t border-border p-4">
             <p className="text-caption text-text-secondary">
               입력 Schema 나 세부 실행 제한(시간·행 수 상한)이 필요할 때만 수정하세요. 기본
-              등록에는 펼칠 필요가 없습니다.
+              등록에는 펼칠 필요가 없습니다. 예시는 위에 있습니다.
             </p>
-            <ExamplePanel type={type} example={example} onFill={onChange} />
             <textarea
               value={manifestText}
               onChange={(e) => onChange(e.target.value)}
@@ -2384,7 +2398,7 @@ function ExamplePanel({
   example: ExampleState;
   onFill: (manifestText: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (example.status === "loading") {
     return (
@@ -2398,41 +2412,62 @@ function ExamplePanel({
     return <ErrorBanner message={example.message} />;
   }
 
-  const { data } = example;
-  const pretty = JSON.stringify(data.manifest, null, 2);
-
   return (
     <Card className="p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <p className="text-body font-semibold text-text-primary">예시 Manifest</p>
-          <p className="mt-0.5 text-caption text-text-secondary">
-            실제로 검증을 통과하는 fixture(<code>{data.sourceFixture}</code>)를 그대로 가져온 예시입니다. id만
-            새로 발급됩니다 — 이름/설명 등 나머지 값은 자산에 맞게 직접 수정하세요.
-          </p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={() => setExpanded((v) => !v)}>
-            {expanded ? "예시 접기" : "예시 보기"}
-          </Button>
-          <Button size="sm" onClick={() => onFill(pretty)}>
-            이 예시로 채우기
-          </Button>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => downloadTextFile(`${type}-manifest.example.json`, pretty)}
-          >
-            <Download size={13} />
-            manifest.json
-          </Button>
-        </div>
+      <p className="text-body font-semibold text-text-primary">
+        예시 Manifest {example.data.length > 1 && `(${example.data.length}가지)`}
+      </p>
+      <p className="mt-0.5 text-caption text-text-secondary">
+        실제로 검증을 통과하는 파일을 그대로 가져온 예시입니다. id만 새로 발급됩니다 — 이름/설명 등
+        나머지 값은 자산에 맞게 직접 수정하세요.
+      </p>
+
+      <div className="mt-3 space-y-3">
+        {example.data.map((item) => {
+          const pretty = JSON.stringify(item.manifest, null, 2);
+          const expanded = expandedId === item.id;
+          return (
+            <div key={item.id} className="rounded-lg border border-border p-3">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="text-body font-medium text-text-primary">{item.label}</p>
+                  <p className="mt-0.5 text-caption text-text-secondary">{item.summary}</p>
+                  <p className="mt-0.5 text-caption text-text-muted">
+                    <code>{item.sourceFixture}</code>
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setExpandedId(expanded ? null : item.id)}
+                  >
+                    {expanded ? "접기" : "내용 보기"}
+                  </Button>
+                  <Button size="sm" onClick={() => onFill(pretty)}>
+                    이걸로 채우기
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() =>
+                      downloadTextFile(`${type}-${item.id}.manifest.example.json`, pretty)
+                    }
+                  >
+                    <Download size={13} />
+                    manifest.json
+                  </Button>
+                </div>
+              </div>
+              {expanded && (
+                <pre className="mt-3 max-h-96 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-100">
+                  {pretty}
+                </pre>
+              )}
+            </div>
+          );
+        })}
       </div>
-      {expanded && (
-        <pre className="mt-3 max-h-96 overflow-auto rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-100">
-          {pretty}
-        </pre>
-      )}
     </Card>
   );
 }
@@ -2460,7 +2495,9 @@ function StepFiles({
 }) {
   const exampleTemplate =
     example.status === "ok"
-      ? example.data.companionFiles.find((f) => f.name === expectedTemplateFileName)
+      ? example.data
+          .flatMap((item) => item.companionFiles)
+          .find((f) => f.name === expectedTemplateFileName)
       : undefined;
 
   return (
