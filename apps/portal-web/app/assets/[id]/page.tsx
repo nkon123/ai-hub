@@ -10,6 +10,7 @@ import {
   Lock,
   PackageOpen,
   PauseCircle,
+  RefreshCw,
   Search,
   Send,
 } from "lucide-react";
@@ -46,6 +47,9 @@ interface IndexingJob {
   chunk_count: number | null;
   completed_at: string | null;
   index_path: string | null;
+  /** FAILED 인데 디스크에는 완성된 색인이 있는 경우 true — 색인 서버는 끝냈는데
+   *  결과가 허브에 전달되지 못한 상태이고, 다시 등록할 필요가 없다. */
+  index_recoverable?: boolean | null;
 }
 
 interface IndexMeta {
@@ -485,6 +489,34 @@ export default function KnowledgeDetailPage() {
   const [suspendOpen, setSuspendOpen] = useState(false);
   const [suspending, setSuspending] = useState(false);
   const [suspendError, setSuspendError] = useState<string | null>(null);
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
+
+  /** 디스크에 완성된 색인이 있으면 Job 상태를 실제에 맞춘다. 성공하면 화면을
+   *  다시 읽어 색인 정보를 그대로 보여 준다. */
+  async function reconcileIndexing(jobId: string) {
+    setReconciling(true);
+    setReconcileMessage(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/assets/${assetId}/indexing-jobs/${jobId}/reconcile`,
+        { method: "POST", headers: { Authorization: `Bearer ${role.token}` } }
+      );
+      const body = await safeJson(res);
+      if (!res.ok) {
+        setReconcileMessage(
+          body?.error?.message ?? `상태를 확인하지 못했습니다. (오류 ${res.status})`
+        );
+        return;
+      }
+      setReconcileMessage(body?.message ?? null);
+      if (body?.changed) await fetchInfo();
+    } catch {
+      setReconcileMessage("서버에 연결할 수 없습니다.");
+    } finally {
+      setReconciling(false);
+    }
+  }
 
   async function fetchInfo() {
     try {
@@ -787,6 +819,35 @@ export default function KnowledgeDetailPage() {
                     label="인덱싱 프로파일"
                     value={`${selectedVer.indexing_profile_ref.name} v${selectedVer.indexing_profile_ref.version}`}
                   />
+                )}
+              </div>
+            ) : selectedVer.indexing_job?.status === "FAILED" &&
+              selectedVer.indexing_job?.index_recoverable ? (
+              /* 색인 서버는 끝냈는데 결과가 허브에 전달되지 못한 상태다
+                 (타임아웃/프록시/재시작). 다시 등록해서 몇 분치 임베딩을 버릴
+                 이유가 없으므로, 복구가 실제로 가능할 때만 이 안내를 낸다. */
+              <div className="rounded-lg border border-warning/30 bg-warning/5 p-3">
+                <p className="text-body text-text-primary">
+                  색인은 완료되어 있지만 허브에 결과가 전달되지 않았습니다.
+                </p>
+                <p className="mt-1 text-caption text-text-secondary">
+                  다시 등록할 필요 없이 상태만 맞추면 됩니다.
+                </p>
+                <div className="mt-3">
+                  <Button
+                    onClick={() => void reconcileIndexing(selectedVer.indexing_job!.id!)}
+                    disabled={reconciling}
+                  >
+                    {reconciling ? (
+                      <Loader2 size={16} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={16} />
+                    )}
+                    색인 상태 다시 확인
+                  </Button>
+                </div>
+                {reconcileMessage && (
+                  <p className="mt-2 text-caption text-text-secondary">{reconcileMessage}</p>
                 )}
               </div>
             ) : (

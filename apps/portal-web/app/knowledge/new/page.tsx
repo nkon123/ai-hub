@@ -7,6 +7,7 @@ import {
   Loader2,
   MessageSquare,
   Package,
+  RefreshCw,
   Sparkles,
   Upload,
   XCircle,
@@ -135,6 +136,10 @@ interface IndexingJob {
   chunk_count: number | null;
   error_message: string | null;
   progress?: IndexingProgress | null;
+  /** FAILED 인데 디스크에는 완성된 색인이 있는 경우 true. indexing-runtime 이
+   *  색인을 끝냈는데 그 응답이 portal-api 에 닿지 못하면(타임아웃/재시작) 생기는
+   *  상태로, 다시 등록하지 않고 상태만 실제에 맞추면 된다. */
+  index_recoverable?: boolean | null;
 }
 
 function formatDuration(seconds: number): string {
@@ -246,6 +251,39 @@ export default function NewKnowledgePage() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<{ assetVersionId: string; assetId: string } | null>(null);
   const [watch, setWatch] = useState<IndexingWatch>({ phase: "queued" });
+  const [reconciling, setReconciling] = useState(false);
+  const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
+
+  /** 디스크에 완성된 색인이 있으면 Job 상태를 실제에 맞춘다. 성공하면 화면도
+   *  완료로 바뀐다 — 다시 등록하지 않고 몇 분치 임베딩을 지킨다. */
+  async function reconcileIndexing(assetId: string, jobId: string) {
+    setReconciling(true);
+    setReconcileMessage(null);
+    try {
+      const res = await fetch(
+        `${API_BASE}/api/v1/assets/${assetId}/indexing-jobs/${jobId}/reconcile`,
+        { method: "POST", headers: { Authorization: "Bearer dev-user-token" } }
+      );
+      const body = await safeJson(res);
+      if (!res.ok) {
+        setReconcileMessage(
+          body?.error?.message ?? `상태를 확인하지 못했습니다. (HTTP ${res.status})`
+        );
+        return;
+      }
+      setReconcileMessage(body?.message ?? null);
+      if (body?.changed && body?.status === "COMPLETED") {
+        setWatch({
+          phase: "completed",
+          job: { id: jobId, status: "COMPLETED", chunk_count: body.chunk_count ?? null, error_message: null },
+        });
+      }
+    } catch (e: unknown) {
+      setReconcileMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setReconciling(false);
+    }
+  }
   const [error, setError] = useState<ServerErrorInfo | null>(null);
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [suggestError, setSuggestError] = useState<string | null>(null);
@@ -599,15 +637,43 @@ export default function NewKnowledgePage() {
                     인덱싱 실패: {watch.job.error_message ?? "인덱싱 서버를 확인하세요."}
                   </span>
                 </div>
-                {/* 재색인 버튼을 두지 않는다 — 색인은 `POST /api/v1/assets`
-                    (등록) 시점에만 시작되고 기존 버전을 다시 색인하는 API가
-                    없다. 없는 기능을 가리키는 버튼은 만들지 않는다. */}
-                <p className="mt-2 text-caption text-text-secondary">
-                  문서는 등록되어 있지만 이 버전은 검색에 사용할 수 없습니다. 원인을 해결한 뒤
-                  문서를 다시 등록해 주세요.
-                </p>
+                {/* 색인이 실제로는 끝나 있는 경우가 있다 — indexing-runtime 이
+                    다 만들었는데 그 응답이 portal-api 에 닿지 못하면(타임아웃,
+                    프록시, 재시작) Job 만 FAILED 로 남는다. 그때는 다시 등록해
+                    몇 분치 임베딩을 버릴 이유가 없으므로, 복구 가능할 때만
+                    이 안내를 보여 준다(가능하지 않을 때 권하지 않는다). */}
+                {watch.job.index_recoverable ? (
+                  <div className="mt-3 rounded-lg border border-warning/30 bg-warning/5 p-3">
+                    <p className="text-caption text-text-secondary">
+                      다만 <strong className="text-text-primary">색인 자체는 완료되어 있습니다.</strong>{" "}
+                      색인 서버가 끝냈지만 결과가 허브에 전달되지 못한 경우로, 다시 등록할 필요 없이
+                      상태만 맞추면 됩니다.
+                    </p>
+                    <div className="mt-3">
+                      <Button
+                        onClick={() => void reconcileIndexing(result.assetId, watch.job.id)}
+                        disabled={reconciling}
+                      >
+                        {reconciling ? (
+                          <Loader2 size={16} className="animate-spin" />
+                        ) : (
+                          <RefreshCw size={16} />
+                        )}
+                        색인 상태 다시 확인
+                      </Button>
+                    </div>
+                    {reconcileMessage && (
+                      <p className="mt-2 text-caption text-text-secondary">{reconcileMessage}</p>
+                    )}
+                  </div>
+                ) : (
+                  <p className="mt-2 text-caption text-text-secondary">
+                    문서는 등록되어 있지만 이 버전은 검색에 사용할 수 없습니다. 원인을 해결한 뒤
+                    문서를 다시 등록해 주세요.
+                  </p>
+                )}
                 <div className="mt-4 flex gap-3">
-                  <Button href={`/assets/${result.assetId}`}>
+                  <Button href={`/assets/${result.assetId}`} variant="secondary">
                     <Package size={16} />
                     자산 상세 보기
                   </Button>
