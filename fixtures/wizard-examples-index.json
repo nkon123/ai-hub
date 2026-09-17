@@ -18,8 +18,8 @@
     "companionFiles": []
   },
   "mcp_server": {
-    "sourceFixture": "mcp-server-thirdparty-filesystem",
-    "manifest": "valid/mcp-server-thirdparty-filesystem/mcp-server-manifest.json",
+    "sourceFixture": "mcp-server-office-connector",
+    "manifest": "valid/mcp-server-office-connector/mcp-server-manifest.json",
     "companionFiles": []
   }
 }
