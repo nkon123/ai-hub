@@ -104,8 +104,11 @@ def resolve_connection_target(
     """
     mode = runtime_mode or settings.runtime_mode
 
-    roots = _resolved_roots(tuple(settings.mcp_server_install_roots))
-    if not roots:
+    # 기능 스위치. 실행이 없다고 해서 등록이 자유로운 것은 아니다 — 등록된
+    # 서버는 PEP 가 police 하는 대상이 되고, 그 목록에 무엇이 들어가는지는
+    # 운영자가 정한다. 다만 그 스위치는 stdio 경로 설정이 아니라 **자기 이름을
+    # 가진 설정**이어야 한다(아래 stdio 분기의 루트 검사와 별개다).
+    if not getattr(settings, "mcp_server_registration_enabled", False):
         raise MCPRegistrationError(MCPRegistrationReason.REGISTRATION_DISABLED)
 
     transport = manifest.get("transport")
@@ -132,6 +135,16 @@ def resolve_connection_target(
         # 켜고 싶다는 요구가 오면 그것은 이 결정을 다시 여는 일이지, 플래그를
         # 추가하는 일이 아니다.
         raise MCPRegistrationError(MCPRegistrationReason.STDIO_NOT_ALLOWED_IN_HOSTED_MODE)
+
+    # 설치 루트는 **stdio 전용** 설정이다 — "이 배포에서 서드파티 코드를 어디서
+    # 실행해도 되는가". 처음에는 이 검사를 함수 맨 앞에 두었는데, 그러면 로컬에서
+    # 아무것도 실행하지 않는 HTTP 서버를 등록하는 데도 의미 없는 경로를 설정해야
+    # 했다(실제로 office-mcp-server 를 등록해 보려다 막혔다). 실행과 무관한 것을
+    # 실행 설정으로 막으면 운영자는 그 설정을 아무 값으로나 채우게 되고, 그러면
+    # 정작 stdio 를 막으려던 통제가 형해화된다.
+    roots = _resolved_roots(tuple(settings.mcp_server_install_roots))
+    if not roots:
+        raise MCPRegistrationError(MCPRegistrationReason.REGISTRATION_DISABLED)
 
     if not install_path or not install_path.strip():
         raise MCPRegistrationError(MCPRegistrationReason.INSTALL_PATH_REQUIRED)

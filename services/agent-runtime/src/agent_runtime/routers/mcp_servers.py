@@ -103,8 +103,15 @@ async def list_mcp_servers(trace_id: str | None = None) -> JSONResponse:
             "entries": [s.to_entry() for s in registry.list_servers()],
             # 화면이 "등록 버튼을 보여 줘도 되는가"를 판단하는 근거. 이 배포에서
             # 아예 불가능한 기능을 눌러 보게 만들지 않기 위해 상태를 먼저 준다.
-            "mcp_server_registration_enabled": bool(settings.mcp_server_install_roots),
-            "stdio_supported": settings.runtime_mode == "local",
+            #
+            # 두 가지를 따로 알려 준다: 기능 자체가 켜져 있는가, 그리고 stdio
+            # (내 PC 에서 직접 실행)까지 되는가. 하나로 뭉치면 "HTTP 서버는
+            # 되는데 stdio 만 안 되는" 상태를 화면이 표현할 수 없다.
+            "mcp_server_registration_enabled": settings.mcp_server_registration_enabled,
+            "stdio_supported": (
+                settings.runtime_mode == "local"
+                and bool(settings.mcp_server_install_roots)
+            ),
             "trace_id": resolved,
         }
     )

@@ -28,6 +28,9 @@ from agent_runtime.mcp_client import (
 @dataclass
 class FakeSettings:
     runtime_mode: str = "local"
+    # 기능 스위치는 기본 켜짐 — 이 파일의 테스트는 대부분 그 다음 겹을 본다.
+    # 꺼진 상태 자체는 `test_http_is_also_gated_by_the_opt_in` 이 확인한다.
+    mcp_server_registration_enabled: bool = True
     mcp_server_install_roots: tuple[str, ...] = ()
     mcp_node_interpreter_path: str | None = None
     mcp_python_interpreter_path: str | None = None
@@ -110,11 +113,20 @@ def test_registration_is_off_until_an_operator_names_a_root(bundle: Path) -> Non
 def test_http_is_also_gated_by_the_opt_in(settings: FakeSettings) -> None:
     """실행이 없다고 해서 등록이 자유로운 것은 아니다 — 등록된 서버는 PEP 가
     police 하는 대상이 되고, 그 목록에 무엇이 들어가는지는 운영자가 정한다."""
-    settings.mcp_server_install_roots = ()
+    settings.mcp_server_registration_enabled = False
     assert (
         _reason(lambda: resolve_connection_target(_http_manifest(), None, settings=settings))
         == MCPRegistrationReason.REGISTRATION_DISABLED
     )
+
+
+def test_http_does_not_need_a_stdio_install_root(settings: FakeSettings) -> None:
+    """HTTP 서버는 이 PC 에서 아무것도 실행하지 않는다 — 실행 경로 설정에
+    묶어 두면 운영자는 그 설정을 아무 값으로나 채우게 되고, 정작 stdio 를
+    막으려던 통제가 형해화된다(office-mcp-server 를 등록해 보려다 발견)."""
+    settings.mcp_server_install_roots = ()
+    target = resolve_connection_target(_http_manifest(), None, settings=settings)
+    assert getattr(target, "endpoint", None)
 
 
 # --- 2겹: hosted 에서 stdio 금지 ---------------------------------------------

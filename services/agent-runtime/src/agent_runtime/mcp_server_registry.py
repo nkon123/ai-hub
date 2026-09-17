@@ -134,9 +134,9 @@ class MCPServerRegistry:
         """
         settings = settings or default_settings
 
-        if not settings.mcp_server_install_roots:
-            raise MCPRegistrationError(MCPRegistrationReason.REGISTRATION_DISABLED)
-
+        # 설치 루트를 여기서 확인하지 않는다 — 그것은 stdio 전용 설정이고,
+        # `resolve_connection_target` 의 stdio 분기가 판단한다. 여기서 막으면
+        # 로컬 실행이 없는 HTTP 서버까지 그 설정에 묶인다.
         if source not in ALLOWED_SOURCES:
             raise MCPRegistrationError(
                 MCPRegistrationReason.UNSUPPORTED_SOURCE, detail=f"source={source}"

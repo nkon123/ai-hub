@@ -66,6 +66,7 @@ def _enabled(monkeypatch, tmp_path):
     """설치 루트가 설정돼 있어야 등록 기능 자체가 켜진다."""
     from agent_runtime.config import settings
 
+    monkeypatch.setattr(settings, "mcp_server_registration_enabled", True, raising=False)
     monkeypatch.setattr(settings, "mcp_server_install_roots", (str(tmp_path),), raising=False)
     monkeypatch.setattr(settings, "runtime_mode", "local", raising=False)
     get_registry().clear()
@@ -175,12 +176,14 @@ async def test_an_unknown_source_is_refused(client, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_registration_disabled_when_no_install_root_is_configured(
+async def test_registration_disabled_when_the_feature_is_off(
     client, monkeypatch
 ) -> None:
+    """운영자가 기능을 꺼 둘 수 있어야 한다 — 다만 그 스위치는 stdio 경로
+    설정이 아니라 자기 이름을 가진 설정이다."""
     from agent_runtime.config import settings
 
-    monkeypatch.setattr(settings, "mcp_server_install_roots", (), raising=False)
+    monkeypatch.setattr(settings, "mcp_server_registration_enabled", False, raising=False)
     res = await _register(client)
     assert res.status_code == 403
     assert res.json()["error"]["code"] == "mcp_server_registration_disabled"

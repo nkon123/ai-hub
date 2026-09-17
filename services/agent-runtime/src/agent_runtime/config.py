@@ -278,6 +278,18 @@ class AgentRuntimeSettings(BaseSettings):
     # 등록이 전면 거부된다(`mcp_server_registration_disabled`) — D-079 의
     # `SEARCH_LOCAL_INDEX_ROOTS`, 위의 `local_agent_roots` 와 같은 모양이다.
     # Bundle 설치가 서버를 실행 가능하게 만들지 않는다는 성질이 여기서 나온다.
+    # D-094 기능 스위치. 기본 꺼짐 — 등록된 서버는 PEP 가 police 하는 대상이
+    # 되고, 그 목록에 무엇이 들어가는지는 운영자가 정한다.
+    #
+    # 처음에는 `mcp_server_install_roots` 가 비었는지로 이 판단을 대신했는데,
+    # 그러면 로컬에서 아무것도 실행하지 않는 HTTP 서버를 등록하는 데도 의미
+    # 없는 경로를 설정해야 한다(실제로 office-mcp-server 를 등록해 보려다
+    # 막혔다). 실행과 무관한 것을 실행 설정으로 막으면 운영자는 그 설정을
+    # 아무 값으로나 채우게 되고, 정작 stdio 를 막으려던 통제가 형해화된다.
+    mcp_server_registration_enabled: bool = False
+
+    #: **stdio 전용** — "이 배포에서 서드파티 코드를 어디서 실행해도 되는가".
+    #: HTTP 서버 등록에는 관여하지 않는다.
     mcp_server_install_roots: tuple[str, ...] = ()
     # stdio 서버를 실행할 인터프리터의 **절대 경로**. PATH 탐색으로 대체하지
     # 않는다(D-084 의 `pythonInterpreterPath` 와 같은 이유 — PATH 는 검토된 적

@@ -277,5 +277,12 @@ async def admin_list_audit_events(
 
 
 # MCP Streamable HTTP 표면. 경로가 `/mcp` 인 것은 MCP 관례이고, 기존 REST 의
-# `/mcp/v1/...` 과 겹치지 않는다(FastAPI 라우트가 mount 보다 먼저 매칭된다).
-app.mount("/mcp", mcp_server.streamable_http_app())
+# `/mcp/v1/...` 과 겹치지 않는다(더 긴 경로가 먼저 매칭된다).
+#
+# `mount("/mcp", ...)` 가 아니라 라우트를 그대로 가져와 붙인다 —
+# `streamable_http_app()` 이 **자체적으로 이미 `/mcp` 를 서빙**하므로 마운트하면
+# 실제 경로가 `/mcp/mcp` 가 된다. 그 상태에서도 `/mcp` 는 307 을 돌려주기 때문에
+# "붙긴 했는데 JSON-RPC 가 Not Found" 라는, 원인을 짐작하기 어려운 모양이 된다
+# (실제로 그렇게 한 번 막혔다).
+for _mcp_route in mcp_server.streamable_http_app().routes:
+    app.router.routes.append(_mcp_route)
