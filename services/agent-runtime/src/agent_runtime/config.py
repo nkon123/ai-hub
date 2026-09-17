@@ -304,5 +304,26 @@ class AgentRuntimeSettings(BaseSettings):
     class Config:
         env_prefix = "AGENT_RUNTIME_"
 
+        # 이 서비스 폴더의 `.env` 를 읽는다(`make dev-agent-runtime` 과
+        # `scripts/windows/start-agent-runtime.ps1` 이 거기서 기동한다).
+        #
+        # 없어도 동작한다 — 환경변수가 여전히 우선이고, `.env` 는 그것을
+        # 대신하는 것이 아니라 기본값 위에 얹는 층이다.
+        #
+        # **왜 필요한가**: stdio MCP 서버 설정(설치 루트, 해석기 경로)은
+        # PC 마다 다른 값이다. 지금까지 이런 값을 넣는 방법은 기동 스크립트를
+        # 고치는 것뿐이었는데, 그것은 추적되는 파일이라 사람마다 다른 값이
+        # 커밋 대상으로 올라온다(`config/ollama.json` 이 실제로 그렇게 됐다).
+        # `.env` 는 `.gitignore` 에 이미 들어 있어 그 문제가 없다.
+        env_file = ".env"
+        # `utf-8` 이 아니라 `utf-8-sig` 다. Windows 에서 메모장이나
+        # PowerShell `Set-Content -Encoding utf8`(5.1)이 BOM 을 붙이는데,
+        # 그러면 첫 줄의 키 이름이 `﻿AGENT_RUNTIME_...` 이 되어
+        # "Extra inputs are not permitted" 로 기동이 죽는다 — 파일은 눈으로
+        # 보면 멀쩡해서 원인을 짐작하기 어렵다(실제로 그렇게 한 번 막혔다).
+        # `utf-8-sig` 는 BOM 이 있으면 벗기고 없으면 그냥 읽는다
+        # (`ollama_config.py` 가 같은 이유로 같은 인코딩을 쓴다).
+        env_file_encoding = "utf-8-sig"
+
 
 settings = AgentRuntimeSettings()

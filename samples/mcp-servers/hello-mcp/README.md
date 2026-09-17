@@ -9,14 +9,20 @@ D-094 의 stdio 등록 경로를 **끝까지** 돌려 보기 위한 최소 예�
 ## 준비 — 설정 네 개
 
 stdio 는 이 PC 에서 **실제로 프로세스를 띄우는** 경로라 기본적으로 꺼져 있습니다.
-agent-runtime 에 아래를 주고 재시작합니다.
+`services/agent-runtime/.env` 에 아래를 넣고 재시작합니다 — 같은 폴더의
+`.env.example` 을 복사해 쓰면 됩니다(`.env` 는 커밋되지 않습니다).
 
 ```
 AGENT_RUNTIME_MCP_SERVER_REGISTRATION_ENABLED=true
 AGENT_RUNTIME_RUNTIME_MODE=local
-AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS=C:\Dev\ai-hub\samples\mcp-servers
-AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH=C:\Dev\ai-hub\.venv\Scripts\python.exe
+AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS=["C:/Dev/ai-hub/samples/mcp-servers"]
+AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH=C:/Dev/ai-hub/.venv/Scripts/python.exe
 ```
+
+**설치 루트는 JSON 배열입니다.** 경로를 그냥 적으면 기동할 때
+`error parsing value for field "mcp_server_install_roots"` 로 죽습니다 —
+이 문서를 처음 쓸 때 그렇게 적어 두었다가 실제로 막혔습니다. Windows 경로는
+슬래시를 쓰거나 역슬래시를 두 번(`C:\\Dev\\...`) 씁니다.
 
 각각이 무엇을 막는지:
 
