@@ -13,6 +13,7 @@ import {
   RefreshCw,
   Search,
   Send,
+  Trash2,
 } from "lucide-react";
 import {
   Badge,
@@ -491,6 +492,36 @@ export default function KnowledgeDetailPage() {
   const [suspendError, setSuspendError] = useState<string | null>(null);
   const [reconciling, setReconciling] = useState(false);
   const [reconcileMessage, setReconcileMessage] = useState<string | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /** 자산 영구 삭제. 되돌릴 수 없으므로 사유를 받고(ReasonDialog) 성공하면
+   *  카탈로그로 보낸다 — 방금 지운 자산의 상세 화면에 남아 있을 이유가 없다. */
+  async function handleDelete(reason: string) {
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`${API_BASE}/api/v1/assets/${assetId}`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${role.token}`,
+        },
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const body = await safeJson(res);
+        setDeleteError(body?.error?.message ?? `삭제하지 못했습니다. (오류 ${res.status})`);
+        return;
+      }
+      router.push("/assets");
+    } catch {
+      setDeleteError("서버에 연결할 수 없습니다.");
+    } finally {
+      setDeleting(false);
+    }
+  }
 
   /** 디스크에 완성된 색인이 있으면 Job 상태를 실제에 맞춘다. 성공하면 화면을
    *  다시 읽어 색인 정보를 그대로 보여 준다. */
@@ -773,6 +804,54 @@ export default function KnowledgeDetailPage() {
         onCancel={() => {
           setSuspendOpen(false);
           setSuspendError(null);
+        }}
+      />
+
+      {/* 위험 구역 — 서버가 확실히 거부할 상태에서는 버튼을 보여 주지 않는다.
+          최종 판정은 서버가 한다(참조 중인 자산은 여기서 알 수 없다). */}
+      {(role.code === "ADMIN" || role.userId === info.owner_creator_id) &&
+        info.versions.length > 0 &&
+        info.versions.every((v) => v.status === "DRAFT" || v.status === "CHANGES_REQUESTED") && (
+          <div className="rounded-card border border-danger/30 bg-danger/5 p-5">
+            <h2 className="text-card-title font-semibold text-danger">자산 삭제</h2>
+            <p className="mt-1.5 text-body text-text-secondary">
+              아직 검토를 요청하지 않은 초안입니다. 모든 버전과 업로드한 문서, 만들어진 색인이
+              함께 영구 삭제되며 되돌릴 수 없습니다.
+            </p>
+            <div className="mt-4">
+              <Button
+                variant="danger"
+                onClick={() => {
+                  setDeleteError(null);
+                  setDeleteOpen(true);
+                }}
+              >
+                <Trash2 size={16} />
+                자산 삭제
+              </Button>
+            </div>
+          </div>
+        )}
+
+      <ReasonDialog
+        open={deleteOpen}
+        title="자산 삭제 확인"
+        description={
+          <>
+            <strong className="text-danger">되돌릴 수 없습니다.</strong> 이 자산의 모든 버전과
+            업로드한 문서, 만들어진 색인이 함께 영구 삭제됩니다. 이 작업은 감사 로그에 기록됩니다.
+          </>
+        }
+        confirmLabel="영구 삭제"
+        confirmVariant="danger"
+        reasonLabel="삭제 사유"
+        reasonPlaceholder="삭제 사유를 입력하세요 (필수)"
+        submitting={deleting}
+        error={deleteError}
+        onConfirm={handleDelete}
+        onCancel={() => {
+          setDeleteOpen(false);
+          setDeleteError(null);
         }}
       />
 
