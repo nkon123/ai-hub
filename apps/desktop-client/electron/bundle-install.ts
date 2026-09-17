@@ -34,6 +34,10 @@ import {
   type ParsedManifest,
   type RevocationEntry,
 } from "./bundle-verify";
+import type {
+  McpServerActivationOutcome,
+  McpServerActivationTarget,
+} from "./mcp-server-activation";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { mergeRevocationEntries } from "./asset-status";
 import { STAGE_LABELS, type CheckItem, type ImportProgressEvent, type ImportResult, type ImportStage } from "./types";
@@ -204,10 +208,21 @@ export function freeBytesAt(dir: string): number {
   return stat.bavail * stat.bsize;
 }
 
+/** D-096. 활성화를 이 모듈이 직접 하지 않고 주입받는 이유: `bundle-install.ts`
+ * 는 fs 와 ZIP 을 다루는 곳이고, agent-runtime 주소는 사용자가 바꿀 수 있는
+ * 설정이라 `main.ts` 만 안다(`agentRuntimeBaseUrl()`). 주소를 여기서 기본값으로
+ * 정해 두면 설정을 바꿔도 반응하지 않는, 이 모듈이 이미 한 번 겪은 형태의
+ * 버그가 된다(CLAUDE.md "연결 판정 오탐"). 넘기지 않으면 활성화를 시도하지
+ * 않는다 — 시도한 척하지 않는다. */
+export type McpServerActivator = (
+  target: McpServerActivationTarget,
+) => Promise<McpServerActivationOutcome>;
+
 export async function importBundle(
   sourceFilePath: string,
   layout: InstallRootLayout,
   emit: (event: ImportProgressEvent) => void,
+  activateMcpServers?: McpServerActivator,
 ): Promise<ImportResult> {
   const checks: CheckItem[] = [];
   let failedStage: string | null = null;
@@ -505,6 +520,44 @@ export async function importBundle(
     }
 
     record("INSTALL", { status: "PASS", message: "모든 자산이 설치되었습니다." });
+
+    // --- D-096: 설치한 MCP 서버를 실제로 쓸 수 있게 한다 -------------------
+    // 파일을 놓는 것과 활성화는 다른 일이다. 여기까지만 하고 끝내면 사용자는
+    // "설치는 됐는데 서버가 안 뜬다"는 상태를 원인도 모른 채 마주한다
+    // (실 사용자 피드백). 활성화 실패는 **설치 실패가 아니다** — stdio 는 이
+    // PC 에서 프로세스를 띄우는 경로라 운영자가 켜 줘야만 동작하고, 그것은
+    // 정상적인 거부다. 그래서 WARN 으로 기록하고 무엇을 하면 되는지 적는다.
+    // MCP 서버를 담지 않은 Bundle 에서는 이 단계가 아예 기록되지 않는다.
+    if (activateMcpServers) {
+      for (const item of manifest.included_assets) {
+        if (item.asset_type !== "mcp_server" || !item.asset_id || !item.version) continue;
+        const installedDir = path.join(
+          layout.assetsDir,
+          folderFor(item),
+          item.asset_id,
+          item.version,
+        );
+        let assetManifest: Record<string, unknown>;
+        try {
+          assetManifest = JSON.parse(
+            fs.readFileSync(path.join(installedDir, "manifest.json"), "utf-8"),
+          ) as Record<string, unknown>;
+        } catch {
+          record("MCP_ACTIVATION", {
+            status: "WARN",
+            message: `'${item.name ?? item.asset_id}'의 매니페스트를 읽을 수 없어 활성화하지 못했습니다. 설치 자체는 완료되었습니다.`,
+          });
+          continue;
+        }
+        const outcome = await activateMcpServers({
+          assetId: item.asset_id,
+          version: item.version,
+          installPath: path.join(installedDir, "source"),
+          manifest: assetManifest,
+        });
+        record("MCP_ACTIVATION", { status: outcome.status, message: outcome.message });
+      }
+    }
 
     return {
       outcome: "SUCCESS",

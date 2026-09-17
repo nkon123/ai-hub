@@ -77,7 +77,12 @@ export type ImportStage =
   | "RUNTIME_COMPAT"
   | "SIGNATURE_TRUST"
   | "ALREADY_INSTALLED"
-  | "INSTALL";
+  | "INSTALL"
+  // D-096. 파일을 놓는 것과 그 서버를 실제로 쓸 수 있게 하는 것은 다른
+  // 일이다. 설치만 되고 활성화가 안 되던 상태("설치는 되는데 mcp서버가
+  // 활성화 안되는거 같은데")를 사용자가 볼 수 있게 단계로 만든다. MCP 서버를
+  // 담지 않은 Bundle 에서는 아예 기록되지 않는다.
+  | "MCP_ACTIVATION";
 
 export interface ImportProgressEvent {
   stage: ImportStage;
@@ -104,6 +109,7 @@ export const STAGE_LABELS: Record<ImportStage, string> = {
   SIGNATURE_TRUST: "Signature/Trust 상태",
   ALREADY_INSTALLED: "기존 설치 버전 확인",
   INSTALL: "설치 완료",
+  MCP_ACTIVATION: "MCP 서버 활성화",
 };
 
 export interface ImportResult {

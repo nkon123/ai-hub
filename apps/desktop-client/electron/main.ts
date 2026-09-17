@@ -2,7 +2,14 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
 import path from "node:path";
 import fs from "node:fs";
 import crypto from "node:crypto";
-import { freeBytesAt, importBundle, resolveInstallRoot, type InstallRootLayout } from "./bundle-install";
+import {
+  freeBytesAt,
+  importBundle,
+  resolveInstallRoot,
+  type InstallRootLayout,
+  type McpServerActivator,
+} from "./bundle-install";
+import { activateInstalledMcpServer } from "./mcp-server-activation";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
@@ -174,6 +181,13 @@ function agentRuntimeBaseUrl(): string {
   return getDesktopSettingsStore().getPublic().agentRuntimeBaseUrl;
 }
 
+/** D-096. 설치 직후 MCP 서버를 활성화하는 함수. 주소는 **호출 시점에** 읽는다
+ * — 모듈 로드 시점에 한 번 읽어 두면 사용자가 설정에서 주소를 바꿔도 예전
+ * 주소로 계속 시도한다. */
+function mcpServerActivator(): McpServerActivator {
+  return (target) => activateInstalledMcpServer(agentRuntimeBaseUrl(), target);
+}
+
 function getConversationStore(): ConversationStore {
   if (!conversationStore) {
     conversationStore = new ConversationStore(getLayout().stateDir);
@@ -291,7 +305,7 @@ function registerIpcHandlers(): void {
     const emit = (progress: ImportProgressEvent) => {
       event.sender.send("bundle:import-progress", progress);
     };
-    const result = await importBundle(filePath, layout, emit);
+    const result = await importBundle(filePath, layout, emit, mcpServerActivator());
     // 파일 경로(사용자가 고른 파일명)나 Manifest 내용은 기록하지 않는다 —
     // 결과 요약(성공/실패 단계, 설치된 자산 개수)만 남긴다.
     if (result.outcome === "SUCCESS") {
@@ -924,7 +938,11 @@ function registerIpcHandlers(): void {
             requestDistribution: (b, t, body) => requestDistribution(b, t, body),
             getDistribution: (b, t, id) => getDistribution(b, t, id),
             downloadDistribution: (b, t, id) => downloadDistribution(b, t, id),
-            importBundle,
+            // Portal 스토어 설치도 같은 활성화를 거친다 — 반입 경로가 둘인데
+            // 한쪽만 활성화하면 "어떻게 설치했느냐"에 따라 서버가 뜨기도
+            // 하고 안 뜨기도 한다.
+            importBundle: (f: string, l: InstallRootLayout, e: (p: ImportProgressEvent) => void) =>
+              importBundle(f, l, e, mcpServerActivator()),
             writeTempFile: (data: Buffer) => {
               const tempPath = path.join(layout.quarantineDir, `${crypto.randomUUID()}-store-download.zip`);
               fs.mkdirSync(layout.quarantineDir, { recursive: true });

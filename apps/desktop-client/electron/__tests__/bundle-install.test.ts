@@ -295,3 +295,117 @@ describe("ASSET_TYPE_FOLDER", () => {
     ]);
   });
 });
+
+describe("importBundle — D-096 설치 후 MCP 서버 활성화", () => {
+  // 활성화가 설치 파이프라인 안에서 실제로 불리는지, 그리고 실패했을 때
+  // 설치를 되돌리지 않는지 — 순수 함수 테스트로는 둘 다 증명되지 않는다.
+  it("does not activate anything for a Bundle with no mcp_server asset", async () => {
+    const calls: unknown[] = [];
+    const result = await importBundle(
+      path.join(FIXTURES_DIR, "valid-bundle.zip"),
+      layout,
+      () => {},
+      async (t) => {
+        calls.push(t);
+        return { status: "PASS" as const, message: "x", serverAlias: "x" };
+      },
+    );
+    expect(result.outcome).toBe("SUCCESS");
+    expect(calls).toHaveLength(0);
+    // 시도하지 않았으면 단계 자체가 없어야 한다 — "활성화: 통과"가 거짓으로
+    // 남으면 없는 서버가 떠 있는 것처럼 보인다.
+    expect(result.checks.find((c) => c.id === "MCP_ACTIVATION")).toBeUndefined();
+  });
+
+  const mcpItem = {
+    asset_id: MCP_ASSET_ID,
+    asset_version_id: "v-1",
+    asset_type: "mcp_server",
+    role: "root",
+    name: "예제 서버",
+    version: "1.0.0",
+    required: true,
+    status: "OK",
+    size_bytes: 10,
+  };
+
+  /** mcp_server 자산 하나가 든, 실제로 설치까지 도달하는 Bundle 을 만든다.
+   * 체크섬을 진짜로 계산해 넣는다 — 대충 만든 Bundle 은 CHECKSUM 에서 멈춰
+   * 활성화 단계에 도달하지 못하고, 그러면 이 테스트는 아무것도 증명하지 않는다. */
+  function writeInstallableMcpBundle(name: string): string {
+    const files: Record<string, string> = {
+      [`assets/mcp-servers/${MCP_ASSET_ID}/manifest.json`]: JSON.stringify({
+        type: "mcp_server",
+        server_alias: "hello-mcp",
+        transport: { kind: "STDIO", interpreter: "python", entrypoint: "server.py" },
+      }),
+      [`assets/mcp-servers/${MCP_ASSET_ID}/source/server.py`]: "print('hi')\n",
+    };
+    const checksums = Object.entries(files)
+      .map(([arcname, content]) => [
+        crypto.createHash("sha256").update(Buffer.from(content, "utf-8")).digest("hex"),
+        arcname,
+      ])
+      .sort((a, b) => (a[1] < b[1] ? -1 : 1))
+      .map(([hash, arcname]) => `${hash}  ${arcname}`)
+      .join("\n");
+    return writeZip(name, {
+      ...files,
+      "bundle-manifest.yaml": bundleManifestWith([mcpItem]),
+      "checksums.sha256": `${checksums}\n`,
+    });
+  }
+
+  it("activates an installed mcp_server and reports it as a check", async () => {
+    const seen: any[] = [];
+    const result = await importBundle(
+      writeInstallableMcpBundle("mcp-installable.zip"),
+      layout,
+      () => {},
+      async (t) => {
+        seen.push(t);
+        return { status: "PASS" as const, message: "'hello-mcp' 활성화됨", serverAlias: "hello-mcp" };
+      },
+    );
+
+    expect(result.outcome).toBe("SUCCESS");
+    // 설치된 코드가 있는 곳을 넘겨야 한다 — 매니페스트가 아니라 source/ 다.
+    expect(seen).toHaveLength(1);
+    expect(seen[0].installPath).toBe(
+      path.join(layout.assetsDir, "mcp-servers", MCP_ASSET_ID, "1.0.0", "source"),
+    );
+    expect(seen[0].manifest.server_alias).toBe("hello-mcp");
+    expect(result.checks.find((c) => c.id === "MCP_ACTIVATION")?.status).toBe("PASS");
+  });
+
+  it("a refused activation is a WARN — the files stay installed", async () => {
+    const result = await importBundle(
+      writeInstallableMcpBundle("mcp-installable-refused.zip"),
+      layout,
+      () => {},
+      async () => ({
+        status: "WARN" as const,
+        message: "허용 목록에 추가해 달라고 요청하세요",
+        serverAlias: "hello-mcp",
+      }),
+    );
+
+    expect(result.outcome).toBe("SUCCESS");
+    expect(result.failedStage).toBeNull();
+    const check = result.checks.find((c) => c.id === "MCP_ACTIVATION");
+    expect(check?.status).toBe("WARN");
+    expect(check?.message).toContain("허용 목록");
+    // 활성화가 거부됐다고 설치를 되돌리지 않는다.
+    expect(
+      fs.existsSync(
+        path.join(layout.assetsDir, "mcp-servers", MCP_ASSET_ID, "1.0.0", "source", "server.py"),
+      ),
+    ).toBe(true);
+  });
+
+  it("works with no activator at all (does not pretend to have tried)", async () => {
+    const { result } = await run("valid-bundle.zip");
+    expect(result.outcome).toBe("SUCCESS");
+    expect(result.checks.find((c) => c.id === "MCP_ACTIVATION")).toBeUndefined();
+  });
+});
