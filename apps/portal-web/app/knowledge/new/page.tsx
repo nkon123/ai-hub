@@ -114,11 +114,35 @@ function fileExtension(filename: string): string {
   return idx === -1 ? "" : filename.slice(idx).toLowerCase();
 }
 
+/** RUNNING 인 Job 에만 붙는다. portal-api 가 indexing-runtime 메모리에서 읽어
+ *  얹어 주는 값이라, 조회에 실패하면 없을 수 있다(그때는 단계 표시 없이
+ *  "진행 중"만 보여 준다 — 모르는 것을 지어내지 않는다). */
+interface IndexingProgress {
+  stage: string;
+  stage_label: string;
+  stage_index: number;
+  stage_total: number;
+  done: number;
+  total: number;
+  percent: number | null;
+  elapsed_seconds: number;
+  eta_seconds: number | null;
+}
+
 interface IndexingJob {
   id: string;
   status: string;
   chunk_count: number | null;
   error_message: string | null;
+  progress?: IndexingProgress | null;
+}
+
+function formatDuration(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds));
+  if (s < 60) return `${s}초`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return s % 60 ? `${m}분 ${s % 60}초` : `${m}분`;
+  return `${Math.floor(m / 60)}시간 ${m % 60}분`;
 }
 
 /**
@@ -617,6 +641,46 @@ export default function NewKnowledgePage() {
                     ? "이 화면에서의 상태 확인을 멈췄습니다."
                     : "색인이 백그라운드에서 진행 중입니다."}
                 </div>
+
+                {/* 실제 진행 상황. 이것이 없으면 "진행 중"과 "멈춤"이 화면에서
+                    구분되지 않는다 — 큰 문서는 몇 분씩 걸리므로 등록자가 멈춘
+                    것으로 읽게 된다. 진행률이 안 넘어오면 이 블록은 통째로
+                    빠지고 위의 "진행 중"만 남는다(모르는 것을 꾸며내지 않는다). */}
+                {watch.phase === "running" && watch.job.progress && (
+                  <div className="mt-3">
+                    <div className="mb-1.5 flex items-baseline justify-between gap-3 text-caption">
+                      <span className="text-text-primary">
+                        {watch.job.progress.stage_index}/{watch.job.progress.stage_total}단계 ·{" "}
+                        {watch.job.progress.stage_label}
+                        {watch.job.progress.total > 0 && (
+                          <span className="text-text-secondary">
+                            {" "}
+                            ({watch.job.progress.done.toLocaleString()} /{" "}
+                            {watch.job.progress.total.toLocaleString()})
+                          </span>
+                        )}
+                      </span>
+                      {watch.job.progress.percent !== null && (
+                        <span className="shrink-0 font-semibold text-text-primary">
+                          {watch.job.progress.percent}%
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="h-1.5 w-full overflow-hidden rounded-full bg-slate-200">
+                      <div
+                        className="h-full rounded-full bg-brand-500 transition-all duration-500"
+                        style={{ width: `${watch.job.progress.percent ?? 0}%` }}
+                      />
+                    </div>
+
+                    <div className="mt-1.5 text-caption text-text-muted">
+                      경과 {formatDuration(watch.job.progress.elapsed_seconds)}
+                      {watch.job.progress.eta_seconds !== null &&
+                        ` · 남은 시간 약 ${formatDuration(watch.job.progress.eta_seconds)}`}
+                    </div>
+                  </div>
+                )}
 
                 <p className="mt-2 text-caption text-text-secondary">
                   {watch.phase === "unwatched" && watch.reason === "unreachable"
