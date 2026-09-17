@@ -1503,7 +1503,108 @@ async def list_indexing_jobs(
     if running:
         for job in running:
             job.progress = await _fetch_indexing_progress(job.id, trace_id)
+
+    # FAILED 인데 디스크에는 완성된 색인이 있을 수 있다 — portal-api 는
+    # indexing-runtime 의 HTTP 응답으로만 결과를 알기 때문에 연결이 끊기면
+    # 색인은 끝났는데 Job 만 FAILED 로 남는다. 그 사실을 여기서 알려 줘야
+    # 화면이 "다시 확인" 을 헛되이 권하지 않는다(있을 때만 권한다).
+    by_id = {j.id: j for j in jobs}
+    for job in out:
+        if job.status != "FAILED":
+            continue
+        row = by_id.get(job.id)
+        index_dir = resolve_knowledge_index_dir(
+            row, job.asset_version_id, require_completed=False
+        )
+        job.index_recoverable = inspect_index_artifacts(index_dir)["complete"]
     return out
+
+
+@router.post("/assets/{asset_id}/indexing-jobs/{job_id}/reconcile", response_model=None)
+async def reconcile_indexing_job(
+    asset_id: str,
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> dict | JSONResponse:
+    """디스크에 완성된 인덱스가 있으면 Job 상태를 실제에 맞춘다.
+
+    **왜 필요한가.** `_trigger_indexing` 은 indexing-runtime 의 HTTP 응답으로만
+    결과를 안다. 그 연결이 끊기면(타임아웃, 프록시, 재시작) portal-api 는 FAILED
+    로 기록하지만 색인 자체는 계속 돌아 정상적으로 끝난다 — 인덱스는 멀쩡히
+    있는데 Job 행만 영원히 FAILED 인 상태가 된다. 2026-09-17 사내 테스트에서
+    "인덱싱 서버는 완료됐는데 허브는 실패라고 나온다"로 보고됐다. 재색인 API 가
+    없어서 몇 분치 임베딩을 버리고 처음부터 다시 등록하는 것 말고는 방법이
+    없었다.
+
+    **무엇을 근거로 뒤집는가.** 파이프라인은 `index-meta.json` 을 **마지막에**
+    쓴다(chroma -> bm25 -> parents -> meta). 그래서 네 산출물이 모두 있고 메타의
+    `chunk_count` 가 0보다 크면 파이프라인이 끝까지 갔다는 뜻이다. 하나라도
+    없으면 뒤집지 않고 무엇이 없는지 알려 준다 — 반쯤 만들어진 인덱스를 성공으로
+    표시하면 검색이 조용히 빈 결과를 내는 더 나쁜 상태가 된다.
+
+    이미 COMPLETED 인 Job 은 건드리지 않는다(멱등).
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_CREATE, trace_id=trace_id,
+        resource_type="ASSET", resource_id=asset_id,
+    )
+    if denial:
+        return denial
+
+    stmt = (
+        select(IndexingJob)
+        .join(AssetVersion, IndexingJob.asset_version_id == AssetVersion.id)
+        .where(IndexingJob.id == job_id, AssetVersion.asset_id == asset_id)
+    )
+    job = (await db.execute(stmt)).scalar_one_or_none()
+    if job is None:
+        raise HTTPException(status_code=404, detail="Indexing job not found")
+
+    if job.status == "COMPLETED":
+        return {"status": job.status, "changed": False, "chunk_count": job.chunk_count,
+                "message": "이미 완료 상태입니다."}
+
+    index_dir = resolve_knowledge_index_dir(
+        job, job.asset_version_id, require_completed=False
+    )
+    report = inspect_index_artifacts(index_dir)
+
+    if not report["complete"]:
+        await record_audit(
+            db, event_type="INDEXING_JOB_RECONCILE", actor=user,
+            resource_type="ASSET_VERSION", resource_id=job.asset_version_id,
+            result="FAILURE", trace_id=trace_id,
+            metadata={"job_id": job.id, "missing": report["missing"]},
+        )
+        return {
+            "status": job.status,
+            "changed": False,
+            "chunk_count": None,
+            "message": "완성된 색인을 찾지 못했습니다. 문서를 다시 등록해 주세요.",
+            "missing": report["missing"],
+        }
+
+    job.status = "COMPLETED"
+    job.chunk_count = report["chunk_count"]
+    job.index_path = report["index_path"]
+    job.error_message = None
+    job.completed_at = datetime.now(UTC)
+    await db.commit()
+
+    await record_audit(
+        db, event_type="INDEXING_JOB_RECONCILE", actor=user,
+        resource_type="ASSET_VERSION", resource_id=job.asset_version_id,
+        result="SUCCESS", trace_id=trace_id,
+        metadata={"job_id": job.id, "chunk_count": report["chunk_count"]},
+    )
+    logger.info(
+        "indexing.job.reconciled job_id=%s chunk_count=%s trace_id=%s",
+        job.id, report["chunk_count"], trace_id,
+    )
+    return {"status": "COMPLETED", "changed": True, "chunk_count": report["chunk_count"],
+            "message": "디스크에 완성된 색인이 있어 상태를 반영했습니다."}
 
 
 async def _fetch_indexing_progress(job_id: str, trace_id: str | None) -> dict | None:
@@ -1528,7 +1629,9 @@ async def _fetch_indexing_progress(job_id: str, trace_id: str | None) -> dict | 
         return None
 
 
-def resolve_knowledge_index_dir(job: IndexingJob | None, version_id: str) -> Path | None:
+def resolve_knowledge_index_dir(
+    job: IndexingJob | None, version_id: str, *, require_completed: bool = True
+) -> Path | None:
     """The single index-directory resolution rule this module uses — do not
     duplicate this candidate list elsewhere (routers/knowledge_diagnostics.py
     reuses this exact function for both its Feature 1 검색 품질 테스트 and
@@ -1552,14 +1655,62 @@ def resolve_knowledge_index_dir(job: IndexingJob | None, version_id: str) -> Pat
     directory. Returns `None` when no job is COMPLETED or no candidate has
     an `index-meta.json`.
     """
-    if not job or job.status != "COMPLETED":
+    if not job or (require_completed and job.status != "COMPLETED"):
         return None
     candidates: list[Path] = []
     if job.index_path:
         candidates.append(Path(job.index_path))
     candidates.append(settings.index_base / version_id)
-    candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
+    if require_completed:
+        # 레거시 수동 인덱스는 "이미 COMPLETED 인 Job 을 어디서 읽을까" 를 풀 때만
+        # 후보다. 복구 판정(아래 `inspect_index_artifacts`)에서까지 이것을 보면
+        # 전혀 다른 자산의 인덱스를 근거로 실패한 Job 을 성공으로 뒤집을 수 있다.
+        candidates.append(settings.index_base / "hr-policy-v1")  # legacy manual index
     return next((p for p in candidates if (p / "index-meta.json").exists()), None)
+
+
+#: 파이프라인이 만드는 산출물. `index-meta.json` 은 **마지막에** 쓰인다
+#: (indexing_runtime.pipeline: chroma add -> bm25 -> parents.json -> index-meta).
+#: 그래서 이 파일이 있다는 것은 파이프라인이 끝까지 갔다는 뜻이다 — 복구 판정의
+#: 핵심 근거다. 나머지도 함께 확인해 "메타만 남은 껍데기"를 성공으로 읽지 않는다.
+_INDEX_ARTIFACTS = ("index-meta.json", "bm25.json", "parents.json", "chroma")
+
+
+def inspect_index_artifacts(index_dir: Path | None) -> dict:
+    """디스크에 실제로 완성된 인덱스가 있는지 본다.
+
+    indexing-runtime 이 색인을 끝냈는데 portal-api 는 FAILED 로 기록하는 일이
+    실제로 있다(2026-09-17 사내 보고). `_trigger_indexing` 은 HTTP 응답으로만
+    결과를 아는데, 그 연결이 끊기면(타임아웃, 프록시, 재시작) 색인 자체는 계속
+    돌아 정상적으로 끝나기 때문이다. 그러면 인덱스는 멀쩡히 있는데 Job 행만
+    영원히 FAILED 로 남고, 재색인 API 도 없어서 되살릴 방법이 없었다.
+
+    반환: {"complete": bool, "missing": [...], "chunk_count": int|None,
+           "index_path": str|None}
+    """
+    if index_dir is None:
+        return {"complete": False, "missing": list(_INDEX_ARTIFACTS),
+                "chunk_count": None, "index_path": None}
+
+    missing = [name for name in _INDEX_ARTIFACTS if not (index_dir / name).exists()]
+    chunk_count: int | None = None
+    if "index-meta.json" not in missing:
+        try:
+            with open(index_dir / "index-meta.json", encoding="utf-8") as f:
+                meta = json.load(f)
+            value = meta.get("chunk_count")
+            chunk_count = int(value) if isinstance(value, int) else None
+        except (OSError, ValueError, TypeError):
+            missing.append("index-meta.json(읽기 실패)")
+
+    # 청크 0개짜리 인덱스는 검색에 쓸 수 없다 — 성공으로 뒤집지 않는다.
+    complete = not missing and bool(chunk_count)
+    return {
+        "complete": complete,
+        "missing": missing,
+        "chunk_count": chunk_count,
+        "index_path": str(index_dir),
+    }
 
 
 @router.get("/assets/{asset_id}/knowledge-info", response_model=None)
@@ -1645,6 +1796,17 @@ async def get_knowledge_info(
                     if job and job.completed_at
                     else None,
                     "index_path": job.index_path if job else None,
+                    # FAILED 인데 디스크에는 완성된 색인이 있는가 — 있으면 다시
+                    # 등록하지 않고 `POST .../indexing-jobs/{id}/reconcile` 로
+                    # 상태만 맞추면 된다(색인 서버는 끝냈는데 응답이 허브에
+                    # 닿지 못한 경우).
+                    "index_recoverable": (
+                        inspect_index_artifacts(
+                            resolve_knowledge_index_dir(job, ver.id, require_completed=False)
+                        )["complete"]
+                        if job and job.status == "FAILED"
+                        else None
+                    ),
                 }
                 if job
                 else None,

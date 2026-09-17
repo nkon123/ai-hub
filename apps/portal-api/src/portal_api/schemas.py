@@ -172,6 +172,11 @@ class IndexingJobOut(BaseModel):
     #        percent, elapsed_seconds, eta_seconds}
     progress: dict | None = None
 
+    # FAILED 인 Job 에만 채워진다. True 면 디스크에 완성된 색인이 있다는 뜻이고
+    # (indexing-runtime 은 끝냈는데 응답이 안 돌아온 경우), `POST /assets/{id}/
+    # indexing-jobs/{job_id}/reconcile` 로 상태를 실제에 맞출 수 있다.
+    index_recoverable: bool | None = None
+
 
 class ErrorDetail(BaseModel):
     code: str
