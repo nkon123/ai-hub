@@ -10,6 +10,7 @@ import {
   type McpServerActivator,
 } from "./bundle-install";
 import { activateInstalledMcpServer } from "./mcp-server-activation";
+import { reactivateInstalledMcpServer } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
@@ -81,6 +82,7 @@ import type {
   DesktopSettingsUpdateResult,
   DiagnosticBundle,
   DiskSpaceInfo,
+  ActivateMcpServerResult,
   DisconnectMcpToolResult,
   ReconcileMcpToolConnectionsResult,
   ImportProgressEvent,
@@ -649,6 +651,26 @@ function registerIpcHandlers(): void {
         "mcp-tool-connection",
         `MCP Tool 연결 해제: ${assetType}/${assetId}@${version}` +
           (result.remoteWarning ? ` (원격 경고: ${result.remoteWarning})` : ""),
+      );
+      return result;
+    },
+  );
+
+  ipcMain.handle(
+    "mcpServer:activate",
+    async (_event, assetId: string, version: string): Promise<ActivateMcpServerResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const result = await reactivateInstalledMcpServer(layout, store, agentRuntimeBaseUrl(), {
+        assetId,
+        version,
+      });
+      // 자산 식별자와 결과만 남긴다 — 경로나 매니페스트 내용은 남기지 않는다.
+      getLogger().info(
+        "mcp-server-activation",
+        `MCP 서버 다시 활성화: ${assetId}@${version} -> ` +
+          `${result.activation?.state ?? "시도 없음"}` +
+          (result.activation?.reason ? ` (${result.activation.reason})` : ""),
       );
       return result;
     },

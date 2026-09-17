@@ -399,6 +399,13 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       return { checked: false, downgradedCount: 0, registrationEnabled: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
 
+    // --- D-096 MCP 서버 다시 활성화 -------------------------------------------
+    // 설치된 자산 폴더를 읽어야 하므로 브라우저 모드에서는 할 수 없다.
+    // 성공한 척하지 않고 이유를 돌려준다.
+    async activateInstalledMcpServer() {
+      return { ok: false, activation: null, message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+
     // --- D-034 해석 경로 4: Local Agent 등록 -----------------------------------
     async registerLocalAgent() {
       return { ok: false, registration: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };

@@ -433,6 +433,39 @@ export function AssetsScreen({
     }
   }
 
+  /** D-096. 설정(설치 루트·해석기 경로)을 고친 뒤 **다시 설치하지 않고**
+   * 재시도하는 경로. 설치 직후의 자동 활성화와 같은 함수를 쓴다. */
+  async function runActivateMcpServer(asset: InstalledAssetWithStatus) {
+    if (!bridge) return;
+    const key = assetKey(asset);
+    setActivationBusy((prev) => new Set(prev).add(key));
+    setActivationNote((prev) => {
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+    try {
+      const result = await bridge.activateInstalledMcpServer(asset.assetId, asset.version);
+      // 실패 사유는 자산 기록에도 남으므로 목록이 스스로 보여 준다. 여기서
+      // 따로 띄우는 것은 기록조차 남지 않은 경우(대상 없음/브라우저 모드)다.
+      if (!result.activation) {
+        setActivationNote((prev) => ({ ...prev, [key]: result.message }));
+      }
+      await load();
+    } catch (err) {
+      setActivationNote((prev) => ({
+        ...prev,
+        [key]: err instanceof Error ? err.message : "활성화 중 알 수 없는 오류가 발생했습니다.",
+      }));
+    } finally {
+      setActivationBusy((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  }
+
   async function runDisconnectMcpTool(asset: InstalledAssetWithStatus) {
     if (!bridge) return;
     const key = assetKey(asset);
@@ -984,6 +1017,20 @@ export function AssetsScreen({
                             : mcpConnectionDisplayState(asset) === "FAILED"
                               ? "다시 연결"
                               : "연결"}
+                    </Button>
+                  )}
+                  {asset.assetType === "mcp_server" && (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={activationBusy.has(key)}
+                      onClick={() => void runActivateMcpServer(asset)}
+                    >
+                      {activationBusy.has(key)
+                        ? "처리 중..."
+                        : asset.activation?.state === "ACTIVE"
+                          ? "다시 확인"
+                          : "다시 활성화"}
                     </Button>
                   )}
                   {asset.assetType === "agent" && (

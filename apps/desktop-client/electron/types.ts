@@ -545,6 +545,17 @@ export interface ConnectMcpToolResult {
   error: string | null;
 }
 
+/** D-096 "다시 활성화". `ConnectMcpToolResult` 와 같은 규약이다 —
+ * `state: "FAILED"` 만 `ok: false`, 시도할 것이 없었던 경우만
+ * `activation: null`(그때는 기록도 남기지 않는다). `message` 는 사유를 옮긴
+ * 것이 아니라 **조치**다(`mcp-server-activation.ts` 가 만든다) — 화면은 그것을
+ * 다시 요약하지 말고 그대로 보여 준다. */
+export interface ActivateMcpServerResult {
+  ok: boolean;
+  activation: KnowledgeActivation | null;
+  message: string;
+}
+
 export interface DisconnectMcpToolResult {
   ok: boolean;
   /** Non-null when the local connection state was cleared successfully but
@@ -1591,6 +1602,12 @@ export interface DesktopBridge {
   /** 로컬 ACTIVE와 agent-runtime의 현재 등록 목록을 비교한다. Runtime에
    * 도달하지 못하면 상태를 추측해 낮추지 않고 `checked: false`를 반환한다. */
   reconcileMcpToolConnections(): Promise<ReconcileMcpToolConnectionsResult>;
+
+  /** D-096: 설치된 MCP 서버를 agent-runtime 에 다시 등록한다. 설치 직후의
+   * 자동 활성화와 **같은 경로**를 쓴다 — 설정(설치 루트, 해석기 경로)을 고친
+   * 뒤 자산을 다시 설치하지 않고 재시도할 수 있게 하는 것이 이 메서드의 존재
+   * 이유다. 성공/실패 모두 설치 기록에 남는다. */
+  activateInstalledMcpServer(assetId: string, version: string): Promise<ActivateMcpServerResult>;
 
   // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
   /** "설치됨"과 "실행에 쓸 수 있음"은 서로 다른 사실이다 — 설치된 Agent와
