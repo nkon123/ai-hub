@@ -767,6 +767,25 @@ export function AssetsScreen({
                           {MCP_CONNECTION_LABEL[mcpConnectionDisplayState(asset)]}
                         </span>
                       )}
+                      {/* D-096. 설치와 활성화는 별개다 — 설치됨만 보여 주면
+                          "설치는 됐는데 왜 안 되지"를 원인 없이 마주한다. */}
+                      {asset.assetType === "mcp_server" && (
+                        <span
+                          className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
+                            asset.activation?.state === "ACTIVE"
+                              ? "bg-success/10 text-success"
+                              : asset.activation?.state === "FAILED"
+                                ? "bg-danger/10 text-danger"
+                                : "bg-slate-100 text-text-secondary"
+                          }`}
+                        >
+                          {asset.activation?.state === "ACTIVE"
+                            ? "활성화됨"
+                            : asset.activation?.state === "FAILED"
+                              ? "활성화 안 됨"
+                              : "활성화 확인 안 됨"}
+                        </span>
+                      )}
                       {asset.assetType === "agent" && (
                         <span
                           className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${LOCAL_AGENT_TONE[localAgentDisplayState(asset)]}`}
@@ -788,6 +807,20 @@ export function AssetsScreen({
                       <p className="mt-1 flex items-start gap-1.5 text-caption text-success">
                         <Info size={13} className="mt-0.5 shrink-0" />
                         {asset.activation.message ?? "이미 검색 가능한 상태입니다."}
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_server" && asset.activation?.state === "FAILED" && (
+                      // 사유가 아니라 조치가 적혀 있다(`mcp-server-activation.ts`).
+                      // 여기서 다시 요약하면 그 조치가 사라진다.
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-danger">
+                        <AlertTriangle size={13} className="mt-0.5 shrink-0" />
+                        {asset.activation.message ?? "활성화하지 못했습니다."}
+                      </p>
+                    )}
+                    {asset.assetType === "mcp_server" && asset.activation?.state === "ACTIVE" && (
+                      <p className="mt-1 flex items-start gap-1.5 text-caption text-text-muted">
+                        <Info size={13} className="mt-0.5 shrink-0" />
+                        연결 상태와 사용 가능한 기능은 &apos;MCP 서버&apos; 탭에서 볼 수 있습니다.
                       </p>
                     )}
                     {asset.assetType === "mcp_tool" && mcpConnectionDisplayState(asset) === "CONNECTED" && (

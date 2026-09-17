@@ -33,6 +33,9 @@ const ASSET_TYPE_LABEL: Record<string, string> = {
   knowledge: "Knowledge",
   prompt: "Prompt",
   mcp_tool: "MCP 설정",
+  // D-096. 없으면 `assetTypeLabel` 이 원문 `mcp_server` 를 그대로 보여 준다 —
+  // 설치는 됐는데 목록에서 알아볼 수 없는 상태가 된다.
+  mcp_server: "MCP 서버",
   service: "AI Service",
 };
 

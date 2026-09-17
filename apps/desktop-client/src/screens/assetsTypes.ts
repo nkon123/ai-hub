@@ -2,7 +2,16 @@
 // (`chatTypes.ts`와 동일한 관례).
 import type { AssetStatus, InstalledAssetWithStatus } from "../../electron/types";
 
-export const ASSET_TYPE_OPTIONS = ["service", "agent", "knowledge", "prompt", "mcp_tool"] as const;
+export const ASSET_TYPE_OPTIONS = [
+  "service",
+  "agent",
+  "knowledge",
+  "prompt",
+  "mcp_tool",
+  // D-096. 필터 칩이 없으면 설치된 MCP 서버만 추려 볼 방법이 없다. 빈 Set 이
+  // "전체"라 목록에는 나오지만, 찾을 수가 없다.
+  "mcp_server",
+] as const;
 export type AssetTypeOption = (typeof ASSET_TYPE_OPTIONS)[number];
 
 export const ASSET_STATUS_OPTIONS: AssetStatus[] = ["ACTIVE", "INACTIVE", "INVALID", "REVOKED"];

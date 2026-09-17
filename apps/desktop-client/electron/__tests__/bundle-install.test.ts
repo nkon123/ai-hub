@@ -409,3 +409,70 @@ describe("importBundle — D-096 설치 후 MCP 서버 활성화", () => {
     expect(result.checks.find((c) => c.id === "MCP_ACTIVATION")).toBeUndefined();
   });
 });
+
+describe("설치된 자산 기록 — D-096 MCP 서버 활성화 결과", () => {
+  // 검사 목록은 이 화면을 떠나면 사라진다. 사용자가 나중에 "이 서버 왜 안
+  // 되지"를 확인하는 곳은 설치된 자산 목록이므로, 성공이든 실패든 거기에
+  // 남아야 한다.
+  const mcpItem = {
+    asset_id: MCP_ASSET_ID,
+    asset_version_id: "v-1",
+    asset_type: "mcp_server",
+    role: "root",
+    name: "예제 서버",
+    version: "1.0.0",
+    required: true,
+    status: "OK",
+    size_bytes: 10,
+  };
+
+  function installableBundle(name: string): string {
+    const files: Record<string, string> = {
+      [`assets/mcp-servers/${MCP_ASSET_ID}/manifest.json`]: JSON.stringify({
+        type: "mcp_server",
+        server_alias: "hello-mcp",
+        transport: { kind: "STDIO", interpreter: "python", entrypoint: "server.py" },
+      }),
+      [`assets/mcp-servers/${MCP_ASSET_ID}/source/server.py`]: "print('hi')\n",
+    };
+    const checksums = Object.entries(files)
+      .map(([arcname, content]) => [
+        crypto.createHash("sha256").update(Buffer.from(content, "utf-8")).digest("hex"),
+        arcname,
+      ])
+      .sort((a, b) => (a[1] < b[1] ? -1 : 1))
+      .map(([hash, arcname]) => `${hash}  ${arcname}`)
+      .join("\n");
+    return writeZip(name, {
+      ...files,
+      "bundle-manifest.yaml": bundleManifestWith([mcpItem]),
+      "checksums.sha256": `${checksums}\n`,
+    });
+  }
+
+  it("persists a refusal so the assets list can explain it later", async () => {
+    await importBundle(installableBundle("mcp-persist-warn.zip"), layout, () => {}, async () => ({
+      status: "WARN" as const,
+      message: "관리자에게 이 경로를 허용 목록에 추가해 달라고 요청하세요: C:/install/x",
+      reason: "install_path_outside_allowed_roots",
+      serverAlias: "hello-mcp",
+    }));
+
+    const record = new InstalledAssetsStore(layout.stateDir).find("mcp_server", MCP_ASSET_ID, "1.0.0");
+    expect(record?.activation?.state).toBe("FAILED");
+    expect(record?.activation?.reason).toBe("install_path_outside_allowed_roots");
+    // 조치 문구가 그대로 남아야 한다 — 여기서 요약하면 조치가 사라진다.
+    expect(record?.activation?.message).toContain("허용 목록에 추가");
+  });
+
+  it("persists a success too", async () => {
+    await importBundle(installableBundle("mcp-persist-ok.zip"), layout, () => {}, async () => ({
+      status: "PASS" as const,
+      message: "'hello-mcp' 활성화됨",
+      serverAlias: "hello-mcp",
+    }));
+
+    const record = new InstalledAssetsStore(layout.stateDir).find("mcp_server", MCP_ASSET_ID, "1.0.0");
+    expect(record?.activation?.state).toBe("ACTIVE");
+  });
+});

@@ -556,6 +556,19 @@ export async function importBundle(
           manifest: assetManifest,
         });
         record("MCP_ACTIVATION", { status: outcome.status, message: outcome.message });
+
+        // 결과를 설치 기록에도 남긴다 — 검사 목록은 이 화면을 떠나면 사라지고,
+        // 사용자가 나중에 "이 서버 왜 안 되지"를 확인하는 곳은 설치된 자산
+        // 목록이다. `mcp-tool-connection.ts`(D-080)가 같은 이유로 성공/실패를
+        // 모두 `updateActivation` 에 남긴다. `indexPath` 는 MCP 서버에 의미가
+        // 없어 항상 null 이다(D-080 도 같다).
+        store.updateActivation(item.asset_type, item.asset_id, item.version, {
+          state: outcome.status === "PASS" ? "ACTIVE" : "FAILED",
+          checkedAt: installedAt,
+          reason: outcome.reason ?? null,
+          message: outcome.message,
+          indexPath: null,
+        });
       }
     }
 
