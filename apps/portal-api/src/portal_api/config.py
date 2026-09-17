@@ -69,6 +69,12 @@ class Settings(BaseSettings):
     # CLAUDE.md에 PoC 단순화로 명시). 그 전까지는 이 예산이 "얼마나 큰 문서까지
     # 등록되는가"를 실질적으로 결정한다.
     indexing_runtime_timeout_seconds: float = 1800.0
+
+    # `GET /assets/{id}/indexing-jobs` 가 RUNNING Job 의 진행률을 indexing-runtime
+    # 에 물어볼 때 쓰는 타임아웃. 색인 예산(위)과 완전히 다른 성격이다 — 사용자가
+    # 화면에서 몇 초마다 폴링하는 경로이고, 그 순간 indexing-runtime 은 색인으로
+    # 바쁘다. 길게 잡으면 진행률 하나 때문에 자산 목록 전체가 느려진다.
+    indexing_progress_timeout_seconds: float = 2.0
     distribution_service_url: str = "http://localhost:8400"
     secret_key: str = "dev-secret-key-change-in-production"
     base_url: str = "http://localhost:8000"

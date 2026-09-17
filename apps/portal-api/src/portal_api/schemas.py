@@ -165,6 +165,13 @@ class IndexingJobOut(BaseModel):
     created_at: datetime
     completed_at: datetime | None
 
+    # RUNNING 인 Job 에만 채워지는 실시간 진행 상황. DB 컬럼이 아니라
+    # indexing-runtime 메모리에서 읽어 얹는 값이므로(routers/assets.py
+    # `_fetch_indexing_progress`) 항상 Optional 이고, 조회에 실패하면 None 이다.
+    # 모양: {stage, stage_label, stage_index, stage_total, done, total,
+    #        percent, elapsed_seconds, eta_seconds}
+    progress: dict | None = None
+
 
 class ErrorDetail(BaseModel):
     code: str

@@ -1490,7 +1490,42 @@ async def list_indexing_jobs(
         .order_by(IndexingJob.created_at.desc())
     )
     jobs = (await db.execute(stmt)).scalars().all()
-    return [IndexingJobOut.model_validate(j) for j in jobs]
+    out = [IndexingJobOut.model_validate(j) for j in jobs]
+
+    # RUNNING 인 Job 에만 실시간 진행률을 얹는다. DB 에는 진행률이 없다 —
+    # `IndexingJob` 은 status 와 (끝나야 채워지는) chunk_count 뿐이라, 큰 문서를
+    # 등록한 사람에게 "진행 중"과 "멈춤"이 똑같이 보였다(700만자 문서, 2026-09-17).
+    # 진행 상황을 아는 것은 indexing-runtime 뿐이므로 그 쪽에 물어본다.
+    #
+    # 이 조회가 실패해도 목록 자체는 그대로 돌려준다. 진행률은 있으면 좋은
+    # 부가 정보이고, 그것 때문에 자산 화면이 통째로 깨지면 손해가 더 크다.
+    running = [j for j in out if j.status == "RUNNING"]
+    if running:
+        for job in running:
+            job.progress = await _fetch_indexing_progress(job.id, trace_id)
+    return out
+
+
+async def _fetch_indexing_progress(job_id: str, trace_id: str | None) -> dict | None:
+    """indexing-runtime 의 메모리 안 진행 상태를 읽어 온다(없으면 None).
+
+    타임아웃을 아주 짧게 잡는다. 이 호출은 사용자가 화면에서 몇 초마다
+    폴링하는 경로에 있고, indexing-runtime 은 같은 순간 색인으로 바쁘다 —
+    여기서 오래 기다리면 자산 목록 응답이 통째로 느려진다.
+    """
+    url = f"{settings.indexing_runtime_url}/indexing/v1/jobs/{job_id}/progress"
+    try:
+        async with httpx.AsyncClient(timeout=settings.indexing_progress_timeout_seconds) as client:
+            resp = await client.get(url)
+        if resp.status_code != 200:
+            return None
+        body = resp.json()
+        return body if isinstance(body, dict) else None
+    except Exception as exc:  # noqa: BLE001 — 진행률은 부가 정보다
+        logger.debug(
+            "indexing.progress.unavailable job_id=%s trace_id=%s error=%s", job_id, trace_id, exc
+        )
+        return None
 
 
 def resolve_knowledge_index_dir(job: IndexingJob | None, version_id: str) -> Path | None:
