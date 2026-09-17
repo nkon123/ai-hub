@@ -1,0 +1,72 @@
+{
+  "schema_version": "1.0",
+  "id": "c1a7f4e2-9b38-4d61-8f20-7e5a3c9b1d64",
+  "type": "mcp_server",
+  "name": "연결 확인용 예제 서버",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "dev-user@miracom.com"
+  },
+  "classification": "PUBLIC_INTERNAL",
+  "description": "D-094 stdio 등록 경로를 끝까지 확인하기 위한 예제. 파일도 네트워크도 건드리지 않고 보낸 문장과 현재 시각만 돌려준다.",
+  "tags": ["sample", "stdio", "smoke-test"],
+  "server_alias": "hello-mcp",
+  "provenance": "INTERNAL",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "STDIO",
+    "interpreter": "python",
+    "entrypoint": "server.py",
+    "args": [],
+    "vendored_dependencies": true
+  },
+  "declared_tools": [
+    {
+      "tool_name": "hello.echo",
+      "label": "보낸 문장을 그대로 돌려줍니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["message"],
+        "properties": {
+          "message": { "type": "string" }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "ADMIN"],
+        "allowed_orgs": ["miracom"]
+      },
+      "data_classification": "PUBLIC_INTERNAL",
+      "confirmation_policy": "NEVER",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_bytes": 4096,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "hello.now",
+      "label": "서버 PC 의 현재 시각을 돌려줍니다",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": ["CREATOR", "ADMIN"],
+        "allowed_orgs": ["miracom"]
+      },
+      "data_classification": "PUBLIC_INTERNAL",
+      "confirmation_policy": "NEVER",
+      "execution_guards": {
+        "timeout_seconds": 10,
+        "max_bytes": 4096,
+        "rate_limit_per_minute": 30
+      }
+    }
+  ]
+}
