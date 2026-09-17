@@ -88,6 +88,57 @@ def _mcp_tool_manifest(**overrides) -> dict:
     return manifest
 
 
+def _mcp_server_manifest(**overrides) -> dict:
+    """D-094 MCP 서버 자산. `samples/mcp-servers/hello-mcp` 와 같은 모양이다
+    — Portal Wizard(`/assets/new/mcp_server`)가 제출하는 것도 이 모양이다."""
+    manifest = {
+        "schema_version": "1.0",
+        "id": str(uuid.uuid4()),
+        "type": "mcp_server",
+        "name": "테스트 MCP 서버 (safe to delete)",
+        "version": "1.0.0",
+        "owner": {"org": "miracom", "creator_id": "dev-user@miracom.com"},
+        "classification": "INTERNAL",
+        "description": "test_asset_registration.py fixture",
+        "server_alias": "test-hello-mcp",
+        "provenance": "INTERNAL",
+        "protocol_version": "2025-06-18",
+        "transport": {
+            "kind": "STDIO",
+            "interpreter": "python",
+            "entrypoint": "server.py",
+            "args": [],
+            "vendored_dependencies": True,
+        },
+        "declared_tools": [
+            {
+                "tool_name": "hello.echo",
+                "label": "보낸 문장을 그대로 돌려줍니다",
+                "input_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["message"],
+                    "properties": {"message": {"type": "string"}},
+                },
+                "risk_level": "READ_ONLY",
+                "permissions": {
+                    "allowed_roles": ["CREATOR", "ADMIN"],
+                    "allowed_orgs": ["miracom"],
+                },
+                "data_classification": "PUBLIC_INTERNAL",
+                "confirmation_policy": "NEVER",
+                "execution_guards": {
+                    "timeout_seconds": 10,
+                    "max_bytes": 4096,
+                    "rate_limit_per_minute": 30,
+                },
+            }
+        ],
+    }
+    manifest.update(overrides)
+    return manifest
+
+
 async def _post_asset(
     client, manifest: dict, *, files: dict | None = None, token: str = "dev-user-token"
 ):
@@ -137,6 +188,33 @@ async def test_register_mcp_tool_asset_end_to_end(client, db) -> None:
     resp = await _post_asset(client, _mcp_tool_manifest())
     assert resp.status_code == 201, resp.text
     assert resp.json()["manifest"]["type"] == "mcp_tool"
+
+
+async def test_register_mcp_server_asset_end_to_end(client, db) -> None:
+    """등록 Wizard(M01)와 스키마(M06)가 `mcp_server` 를 먼저 알게 된 뒤에도
+    `_MANIFEST_TYPE_TO_SCHEMA` 에 그 키가 없어 제출만 400 으로 막혔다 —
+    Wizard 를 5단계까지 다 채운 뒤에야 드러나는 실패였다."""
+    resp = await _post_asset(client, _mcp_server_manifest())
+    assert resp.status_code == 201, resp.text
+    body = resp.json()
+    assert body["status"] == "DRAFT"
+    assert body["manifest"]["type"] == "mcp_server"
+    assert body["manifest"]["server_alias"] == "test-hello-mcp"
+
+    stored = (
+        await db.execute(select(AssetVersion).where(AssetVersion.id == body["id"]))
+    ).scalar_one()
+    assert stored.manifest["transport"]["kind"] == "STDIO"
+
+
+async def test_invalid_mcp_server_manifest_rejected_with_field_errors(client) -> None:
+    """종류를 받아준다고 검증까지 느슨해지지 않는다."""
+    manifest = _mcp_server_manifest(transport={"kind": "STDIO"})  # entrypoint 누락
+
+    resp = await _post_asset(client, manifest)
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert resp.json()["error"]["details"]["errors"]
 
 
 # --- Schema-invalid manifests rejected with field errors -------------------

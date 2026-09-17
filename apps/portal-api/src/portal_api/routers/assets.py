@@ -98,11 +98,18 @@ _MY_ASSET_CATEGORY_ORDER = (
     "DEPRECATED",
 )
 
+# 이 map의 키가 곧 "Portal이 받는 자산 종류"다 — 여기 없는 종류는
+# `POST /api/v1/assets`와 `POST /api/v1/manifests/validate` 양쪽에서 400이다.
+# `mcp_server`는 스키마(`SchemaType.MCP_SERVER`)도 등록 Wizard(M01
+# `/assets/new/mcp_server`)도 먼저 생겼는데 이 map만 빠져 있어, Wizard를
+# 끝까지 진행해도 제출에서만 "지원하지 않는 자산 유형입니다"로 막혔다(D-094).
+# 새 자산 종류를 추가할 때 M01/M06만 고치고 여기를 잊기 쉽다.
 _MANIFEST_TYPE_TO_SCHEMA: dict[str, SchemaType] = {
     "agent": SchemaType.AGENT,
     "knowledge": SchemaType.KNOWLEDGE,
     "prompt": SchemaType.PROMPT,
     "mcp_tool": SchemaType.MCP_TOOL,
+    "mcp_server": SchemaType.MCP_SERVER,
     "service": SchemaType.SERVICE,
 }
 
@@ -768,8 +775,11 @@ async def create_asset(
             return error_response(
                 status.HTTP_400_BAD_REQUEST,
                 "ASSET_UPLOAD_EXTENSION_REJECTED",
+                # "지식 자산"이라고 적혀 있었는데 이 경로는 모든 종류의 자산이
+                # 지나간다 — `mcp_server` 가 `server.py` 를 올리려다 "지식 자산"
+                # 얘기를 듣는 상태였다(D-096).
                 f"'{safe_name}' 파일의 확장자({extension or '(없음)'})는 "
-                "지식 자산 등록에 허용되지 않습니다.",
+                "자산 등록에 허용되지 않습니다.",
                 trace_id,
             )
 
