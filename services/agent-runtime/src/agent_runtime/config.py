@@ -11,6 +11,9 @@ from pydantic_settings import BaseSettings
 from agent_runtime.ollama_config import load_ollama_endpoint
 
 _REPO_ROOT = Path(__file__).parent.parent.parent.parent.parent  # enterprise-ai-asset-hub/
+#: services/agent-runtime/ — `.env` 가 놓이는 곳. 파일 위치에서 거슬러 올라가므로
+#: 프로세스를 어디서 띄우든 같은 파일을 가리킨다(아래 `env_file` 주석 참고).
+_SERVICE_ROOT = Path(__file__).parent.parent.parent
 
 
 class AgentRuntimeSettings(BaseSettings):
@@ -315,7 +318,15 @@ class AgentRuntimeSettings(BaseSettings):
         # 고치는 것뿐이었는데, 그것은 추적되는 파일이라 사람마다 다른 값이
         # 커밋 대상으로 올라온다(`config/ollama.json` 이 실제로 그렇게 됐다).
         # `.env` 는 `.gitignore` 에 이미 들어 있어 그 문제가 없다.
-        env_file = ".env"
+        #
+        # **절대 경로다.** 처음에는 `".env"` 라고만 적었는데, 그러면 경로가
+        # **프로세스의 CWD** 기준이라 `services/agent-runtime` 밖에서 띄우면
+        # 파일이 조용히 무시된다 — 오류도 경고도 없이 모든 값이 기본값으로
+        # 돌아가고, 증상은 "설정을 넣었는데 반영이 안 된다"로만 나타난다
+        # (실제로 이 저장소 루트에서 띄워 보고 발견했다: enabled=False,
+        # roots=()). `make dev-agent-runtime` 은 `cd` 후 실행해서 우연히
+        # 동작하고 있었을 뿐이다.
+        env_file = _SERVICE_ROOT / ".env"
         # `utf-8` 이 아니라 `utf-8-sig` 다. Windows 에서 메모장이나
         # PowerShell `Set-Content -Encoding utf8`(5.1)이 BOM 을 붙이는데,
         # 그러면 첫 줄의 키 이름이 `﻿AGENT_RUNTIME_...` 이 되어
