@@ -184,7 +184,9 @@ def test_error_flag_is_carried_through() -> None:
 def test_content_blocks_to_dicts_handles_sdk_objects_and_plain_dicts() -> None:
     """이 함수 하나만 SDK 타입을 안다 — 나머지 필터는 순수 데이터만 다뤄서
     SDK 없이 테스트되고, SDK 가 필드명을 바꿔도 여기만 고치면 된다."""
-    import mcp_types as t
+    # 선언된 의존성(`mcp`)이 재노출하는 것을 쓴다 — `mcp_types` 는
+    # 전이 의존성이라 직접 import 하면 환경에 따라 없다.
+    from mcp import types as t
 
     blocks = content_blocks_to_dicts([t.TextContent(type="text", text="hi"), {"type": "x"}])
     assert blocks[0]["text"] == "hi"

@@ -30,7 +30,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import mcp_types as types
+# `mcp_types` 를 직접 import 하지 않는다 — 그것은 `mcp` 의 **전이**
+# 의존성이라 우리 `pyproject.toml` 에 없고, 로컬에서 우연히 설치돼
+# 있어서 동작할 뿐이다(실제로 다른 환경 빌드에서 ModuleNotFoundError
+# 로 터졌다). `mcp.types` 가 같은 객체를 재노출한다.
+from mcp import types
 from mcp.server import ServerRequestContext
 from mcp.server.lowlevel import Server
 

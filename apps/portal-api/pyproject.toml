@@ -19,6 +19,12 @@ dependencies = [
   "ai-asset-schemas",
   "security-policy",
   "aiofiles>=25.1.0",
+  # indexing-runtime/agent-runtime/search-runtime 을 HTTP 로만 호출한다
+  # (`routers/assets.py` 의 `_call_indexing_runtime_http`/`_fetch_indexing_progress`,
+  # `routers/knowledge_metadata_suggest.py` 등). 지금까지 선언 없이 쓰였는데
+  # starlette 의 TestClient 가 전이로 끌어와 우연히 동작했을 뿐이라, 다른
+  # 해석 결과에서는 ModuleNotFoundError 가 된다.
+  "httpx>=0.27.0",
   "python-multipart>=0.0.32",
   "observability",
   # P12 Knowledge 품질: portal-api는 evaluation_runner의 공개 API만 사용해
