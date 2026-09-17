@@ -30,7 +30,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 from observability import get_trace_id
 from security_policy import Permission, Role, VersionStatus, has_permission, is_mutable
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -40,7 +40,15 @@ from portal_api.config import settings
 from portal_api.database import get_db
 from portal_api.diffing import compute_manifest_diff
 from portal_api.errors import error_response, not_found
-from portal_api.models import Asset, AssetVersion, AssetVersionRevocation, IndexingJob
+from portal_api.models import (
+    Asset,
+    AssetVersion,
+    AssetVersionRevocation,
+    DistributionRequest,
+    IndexingJob,
+)
+from portal_api.models.evaluation import EvaluationResultRecord
+from portal_api.models.service import ServiceVersion
 from portal_api.models.review import ReviewDecision, ReviewRequest
 from portal_api.models.revocation import effective_filter
 from portal_api.platform_settings import INDEXING_EMBED_MODEL_KEY, get_setting
@@ -48,6 +56,7 @@ from portal_api.python_signature import PythonSignatureError, convert_python_sig
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     AssetListResponse,
+    DeleteAssetRequest,
     AssetOut,
     AssetUploadPolicyOut,
     AssetVersionOut,
@@ -1518,6 +1527,188 @@ async def list_indexing_jobs(
         )
         job.index_recoverable = inspect_index_artifacts(index_dir)["complete"]
     return out
+
+
+def _safe_rmtree(target: Path, allowed_root: Path) -> bool:
+    """`allowed_root` 안에 있는 디렉터리만 지운다.
+
+    경로는 DB 에서 온다(우리가 쓴 값)지만 그렇다고 검사를 생략하지 않는다 —
+    잘못된 행 하나, 손으로 고친 값 하나가 저장소 밖을 지우는 일로 이어지면
+    되돌릴 수 없다. `resolve()` 후 `relative_to` 로 포함 관계를 확인한다
+    (symlink 로 밖을 가리키는 경우까지 걸러낸다).
+    """
+    try:
+        resolved = target.resolve()
+        root = allowed_root.resolve()
+        resolved.relative_to(root)
+    except (OSError, ValueError):
+        logger.warning("asset.delete.path_outside_allowed_root target=%s", target)
+        return False
+    if not resolved.is_dir():
+        return False
+    shutil.rmtree(resolved, ignore_errors=True)
+    return True
+
+
+async def _find_asset_references(db: AsyncSession, asset_id: str, version_ids: list[str]) -> list[str]:
+    """이 자산을 가리키는 다른 것들. 있으면 삭제하지 않는다.
+
+    FK 만 보면 놓친다. 서비스 정의는 `knowledge_bindings[].knowledge_id` 를
+    **JSON 안에** 들고 있고, 배포 요청은 `root_id` 에 문자열로 들고 있다 —
+    데이터베이스가 막아 주지 않는 참조들이다. 이것을 확인하지 않고 지우면
+    게시된 챗봇이 질의 시점에 조용히 빈 결과를 내기 시작한다.
+    """
+    blockers: list[str] = []
+
+    service_versions = (await db.execute(select(ServiceVersion))).scalars().all()
+    for sv in service_versions:
+        definition = sv.service_definition if isinstance(sv.service_definition, dict) else {}
+        for binding in definition.get("knowledge_bindings") or []:
+            if isinstance(binding, dict) and binding.get("knowledge_id") == asset_id:
+                blockers.append(f"서비스 버전 {sv.version or sv.id}")
+                break
+
+    dist = (
+        await db.execute(
+            select(DistributionRequest).where(
+                DistributionRequest.root_id.in_([asset_id, *version_ids])
+            )
+        )
+    ).scalars().all()
+    if dist:
+        blockers.append(f"배포 요청 {len(dist)}건")
+
+    revocations = (
+        await db.execute(
+            select(AssetVersionRevocation).where(AssetVersionRevocation.version_id.in_(version_ids))
+        )
+    ).scalars().all()
+    if revocations:
+        blockers.append(f"회수 기록 {len(revocations)}건")
+
+    return blockers
+
+
+@router.delete("/assets/{asset_id}", response_model=None)
+async def delete_asset(
+    asset_id: str,
+    body: DeleteAssetRequest,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> dict | JSONResponse:
+    """초안 자산을 영구 삭제한다. 되돌릴 수 없다.
+
+    **승인된 적이 있는 자산은 지우지 않는다.** 명세 §4.1 이 삭제를 허용하는
+    상태는 DRAFT(편집·삭제·검증) 와 CHANGES_REQUESTED 뿐이다. 승인 이력은 감사
+    대상이고, 게시된 서비스가 그 버전을 참조할 수 있다 — 승인된 자산을 내리는
+    수단은 이미 있다(중단/지원종료/폐기). 지우는 것과 내리는 것은 다른 일이다.
+
+    FK 가 막아 주지 않는 참조도 함께 본다(`_find_asset_references`): 서비스
+    정의의 `knowledge_bindings`, 배포 요청의 `root_id`, 회수 기록. 이것을
+    확인하지 않고 지우면 게시된 챗봇이 질의 시점에 조용히 빈 결과를 낸다.
+
+    파일도 함께 지운다(업로드 원본과 색인 디렉터리). 행만 지우면 디스크에
+    아무도 모르는 데이터가 남는다 — 21MB 문서 하나가 525MB 인덱스를 만든다.
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.ASSET_DELETE, trace_id=trace_id,
+        resource_type="ASSET", resource_id=asset_id,
+    )
+    if denial:
+        return denial
+
+    if not body.reason or not body.reason.strip():
+        return error_response(
+            status.HTTP_400_BAD_REQUEST, "VALIDATION_ERROR",
+            "삭제 사유(reason)는 필수입니다.", trace_id,
+        )
+
+    asset = (
+        await db.execute(select(Asset).where(Asset.id == asset_id))
+    ).scalar_one_or_none()
+    if asset is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # 소유권은 권한과 별개로 확인한다 — ASSET_DELETE 가 있다고 남의 초안을
+    # 지울 수 있는 것은 아니다(ASSET_SUBMIT_REVIEW 와 같은 패턴).
+    if user.role != Role.ADMIN.value and asset.owner_creator_id != user.user_id:
+        await record_audit(
+            db, event_type="ASSET_DELETED", actor=user, resource_type="ASSET",
+            resource_id=asset_id, result="DENIED", trace_id=trace_id,
+            metadata={"reason": "not_owner"},
+        )
+        return error_response(
+            status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED",
+            "본인이 등록한 자산만 삭제할 수 있습니다.", trace_id,
+        )
+
+    versions = (
+        await db.execute(select(AssetVersion).where(AssetVersion.asset_id == asset_id))
+    ).scalars().all()
+
+    undeletable = [v for v in versions if not is_mutable(VersionStatus(v.status))]
+    if undeletable:
+        states = ", ".join(sorted({v.status for v in undeletable}))
+        return error_response(
+            status.HTTP_409_CONFLICT, "ASSET_NOT_DELETABLE",
+            f"승인 절차에 들어간 자산은 삭제할 수 없습니다(현재: {states}). "
+            "대신 중단 또는 지원 종료를 사용하세요.",
+            trace_id,
+        )
+
+    version_ids = [v.id for v in versions]
+    blockers = await _find_asset_references(db, asset_id, version_ids)
+    if blockers:
+        return error_response(
+            status.HTTP_409_CONFLICT, "ASSET_IN_USE",
+            f"다른 곳에서 사용 중이라 삭제할 수 없습니다: {', '.join(blockers)}.",
+            trace_id,
+        )
+
+    # 파일을 먼저 지우지 않는다. DB 삭제가 실패하면 행은 남고 파일만 사라져
+    # "있는데 읽을 수 없는" 상태가 되기 때문이다. 순서: DB -> 파일.
+    storage_dirs = [Path(v.storage_path) for v in versions if v.storage_path]
+    index_dirs = [settings.index_base / vid for vid in version_ids]
+
+    if version_ids:
+        await db.execute(
+            delete(EvaluationResultRecord).where(EvaluationResultRecord.asset_version_id.in_(version_ids))
+        )
+        await db.execute(
+            delete(IndexingJob).where(IndexingJob.asset_version_id.in_(version_ids))
+        )
+        await db.execute(delete(AssetVersion).where(AssetVersion.id.in_(version_ids)))
+    await db.execute(delete(Asset).where(Asset.id == asset_id))
+    await db.commit()
+
+    removed_dirs = 0
+    for d in storage_dirs:
+        removed_dirs += int(_safe_rmtree(d, settings.storage_root))
+    for d in index_dirs:
+        removed_dirs += int(_safe_rmtree(d, settings.index_base))
+
+    await record_audit(
+        db, event_type="ASSET_DELETED", actor=user, resource_type="ASSET",
+        resource_id=asset_id, result="SUCCESS", trace_id=trace_id,
+        metadata={
+            "asset_name": asset.name,
+            "asset_type": asset.type,
+            "version_count": len(versions),
+            "removed_directories": removed_dirs,
+            "reason": body.reason.strip()[:500],
+        },
+    )
+    logger.info(
+        "asset.deleted asset_id=%s versions=%d dirs=%d trace_id=%s",
+        asset_id, len(versions), removed_dirs, trace_id,
+    )
+    return {
+        "deleted": True,
+        "asset_id": asset_id,
+        "version_count": len(versions),
+        "removed_directories": removed_dirs,
+    }
 
 
 @router.post("/assets/{asset_id}/indexing-jobs/{job_id}/reconcile", response_model=None)

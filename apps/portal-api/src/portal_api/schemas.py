@@ -521,6 +521,14 @@ class DeprecateRequest(BaseModel):
     reason: str
 
 
+class DeleteAssetRequest(BaseModel):
+    """초안 자산 영구 삭제. 사유는 필수다 — 되돌릴 수 없는 행동이라 감사 기록에
+    "누가 왜 지웠는가"가 남아야 한다(루트 CLAUDE.md UI 규칙: 폐기는 확인과
+    사유를 요구한다)."""
+
+    reason: str
+
+
 # --- P16 수명주기/회수 (01-portal-and-distribution.md §2 P16) ---
 
 

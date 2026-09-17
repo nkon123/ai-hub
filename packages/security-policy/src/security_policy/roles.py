@@ -45,6 +45,12 @@ class Permission(StrEnum):
     REVIEW_DECIDE_RELEASE = "REVIEW_DECIDE_RELEASE"
     ASSET_SUSPEND = "ASSET_SUSPEND"
     ASSET_DEPRECATE = "ASSET_DEPRECATE"
+    # 초안 자산의 **영구 삭제**. SUSPEND/DEPRECATE/RETIRE 와 전혀 다른 행위라
+    # 그것들을 재사용하지 않는다 — 앞의 셋은 승인된 자산의 상태를 바꿔 기록을
+    # 남기는 일이고, 이것은 기록 자체를 지우는 일이다. 그래서 별도 권한이고,
+    # 라우터는 승인된 적이 있는 자산에는 이 권한이 있어도 삭제를 거부한다
+    # (승인 이력은 감사 대상이고, 게시된 서비스가 참조할 수 있다).
+    ASSET_DELETE = "ASSET_DELETE"
     # P16 수명주기/회수 (01-portal-and-distribution.md §2 P16). Reading the
     # lifecycle screen and the impact query is intentionally narrower than
     # ASSET_READ (granted to every role) — P16's audience is RELEASE_MANAGER,
@@ -121,6 +127,10 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.ASSET_EDIT_DRAFT,
             Permission.ASSET_SUBMIT_REVIEW,
             Permission.ASSET_VALIDATE,
+            # 자기가 만든 초안을 지우는 것은 제작자의 일이다. 소유권은 라우터가
+            # 따로 확인한다(ASSET_SUBMIT_REVIEW 와 같은 방식) — 이 권한만으로
+            # 남의 초안을 지울 수는 없다.
+            Permission.ASSET_DELETE,
             Permission.SERVICE_READ,
             Permission.SERVICE_CREATE,
             Permission.SERVICE_EDIT_DRAFT,
