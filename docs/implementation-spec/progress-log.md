@@ -1,5 +1,13 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M05 MCP 자동 선택이 전혀 동작하지 않던 것 — 라우팅 호출의 생각(thinking) 끄기
+
+- **제보**: "MCP 도구를 딱 하나 선택했을 때만 MCP 를 고르고, 자동 선택은 전혀 동작하지 않는다."
+- **재현(실제 Ollama, 현재 채팅 모델 `gemma4:latest`)**: 라우터 raw 응답이 대부분 **빈 문자열**이었다 — `done_reason=length`, `eval_count=160`. gemma4 가 라우팅 상한(`router_max_output_tokens=160`)을 숨은 추론(`thinking`, 500자 이상)에 다 쓰고 JSON 을 못 썼다 → `unparseable` → Tool 없음. 후보가 1개면 덜 생각해서 가끔 통과했고, 그래서 "하나 고르면 된다"로 보였다. 모델 거절도 타임아웃도 아니었다.
+- **고친 것**: `OllamaLLMAdapter` — 상한을 준 호출(라우팅 3종)에만 `think: false`. 답변 생성(상한 없음)은 그대로. `think` 를 거부(400 + 오류문에 think)하는 모델/구버전 Ollama 에는 필드를 빼고 한 번 재시도하고 (endpoint, model) 단위로 기억한다. 그 밖의 400 은 재시도로 덮지 않는다.
+- **검증**: 실제 gemma4 로 기본 vs `think=false` — 기본 6회 중 5회 빈 응답, 끈 뒤 6/6. 수정한 어댑터로 `route_tool_call` 을 자동 모드(후보 5개)에 대고 5개 질문 × 3회 = **15/15 기대대로**(시각→hello.now, 따라 말하기→hello.echo, 테이블→db_metadata.get_tables, 인사 규정→선택 안 함), 0.2~0.6초. 신규 단위 4개(상한 호출만 think=false, 답변 생성엔 없음, 거부 시 재시도+기억, 무관한 400 은 그대로 오류). agent-runtime unit+integration+contract **567 → 571 passed, 실패 19건 동일**. 변이: 필드를 빼면 2개 실패.
+- **확인하지 못한 것**: `think` 를 모르는 모델(예: exaone3.5)이 이 PC 의 Ollama 에 없어 재시도 경로는 MockTransport 로만 확인했다. 실행 중인 agent-runtime 에 반영됐는지(재시작/--reload)와 Desktop 대화에서의 확인은 남아 있다.
+
 ## 2026-09-18 M01/M02 MCP 서버 새 버전에서 코드·매니페스트 교체 (D-101)
 
 - **요청**: "MCP 도 새로 버전 생성할 때 파일을 다시 올리는 게 필요하다."

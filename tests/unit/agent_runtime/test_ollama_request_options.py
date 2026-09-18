@@ -87,3 +87,71 @@ async def test_streaming_and_model_fields_are_unchanged() -> None:
     assert body["model"] == "exaone3.5:7.8b"
     assert body["stream"] is True
     assert body["messages"] == [{"role": "user", "content": "hi"}]
+
+
+# --- 상한을 준 호출은 생각(thinking)을 끈다 -------------------------------------
+# 2026-09-18 실측: 생각하는 모델(gemma4)이 라우팅 상한 160 토큰을 숨은 추론에 다
+# 쓰고 JSON 을 한 글자도 못 쓴 채 `done_reason=length` 로 끝났다 — TOOL_ROUTE 6회
+# 중 5회가 `unparseable` 이라 "MCP 자동 선택이 전혀 동작 안 함". `think: false` 로
+# 6/6 정답. 이 속성과, 그 필드를 모르는 모델이 깨지지 않는 것을 고정한다.
+
+
+def _reset_think_cache() -> None:
+    OllamaLLMAdapter._think_unsupported.clear()
+
+
+async def test_capped_call_turns_thinking_off() -> None:
+    _reset_think_cache()
+    sent: list[dict[str, Any]] = []
+    await _drain(_capturing_adapter(sent), max_output_tokens=160)
+    assert sent[0]["think"] is False
+
+
+async def test_answer_generation_leaves_thinking_alone() -> None:
+    """답변 생성에서는 추론이 품질이다 — 필드 자체를 보내지 않는다."""
+    _reset_think_cache()
+    sent: list[dict[str, Any]] = []
+    await _drain(_capturing_adapter(sent))
+    assert "think" not in sent[0]
+
+
+async def test_model_that_rejects_think_is_retried_without_it_and_remembered() -> None:
+    _reset_think_cache()
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        sent.append(body)
+        if "think" in body:
+            return httpx.Response(400, json={"error": '"exaone3.5:7.8b" does not support thinking'})
+        line = json.dumps({"message": {"content": "{\"tool_name\": null}"}, "done": True})
+        return httpx.Response(200, content=(line + "\n").encode())
+
+    adapter = OllamaLLMAdapter(_MODEL_ALIASES, transport=httpx.MockTransport(handler))
+
+    tokens = await _drain(adapter, max_output_tokens=160)
+    assert "".join(tokens) == '{"tool_name": null}'  # 원래 되던 호출은 계속 된다
+    assert ["think" in b for b in sent] == [True, False]
+
+    # 두 번째 호출부터는 거부된 필드를 다시 보내지 않는다(왕복 한 번 절약).
+    await _drain(adapter, max_output_tokens=160)
+    assert ["think" in b for b in sent] == [True, False, False]
+
+
+async def test_other_400_is_not_swallowed_by_the_think_retry() -> None:
+    """`think` 와 무관한 400 은 재시도로 덮지 않는다 — 원래대로 오류가 난다."""
+    _reset_think_cache()
+    calls: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(400, json={"error": "invalid messages"})
+
+    adapter = OllamaLLMAdapter(_MODEL_ALIASES, transport=httpx.MockTransport(handler))
+    try:
+        await _drain(adapter, max_output_tokens=160)
+    except httpx.HTTPStatusError:
+        pass
+    else:  # pragma: no cover - 실패 경로
+        raise AssertionError("400 이 조용히 삼켜졌다")
+    assert len(calls) == 1

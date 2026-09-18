@@ -144,6 +144,16 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
 
 ## 이 모듈에서 반복해서 틀렸던 것
 
+- **생각하는 모델은 출력 상한을 추론에 다 쓴다(2026-09-18).** 라우팅 호출
+  (KNOWLEDGE_ROUTE/질의 재작성/TOOL_ROUTE)은 `max_output_tokens`(160)로 막는데,
+  gemma4·qwen3 같은 모델은 숨은 추론(`message.thinking`)도 그 상한에서 소비해
+  JSON 을 한 글자도 못 쓰고 `done_reason=length` 로 끝난다 — 로그에는
+  `unparseable` 로만 보이고 "MCP 자동 선택이 전혀 동작 안 함"으로 나타났다(후보가
+  적으면 덜 생각해서 가끔 통과했다). 그래서 `OllamaLLMAdapter` 는 상한을 준
+  호출에 `think: false` 를 싣고, 그 필드를 거부(400)하는 모델에는 빼고 재시도한
+  뒤 기억한다. **라우팅 품질을 볼 때 모델을 바꿨다면 raw 응답의
+  `done_reason`/`eval_count` 부터 본다** — 프롬프트를 고치기 전에.
+
 - **D-078: 로컬 조회 데이터를 허브로 보내지 않는다.** Hub(portal-api 중앙
   Knowledge Registry)에 보낼 질의 문자열을 만드는 경로는 `hub_query.py`의
   `build_hub_query` **하나뿐**이며, 이번 턴의 `question`과 이전 턴들의
