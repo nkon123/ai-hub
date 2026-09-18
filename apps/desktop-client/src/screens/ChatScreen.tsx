@@ -41,7 +41,7 @@ import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
 import { AgentDraftDialog } from "./AgentDraftDialog";
 import { AnswerMarkdown } from "./AnswerMarkdown";
-import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../ui";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState, Tabs } from "../ui";
 import {
   SCHEDULE_HISTORY_OUTCOME_LABELS,
   SCHEDULE_HISTORY_OUTCOME_TONE,
@@ -405,6 +405,12 @@ function ToolExecutionsPanel({ executions }: { executions: ToolExecutionRecord[]
     </div>
   );
 }
+
+type SidebarTab = "chats" | "bots";
+const SIDEBAR_TABS: Array<{ id: SidebarTab; label: string }> = [
+  { id: "chats", label: "대화" },
+  { id: "bots", label: "봇" },
+];
 
 export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: () => void } = {}) {
   const bridge = getDesktopBridge();
@@ -1025,6 +1031,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 노출한다 — 스케줄러 자체가 Main Process 전용이라, 브라우저 개발
   // 모드에서는 항상 빈 이력만 볼 수 있어 노출해 봐야 오해만 준다.
   const [scheduleBotSelected, setScheduleBotSelected] = useState(false);
+  const [sidebarTab, setSidebarTab] = useState<SidebarTab>("chats");
   const [scheduleBotHistory, setScheduleBotHistory] = useState<ScheduleHistoryRecord[] | null>(null);
   const [scheduleBotError, setScheduleBotError] = useState<string | null>(null);
   const [scheduleBotSchedules, setScheduleBotSchedules] = useState<ScheduleRecord[]>([]);
@@ -1403,6 +1410,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     if (!conversationBridge) return;
     setSendError(null);
     setScheduleBotSelected(false);
+    setSidebarTab("chats");
     try {
       const record = await conversationBridge.getConversation(id);
       if (!record) {
@@ -1423,11 +1431,22 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setMessages([]);
     setSendError(null);
     setScheduleBotSelected(false);
+    setSidebarTab("chats");
   }
 
   function handleSelectScheduleBot(): void {
     setScheduleBotSelected(true);
     void loadScheduleBot();
+  }
+
+  // 좌측 목록은 "대화 | 봇" 두 탭이다(2026-09-18 사용자 요청). 봇(지금은
+  // 스케줄봇 하나)은 대화가 아니라 실행 이력을 읽는 곳이라 대화 목록에 섞지
+  // 않는다. 탭을 바꾸면 오른쪽도 그 탭의 것을 보여 준다 — 대화 탭으로
+  // 돌아가면 보던 대화가 그대로 있고, 봇 탭을 열면 스케줄봇을 바로 연다.
+  function handleSidebarTabChange(next: SidebarTab): void {
+    setSidebarTab(next);
+    if (next === "bots") handleSelectScheduleBot();
+    else setScheduleBotSelected(false);
   }
 
   function requestDeleteConversation(c: ConversationSummary): void {
@@ -2131,24 +2150,22 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             보존. Electron 브릿지가 있을 때만(대화 저장은 Main Process 전용). */}
         {conversationBridge && (
           <aside className="flex w-64 shrink-0 flex-col border-r border-border pr-3" aria-label="채팅 목록">
-            <Button
-              variant="secondary"
-              onClick={handleNewConversation}
-              disabled={isRunning}
-              className="mb-3 w-full justify-center"
-            >
-              <MessageSquarePlus size={14} /> 새 대화
-            </Button>
+            {/* "대화 | 봇" 탭(2026-09-18 사용자 요청). 봇 탭은 스케줄러가 있는
+                Electron 에서만 의미가 있다 — 브릿지가 없으면 탭 없이 대화 목록만. */}
+            {bridge && (
+              <Tabs
+                tabs={SIDEBAR_TABS}
+                activeId={sidebarTab}
+                onChange={(id) => handleSidebarTabChange(id as SidebarTab)}
+                compact
+                disabled={isRunning}
+              />
+            )}
             <div className="flex-1 space-y-1 overflow-y-auto pr-1">
-              {/* 실사용 제보(2026-08-19) 요구 2 — 스케줄봇은 항상 최상단에
-                  고정한다(이력이 0건이어도). 스케줄 화면 자체가 아직 "이
-                  기능이 있다"는 사실을 발견하기 어려운 자리에 있어, 이력이
-                  없을 때 통째로 숨기면 사용자가 "확인할 곳이 아예 없다"고
-                  오해할 수 있다 — 대신 클릭 시 명확한 빈 상태 문구를
-                  보여준다(둘 중 선택, 최종 보고에 판단 이유 기록). Electron
-                  브릿지가 있을 때만 노출한다(스케줄러는 Main Process
-                  전용). */}
-              {bridge && (
+              {/* 스케줄봇은 봇 탭에만 있다(예전에는 대화 목록 맨 위에 고정돼
+                  대화와 섞여 보였다). 이력이 0건이어도 항목은 보인다 — 클릭하면
+                  명확한 빈 상태 문구가 나온다(2026-08-19 요구 2 유지). */}
+              {bridge && sidebarTab === "bots" && (
                 <button
                   type="button"
                   onClick={handleSelectScheduleBot}
@@ -2170,12 +2187,15 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   </span>
                 </button>
               )}
-              {conversationsError && <ErrorBanner message={conversationsError} />}
-              {conversations === null && !conversationsError && <LoadingState label="대화 목록을 불러오는 중..." />}
-              {conversations !== null && conversations.length === 0 && !conversationsError && (
+              {sidebarTab === "chats" && conversationsError && <ErrorBanner message={conversationsError} />}
+              {sidebarTab === "chats" && conversations === null && !conversationsError && (
+                <LoadingState label="대화 목록을 불러오는 중..." />
+              )}
+              {sidebarTab === "chats" && conversations !== null && conversations.length === 0 && !conversationsError && (
                 <p className="px-1 py-6 text-center text-caption text-text-muted">아직 저장된 대화가 없습니다.</p>
               )}
-              {conversations !== null &&
+              {sidebarTab === "chats" &&
+                conversations !== null &&
                 conversations.map((c) => (
                   // 삭제 버튼은 행 위에 겹쳐 놓는다(2026-08-14). 예전에는
                   // 옆 칸을 항상 차지한 채 `opacity-0`으로 숨어 있어서, 목록
@@ -2215,6 +2235,18 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   </div>
                 ))}
             </div>
+            {/* 새 대화는 목록 **맨 아래**(2026-09-18 사용자 요청) — 목록이 길어도
+                자리가 바뀌지 않게 스크롤 영역 밖에 둔다. */}
+            {sidebarTab === "chats" && (
+              <Button
+                variant="secondary"
+                onClick={handleNewConversation}
+                disabled={isRunning}
+                className="mt-3 w-full shrink-0 justify-center"
+              >
+                <MessageSquarePlus size={14} /> 새 대화
+              </Button>
+            )}
           </aside>
         )}
 
@@ -2889,7 +2921,7 @@ function ScheduleBotPanel({
         <CalendarClock size={14} className="mt-0.5 shrink-0 text-text-muted" aria-hidden="true" />
         <span>
           스케줄봇은 등록된 스케줄의 실행 결과만 보여주는 읽기 전용 화면입니다 — 질문을 입력할 수 없습니다. 항목을
-          클릭하면 실행 결과 전문을 볼 수 있습니다. 새 대화나 왼쪽의 다른 대화를 선택하면 다시 일반 대화로 돌아갑니다.
+          클릭하면 실행 결과 전문을 볼 수 있습니다. 왼쪽 위의 "대화" 탭을 누르면 다시 일반 대화로 돌아갑니다.
         </span>
       </div>
       <div className="flex-1 space-y-2 overflow-y-auto pr-1">

@@ -436,9 +436,26 @@ export interface TabItem {
   label: string;
 }
 
-export function Tabs({ tabs, activeId, onChange }: { tabs: TabItem[]; activeId: string; onChange: (id: string) => void }) {
+export function Tabs({
+  tabs,
+  activeId,
+  onChange,
+  compact = false,
+  disabled = false,
+}: {
+  tabs: TabItem[];
+  activeId: string;
+  onChange: (id: string) => void;
+  /** 좁은 패널(대화 화면 좌측 목록)용 — 탭이 폭을 나눠 갖고 여백이 작다. */
+  compact?: boolean;
+  /** 진행 중인 작업이 있어 전환하면 안 될 때. */
+  disabled?: boolean;
+}) {
   return (
-    <div role="tablist" className="mb-6 flex gap-1 overflow-x-auto border-b border-border">
+    <div
+      role="tablist"
+      className={`flex gap-1 overflow-x-auto border-b border-border ${compact ? "mb-3" : "mb-6"}`}
+    >
       {tabs.map((tab) => {
         const active = tab.id === activeId;
         return (
@@ -447,8 +464,11 @@ export function Tabs({ tabs, activeId, onChange }: { tabs: TabItem[]; activeId: 
             type="button"
             role="tab"
             aria-selected={active}
+            disabled={disabled}
             onClick={() => onChange(tab.id)}
-            className={`shrink-0 whitespace-nowrap border-b-2 px-4 py-2.5 text-body font-medium transition-colors ${
+            className={`whitespace-nowrap border-b-2 font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-55 ${
+              compact ? "flex-1 px-2 py-2 text-caption" : "shrink-0 px-4 py-2.5 text-body"
+            } ${
               active ? "border-brand-500 text-brand-700" : "border-transparent text-text-secondary hover:text-text-primary"
             }`}
           >
