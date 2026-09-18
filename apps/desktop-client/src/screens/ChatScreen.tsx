@@ -2689,7 +2689,15 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   <ComposerMenu
                     state={composerMenuState}
                     knowledgeDetail={useKnowledge ? `${knowledgeIds.length}개` : null}
+                    // 오른쪽 값은 **짧게** — 긴 문장을 주면 라벨 칸이 눌려
+                    // 글자가 세로로 쏟아진다(MenuRow 의 detail 주석 참고).
+                    // 후보 이름 목록은 설명 자리로 내린다.
                     toolAutoDetail={
+                      unifiedToolRouteHasCandidates
+                        ? `후보 ${registeredLocalTools.length + connectedMcpToolNames.length}개`
+                        : null
+                    }
+                    toolAutoDescription={
                       unifiedToolRouteHasCandidates
                         ? describeUnifiedToolRouteCandidates(registeredLocalTools, connectedMcpToolNames)
                         : null

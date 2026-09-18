@@ -53,7 +53,7 @@ function MenuRow({
       className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent"
     >
       <span className="mt-0.5 shrink-0 text-text-muted">{icon}</span>
-      <span className="min-w-0 flex-1">
+      <span className="min-w-0 flex-1 break-words">
         <span className="flex items-center gap-1.5">
           <span className="text-body font-medium text-text-primary">{label}</span>
           {checked && (
@@ -66,7 +66,19 @@ function MenuRow({
           <span className="block text-caption text-text-secondary">{reason ?? description}</span>
         )}
       </span>
-      {detail && <span className="shrink-0 text-caption text-text-muted">{detail}</span>}
+      {detail && (
+        // `shrink-0` 만 주면 긴 값이 들어왔을 때 왼쪽 라벨 칸이 0 에 가깝게
+        // 눌려 글자가 **세로로** 쏟아진다(2026-09-18 실사용: "필요하면 Tool
+        // 자동 선택"이 세로로 길게 겹쳐 보였다 — 후보 Tool 이름 목록이 이
+        // 자리에 통째로 들어갔었다). 이 자리는 짧은 현재 값만 받고, 길면
+        // 잘라서 보여준다(전체 문구는 title 로 남는다).
+        <span
+          title={detail}
+          className="max-w-[45%] shrink-0 truncate text-caption text-text-muted"
+        >
+          {detail}
+        </span>
+      )}
     </button>
   );
 }
@@ -90,6 +102,7 @@ export function ComposerMenu({
   /** 도구 > MCP 행에 보여줄 현재 범위(없으면 "선택 안 함"). */
   mcpDetail,
   toolAutoDetail,
+  toolAutoDescription,
   knowledgeDetail,
 }: {
   state: ComposerMenuState;
@@ -100,7 +113,11 @@ export function ComposerMenu({
   onOpenMcp: () => void;
   onOpenLocalTool: () => void;
   mcpDetail?: string | null;
+  /** 오른쪽 끝에 붙는 **짧은** 현재 값(예: "후보 3개"). 긴 문장을 주면
+   *  잘려서 보인다 — 설명이 필요하면 `toolAutoDescription` 을 쓴다. */
   toolAutoDetail?: string | null;
+  /** Tool 자동 선택 행의 설명(후보 Tool 목록 등 긴 문장). */
+  toolAutoDescription?: string | null;
   knowledgeDetail?: string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -213,7 +230,11 @@ export function ComposerMenu({
             <MenuRow
               icon={<Sparkles size={15} aria-hidden="true" />}
               label="필요하면 Tool 자동 선택"
-              description="이 질문에 맞는 Tool을 AI가 후보 중에서 고릅니다."
+              description={
+                toolAutoDescription
+                  ? `이 질문에 맞는 Tool을 AI가 후보 중에서 고릅니다. 후보: ${toolAutoDescription}`
+                  : "이 질문에 맞는 Tool을 AI가 후보 중에서 고릅니다."
+              }
               detail={toolAutoDetail}
               checked={state.toolAuto.on}
               disabled={toolAuto.disabled}
