@@ -2055,60 +2055,6 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 
   return (
     <div className="flex h-full flex-col">
-      {/* 슬림 헤더 — 정상일 때는 상태 점 하나만 남긴다. 무엇을 근거로 답하는지
-          (모델/지식)는 입력창의 토글이 그대로 보여주므로 여기서 다시 적지
-          않는다. Service/버전/연결 상세는 자산 허브 > 설치된 자산(D03 상세)과
-          설정 > 연결 상태에 있다. */}
-      <div className="mb-2 flex shrink-0 items-center justify-between gap-2 px-1">
-        <h1 className="text-card-title font-semibold text-text-primary">채팅</h1>
-        <div className="flex items-center gap-1">
-          {connections === null ? (
-            <span
-              role="status"
-              aria-label="연결 확인 중"
-              title="연결 확인 중..."
-              className="h-2 w-2 animate-pulse rounded-full bg-slate-300"
-            />
-          ) : connectionAssessment.state === "healthy" ? (
-            <span
-              role="status"
-              aria-label="연결 정상"
-              title={`연결 정상 · ${connectionTooltip}`}
-              className="h-2 w-2 rounded-full bg-success"
-            />
-          ) : (
-            <span
-              role="status"
-              title={connectionTooltip}
-              className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
-                connectionAssessment.state === "limited" ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger"
-              }`}
-            >
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  connectionAssessment.state === "limited" ? "bg-warning" : "bg-danger"
-                }`}
-              />
-              {connectionAssessment.state === "limited" ? "일부 기능 제한" : "대화 연결 문제"}
-            </span>
-          )}
-          <IconAction label="연결 상태 다시 확인" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
-            <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} />
-          </IconAction>
-          <IconAction
-            label={
-              hasLiveMessagesForAgentDraft
-                ? "대화로 Agent 초안 만들기"
-                : "이 세션에서 실제로 실행된 턴이 아직 없습니다"
-            }
-            onClick={() => setAgentDraftDialogOpen(true)}
-            disabled={!hasLiveMessagesForAgentDraft}
-          >
-            <Sparkles size={13} />
-          </IconAction>
-        </div>
-      </div>
-
       {/* 연결 장애 복구 안내(CLAUDE.md 필수) — 대화가 실제로 막힐 수 있는
           상황이므로 한 줄 알림으로 항상 보여주고, 서비스별 사유와 복구 방법은
           펼쳤을 때 그대로 나온다. */}
@@ -2254,10 +2200,71 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 <MessageSquarePlus size={14} /> 새 대화
               </Button>
             )}
+            {sidebarTab === "bots" && (
+              // 아직 없는 기능이다(2026-09-18 요청: 자리만 먼저). 누를 수 있는
+              // 척하지 않도록 비활성으로 두고 이유를 title 로 남긴다.
+              <Button
+                variant="secondary"
+                disabled
+                title="봇 만들기는 향후 지원 예정입니다."
+                className="mt-3 w-full shrink-0 justify-center"
+              >
+                <Bot size={14} /> 봇 생성(향후 지원)
+              </Button>
+            )}
           </aside>
         )}
 
         <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+          {/* 상태 점과 보조 동작 — 예전에는 "채팅" 제목과 함께 화면 전체 폭
+              줄을 차지해 왼쪽 목록 탭이 한 줄 아래에서 시작했다(2026-09-18
+              요청: 제목 제거, 탭이 위까지 꽉 차게). 정상일 때는 점 하나다. */}
+          <div className="mb-2 flex shrink-0 items-center justify-end gap-1">
+            {connections === null ? (
+              <span
+                role="status"
+                aria-label="연결 확인 중"
+                title="연결 확인 중..."
+                className="h-2 w-2 animate-pulse rounded-full bg-slate-300"
+              />
+            ) : connectionAssessment.state === "healthy" ? (
+              <span
+                role="status"
+                aria-label="연결 정상"
+                title={`연결 정상 · ${connectionTooltip}`}
+                className="h-2 w-2 rounded-full bg-success"
+              />
+            ) : (
+              <span
+                role="status"
+                title={connectionTooltip}
+                className={`inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-semibold ${
+                  connectionAssessment.state === "limited" ? "bg-warning/10 text-warning" : "bg-danger/10 text-danger"
+                }`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    connectionAssessment.state === "limited" ? "bg-warning" : "bg-danger"
+                  }`}
+                />
+                {connectionAssessment.state === "limited" ? "일부 기능 제한" : "대화 연결 문제"}
+              </span>
+            )}
+            <IconAction label="연결 상태 다시 확인" onClick={() => void refreshConnections()} disabled={connectionsChecking}>
+              <RefreshCw size={13} className={connectionsChecking ? "animate-spin" : ""} />
+            </IconAction>
+            <IconAction
+              label={
+                hasLiveMessagesForAgentDraft
+                  ? "대화로 Agent 초안 만들기"
+                  : "이 세션에서 실제로 실행된 턴이 아직 없습니다"
+              }
+              onClick={() => setAgentDraftDialogOpen(true)}
+              disabled={!hasLiveMessagesForAgentDraft}
+            >
+              <Sparkles size={13} />
+            </IconAction>
+          </div>
           {/* 지식 검색 대상 상태 — 지식 검색 자동화 + D-079 이어 붙이기(활성화
               인지): "설치됨"과 "활성화됨"은 서로 다른 사실이다. 정상일 때(활성
               1개 이상 + 제외 없음)는 물론이고, Knowledge를 아직 하나도 설치하지
