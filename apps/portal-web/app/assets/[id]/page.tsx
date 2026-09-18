@@ -27,6 +27,8 @@ import {
 } from "../../_components/ui";
 import { canCreateDistribution, useRole, type RoleDef } from "../../_components/role-context";
 
+import { NewKnowledgeVersionForm } from "./_components/new-version-form";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 const EDITABLE_STATUSES = new Set(["DRAFT", "CHANGES_REQUESTED"]);
@@ -473,6 +475,8 @@ export default function KnowledgeDetailPage() {
   const { role } = useRole();
 
   const [info, setInfo] = useState<KnowledgeInfo | null>(null);
+  const [showNewVersion, setShowNewVersion] = useState(false);
+  const [newVersionNotice, setNewVersionNotice] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedVersionIdx, setSelectedVersionIdx] = useState(0);
@@ -731,6 +735,10 @@ export default function KnowledgeDetailPage() {
               <GitBranch size={14} />
               버전 관리
             </Button>
+            <Button size="sm" onClick={() => setShowNewVersion((v) => !v)}>
+              <RefreshCw size={14} />
+              새 버전 만들기
+            </Button>
             <Button
               variant="secondary"
               size="sm"
@@ -745,6 +753,31 @@ export default function KnowledgeDetailPage() {
           </p>
         </div>
       </div>
+
+      {newVersionNotice && (
+        <div className="rounded-lg border border-success/30 bg-success/5 px-4 py-3 text-body text-success">
+          {newVersionNotice}
+        </div>
+      )}
+
+      {showNewVersion && (
+        <NewKnowledgeVersionForm
+          assetId={assetId}
+          versions={info.versions}
+          onCancel={() => setShowNewVersion(false)}
+          onCreated={async (_newVersionId, newVersion) => {
+            setShowNewVersion(false);
+            setNewVersionNotice(
+              `v${newVersion} 초안을 만들었습니다. 색인이 백그라운드에서 진행 중입니다 — 아래 버전 히스토리에서 상태를 확인하세요.`
+            );
+            await fetchInfo();
+            // knowledge-info는 버전을 created_at 내림차순으로 준다(portal-api
+            // `get_knowledge_info`) — 방금 만든 버전이 0번이다. 색인 상태를
+            // 보려고 사용자가 다시 찾아 누르게 하지 않는다.
+            setSelectedVersionIdx(0);
+          }}
+        />
+      )}
 
       {/* Version timeline */}
       <Section title="버전 히스토리">

@@ -1,5 +1,17 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-17 M01/M02 지식 재색인 — 문서 교체와 색인 전략 변경 (D-097)
+
+- **없던 경로였다**: `/knowledge/new` 는 매번 새 asset id·version 1.0.0 고정이라 항상 **새 자산**을 만들고, `POST /assets/{id}/versions` 는 Manifest·파일을 복사만 하고 색인을 걸지 않는다(`_trigger_indexing` 호출부가 `POST /assets` 한 곳뿐이었다). 그래서 "문서를 갱신해 다시 색인"과 "청킹 전략만 바꿔 다시 색인"을 화면에서 할 수 없었고, 사용자는 같은 지식을 자산 id가 다른 둘로 만들 수밖에 없었다.
+- **M02 신규 엔드포인트** `POST /api/v1/assets/{asset_id}/knowledge-versions`(multipart, OpenAPI 먼저 작성). `documents_source` 가 두 의도를 명시적으로 가른다 — `UPLOAD`(파일 1개 이상 필수)와 `REUSE_PREVIOUS`(직전 버전 저장소를 복사, 파일 동봉 시 거부). **빈 `files` 를 재사용으로 해석하지 않는다**: 업로드가 통째로 빠진 요청이 조용히 복사로 둔갑하면 등록자는 새 문서가 색인된 줄 안 채 끝난다(화면엔 새 버전이 보인다). 새 버전은 DRAFT + 색인 Job이며, 소스 버전의 Manifest·저장소·색인은 건드리지 않는다.
+- 버전 번호는 **모든** 기존 버전보다 커야 한다(생성 순서와 SemVer 순서는 다르다 — 1.2.0 뒤에 1.1.1 핫픽스가 있을 수 있다). 저장 경로는 새 버전 **id**로만 만든다(사용자가 준 버전 문자열·파일명으로 만들지 않음). 교체된 Manifest는 Knowledge Schema로 다시 검증하고, 실패하면 이미 복사/저장한 디렉터리를 지운다.
+- 업로드 정책(개수·크기·확장자, 스트리밍 해시)은 `create_asset` 의 루프를 `_save_uploads` 헬퍼로 **뽑아 공유**했다 — 복사해 두면 새 경로에만 한도가 빠지는 상태가 조용히 생긴다. `create_asset` 동작은 그대로(같은 오류코드·같은 정리 동작).
+- **M01 화면**: 지식 자산 상세(P06)의 "새 버전 만들기" — 버전(직전 버전 patch 자동 제안), 문서 라디오(새로 올리기/기존 그대로), 색인·검색 전략 select(직전 버전 값을 기본으로 읽어 온다. 못 읽으면 "현재 설정 유지"로 두고 그렇다고 말한다 — 아무 Preset이나 기본으로 고르면 바꿀 의도가 없던 전략이 조용히 바뀐다), Changelog, 제출 전 "무엇이 일어나는가" 한 줄 요약.
+- 색인·검색 Preset을 `apps/portal-web/app/_components/knowledge-profiles.ts` 로 단일화하고 `/knowledge/new` 가 이를 import 하게 했다 — 두 화면에 복사돼 있으면 한쪽 숫자만 바뀌고도 이름("문맥 보존")은 같아서, 고른 전략과 실제 색인된 전략이 갈라진다.
+- **검증**: 신규 `tests/integration/portal_api/test_knowledge_version_reindex.py` 18개 통과(정상 2경로·빈 결과·400/403/404/409·감사 기록·승인 버전 불변). `tests/integration/portal_api + tests/contract`: 변경 전 555 passed/31 failed → 변경 후 **573 passed/31 failed**(+18 = 신규 테스트, 실패 집합 동일). portal-web `typecheck` 통과, `lint` 경고 8건(기준선 동일). **변이 검증 2건**: (a) Profile 반영을 지우면 `test_reuse_previous_reindexes_with_new_profile_without_reuploading` 이 깨진다, (b) 빈 업로드를 재사용으로 떨어뜨리면 `test_upload_mode_rejects_empty_file_list` 가 깨진다 — 통과한 assertion이 실제로 그 속성을 때린다(tests/CLAUDE.md 규율).
+- **라이브 스택 확인**(portal-api 8000 / indexing-runtime 8200): 버릴 지식 자산을 만들어 REUSE_PREVIOUS(전략만 markdown으로 교체)와 UPLOAD(문서 교체) 두 경로를 실행 → 세 버전 모두 색인 `COMPLETED`, 재사용 버전은 같은 문서 + 새 `indexing_profile_ref`, 업로드 버전은 새 문서 + 실제 sha256. 확인 후 그 자산은 삭제했다(시딩된 데모 자산은 건드리지 않았다).
+- **남은 문제(D-097 우측 열)**: `POST /api/v1/assets` 는 기존 asset id로 버전을 붙일 때 소유자 검사를 하지 않는다 — ASSET_CREATE 권한만 있으면 남의 지식 자산에 버전을 추가할 수 있다. 신규 엔드포인트는 소유자 검사를 하므로 구멍을 넓히지는 않았으나, 기존 구멍은 그대로다.
+
 ## 2026-09-17 M01 좌측 메뉴 정리 — 유형별 자산 목록
 
 - **결과 메뉴**: **자산**(지식·프롬프트·MCP·서비스·내 자산) / **운영**(게시 관리·반출 요청) / 거버넌스 / 관리(준비 중). 최상위 항목은 하나도 없다 — 모든 항목이 섹션에 속한다. 유형별 목록이 "무엇이 있는가"라면 P07 내 자산은 "그중 내 것"이라 같은 섹션 마지막에 둔다.

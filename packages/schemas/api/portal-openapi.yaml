@@ -203,6 +203,99 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/assets/{asset_id}/knowledge-versions:
+    post:
+      tags: [assets]
+      summary: 지식 자산의 새 버전 만들기 — 문서 재업로드 또는 색인 전략만 변경 (P06)
+      description: |
+        Knowledge 자산 전용. 직전 버전을 소스로 새 DRAFT 버전을 만들고 **색인을
+        다시 건다** — `POST /api/v1/assets`(신규 등록)를 제외하면 색인이
+        트리거되는 유일한 경로다. `POST /api/v1/assets/{asset_id}/versions`는
+        Manifest/파일만 복사하고 색인하지 않으므로 이 용도로 쓸 수 없다.
+
+        `documents_source`가 두 경우를 **명시적으로** 가른다:
+        - `UPLOAD` — 새 문서를 올린다(`files` 최소 1개 필수). 색인 전략을
+          함께 바꿀 수도 있다.
+        - `REUSE_PREVIOUS` — 문서는 그대로 두고 색인/검색 전략만 바꾼다.
+          직전 버전의 저장소 디렉터리를 복사한다(`files`를 함께 보내면
+          VALIDATION_ERROR). 직전 버전에 저장된 문서가 없으면 409.
+
+        빈 `files`를 "복사 요청"으로 해석하지 않는다 — 업로드에 실패한 요청이
+        조용히 이전 문서 복사로 둔갑하면 등록자는 새 문서가 색인된 줄 안다.
+
+        `version`은 기존 **모든** 버전보다 SemVer상 커야 한다. 새 Manifest는
+        직전 버전 Manifest를 복사한 뒤 `version`/`changelog`/전달된 Profile과
+        실제 파일 목록(`source.documents`)만 교체하고 Knowledge Schema로 다시
+        검증한다. 호출자는 자산 소유자(CREATOR) 본인 또는 ADMIN만 가능하다.
+        승인된 버전은 어떤 경우에도 제자리 수정하지 않는다.
+      operationId: create_knowledge_version
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [version, documents_source]
+              properties:
+                version:
+                  type: string
+                  description: 새 SemVer 버전(major.minor.patch). 기존 모든 버전보다 커야 한다.
+                  example: "1.1.0"
+                documents_source:
+                  type: string
+                  enum: [UPLOAD, REUSE_PREVIOUS]
+                changelog:
+                  type: string
+                indexing_profile:
+                  type: string
+                  description: >
+                    Knowledge Manifest의 `indexing_profile` 스냅샷(JSON 문자열).
+                    생략하면 직전 버전 값을 그대로 쓴다.
+                indexing_profile_ref:
+                  type: string
+                  description: Profile 정체성(JSON 문자열, `{name, version}`). 생략하면 직전 버전 값.
+                retrieval_profile:
+                  type: string
+                  description: Manifest의 `retrieval_profile` 스냅샷(JSON 문자열). 생략하면 직전 버전 값.
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "201":
+          description: >
+            Created (DRAFT). 색인 Job이 함께 생성되어 배경에서 실행된다 —
+            진행 상황은 `GET /api/v1/assets/{asset_id}/indexing-jobs`로 본다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetVersion"
+        "400":
+          description: >
+            VALIDATION_ERROR(버전 형식/순서, `documents_source`와 `files`
+            조합, Profile JSON 파싱 실패, 교체된 Manifest의 스키마 위반) 또는
+            ASSET_UPLOAD_* (개수/크기/확장자 정책 위반 — `POST /api/v1/assets`와
+            동일한 정책과 오류코드).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            ASSET_STATE_TRANSITION_INVALID — 지식 자산이 아니거나, 소스로 삼을
+            버전이 없거나, `REUSE_PREVIOUS`인데 직전 버전에 저장된 문서가 없다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/assets/{asset_id}/versions/{version_id}:
     patch:
       tags: [assets]

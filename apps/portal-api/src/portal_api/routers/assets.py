@@ -797,6 +797,105 @@ async def convert_mcp_tool_python_signature(
     )
 
 
+class _SavedUploads(NamedTuple):
+    """`_save_uploads` 결과. `written_paths` 는 호출자가 이후 단계에서 실패했을
+    때 이미 쓴 파일을 지우기 위해 돌려준다(저장은 DB 커밋보다 먼저 일어난다)."""
+
+    saved_files: list[str]
+    checksums_by_relpath: dict[str, str]
+    written_paths: list[Path]
+
+
+async def _save_uploads(
+    files: list[UploadFile],
+    storage_path: Path,
+    upload_policy: _AssetUploadPolicy,
+    asset_type: str,
+    trace_id: str,
+) -> tuple[_SavedUploads | None, JSONResponse | None]:
+    """업로드를 정책대로 검사하며 스트리밍 저장한다.
+
+    `create_asset`(신규 등록)과 `create_knowledge_version`(지식 새 버전)이
+    **같은** 한도·확장자 정책과 오류코드를 쓰도록 한 곳에 둔다 — 복사해 두면
+    한쪽에만 한도가 붙는 상태가 조용히 생긴다.
+
+    Content-Length 는 호출자가 위조할 수 있으므로 실제로 읽은 바이트만
+    신뢰한다. 위반 시 이 요청이 쓴 파일을 모두 지우고 오류 응답을 돌려준다
+    (파일 개수 검사는 호출자가 읽기 전에 먼저 한다).
+    """
+    saved_files: list[str] = []
+    written_paths: list[Path] = []
+    checksums_by_relpath: dict[str, str] = {}
+    total_bytes_read = 0
+
+    def _cleanup_partial_upload() -> None:
+        for written in written_paths:
+            written.unlink(missing_ok=True)
+
+    for upload in files:
+        if not upload.filename:
+            continue
+        # Prevent path traversal
+        safe_name = Path(upload.filename).name
+        extension = Path(safe_name).suffix.lower()
+        if upload_policy.rejects(extension, asset_type):
+            _cleanup_partial_upload()
+            return None, error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_UPLOAD_EXTENSION_REJECTED",
+                # "지식 자산"이라고 적혀 있었는데 이 경로는 모든 종류의 자산이
+                # 지나간다 — `mcp_server` 가 `server.py` 를 올리려다 "지식 자산"
+                # 얘기를 듣는 상태였다(D-096).
+                f"'{safe_name}' 파일의 확장자({extension or '(없음)'})는 "
+                "자산 등록에 허용되지 않습니다.",
+                trace_id,
+            )
+
+        dest = storage_path / safe_name
+        hasher = hashlib.sha256()
+        file_bytes_read = 0
+        violation: JSONResponse | None = None
+        with dest.open("wb") as out:
+            while True:
+                chunk = await upload.read(_ASSET_UPLOAD_CHUNK_SIZE)
+                if not chunk:
+                    break
+                file_bytes_read += len(chunk)
+                total_bytes_read += len(chunk)
+                if file_bytes_read > upload_policy.max_single_file_bytes:
+                    violation = error_response(
+                        status.HTTP_400_BAD_REQUEST,
+                        "ASSET_UPLOAD_FILE_TOO_LARGE",
+                        f"'{safe_name}' 파일 크기가 허용된 최대치"
+                        f"({upload_policy.max_single_file_bytes} bytes)를 초과했습니다.",
+                        trace_id,
+                    )
+                    break
+                if total_bytes_read > upload_policy.max_total_request_bytes:
+                    violation = error_response(
+                        status.HTTP_400_BAD_REQUEST,
+                        "ASSET_UPLOAD_REQUEST_TOO_LARGE",
+                        "이번 등록 요청의 전체 파일 크기가 허용된 최대치"
+                        f"({upload_policy.max_total_request_bytes} bytes)를 초과했습니다"
+                        f" ('{safe_name}' 처리 중 초과).",
+                        trace_id,
+                    )
+                    break
+                hasher.update(chunk)
+                out.write(chunk)
+
+        if violation is not None:
+            dest.unlink(missing_ok=True)
+            _cleanup_partial_upload()
+            return None, violation
+
+        written_paths.append(dest)
+        saved_files.append(safe_name)
+        checksums_by_relpath[safe_name] = hasher.hexdigest()
+
+    return _SavedUploads(saved_files, checksums_by_relpath, written_paths), None
+
+
 @router.post("/assets", response_model=AssetVersionOut, status_code=status.HTTP_201_CREATED)
 async def create_asset(
     manifest: str = Form(..., description="Asset manifest JSON string"),
@@ -879,75 +978,18 @@ async def create_asset(
     storage_path = (settings.storage_root / asset_type / asset_id / version_str).resolve()
     storage_path.mkdir(parents=True, exist_ok=True)
 
-    saved_files: list[str] = []
-    written_paths: list[Path] = []
-    checksums_by_relpath: dict[str, str] = {}
-    total_bytes_read = 0
+    saved, upload_violation = await _save_uploads(
+        files, storage_path, upload_policy, asset_type, trace_id
+    )
+    if upload_violation is not None:
+        return upload_violation
+    assert saved is not None
+    saved_files = saved.saved_files
+    checksums_by_relpath = saved.checksums_by_relpath
 
     def _cleanup_partial_upload() -> None:
-        for written in written_paths:
+        for written in saved.written_paths:
             written.unlink(missing_ok=True)
-
-    for upload in files:
-        if not upload.filename:
-            continue
-        # Prevent path traversal
-        safe_name = Path(upload.filename).name
-        extension = Path(safe_name).suffix.lower()
-        if upload_policy.rejects(extension, asset_type):
-            _cleanup_partial_upload()
-            return error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "ASSET_UPLOAD_EXTENSION_REJECTED",
-                # "지식 자산"이라고 적혀 있었는데 이 경로는 모든 종류의 자산이
-                # 지나간다 — `mcp_server` 가 `server.py` 를 올리려다 "지식 자산"
-                # 얘기를 듣는 상태였다(D-096).
-                f"'{safe_name}' 파일의 확장자({extension or '(없음)'})는 "
-                "자산 등록에 허용되지 않습니다.",
-                trace_id,
-            )
-
-        dest = storage_path / safe_name
-        hasher = hashlib.sha256()
-        file_bytes_read = 0
-        violation: JSONResponse | None = None
-        with dest.open("wb") as out:
-            while True:
-                chunk = await upload.read(_ASSET_UPLOAD_CHUNK_SIZE)
-                if not chunk:
-                    break
-                file_bytes_read += len(chunk)
-                total_bytes_read += len(chunk)
-                if file_bytes_read > upload_policy.max_single_file_bytes:
-                    violation = error_response(
-                        status.HTTP_400_BAD_REQUEST,
-                        "ASSET_UPLOAD_FILE_TOO_LARGE",
-                        f"'{safe_name}' 파일 크기가 허용된 최대치"
-                        f"({upload_policy.max_single_file_bytes} bytes)를 초과했습니다.",
-                        trace_id,
-                    )
-                    break
-                if total_bytes_read > upload_policy.max_total_request_bytes:
-                    violation = error_response(
-                        status.HTTP_400_BAD_REQUEST,
-                        "ASSET_UPLOAD_REQUEST_TOO_LARGE",
-                        "이번 등록 요청의 전체 파일 크기가 허용된 최대치"
-                        f"({upload_policy.max_total_request_bytes} bytes)를 초과했습니다"
-                        f" ('{safe_name}' 처리 중 초과).",
-                        trace_id,
-                    )
-                    break
-                hasher.update(chunk)
-                out.write(chunk)
-
-        if violation is not None:
-            dest.unlink(missing_ok=True)
-            _cleanup_partial_upload()
-            return violation
-
-        written_paths.append(dest)
-        saved_files.append(safe_name)
-        checksums_by_relpath[safe_name] = hasher.hexdigest()
 
     # --- D-096: 소스 코드를 받았다면 그것이 정말 이 서버의 코드인지 ---------
     # 확장자 예외만으로는 "이 자산 종류는 코드를 가질 수 있다"까지만 말한다.
@@ -1259,6 +1301,341 @@ async def create_asset_version(
             "source_version": source.version,
         },
     )
+    return AssetVersionOut.model_validate(new_version)
+
+
+_KNOWLEDGE_DOCUMENT_MIME_TYPES = {
+    ".md": "text/markdown",
+    ".markdown": "text/markdown",
+    ".txt": "text/plain",
+    ".pdf": "application/pdf",
+    ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".html": "text/html",
+    ".csv": "text/csv",
+    ".json": "application/json",
+}
+
+
+def _knowledge_document_entries(
+    file_names: list[str], checksums_by_relpath: dict[str, str]
+) -> list[dict]:
+    """업로드된 파일 목록을 Knowledge Manifest의 `source.documents`로 옮긴다.
+
+    `sha256`은 실제로 저장하며 계산한 값이다 — P12 등록 화면은 이 자리에 0을
+    채워 보내지만(브라우저가 해시를 계산하지 않는다), 서버가 이미 값을 갖고
+    있는 경로에서까지 0을 남길 이유는 없다.
+    """
+    return [
+        {
+            "path": f"documents/{name}",
+            "mime_type": _KNOWLEDGE_DOCUMENT_MIME_TYPES.get(
+                Path(name).suffix.lower(), "application/octet-stream"
+            ),
+            "sha256": checksums_by_relpath.get(name, "0" * 64),
+        }
+        for name in file_names
+    ]
+
+
+@router.post(
+    "/assets/{asset_id}/knowledge-versions",
+    response_model=AssetVersionOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_knowledge_version(
+    asset_id: str,
+    version: str = Form(...),
+    documents_source: str = Form(...),
+    changelog: str | None = Form(default=None),
+    indexing_profile: str | None = Form(default=None),
+    indexing_profile_ref: str | None = Form(default=None),
+    retrieval_profile: str | None = Form(default=None),
+    files: list[UploadFile] = File(default=[]),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+    indexing_caller: IndexingCaller = Depends(get_indexing_caller),
+    indexing_session_factory: SessionFactory = Depends(get_indexing_session_factory),
+) -> AssetVersionOut | JSONResponse:
+    """P06: 지식 자산의 새 버전을 만들고 **색인을 다시 건다**.
+
+    `create_asset_version`(범용 새 버전)은 파일과 Manifest를 복사만 하고 색인을
+    걸지 않는다 — 문서를 바꾸거나 청킹 전략을 바꾸면 벡터를 다시 만들어야
+    하므로(D-082: "청킹 전략 변경은 재색인이 필요하므로 승인된 버전 제자리
+    수정이 아니라 새 Knowledge 버전으로만 수행해야 한다") 그 경로로는 이 요구를
+    만족할 수 없다. 그래서 색인을 트리거하는 두 번째 — 그리고 마지막 — 경로를
+    여기 둔다.
+
+    `documents_source`가 두 경우를 **명시적으로** 가른다. 빈 `files`를 "이전
+    문서 재사용"으로 해석하지 않는다 — 업로드가 통째로 빠진 요청이 조용히
+    복사로 둔갑하면 등록자는 새 문서가 색인된 줄 안다.
+
+    승인된 버전은 어디서도 수정하지 않는다. 소스 버전은 읽기만 하고, 새 파일은
+    **새 디렉터리**(자산 유형/자산 id/새 버전 id)에 쓴다 — 경로를 사용자가 준
+    버전 문자열이나 파일명으로 만들지 않는다(루트 CLAUDE.md 코드 규칙).
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db,
+        user,
+        Permission.ASSET_CREATE,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
+    )
+    if denial:
+        return denial
+
+    asset, denial = await _require_asset_owner(
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
+        denied_event="KNOWLEDGE_VERSION_CREATE_DENIED",
+        denied_message="본인이 소유한 자산만 새 버전을 만들 수 있습니다.",
+    )
+    if denial:
+        return denial
+    assert asset is not None
+
+    if asset.type != "knowledge":
+        return error_response(
+            status.HTTP_409_CONFLICT,
+            "ASSET_STATE_TRANSITION_INVALID",
+            "이 기능은 지식 자산에서만 사용할 수 있습니다.",
+            trace_id,
+        )
+
+    mode = (documents_source or "").strip().upper()
+    if mode not in {"UPLOAD", "REUSE_PREVIOUS"}:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "documents_source는 UPLOAD 또는 REUSE_PREVIOUS여야 합니다.",
+            trace_id,
+        )
+
+    real_files = [f for f in files if f.filename]
+    if mode == "UPLOAD" and not real_files:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "새 문서를 올리는 방식에서는 파일이 최소 1개 필요합니다. "
+            "문서를 그대로 두고 색인 전략만 바꾸려면 documents_source를 "
+            "REUSE_PREVIOUS로 보내세요.",
+            trace_id,
+        )
+    if mode == "REUSE_PREVIOUS" and real_files:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "이전 문서를 재사용하는 방식에서는 파일을 함께 보낼 수 없습니다.",
+            trace_id,
+        )
+
+    profiles: dict[str, dict] = {}
+    for field_name, raw in (
+        ("indexing_profile", indexing_profile),
+        ("indexing_profile_ref", indexing_profile_ref),
+        ("retrieval_profile", retrieval_profile),
+    ):
+        if raw is None or not raw.strip():
+            continue
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                f"{field_name}이(가) 올바른 JSON이 아닙니다.",
+                trace_id,
+            )
+        if not isinstance(parsed, dict):
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                f"{field_name}은(는) JSON 객체여야 합니다.",
+                trace_id,
+            )
+        profiles[field_name] = parsed
+
+    existing = (
+        (
+            await db.execute(
+                select(AssetVersion)
+                .where(AssetVersion.asset_id == asset_id)
+                .order_by(AssetVersion.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not existing:
+        return error_response(
+            status.HTTP_409_CONFLICT,
+            "ASSET_STATE_TRANSITION_INVALID",
+            "소스로 삼을 버전이 없습니다.",
+            trace_id,
+        )
+
+    new_version_str = (version or "").strip()
+    # 가장 최근에 만들어진 버전이 "직전 버전"(Manifest와 문서를 물려받을 대상)
+    # 이지만, 버전 번호는 **모든** 기존 버전보다 커야 한다 — 생성 순서와 SemVer
+    # 순서는 같지 않다(1.2.0 다음에 1.1.1 핫픽스를 만들 수 있다).
+    source = existing[0]
+    for candidate in existing:
+        comparison = is_strictly_greater(new_version_str, candidate.version)
+        if comparison is None:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "버전 형식이 올바르지 않습니다. major.minor.patch 형식(예: 1.2.3)을 사용하세요.",
+                trace_id,
+            )
+        if not comparison:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                f"새 버전({new_version_str})은 기존 버전({candidate.version})보다 커야 합니다.",
+                trace_id,
+            )
+
+    new_version_id = str(uuid.uuid4())
+    storage_path = (settings.storage_root / asset.type / asset_id / new_version_id).resolve()
+
+    if mode == "UPLOAD":
+        upload_policy = _read_asset_upload_policy()
+        if len(real_files) > upload_policy.max_file_count:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_UPLOAD_TOO_MANY_FILES",
+                f"업로드 파일 개수({len(real_files)}개)가 허용된 최대치"
+                f"({upload_policy.max_file_count}개)를 초과했습니다.",
+                trace_id,
+            )
+        storage_path.mkdir(parents=True, exist_ok=True)
+        saved, upload_violation = await _save_uploads(
+            real_files, storage_path, upload_policy, asset.type, trace_id
+        )
+        if upload_violation is not None:
+            return upload_violation
+        assert saved is not None
+        saved_files = saved.saved_files
+        checksums_by_relpath = saved.checksums_by_relpath
+        if checksums_by_relpath:
+            (storage_path / "checksums.sha256").write_text(
+                _render_asset_checksums_file(checksums_by_relpath), encoding="utf-8"
+            )
+    else:
+        source_dir = Path(source.storage_path) if source.storage_path else None
+        if source_dir is None or not source_dir.exists():
+            return error_response(
+                status.HTTP_409_CONFLICT,
+                "ASSET_STATE_TRANSITION_INVALID",
+                "직전 버전에 저장된 문서가 없어 재사용할 수 없습니다. "
+                "문서를 다시 올려 새 버전을 만드세요.",
+                trace_id,
+            )
+        shutil.copytree(source_dir, storage_path)
+        saved_files = sorted(
+            entry.name
+            for entry in storage_path.iterdir()
+            if entry.is_file() and entry.name != "checksums.sha256"
+        )
+        checksums_by_relpath = {}
+        if not saved_files:
+            shutil.rmtree(storage_path, ignore_errors=True)
+            return error_response(
+                status.HTTP_409_CONFLICT,
+                "ASSET_STATE_TRANSITION_INVALID",
+                "직전 버전에 저장된 문서가 없어 재사용할 수 없습니다. "
+                "문서를 다시 올려 새 버전을 만드세요.",
+                trace_id,
+            )
+
+    new_manifest = dict(source.manifest or {})
+    new_manifest["version"] = new_version_str
+    if changelog is not None:
+        new_manifest["changelog"] = changelog
+    for field_name, parsed in profiles.items():
+        new_manifest[field_name] = parsed
+    if mode == "UPLOAD":
+        # 파일이 바뀐 경우에만 문서 목록을 다시 쓴다. 재사용 경로에서는 직전
+        # Manifest의 `source`가 이미 그 파일들을 정확히 기술하고 있다.
+        new_manifest["source"] = {
+            "type": "portal_upload",
+            "documents": _knowledge_document_entries(saved_files, checksums_by_relpath),
+        }
+
+    try:
+        validate_manifest(new_manifest, SchemaType.KNOWLEDGE)
+    except SchemaValidationError as e:
+        shutil.rmtree(storage_path, ignore_errors=True)
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Manifest가 스키마를 충족하지 않습니다.",
+            trace_id,
+            details={"errors": list(e.errors) if e.errors else [str(e)]},
+        )
+
+    canonical = json.dumps(new_manifest, sort_keys=True, ensure_ascii=False)
+    manifest_hash = hashlib.sha256(canonical.encode()).hexdigest()
+
+    new_version = AssetVersion(
+        id=new_version_id,
+        asset_id=asset_id,
+        version=new_version_str,
+        status=VersionStatus.DRAFT.value,
+        manifest=new_manifest,
+        manifest_hash=manifest_hash,
+        changelog=changelog if changelog is not None else source.changelog,
+        storage_path=str(storage_path),
+    )
+    db.add(new_version)
+    await db.commit()
+    await db.refresh(new_version)
+
+    await record_audit(
+        db,
+        event_type="ASSET_VERSION_CREATED",
+        actor=user,
+        resource_type="ASSET_VERSION",
+        resource_id=new_version.id,
+        result="SUCCESS",
+        trace_id=trace_id,
+        resource_version=new_version.version,
+        metadata={
+            "asset_id": asset_id,
+            "asset_type": asset.type,
+            "documents_source": mode,
+            "file_count": len(saved_files),
+            "source_version_id": source.id,
+            "source_version": source.version,
+            "reindexed": True,
+        },
+    )
+
+    job = IndexingJob(asset_version_id=new_version_id, status="PENDING")
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+    configured_embed_model = await get_setting(db, INDEXING_EMBED_MODEL_KEY)
+    background_tasks.add_task(
+        _trigger_indexing,
+        job.id,
+        new_version_id,
+        str(storage_path),
+        trace_id,
+        new_manifest.get("classification"),
+        configured_embed_model,
+        indexing_caller,
+        indexing_session_factory,
+        new_manifest.get("indexing_profile"),
+    )
+
     return AssetVersionOut.model_validate(new_version)
 
 

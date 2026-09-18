@@ -120,6 +120,13 @@ uv run pytest tests/ -q   # 전체(e2e/security는 루트 pyproject addopts로 �
   추가할 때는 반드시 구분되는 `no_result_reason` 값을 주고, 그 값이 재시도
   안내를 정당화하는지부터 먼저 판단한다.
 
+- **색인을 거는 경로는 두 곳뿐이고, 둘 다 `routers/assets.py` 에 있다**:
+  `create_asset`(신규 등록)과 `create_knowledge_version`(지식 새 버전 —
+  문서 교체 또는 색인 전략 변경, D-097). `create_asset_version`(범용 새
+  버전)은 **색인을 걸지 않는다** — Manifest와 파일을 복사만 한다. 재색인이
+  필요한 기능을 그 위에 올리면 화면만 새 버전이 되고 벡터는 예전 것이
+  남는다. 업로드 저장·정책 검사는 두 경로가 `_save_uploads` 를 공유한다.
+
 ## 완료 전 확인
 
 - RBAC 403 경로가 `record_audit(result="DENIED")`도 함께 기록하는지
