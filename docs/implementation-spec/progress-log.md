@@ -1,5 +1,14 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M05 `.env` 목록 설정 때문에 agent-runtime이 기동하지 못하던 것
+
+- **증상(사내 PC 실사용 제보)**: 기동 중 `SettingsError: error parsing value for field "mcp_server_install_roots" from source "DotEnvSettingsSource"`. 서비스가 아예 뜨지 않는다.
+- **원인**: pydantic-settings는 복합 타입(`tuple[str, ...]`) 값을 **JSON으로만** 읽는다. `.env`에 평문 Windows 경로를 적었거나, JSON 배열에 역슬래시를 한 번만 썼으면(`["C:\Users\..."]` — `\U`는 JSON에서 잘못된 이스케이프) 그대로 기동 실패다. 메시지는 원인도 해결책도 말하지 않는다.
+- **고친 것**: 세 목록 설정(`mcp_server_install_roots`/`local_agent_roots`/`mcp_tool_registration_allowed_aliases`)에 `NoDecode`를 붙이고 `config.py::_parse_delimited_list`가 직접 읽는다 — JSON 배열(**기존 `.env`가 그대로 동작한다**), `os.pathsep` 구분(`;`/`:` — search-runtime `SEARCH_LOCAL_INDEX_ROOTS`와 같은 관례), 줄바꿈 구분, 값 하나짜리 평문.
+- **일부러 거부하는 두 가지**(조용히 통과시키는 쪽이 더 나쁘다): `[`로 시작하는데 JSON이 아닌 값은 구분자 분리로 넘기지 않고 거부한다(넘기면 `["C:\a"]`가 경로 하나가 되어 "설정은 했는데 아무것도 안 잡힌다"). 제어문자가 섞인 값도 거부한다 — `.env`에서 큰따옴표로 감싸면 python-dotenv가 `\a`/`\t`를 해석해 없는 경로를 만든다(실측: `"C:\Users\hong\assets"` → `C:\Users\hong\x07ssets`). 두 경우 모두 **무엇을 어떻게 고치는지** 말하는 메시지를 낸다.
+- `.env.example`을 평문·구분자 예시 우선으로 고치고 "값을 따옴표로 감싸지 말 것"을 명시했다.
+- **검증**: 재현 → 수정 → 확인. 신규 `tests/unit/agent_runtime/test_settings_list_parsing.py` 9개 통과. unit+integration+contract 전체 1573 passed → **1582 passed**(+9, 실패 105건은 기준선과 동일 집합). 변이 검증: `NoDecode`를 되돌리면 9개 중 7개가 깨진다 — 원래 버그를 실제로 때린다.
+
 ## 2026-09-18 M04 대화 화면 — 허브에서 받은 프롬프트를 입력창에 넣기 (D-098)
 
 - 대화(D06) 입력창 버튼 줄에 **"프롬프트"** 버튼 추가(로컬 Tool 버튼과 같은 자리·같은 모양). 누르면 설치된 Prompt 자산 목록이 뜨고, 고르면 미리보기를 거쳐 **질문 입력창에 본문이 들어간다**. 목록은 **최근에 쓴 것이 위**(최대 10건 기억)이고 그 아래가 나머지 허브 프롬프트다.

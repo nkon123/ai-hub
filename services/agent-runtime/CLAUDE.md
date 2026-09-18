@@ -207,6 +207,25 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   건드리면 `tests/integration/agent_runtime/test_local_models_endpoint.py`를
   반드시 돌린다.
 
+- **목록 설정(`tuple[str, ...]`)을 `.env`에 평문으로 쓰면 서비스가 아예 뜨지
+  않았다(2026-09-18 사내 PC 실사용).** pydantic-settings는 복합 타입 값을
+  **JSON으로만** 읽어서 `AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS=C:\Users\...`
+  같은 값이 `SettingsError: error parsing value for field "..." from source
+  "DotEnvSettingsSource"`로 기동을 막았다 — 그 메시지는 원인도 해결책도
+  말하지 않는다. "Windows 경로를 JSON에 넣으려면 역슬래시를 두 번 써야 한다"를
+  이미 아는 사람만 쓸 수 있는 설정이었다. 지금은 세 목록 설정
+  (`mcp_server_install_roots`/`local_agent_roots`/
+  `mcp_tool_registration_allowed_aliases`)에 `NoDecode`를 붙이고
+  `config.py::_parse_delimited_list`가 직접 읽는다: JSON 배열(기존 `.env`
+  호환), `os.pathsep` 구분, 줄바꿈 구분, 값 하나짜리 평문. **새 목록 설정을
+  추가하면 이 검증기의 필드 목록에 함께 넣는다** — 빠뜨리면 그 필드만 다시
+  JSON 전용이 되고 다음 사람이 같은 메시지를 다시 만난다.
+  두 가지는 일부러 거부한다(조용히 통과시키는 쪽이 더 나쁘다): (a) `[`로
+  시작하는데 JSON이 아닌 값 — 구분자로 나누면 `["C:\a"]`가 경로 하나가 되어
+  "설정은 했는데 아무것도 안 잡힌다", (b) 제어문자가 섞인 값 — `.env`에서
+  큰따옴표로 감싸면 python-dotenv가 `\a`/`\t`를 해석해 없는 경로를 만든다.
+  `tests/unit/agent_runtime/test_settings_list_parsing.py`가 고정한다.
+
 ## 완료 전 확인
 
 - `mcp_tools.py`의 `MCP_TOOL_SPECS`를 office-mcp-server의

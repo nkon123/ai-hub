@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
+import os
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import Field
-from pydantic_settings import BaseSettings
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, NoDecode
 
 from agent_runtime.ollama_config import load_ollama_endpoint
 
@@ -138,7 +140,7 @@ class AgentRuntimeSettings(BaseSettings):
     # it is "registration is on for these already-office-profile-approved
     # servers", so turning it on can never by itself grant a new server any
     # permission it did not already have in `office-profile.json`.
-    mcp_tool_registration_allowed_aliases: tuple[str, ...] = ()
+    mcp_tool_registration_allowed_aliases: Annotated[tuple[str, ...], NoDecode] = ()
     # Persistent JSON file backing the registry (same "rewrite whole file
     # under a lock" design as search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
     mcp_tool_registry_path: Path = _REPO_ROOT / "data" / "agent-runtime" / "mcp-tool-registry.json"
@@ -252,7 +254,7 @@ class AgentRuntimeSettings(BaseSettings):
     # module joins `assets/agents|prompts/...` onto each configured root
     # itself, see that module's docstring "Path safety"). No existing
     # deployment's behavior changes merely because this setting now exists.
-    local_agent_roots: tuple[str, ...] = ()
+    local_agent_roots: Annotated[tuple[str, ...], NoDecode] = ()
     # Persistent JSON file backing the registry (same "rewrite whole file
     # under a lock" design as `mcp_tool_registry_path` above and
     # search-runtime's `LOCAL_INDEX_REGISTRY_PATH`).
@@ -293,7 +295,7 @@ class AgentRuntimeSettings(BaseSettings):
 
     #: **stdio 전용** — "이 배포에서 서드파티 코드를 어디서 실행해도 되는가".
     #: HTTP 서버 등록에는 관여하지 않는다.
-    mcp_server_install_roots: tuple[str, ...] = ()
+    mcp_server_install_roots: Annotated[tuple[str, ...], NoDecode] = ()
     # stdio 서버를 실행할 인터프리터의 **절대 경로**. PATH 탐색으로 대체하지
     # 않는다(D-084 의 `pythonInterpreterPath` 와 같은 이유 — PATH 는 검토된 적
     # 없는 런타임으로 조용히 해석된다). 비어 있으면 그 interpreter 를 요구하는
@@ -303,6 +305,77 @@ class AgentRuntimeSettings(BaseSettings):
     # 핸드셰이크와 `tools/list` 에 허용하는 시간. 응답하지 않는 서버 때문에
     # 등록 요청이 매달려 있지 않게 한다.
     mcp_connect_timeout_seconds: float = 20.0
+
+    # --- 목록 설정을 사람이 쓰는 모양 그대로 받는다 -------------------------
+    #
+    # 위 세 필드는 `.env` 나 환경변수로 들어온다. pydantic-settings 는 기본적으로
+    # 복합 타입(tuple/list) 값을 **JSON 으로만** 읽어서, 사람이 자연스럽게 쓰는
+    # 두 모양이 전부 기동 실패가 됐다(2026-09-18 실사용 제보 — 사내 PC 에서
+    # agent-runtime 이 이 오류로 뜨지 않았다):
+    #
+    #     AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS=C:\Users\hong\assets
+    #     AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS=["C:\Users\hong\assets"]
+    #
+    # 앞의 것은 JSON 이 아니라서, 뒤의 것은 `\U` 가 JSON 에서 잘못된 이스케이프라서
+    # 실패한다 — 즉 "Windows 경로를 JSON 에 넣으려면 역슬래시를 두 번 써야 한다"를
+    # 이미 아는 사람만 쓸 수 있는 설정이었다. 게다가 그때 나오는 메시지는
+    # `error parsing value for field "..." from source "DotEnvSettingsSource"` 한 줄뿐이라
+    # **무엇이 잘못됐는지도, 어떻게 고치는지도 말하지 않는다.**
+    #
+    # 그래서 `NoDecode` 로 JSON 해석을 끄고 여기서 직접 읽는다. 받는 모양:
+    #   - JSON 배열 `["C:/a", "C:/b"]` — 기존 `.env` 가 그대로 계속 동작한다
+    #   - `os.pathsep` 구분 목록 `C:\a;C:\b` (Windows `;`, POSIX `:`) —
+    #     search-runtime 의 `SEARCH_LOCAL_INDEX_ROOTS` 와 같은 관례
+    #   - 줄바꿈 구분, 또는 값 하나짜리 평문
+    #
+    # `[` 로 시작하는데 JSON 으로 못 읽으면 **구분자 분리로 넘어가지 않고 거부**한다.
+    # 그대로 나누면 `["C:\a"]` 같은 문자열이 경로 하나로 통째로 들어가 "설정은
+    # 했는데 아무것도 안 잡히는" 상태가 되고, 그 증상은 기동 실패보다 찾기 어렵다.
+    @field_validator(
+        "mcp_tool_registration_allowed_aliases",
+        "local_agent_roots",
+        "mcp_server_install_roots",
+        mode="before",
+    )
+    @classmethod
+    def _parse_delimited_list(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        text = value.strip()
+        if not text:
+            return ()
+        if text.startswith("["):
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError as e:
+                raise ValueError(
+                    f"JSON 배열로 쓰다가 읽지 못했습니다({e.msg}). Windows 경로를 JSON 에 "
+                    '넣으려면 역슬래시를 두 번 쓰거나 슬래시를 쓰세요(["C:/Users/..."]). '
+                    f'대괄호 없이 "{os.pathsep}" 로 구분해 나열해도 됩니다.'
+                ) from e
+            if not isinstance(parsed, list):
+                raise ValueError('JSON 으로 쓸 경우 배열이어야 합니다(예: ["C:/Users/..."]).')
+            return tuple(str(item).strip() for item in parsed if str(item).strip())
+        parts = [part for line in text.splitlines() for part in line.split(os.pathsep)]
+        values = tuple(
+            cleaned
+            for cleaned in (part.strip().strip('"').strip("'") for part in parts)
+            if cleaned
+        )
+        # `.env` 에서 값을 **큰따옴표로 감싸면** python-dotenv 가 그 안의
+        # `\a`/`\t`/`\U` 를 이스케이프로 해석한다 — `"C:\Users\hong\assets"` 가
+        # 조용히 `C:\Users\hong\x07ssets` 가 되어 기동은 성공하는데 그 경로가
+        # 없으니 아무 서버도 잡히지 않는다. 여기 도달했을 때는 이미 망가진
+        # 뒤라 원래 값을 되돌릴 수 없으므로, 대신 **틀렸다고 말한다** —
+        # 실제 경로에는 제어문자가 들어가지 않는다.
+        for item in values:
+            if any(ch < " " for ch in item):
+                raise ValueError(
+                    "값에 제어문자가 들어 있습니다 — `.env` 에서 큰따옴표로 감싸면 "
+                    r"역슬래시가 이스케이프로 해석됩니다(\a, \t, \U ...). "
+                    "따옴표를 빼거나 작은따옴표를 쓰세요."
+                )
+        return values
 
     class Config:
         env_prefix = "AGENT_RUNTIME_"
