@@ -24,6 +24,7 @@ import {
   resolveKnowledgeSelection,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  restoreMcpServerRegistrations,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -900,5 +901,35 @@ describe("isChatThreadNearBottom", () => {
 
   it("exposes the default threshold as a named constant, not a magic number", () => {
     expect(CHAT_THREAD_NEAR_BOTTOM_PX).toBe(96);
+  });
+});
+
+describe("restoreMcpServerRegistrations — 목록 로딩을 절대 막지 않는다", () => {
+  it("returns no notice when nothing was refused", async () => {
+    const bridge = { reconcileMcpServerActivations: async () => ({ checked: true, failedCount: 0, error: null }) };
+    expect(await restoreMcpServerRegistrations(bridge)).toBeNull();
+  });
+
+  it("names how many were refused and where to look", async () => {
+    const bridge = { reconcileMcpServerActivations: async () => ({ checked: true, failedCount: 2, error: null }) };
+    const notice = await restoreMcpServerRegistrations(bridge);
+    expect(notice).toContain("2개");
+    expect(notice).toContain("설치된 자산");
+  });
+
+  it("stays quiet when agent-runtime is unreachable (the connection banner already says so)", async () => {
+    const bridge = { reconcileMcpServerActivations: async () => ({ checked: false, failedCount: 0, error: "x" }) };
+    expect(await restoreMcpServerRegistrations(bridge)).toBeNull();
+  });
+
+  it("never throws — missing method (stale preload), throwing call, or no bridge", async () => {
+    expect(await restoreMcpServerRegistrations(null)).toBeNull();
+    expect(await restoreMcpServerRegistrations({})).toBeNull();
+    const throwing = {
+      reconcileMcpServerActivations: async () => {
+        throw new Error("boom");
+      },
+    };
+    expect(await restoreMcpServerRegistrations(throwing)).toBeNull();
   });
 });

@@ -33,6 +33,7 @@ import {
   ReasonConfirmDialog,
 } from "../ui";
 import { assetTypeLabel, formatBytes, formatDateTime } from "../format";
+import { restoreMcpServerRegistrations } from "./chatTypes";
 import { ASSET_STATUS_LABEL as STATUS_LABEL, ASSET_STATUS_TONE as STATUS_TONE } from "./assetStatusLabels";
 import {
   ASSET_STATUS_OPTIONS,
@@ -253,6 +254,9 @@ export function AssetsScreen({
     if (!bridge) return;
     setError(null);
     try {
+      // 결과(성공/거절)는 설치 기록에 남아 아래 목록에 그대로 보인다 — 따로
+      // 안내를 띄우지 않는다.
+      await restoreMcpServerRegistrations(bridge);
       try {
         const reconciled = await bridge.reconcileMcpToolConnections();
         setMcpReconcileNotice(reconciled.checked ? null : reconciled.error);

@@ -1,5 +1,15 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M04 MCP 서버가 "다시 확인"을 눌러야만 활성화되던 것
+
+- **제보**: "데스크톱 클라이언트에서 MCP 서버가 바로 안 뜬다. 자산 허브 > 설치된 자산에서 '다시 확인'을 한 번 눌러야 그 뒤부터 활성화된다."
+- **원인**: agent-runtime 의 MCP 서버 레지스트리(`mcp_server_registry.py` 의 `_servers`)는 **메모리에만** 있다. agent-runtime 이 재시작되면 등록이 전부 사라지는데 Desktop 설치 기록은 여전히 ACTIVE 라, 다시 등록하는 경로가 "다시 확인" 버튼(`mcpServer:activate`) 하나뿐이었다. Knowledge(D-079)·MCP Tool(D-080)·Local Agent 에는 있는 재확인(reconcile)이 MCP 서버(D-096)에만 없었다.
+- **고친 것**: `reconcileInstalledMcpServers`(`electron/mcp-server-connection.ts`) — `GET /local/v1/mcp-servers` 로 현재 목록을 받아, **로컬 기록이 ACTIVE 이고 Active Version 인** MCP 서버 중 목록에 없는 것만 "다시 확인"과 **같은 경로**(`reactivateInstalledMcpServer`)로 다시 등록한다. FAILED(설정이 안 바뀌면 또 거절됨)와 미시도 기록은 조용히 시도하지 않는다. agent-runtime 에 도달하지 못하면 아무것도 바꾸지 않는다(`checked: false`).
+  - 돌리는 곳: ① 앱 시작 직후 Main process 가 스스로(agent-runtime 이 늦게 뜰 수 있어 5초 간격 최대 2분 재시도), ② 대화 화면·설치된 자산 화면을 열 때(`reconcileMcpServerActivations` IPC). 둘이 겹치면 진행 중인 것을 공유한다.
+  - 대화 화면은 재등록이 **거절된 것이 있을 때만** 안내를 띄운다(`restoreMcpServerRegistrations`, 절대 throw 하지 않음). 도달 불가는 연결 배너가 이미 말한다.
+- **검증**: 신규 테스트 10개(재등록·이미 있으면 안 건드림·FAILED 재시도 안 함·Active Version 아니면 건너뜀·거절 기록·도달 불가 시 불변 6 + 화면 헬퍼 4). vitest 변경 전 **1110 passed / 12 failed** → 변경 후 **1120 passed / 12 failed**(실패 집합 동일한 기존 실패). typecheck 두 설정 통과. **변이 검증**: ACTIVE 조건을 빼면 "FAILED 재시도 안 함"이, 서버 목록 대조를 빼면 "이미 있으면 안 건드림"이 각각 깨진다. `tsc -p tsconfig.electron.json` 으로 `dist/electron/preload.js` 재빌드(새 채널 포함 확인).
+- **확인하지 못한 것**: 이 세션에서 Electron 창을 띄워 agent-runtime 을 재시작해 보는 실사용 재현은 하지 않았다 — 위 단위 테스트가 HTTP 왕복과 기록 변화를 고정한다.
+
 ## 2026-09-18 M04 출처 칩이 파일명만 보여주던 것
 
 - **제보**: "지식 검색 결과가 파일명으로만 여러 칩으로 나온다 — 어떤 게 검색됐는지 내용이나 주제가 보여야 할 것 같다."

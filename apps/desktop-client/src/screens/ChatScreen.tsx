@@ -88,6 +88,7 @@ import {
   resolveExcludedRowText,
   resolveReconcileCaption,
   resolveReconcileNotice,
+  restoreMcpServerRegistrations,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -474,6 +475,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 상태이므로 "안 보임"으로 조용히 넘어가지 않고 왜, 무엇이 필요한지 보여준다.
   const [localAgentsEnabled, setLocalAgentsEnabled] = useState<boolean | null>(null);
   const [localAgentReconcileNotice, setLocalAgentReconcileNotice] = useState<string | null>(null);
+  // agent-runtime 재시작으로 빠진 MCP 서버 등록을 복구하다 거절된 것이 있을 때만.
+  const [mcpServerRestoreNotice, setMcpServerRestoreNotice] = useState<string | null>(null);
   // Task Brief 제약 B — 관리자가 AGENT_RUNTIME_LOCAL_AGENT_ROOTS에 그대로
   // 복사해 넣을 수 있도록 이 PC의 실제 설치 경로를 보여준다.
   const [installRootPath, setInstallRootPath] = useState<string | null>(null);
@@ -515,6 +518,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // `TypeError: bridge.reconcileKnowledgeActivations is not a function`을
       // 던져 채팅 화면 전체가 죽었다).
       setReconcileNotice(await resolveReconcileNotice(bridge));
+      // agent-runtime 이 재시작되면 MCP 서버 등록이 사라진다(메모리 레지스트리).
+      // "+" 메뉴의 MCP 도구 목록을 열기 전에 복구해 둔다 — 예전에는 자산 화면에서
+      // "다시 확인"을 눌러야만 보였다(2026-09-18 실사용).
+      setMcpServerRestoreNotice(await restoreMcpServerRegistrations(bridge));
       const all = await bridge.listInstalledAssets();
       // D12/D-068: only offer the Active Version of each installed
       // Knowledge — an INACTIVE version (superseded via D12's "Active
@@ -2357,6 +2364,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           {bridge && localAgentReconcileNotice && (
             <Notice tone="info" title={`Local Agent 등록 상태 확인 불가: ${localAgentReconcileNotice}`} />
           )}
+          {bridge && mcpServerRestoreNotice && <Notice tone="info" title={mcpServerRestoreNotice} />}
 
           {bridge && calculatorSampleConnected && (
             <div className="mb-4 shrink-0 rounded-card border border-brand-200 bg-brand-50/40 p-4">

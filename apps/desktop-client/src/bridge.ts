@@ -53,6 +53,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   disconnectInstalledMcpTool: true,
   reconcileMcpToolConnections: true,
   activateInstalledMcpServer: true,
+  reconcileMcpServerActivations: true,
   registerLocalAgent: true,
   unregisterLocalAgent: true,
   reconcileLocalAgentRegistrations: true,

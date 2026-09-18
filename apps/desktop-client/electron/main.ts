@@ -10,7 +10,7 @@ import {
   type McpServerActivator,
 } from "./bundle-install";
 import { activateInstalledMcpServer } from "./mcp-server-activation";
-import { reactivateInstalledMcpServer } from "./mcp-server-connection";
+import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
 import { ConversationStore } from "./conversation-store";
@@ -85,6 +85,7 @@ import type {
   DiagnosticBundle,
   DiskSpaceInfo,
   ActivateMcpServerResult,
+  ReconcileMcpServersResult,
   DisconnectMcpToolResult,
   ReconcileMcpToolConnectionsResult,
   ImportProgressEvent,
@@ -697,6 +698,8 @@ function registerIpcHandlers(): void {
       return result;
     },
   );
+
+  ipcMain.handle("mcpServer:reconcile", (): Promise<ReconcileMcpServersResult> => reconcileMcpServers());
 
   ipcMain.handle("mcpTool:reconcileConnections", async (): Promise<ReconcileMcpToolConnectionsResult> => {
     const layout = getLayout();
@@ -1656,9 +1659,62 @@ function registerIpcHandlers(): void {
   );
 }
 
+// --- MCP 서버 등록 복구 ----------------------------------------------------------
+// agent-runtime 의 MCP 서버 레지스트리는 메모리에만 있어서, agent-runtime 이
+// 재시작되면 Desktop 기록은 ACTIVE 인데 대화에서는 서버가 안 보인다(2026-09-18
+// 실사용: "자산 화면에서 다시 확인을 눌러야만 활성화된다"). 앱 시작 때와 대화/
+// 자산 화면을 열 때 빠진 것을 다시 등록한다.
+//
+// 동시에 두 번 돌지 않게 진행 중인 것을 공유한다 — 시작 루프와 화면 호출이
+// 겹치면 같은 서버에 handshake 를 두 번 하게 된다.
+let mcpServerReconcileInFlight: Promise<ReconcileMcpServersResult> | null = null;
+
+function reconcileMcpServers(): Promise<ReconcileMcpServersResult> {
+  if (mcpServerReconcileInFlight) return mcpServerReconcileInFlight;
+  mcpServerReconcileInFlight = (async () => {
+    const layout = getLayout();
+    const store = new InstalledAssetsStore(layout.stateDir);
+    const activeVersions = new ActiveVersionStore(layout.stateDir);
+    const result = await reconcileInstalledMcpServers(layout, store, agentRuntimeBaseUrl(), (type, id) =>
+      activeVersions.get(type, id),
+    );
+    if (result.checked && (result.restoredCount > 0 || result.failedCount > 0)) {
+      getLogger()[result.failedCount > 0 ? "warn" : "info"](
+        "mcp-server-activation",
+        `agent-runtime에서 빠진 MCP 서버 다시 등록 — 성공 ${result.restoredCount}건, 실패 ${result.failedCount}건`,
+      );
+    }
+    return result;
+  })().finally(() => {
+    mcpServerReconcileInFlight = null;
+  });
+  return mcpServerReconcileInFlight;
+}
+
+/** 시작 직후에는 agent-runtime 이 아직 안 떠 있을 수 있다(기동 스크립트가
+ * 서비스와 Desktop 을 함께 띄운다). 도달할 때까지 잠시 재시도하고, 그래도
+ * 안 되면 조용히 멈춘다 — 대화/자산 화면을 열 때 다시 시도된다. */
+async function reconcileMcpServersOnStartup(attempts = 24, intervalMs = 5_000): Promise<void> {
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      const result = await reconcileMcpServers();
+      if (result.checked) return;
+    } catch (err) {
+      getLogger().warn(
+        "mcp-server-activation",
+        `시작 시 MCP 서버 등록 복구 중 오류: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  getLogger().warn("mcp-server-activation", "시작 시 agent-runtime에 연결하지 못해 MCP 서버 등록 복구를 건너뜁니다.");
+}
+
 app.whenReady().then(() => {
   registerIpcHandlers();
   createWindow();
+  void reconcileMcpServersOnStartup();
   // D14 — 앱이 실행되는 동안에만 동작하는 Main-process 스케줄러. 놓친 실행
   // 감지(D)가 시작 즉시 한 번 실행된 뒤 반복 tick이 시작된다.
   getScheduleScheduler().start();

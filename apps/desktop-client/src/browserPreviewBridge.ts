@@ -421,6 +421,9 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async activateInstalledMcpServer() {
       return { ok: false, activation: null, message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
+    async reconcileMcpServerActivations() {
+      return { checked: false, restoredCount: 0, failedCount: 0, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
 
     // --- D-034 해석 경로 4: Local Agent 등록 -----------------------------------
     async registerLocalAgent() {

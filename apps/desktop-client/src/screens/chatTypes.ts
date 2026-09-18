@@ -445,6 +445,33 @@ export async function resolveReconcileNotice(bridge: ReconcileCapableBridge | nu
   }
 }
 
+// --- MCP 서버 등록 복구 ----------------------------------------------------------
+// agent-runtime 의 MCP 서버 레지스트리는 메모리에만 있어 재시작하면 빈다.
+// 대화/자산 화면을 열 때 Main process 에 "빠진 것을 다시 등록"을 맡긴다
+// (`electron/mcp-server-connection.ts::reconcileInstalledMcpServers`).
+//
+// 안내를 돌려주는 경우는 **다시 등록을 시도했는데 거절된 것이 있을 때뿐**이다.
+// agent-runtime 에 도달하지 못한 것은 대화 화면의 연결 배너가 이미 말하고,
+// 메서드가 없는 것(오래된 preload.js)은 앱 시작 때 Main 이 같은 일을 이미
+// 했다 — 둘 다 여기서 한 번 더 경고하면 같은 사실이 두 줄로 뜬다.
+export interface McpServerReconcileCapableBridge {
+  reconcileMcpServerActivations?: () => Promise<{ checked: boolean; failedCount: number; error: string | null }>;
+}
+
+/** 절대 throw 하지 않는다 — 호출자는 이 결과와 무관하게 목록을 계속 불러온다. */
+export async function restoreMcpServerRegistrations(
+  bridge: McpServerReconcileCapableBridge | null,
+): Promise<string | null> {
+  if (!bridge || typeof bridge.reconcileMcpServerActivations !== "function") return null;
+  try {
+    const result = await bridge.reconcileMcpServerActivations();
+    if (!result.checked || result.failedCount === 0) return null;
+    return `MCP 서버 ${result.failedCount}개를 다시 연결하지 못했습니다. 자산 허브 > 설치된 자산에서 사유를 확인하세요.`;
+  } catch {
+    return null;
+  }
+}
+
 // --- D06 대화: KNOWLEDGE_ROUTE 표시(agentic Knowledge 선택) -------------------
 // 배경: 이전에는 "지식에서 검색"을 켜면 설치+활성화된 Knowledge 전부를
 // 검색했다(위 `partitionInstalledKnowledgeByActivation`). 후보(이름/설명/

@@ -21,8 +21,13 @@ import path from "node:path";
 import { assetInstallDir, readAssetManifest } from "./asset-management";
 import type { InstallRootLayout } from "./bundle-install";
 import type { InstalledAssetsStore } from "./installed-assets-store";
-import { activateInstalledMcpServer, type FetchLike } from "./mcp-server-activation";
-import type { ActivateMcpServerResult, KnowledgeActivation } from "./types";
+import {
+  activateInstalledMcpServer,
+  listRegisteredMcpServerAliases,
+  serverAliasOf,
+  type FetchLike,
+} from "./mcp-server-activation";
+import type { ActivateMcpServerResult, KnowledgeActivation, ReconcileMcpServersResult } from "./types";
 
 export interface McpServerTarget {
   assetId: string;
@@ -97,4 +102,64 @@ export async function reactivateInstalledMcpServer(
   store.updateActivation("mcp_server", target.assetId, target.version, activation);
 
   return { ok: outcome.status === "PASS", activation, message: outcome.message };
+}
+
+/**
+ * 로컬에 ACTIVE 로 기록된 MCP 서버를 agent-runtime 의 **현재** 등록 목록과
+ * 맞추고, 빠진 것은 다시 등록한다.
+ *
+ * 왜 필요한가: agent-runtime 의 서버 레지스트리는 메모리에만 있다
+ * (`mcp_server_registry.py`). agent-runtime 이 재시작되면 등록이 전부
+ * 사라지는데 Desktop 의 설치 기록은 여전히 ACTIVE 라, 사용자가 자산 화면에서
+ * "다시 확인"을 누르기 전까지 대화에서 서버가 보이지 않았다(2026-09-18 실사용
+ * 제보). 사용자가 이미 한 번 성공시킨 등록을 다시 하는 것이므로 확인을 묻지
+ * 않는다 — 새로 허용하는 것이 아니라 잃어버린 상태를 복구하는 것이다.
+ *
+ * 대상은 **로컬 기록이 ACTIVE 인 것만**이다. FAILED 는 설정이 바뀌지 않는 한
+ * 다시 거절될 것이 뻔하고(stdio 비허용 등), 기록이 없는 것은 사용자가 아직
+ * 시도하지 않은 것이다 — 둘 다 여기서 조용히 시도하지 않는다. 같은 자산의
+ * 다른 버전이 있으면 Active Version(D12)만 다룬다 — 옛 버전이 같은 alias 로
+ * 덮어쓰면 안 된다.
+ *
+ * agent-runtime 에 도달하지 못하면 아무것도 바꾸지 않고 `checked: false`.
+ */
+export async function reconcileInstalledMcpServers(
+  layout: InstallRootLayout,
+  store: InstalledAssetsStore,
+  agentRuntimeBaseUrl: string,
+  activeVersionOf: (assetType: string, assetId: string) => string | null,
+  fetchImpl: FetchLike = fetch,
+): Promise<ReconcileMcpServersResult> {
+  const remote = await listRegisteredMcpServerAliases(agentRuntimeBaseUrl, fetchImpl);
+  if (!remote.ok) {
+    return { checked: false, restoredCount: 0, failedCount: 0, error: remote.message };
+  }
+
+  let restoredCount = 0;
+  let failedCount = 0;
+  const attempted = new Set<string>();
+  for (const asset of store.list()) {
+    if (asset.assetType !== "mcp_server" || asset.activation?.state !== "ACTIVE") continue;
+    const activeVersion = activeVersionOf(asset.assetType, asset.assetId);
+    if (activeVersion != null && activeVersion !== asset.version) continue;
+
+    const manifest = readAssetManifest(layout, asset);
+    const alias =
+      (manifest.available && manifest.manifest
+        ? serverAliasOf(manifest.manifest as Record<string, unknown>)
+        : null) ?? asset.assetId;
+    if (remote.aliases.has(alias) || attempted.has(alias)) continue;
+    attempted.add(alias);
+
+    const result = await reactivateInstalledMcpServer(
+      layout,
+      store,
+      agentRuntimeBaseUrl,
+      { assetId: asset.assetId, version: asset.version },
+      fetchImpl,
+    );
+    if (result.ok) restoredCount += 1;
+    else failedCount += 1;
+  }
+  return { checked: true, restoredCount, failedCount, error: null };
 }

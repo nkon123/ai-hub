@@ -19,6 +19,7 @@ import type {
   ConversationTurnStatus,
   DeactivateKnowledgeResult,
   ActivateMcpServerResult,
+  ReconcileMcpServersResult,
   DisconnectMcpToolResult,
   DesktopBridge,
   DesktopSettingsInput,
@@ -140,6 +141,9 @@ const bridge: DesktopBridge = {
   // --- D-096 MCP 서버 다시 활성화 ---------------------------------------------
   activateInstalledMcpServer: (assetId: string, version: string): Promise<ActivateMcpServerResult> =>
     ipcRenderer.invoke("mcpServer:activate", assetId, version),
+
+  reconcileMcpServerActivations: (): Promise<ReconcileMcpServersResult> =>
+    ipcRenderer.invoke("mcpServer:reconcile"),
 
   // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
   registerLocalAgent: (

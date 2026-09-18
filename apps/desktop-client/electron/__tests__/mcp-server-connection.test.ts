@@ -7,7 +7,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolveInstallRoot, type InstallRootLayout } from "../bundle-install";
 import { InstalledAssetsStore } from "../installed-assets-store";
-import { reactivateInstalledMcpServer } from "../mcp-server-connection";
+import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "../mcp-server-connection";
 import type { FetchLike } from "../mcp-server-activation";
 
 const ASSET_ID = "aaaa1111-bbbb-2222-cccc-333333333333";
@@ -180,5 +180,111 @@ describe("reactivateInstalledMcpServer", () => {
     );
 
     expect(calls[0].body.install_path).toBeNull();
+  });
+});
+
+// agent-runtime 의 서버 레지스트리는 메모리에만 있다. 재시작 뒤에도 Desktop 기록은
+// ACTIVE 라, 예전에는 자산 화면에서 "다시 확인"을 눌러야만 대화에 서버가 보였다
+// (2026-09-18 실사용 제보). 복구가 무엇을 다시 등록하고 무엇을 건드리지 않는지 고정한다.
+describe("reconcileInstalledMcpServers", () => {
+  const BASE = "http://localhost:8100";
+  const noPointer = () => null;
+
+  function setActivation(state: "ACTIVE" | "FAILED", version = VERSION) {
+    store.updateActivation("mcp_server", ASSET_ID, version, {
+      state,
+      checkedAt: new Date().toISOString(),
+      reason: state === "FAILED" ? "install_path_outside_allowed_roots" : null,
+      message: null,
+      indexPath: null,
+    });
+  }
+
+  /** GET 은 `registered` 를 목록으로, POST 는 `postStatus` 로 답한다. */
+  function runtime(registered: string[] | "unreachable", postStatus = 200, postBody: unknown = {
+    entry: { server_alias: "hello-mcp", tool_names: ["hello.echo"] },
+  }) {
+    const posts: any[] = [];
+    const fetchImpl = (async (url: any, init?: any) => {
+      if (registered === "unreachable") throw new TypeError("fetch failed");
+      if (init?.method === "POST") {
+        posts.push({ url: String(url), body: JSON.parse(init.body) });
+        return { ok: postStatus < 300, status: postStatus, json: async () => postBody } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ entries: registered.map((server_alias) => ({ server_alias, state: "ACTIVE" })) }),
+      } as Response;
+    }) as unknown as FetchLike;
+    return { fetchImpl, posts };
+  }
+
+  it("re-registers a locally ACTIVE server that agent-runtime no longer has", async () => {
+    const dir = installMcpServerAsset();
+    setActivation("ACTIVE");
+    const { fetchImpl, posts } = runtime([]);
+
+    const result = await reconcileInstalledMcpServers(layout, store, BASE, noPointer, fetchImpl);
+
+    expect(result).toEqual({ checked: true, restoredCount: 1, failedCount: 0, error: null });
+    expect(posts).toHaveLength(1);
+    // "다시 확인" 버튼과 같은 경로여야 한다.
+    expect(posts[0].body.install_path).toBe(path.join(dir, "source"));
+    expect(store.find("mcp_server", ASSET_ID, VERSION)?.activation?.state).toBe("ACTIVE");
+  });
+
+  it("leaves a server alone when agent-runtime still has it", async () => {
+    installMcpServerAsset();
+    setActivation("ACTIVE");
+    const { fetchImpl, posts } = runtime(["hello-mcp"]);
+
+    const result = await reconcileInstalledMcpServers(layout, store, BASE, noPointer, fetchImpl);
+
+    expect(result.restoredCount).toBe(0);
+    expect(posts).toHaveLength(0);
+  });
+
+  it("does not silently retry a server whose last attempt was refused", async () => {
+    installMcpServerAsset(); // 기록이 FAILED 로 시작한다
+    const { fetchImpl, posts } = runtime([]);
+
+    await reconcileInstalledMcpServers(layout, store, BASE, noPointer, fetchImpl);
+
+    expect(posts).toHaveLength(0);
+  });
+
+  it("skips a version that is not the Active Version", async () => {
+    installMcpServerAsset();
+    setActivation("ACTIVE");
+    const { fetchImpl, posts } = runtime([]);
+
+    await reconcileInstalledMcpServers(layout, store, BASE, () => "2.0.0", fetchImpl);
+
+    expect(posts).toHaveLength(0);
+  });
+
+  it("records a refusal and counts it as failed", async () => {
+    installMcpServerAsset();
+    setActivation("ACTIVE");
+    const { fetchImpl } = runtime([], 400, { error: { code: "interpreter_not_configured" } });
+
+    const result = await reconcileInstalledMcpServers(layout, store, BASE, noPointer, fetchImpl);
+
+    expect(result).toMatchObject({ checked: true, restoredCount: 0, failedCount: 1 });
+    expect(store.find("mcp_server", ASSET_ID, VERSION)?.activation?.reason).toBe("interpreter_not_configured");
+  });
+
+  it("changes nothing when agent-runtime is unreachable", async () => {
+    installMcpServerAsset();
+    setActivation("ACTIVE");
+    const { fetchImpl } = runtime("unreachable");
+
+    const result = await reconcileInstalledMcpServers(layout, store, BASE, noPointer, fetchImpl);
+
+    expect(result.checked).toBe(false);
+    expect(result.error).toBeTruthy();
+    // 도달하지 못한 것을 "등록 안 됨"으로 지어내지 않는다.
+    expect(store.find("mcp_server", ASSET_ID, VERSION)?.activation?.state).toBe("ACTIVE");
   });
 });

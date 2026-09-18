@@ -133,3 +133,44 @@ export async function activateInstalledMcpServer(
     serverAlias: body?.entry?.server_alias ?? alias,
   };
 }
+
+export type RegisteredMcpServersResult =
+  | { ok: true; aliases: Set<string> }
+  | { ok: false; message: string };
+
+/** agent-runtime 에 **지금** 등록돼 있는 서버 alias 들.
+ *
+ * `state` 를 가리지 않는다 — 서버 쪽에서 FAILED/UNREACHABLE 로 남아 있는
+ * 것은 이미 누군가 시도했고 그 결과가 서버에 남아 있다는 뜻이므로, 다시
+ * 등록할 대상(= 목록에 **없는** 것)이 아니다. 도달하지 못하면 "없음"으로
+ * 지어내지 않고 `ok: false` 를 돌려준다.
+ */
+export async function listRegisteredMcpServerAliases(
+  agentRuntimeBaseUrl: string,
+  fetchImpl: FetchLike = fetch,
+  timeoutMs = 10_000,
+): Promise<RegisteredMcpServersResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(`${agentRuntimeBaseUrl.replace(/\/+$/, "")}/local/v1/mcp-servers`, {
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      return { ok: false, message: `agent-runtime이 MCP 서버 목록 요청을 거부했습니다 (HTTP ${res.status}).` };
+    }
+    const body = (await res.json().catch(() => null)) as { entries?: Array<{ server_alias?: unknown }> } | null;
+    if (!body || !Array.isArray(body.entries)) {
+      return { ok: false, message: "agent-runtime의 MCP 서버 목록 응답을 해석하지 못했습니다." };
+    }
+    const aliases = new Set<string>();
+    for (const entry of body.entries) {
+      if (typeof entry?.server_alias === "string") aliases.add(entry.server_alias);
+    }
+    return { ok: true, aliases };
+  } catch {
+    return { ok: false, message: guidanceFor("agent_runtime_unreachable", "") };
+  } finally {
+    clearTimeout(timer);
+  }
+}

@@ -600,6 +600,17 @@ export interface DisconnectMcpToolResult {
   error: string | null;
 }
 
+/** `reconcileInstalledMcpServers` 결과. `checked: false` 는 agent-runtime 에
+ * 도달하지 못해 **아무것도 바꾸지 않았다**는 뜻이다(`error` 에 안내). */
+export interface ReconcileMcpServersResult {
+  checked: boolean;
+  /** agent-runtime 에서 빠져 있어 다시 등록했고 성공한 수. */
+  restoredCount: number;
+  /** 다시 등록을 시도했지만 거절된 수 — 결과는 설치 기록에 남는다. */
+  failedCount: number;
+  error: string | null;
+}
+
 export interface ReconcileMcpToolConnectionsResult {
   checked: boolean;
   downgradedCount: number;
@@ -1644,6 +1655,11 @@ export interface DesktopBridge {
    * 뒤 자산을 다시 설치하지 않고 재시도할 수 있게 하는 것이 이 메서드의 존재
    * 이유다. 성공/실패 모두 설치 기록에 남는다. */
   activateInstalledMcpServer(assetId: string, version: string): Promise<ActivateMcpServerResult>;
+
+  /** 로컬에 ACTIVE 로 기록된 MCP 서버 중 agent-runtime 에서 빠진 것을 다시
+   * 등록한다. agent-runtime 의 서버 레지스트리는 메모리에만 있어 재시작하면
+   * 비기 때문이다. 앱 시작 때 Main process 가 스스로도 한 번 돌린다. */
+  reconcileMcpServerActivations(): Promise<ReconcileMcpServersResult>;
 
   // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
   /** "설치됨"과 "실행에 쓸 수 있음"은 서로 다른 사실이다 — 설치된 Agent와

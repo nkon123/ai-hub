@@ -154,6 +154,9 @@ function createCompleteBridge(): DesktopBridge {
     async activateInstalledMcpServer() {
       return { ok: true, activation: null, message: "" };
     },
+    async reconcileMcpServerActivations() {
+      return { checked: true, restoredCount: 0, failedCount: 0, error: null };
+    },
     async registerLocalAgent() {
       return { ok: false, registration: null, error: null };
     },
