@@ -396,6 +396,8 @@ const KNOWN_EVENT_NAMES = [
   // "fallback"(LLM 호출은 됐지만 신뢰할 수 없어 전체를 검색했다) 중 하나 —
   // chatTypes.ts의 describeKnowledgeRoute가 세 경우를 구분해 보여준다.
   "knowledge.route.selected",
+  // D-103 — 지식을 건너뛰었는데(abstained) Tool 결과가 없어 결국 검색했다.
+  "knowledge.route.abstain_reverted",
   "knowledge.search.started",
   "knowledge.search.completed",
   "knowledge.query_rewritten",

@@ -814,6 +814,24 @@ async def run_knowledge_chat(
         # --- ANALYZE (implicit) + KNOWLEDGE_SEARCH (0..n) ---
         run_store.set_status(run_id, "RUNNING")
         citations: list[dict[str, Any]] = []
+        route_result: KnowledgeRouteResult | None = None
+        # D-103 — 지식과 Tool 이 **둘 다** 켜진 턴에서만, 지식 라우터가 "이건
+        # Tool 로 답할 질문이라 지식은 필요 없다"(abstain)를 고를 수 있다. 그
+        # 판단을 돕도록 이번 턴의 Tool 후보(이름·설명, 메타데이터만)를 넘긴다.
+        # abstain 이면 검색을 **없애는 것이 아니라 미룬다** — Tool 이 실제로
+        # 결과를 내지 못하면 아래에서 전체 지식을 검색한다. 라우터가 틀려도
+        # 이 기능 이전보다 나빠지지 않게 하기 위해서다(2026-09-18 실사용:
+        # "현재 시간"을 넥사크로 문서에서 찾았다).
+        tool_route_will_run = mcp_tool_request is None and tool_route_enabled and mcp_allowed
+        knowledge_route_tool_hints: list[str] = []
+        if has_knowledge_id and knowledge_candidates and tool_route_will_run:
+            knowledge_route_tool_hints = [
+                f"{c['tool_name']}: {c.get('description') or ''}".strip().rstrip(":")
+                for c in mcp_tools.filter_candidates_to_scope(
+                    mcp_tools.list_candidate_tools(config.office_profile), mcp_tool_scope
+                )
+            ]
+        knowledge_deferred = False
         if has_knowledge_id:
             # --- KNOWLEDGE_ROUTE (optional, before KNOWLEDGE_SEARCH) ---
             # Agentic Knowledge selection — only runs when the caller
@@ -822,7 +840,6 @@ async def run_knowledge_chat(
             # never does). See `agent_runtime.knowledge_router` for the
             # fail-open contract this relies on: `route_result.selected_ids`
             # is always safe to search directly, in every status.
-            route_result: KnowledgeRouteResult | None = None
             if knowledge_candidates:
                 knowledge_route_started = time.monotonic()
                 route_result = await route_knowledge_candidates(
@@ -832,6 +849,7 @@ async def run_knowledge_chat(
                     model_alias="default-chat",
                     timeout_seconds=settings.knowledge_route_timeout_seconds,
                     skip_threshold=settings.knowledge_route_skip_threshold,
+                    tool_hints=knowledge_route_tool_hints,
                 )
                 _log_stage(
                     run_id,
@@ -860,6 +878,12 @@ async def run_knowledge_chat(
                     len(route_result.excluded),
                 )
 
+            if route_result is not None and route_result.status == "abstained":
+                knowledge_deferred = True
+
+        async def _search_knowledge(ids_to_search: list[str]) -> list[dict[str, Any]] | None:
+            """Stage 1 지식 검색. 실패하면 Run 을 FAILED 로 끝내고 None 을 돌려준다.
+            즉시 검색과 D-103 의 미룬 검색이 **같은 함수**를 쓴다."""
             run_store.append_event(
                 run_id, "knowledge.search.started", {"knowledge_id": knowledge_id}
             )
@@ -894,10 +918,6 @@ async def run_knowledge_chat(
             # Otherwise `knowledge_ids` (non-empty) reproduces the plain
             # fan-out; omitting both reproduces the exact prior
             # single-`knowledge_id` request/response handling.
-            if route_result is not None:
-                ids_to_search = route_result.selected_ids
-            else:
-                ids_to_search = list(knowledge_ids) if knowledge_ids else [knowledge_id]
             access_context = {
                 # §3.8 step 1 — see this function's docstring for why this
                 # comes from `user_context`, never from `input`.
@@ -953,11 +973,11 @@ async def run_knowledge_chat(
                 # access_context above rather than trusting `input`, so this
                 # path fires on a real integration/config bug, not normal use.
                 _fail(run_store, run_id, trace_id, exc.code, exc.message)
-                return
+                return None
 
             _log_stage(run_id, "knowledge_search", search_started, ids=len(ids_to_search))
 
-            citations = [
+            found = [
                 {**citation, "source": "local"}
                 for search_result in search_results
                 for citation in search_result.get("citations", [])
@@ -975,57 +995,77 @@ async def run_knowledge_chat(
             run_store.append_event(
                 run_id,
                 "knowledge.search.completed",
-                {"citation_count": len(citations), "latency_ms": latency_ms},
+                {"citation_count": len(found), "latency_ms": latency_ms},
             )
-            logger.info("run.knowledge_search run_id=%s citation_count=%d", run_id, len(citations))
-            for citation in citations:
+            logger.info("run.knowledge_search run_id=%s citation_count=%d", run_id, len(found))
+            for citation in found:
                 run_store.append_event(run_id, "citation.added", citation)
+            return found
 
-        # --- Stage 2: hub lookup (opt-in, only when Stage 1 found nothing) ---
-        # Consent-default-off: `allow_hub_lookup` defaults False, so this
-        # block never runs — and `hub_search_adapter.search` is never
-        # called — unless a caller explicitly opts in. See hub_query.py's
-        # module docstring for why `hub_query` is built ONLY from `question`
-        # (this call's own untouched parameter, never the Stage 1 rewritten
-        # `search_query`) and `bounded_history`'s `["question"]` fields.
-        if len(citations) == 0 and allow_hub_lookup and hub_search_adapter is not None:
-            hub_query = build_hub_query(question, bounded_history)
-            try:
-                hub_result = await hub_search_adapter.search(hub_query, top_k=5, trace_id=trace_id)
-            except HubSearchError as exc:
-                # Hub unreachable/erroring must never fail the Run — Stage 2
-                # simply contributes nothing, falling through to the same
-                # INSUFFICIENT_EVIDENCE path as if it had never been tried.
-                logger.info(
-                    "hub.search.failed run_id=%s code=%s message=%s",
-                    run_id,
-                    exc.code,
-                    exc.message,
-                )
+        async def _hub_lookup(citations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            """Stage 2 허브 조회(동의 시, Stage 1 이 비었을 때만). 즉시/미룬 경로 공용."""
+            # --- Stage 2: hub lookup (opt-in, only when Stage 1 found nothing) ---
+            # Consent-default-off: `allow_hub_lookup` defaults False, so this
+            # block never runs — and `hub_search_adapter.search` is never
+            # called — unless a caller explicitly opts in. See hub_query.py's
+            # module docstring for why `hub_query` is built ONLY from `question`
+            # (this call's own untouched parameter, never the Stage 1 rewritten
+            # `search_query`) and `bounded_history`'s `["question"]` fields.
+            if len(citations) == 0 and allow_hub_lookup and hub_search_adapter is not None:
+                hub_query = build_hub_query(question, bounded_history)
+                try:
+                    hub_result = await hub_search_adapter.search(hub_query, top_k=5, trace_id=trace_id)
+                except HubSearchError as exc:
+                    # Hub unreachable/erroring must never fail the Run — Stage 2
+                    # simply contributes nothing, falling through to the same
+                    # INSUFFICIENT_EVIDENCE path as if it had never been tried.
+                    logger.info(
+                        "hub.search.failed run_id=%s code=%s message=%s",
+                        run_id,
+                        exc.code,
+                        exc.message,
+                    )
+                else:
+                    hub_citations = [
+                        {**citation, "source": "hub"} for citation in hub_result.get("citations", [])
+                    ]
+                    # Safe to include the literal query text in this event:
+                    # `UserTypedQuery` structurally guarantees it never contains
+                    # assistant/local content (see hub_query.py).
+                    run_store.append_event(
+                        run_id,
+                        "hub.query_sent",
+                        {
+                            "query": hub_query.text,
+                            "knowledge_ids_searched": hub_result.get("knowledge_ids_searched", []),
+                        },
+                    )
+                    run_store.append_event(
+                        run_id, "hub.search.completed", {"citation_count": len(hub_citations)}
+                    )
+                    logger.info(
+                        "run.hub_search run_id=%s citation_count=%d", run_id, len(hub_citations)
+                    )
+                    citations = citations + hub_citations
+                    for citation in hub_citations:
+                        run_store.append_event(run_id, "citation.added", citation)
+            return citations
+
+        if has_knowledge_id and not knowledge_deferred:
+            # `route_result` (KNOWLEDGE_ROUTE) takes over id selection entirely
+            # when present — its `selected_ids` is always the right thing to
+            # search, fallback-inclusive. Otherwise `knowledge_ids` reproduces
+            # the plain fan-out; omitting both, the single-`knowledge_id` path.
+            if route_result is not None:
+                ids_now = route_result.selected_ids
             else:
-                hub_citations = [
-                    {**citation, "source": "hub"} for citation in hub_result.get("citations", [])
-                ]
-                # Safe to include the literal query text in this event:
-                # `UserTypedQuery` structurally guarantees it never contains
-                # assistant/local content (see hub_query.py).
-                run_store.append_event(
-                    run_id,
-                    "hub.query_sent",
-                    {
-                        "query": hub_query.text,
-                        "knowledge_ids_searched": hub_result.get("knowledge_ids_searched", []),
-                    },
-                )
-                run_store.append_event(
-                    run_id, "hub.search.completed", {"citation_count": len(hub_citations)}
-                )
-                logger.info(
-                    "run.hub_search run_id=%s citation_count=%d", run_id, len(hub_citations)
-                )
-                citations = citations + hub_citations
-                for citation in hub_citations:
-                    run_store.append_event(run_id, "citation.added", citation)
+                ids_now = list(knowledge_ids) if knowledge_ids else [knowledge_id]
+            found_now = await _search_knowledge(ids_now)
+            if found_now is None:
+                return
+            citations = found_now
+        if not knowledge_deferred:
+            citations = await _hub_lookup(citations)
 
         # --- TOOL_ROUTE (optional, D-083) ---
         # Agentic MCP Tool selection — only runs when the caller opted in
@@ -1150,6 +1190,24 @@ async def run_knowledge_chat(
                 tool_results = []
             else:
                 tool_results = [outcome]
+
+        # D-103 — 지식을 미뤘는데 Tool 이 결과를 내지 못했다(선택 안 됨·거부·
+        # 거절). 이제라도 전체 지식을 검색한다: abstain 은 "Tool 로 답한다"는
+        # 판단이었지 "근거 없이 답한다"가 아니다. 그 뒤의 근거 부족 판정(D-036)은
+        # 그대로다.
+        if knowledge_deferred and not tool_results:
+            assert route_result is not None
+            fallback_ids = [choice["knowledge_id"] for choice in route_result.excluded]
+            run_store.append_event(
+                run_id,
+                "knowledge.route.abstain_reverted",
+                {"reason": "no_tool_result", "knowledge_count": len(fallback_ids)},
+            )
+            logger.info("knowledge.route.abstain_reverted run_id=%s", run_id)
+            found_late = await _search_knowledge(fallback_ids)
+            if found_late is None:
+                return
+            citations = await _hub_lookup(found_late)
 
         # Hallucination guard (D-036), extended to cover tool-only evidence:
         # never answer when there is no Knowledge citation AND no MCP Tool

@@ -103,7 +103,7 @@ Run 상태(`run_store.py`): `CREATED`, `PREFLIGHT`, `RUNNING`,
 `SUCCEEDED`, `FAILED`, `CANCELLED`, `INSUFFICIENT_EVIDENCE`(`TERMINAL_STATUSES`).
 
 내부 이벤트 이름: `run.started`, `preflight.completed`,
-`knowledge.route.selected`, `knowledge.search.started`,
+`knowledge.route.selected`, `knowledge.route.abstain_reverted`(D-103), `knowledge.search.started`,
 `knowledge.query_rewritten`, `knowledge.search.completed`,
 `citation.added`, `hub.query_sent`, `hub.search.completed`,
 `mcp.tool_route.selected`, `mcp.tool_route.rejected`(둘 다 D-083),
@@ -153,6 +153,21 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   호출에 `think: false` 를 싣고, 그 필드를 거부(400)하는 모델에는 빼고 재시도한
   뒤 기억한다. **라우팅 품질을 볼 때 모델을 바꿨다면 raw 응답의
   `done_reason`/`eval_count` 부터 본다** — 프롬프트를 고치기 전에.
+
+- **지식과 Tool 이 둘 다 켜진 턴에서는 지식 라우터가 "지식 불필요"를 고를 수
+  있다(D-103, 2026-09-18).** 전에는 지식 검색을 켜면 무조건 검색했다 — 라우터에
+  "0개 선택"이 없었고(빈 선택은 전체 검색으로 되돌아감) 후보 1~2개면 라우터를
+  건너뛰었다. 그래서 "현재 시간"을 넥사크로 문서에서 찾았다. 지금은
+  `tool_route` 가 실제로 돌 턴에만 `route_knowledge_candidates(tool_hints=...)`
+  로 이번 턴 Tool 후보(이름·설명)를 넘기고, 그때만 `status="abstained"`(검색 대상
+  0개)가 가능하며 threshold 로 건너뛰지 않는다. **abstain 은 검색을 없애는 게
+  아니라 미룬다** — Tool 결과가 없으면 `knowledge.route.abstain_reverted` 를
+  내고 전체를 검색한 뒤 평소처럼 D-036 가드를 지난다(라우터가 틀려도 이전보다
+  나빠지지 않는다). 검색·허브 조회는 `_search_knowledge`/`_hub_lookup` 내부
+  함수 하나씩이라 즉시/미룬 경로가 같은 코드를 쓴다. 실측(gemma4)에서 모델은
+  "Tool 로 답하겠다"를 **Tool 이름을 selected 에 넣어** 표현했다 — 그것을
+  invalid id 로 읽으면 abstain 이 한 번도 성립하지 않는다(24회 중 0회 → 관용
+  처리 후 23/24). Tool 힌트가 없으면 동작은 이전과 바이트 단위로 같다.
 
 - **D-078: 로컬 조회 데이터를 허브로 보내지 않는다.** Hub(portal-api 중앙
   Knowledge Registry)에 보낼 질의 문자열을 만드는 경로는 `hub_query.py`의

@@ -531,7 +531,10 @@ export async function restoreMcpServerRegistrations(
 /** SSE `"knowledge.route.selected"`의 실제 payload — 서버 필드 이름 그대로
  * (`workflow.py`가 `route_result`를 이 모양으로 직렬화한다). */
 export interface KnowledgeRouteEventData {
-  status: "ran" | "skipped" | "fallback";
+  /** `"abstained"`(D-103): 지식·Tool 이 둘 다 켜진 턴에서 "Tool 로 답할 질문이라
+   * 지식은 필요 없다"고 판단해 검색을 미뤘다. Tool 결과가 없으면 서버가
+   * `knowledge.route.abstain_reverted` 를 보내고 결국 검색한다. */
+  status: "ran" | "skipped" | "fallback" | "abstained";
   fallback_reason: string | null;
   selected: Array<{ knowledge_id: string; reason: string }>;
   excluded: Array<{ knowledge_id: string; reason: string }>;
@@ -570,7 +573,7 @@ export function groupKnowledgeRouteChoicesByReason(
 }
 
 export interface KnowledgeRouteDisplay {
-  status: "ran" | "skipped" | "fallback";
+  status: "ran" | "skipped" | "fallback" | "abstained" | "abstain_reverted";
   /** 사실 그대로의 한 줄 요약 — `status === "ran"`일 때만 실제 선택이
    * 일어났다고 말한다. */
   headline: string;
@@ -598,6 +601,9 @@ export function describeKnowledgeRoute(
   let headline: string;
   if (event.status === "ran") {
     headline = `관련 있는 지식 자산 ${event.selected.length}개를 자동으로 선택해 검색했습니다.`;
+  } else if (event.status === "abstained") {
+    // 검색을 **하지 않았다**고 말한다 — "0개 선택해 검색"처럼 읽히면 안 된다.
+    headline = "Tool로 답할 질문이라 지식 검색을 건너뛰었습니다.";
   } else if (event.status === "skipped") {
     headline = `설치된 Knowledge가 적어(${event.selected.length}개) 자동 선택 없이 전체를 검색했습니다 — 선택이 이루어진 것은 아닙니다.`;
   } else {
@@ -611,6 +617,21 @@ export function describeKnowledgeRoute(
     excluded: excludedGroup.items,
     sharedSelectedReason: selectedGroup.sharedReason,
     sharedExcludedReason: excludedGroup.sharedReason,
+  };
+}
+
+/** SSE `knowledge.route.abstain_reverted`(D-103) — 지식을 건너뛰었는데 Tool 이
+ * 결과를 내지 못해 결국 검색했다. "건너뛰었다"가 화면에 남아 있으면 출처 칩이
+ * 왜 나왔는지 설명이 안 된다. 이전 표시가 없으면(이벤트 순서가 어긋난 경우)
+ * 그대로 둔다 — 없는 사실을 만들지 않는다. */
+export function markKnowledgeRouteAbstainReverted(
+  route: KnowledgeRouteDisplay | null,
+): KnowledgeRouteDisplay | null {
+  if (!route) return route;
+  return {
+    ...route,
+    status: "abstain_reverted",
+    headline: `Tool 결과가 없어 결국 지식 자산 ${route.excluded.length}개를 검색했습니다.`,
   };
 }
 

@@ -68,7 +68,7 @@ class KnowledgeRouteChoice(TypedDict):
     reason: str
 
 
-RouteStatus = Literal["ran", "skipped", "fallback"]
+RouteStatus = Literal["ran", "skipped", "fallback", "abstained"]
 
 
 @dataclass(frozen=True)
@@ -85,6 +85,11 @@ class KnowledgeRouteResult:
     - `status="fallback"`: the LLM call happened but its result could not
       be trusted (error/timeout/unparseable/unknown id/empty selection) —
       `selected_ids` is every candidate id, `fallback_reason` says why.
+    - `status="abstained"` (D-103, **only when `tool_hints` was given**): the
+      model judged that this question is for a Tool, not for Knowledge —
+      `selected_ids` is EMPTY. The caller must not treat this as "searched
+      and found nothing"; workflow.py defers the search and runs it anyway
+      if no Tool result materializes.
     """
 
     selected_ids: list[str]
@@ -110,6 +115,27 @@ _ROUTE_SYSTEM_PROMPT = (
     '- 출력 형식: {"selected": [{"knowledge_id": "...", "reason": "..."}], '
     '"excluded": [{"knowledge_id": "...", "reason": "..."}]}'
 )
+
+
+#: D-103 — 지식과 Tool 이 **둘 다** 켜진 턴에만 붙는 규칙. 이 규칙이 없으면
+#: 라우터는 "확신 없으면 포함" 때문에 "현재 시간" 같은 질문에도 지식을 고르고,
+#: 빈 선택조차 "전체 검색"으로 되돌아간다(2026-09-18 실사용: 넥사크로 문서에서
+#: 현재 시간을 찾았다).
+_ABSTAIN_RULE = (
+    "- 이번 대화에서는 아래 'Tool' 목록도 쓸 수 있습니다. 질문이 지식 문서가 아니라 "
+    "Tool 로 답할 질문(현재 시각, 실시간 조회, 계산 등)이면 selected 를 빈 배열 [] 로 "
+    "두고 모든 후보를 excluded 에 넣으세요. 이 경우에는 이 규칙이 '확신할 수 없으면 "
+    "포함' 규칙보다 우선합니다. selected 에는 지식 자산의 knowledge_id 만 넣고, Tool "
+    "이름은 절대 넣지 마세요.\n"
+)
+
+
+def _system_prompt(tool_hints: list[str] | None) -> str:
+    if not tool_hints:
+        return _ROUTE_SYSTEM_PROMPT
+    marker = "- 출력 형식:"
+    head, tail = _ROUTE_SYSTEM_PROMPT.split(marker, 1)
+    return head + _ABSTAIN_RULE + marker + tail
 
 
 def _normalize_candidates(candidates: list[dict[str, Any]]) -> list[KnowledgeCandidate]:
@@ -206,11 +232,20 @@ async def route_knowledge_candidates(
     model_alias: str,
     timeout_seconds: float,
     skip_threshold: int,
+    tool_hints: list[str] | None = None,
 ) -> KnowledgeRouteResult:
     """Chooses the subset of `candidates` worth searching for `question`.
 
+    `tool_hints` (D-103, optional): one line per Tool this turn could use
+    (`"name: description"`, metadata only). When given, the router may
+    **abstain** — answer "this is a Tool question" with an empty selection —
+    and the skip threshold does not apply (1 Knowledge + tools still needs a
+    decision). Omitted reproduces the prior behavior exactly.
+
     Never raises. See `KnowledgeRouteResult`'s docstring for what each
     `status` means and what `selected_ids` is in each case."""
+    hints = [h for h in (tool_hints or []) if isinstance(h, str) and h.strip()]
+    hint_tool_names = {h.split(":", 1)[0].strip() for h in hints}
     normalized = _normalize_candidates(candidates)
     if not normalized:
         # Nothing valid was ever offered to route over — there is no "all
@@ -220,7 +255,7 @@ async def route_knowledge_candidates(
             selected_ids=[], selected=[], excluded=[], status="skipped", fallback_reason=None
         )
 
-    if len(normalized) <= skip_threshold:
+    if not hints and len(normalized) <= skip_threshold:
         return _search_all(
             normalized,
             "후보 지식 자산 수가 적어 전체를 검색합니다.",
@@ -229,13 +264,19 @@ async def route_knowledge_candidates(
         )
 
     candidate_ids = {c["knowledge_id"] for c in normalized}
+    tool_block = (
+        "\n\nTool:\n" + "\n".join(f"- {' '.join(h.split())[:160]}" for h in hints[:20])
+        if hints
+        else ""
+    )
     messages = [
-        {"role": "system", "content": _ROUTE_SYSTEM_PROMPT},
+        {"role": "system", "content": _system_prompt(hints)},
         {
             "role": "user",
             "content": (
                 f"질문: {question}\n\n"
-                f"후보 지식 자산:\n{_render_candidate_block(normalized)}\n\n"
+                f"후보 지식 자산:\n{_render_candidate_block(normalized)}"
+                f"{tool_block}\n\n"
                 "JSON:"
             ),
         },
@@ -297,6 +338,11 @@ async def route_knowledge_candidates(
         kid = str(entry.get("knowledge_id") or "").strip()
         if not kid:
             continue
+        if kid in hint_tool_names and kid not in candidate_ids:
+            # D-103 실측(gemma4): 모델이 "Tool 로 답하겠다"를 Tool 이름을
+            # selected 에 넣는 식으로 표현했다(지식은 excluded 에 옳게 넣고).
+            # 모르는 id 가 아니라 "지식 대신 Tool" 이라는 뜻이므로 건너뛴다.
+            continue
         if kid not in candidate_ids:
             logger.info("knowledge.route.fallback reason=invalid_ids latency_ms=%d", latency_ms)
             result = _search_all(
@@ -310,6 +356,22 @@ async def route_knowledge_candidates(
             selected_ids.append(kid)
         reason = entry.get("reason")
         selected_reasons[kid] = str(reason) if reason else "관련 있는 지식으로 선택되었습니다."
+
+    if not selected_ids and hints:
+        # D-103 — Tool 이 있는 턴에서 "지식 불필요"는 정당한 답이다. 검색 대상은
+        # 비어 있고, workflow 가 Tool 결과가 없으면 결국 전체를 검색한다.
+        logger.info("knowledge.route.abstained_for_tool latency_ms=%d", latency_ms)
+        return KnowledgeRouteResult(
+            selected_ids=[],
+            selected=[],
+            excluded=[
+                {"knowledge_id": c["knowledge_id"], "reason": "Tool 로 답할 질문이라 지식 검색이 필요 없다고 판단했습니다."}
+                for c in normalized
+            ],
+            status="abstained",
+            fallback_reason=None,
+            latency_ms=latency_ms,
+        )
 
     if not selected_ids:
         # Valid JSON, but the router chose nothing — "abstained". Treated

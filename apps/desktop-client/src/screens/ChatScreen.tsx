@@ -78,6 +78,7 @@ import {
   describeKnowledgeRoute,
   describeToolRouteRejected,
   describeCitationChip,
+  markKnowledgeRouteAbstainReverted,
   citationChipsToShow,
   summarizeCitationSources,
   describeToolRouteSelected,
@@ -1180,6 +1181,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             if (data) {
               next = { ...next, knowledgeRoute: describeKnowledgeRoute(data, next.knowledgeCandidateNameById) };
             }
+            break;
+          }
+          case "knowledge.route.abstain_reverted": {
+            next = { ...next, knowledgeRoute: markKnowledgeRouteAbstainReverted(next.knowledgeRoute) };
             break;
           }
           case "mcp.tool_route.selected": {

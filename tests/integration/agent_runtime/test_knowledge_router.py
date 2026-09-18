@@ -225,3 +225,109 @@ async def test_malformed_candidates_are_dropped_defensively() -> None:
     assert adapter.call_count == 0
     assert result.status == "skipped"
     assert result.selected_ids == []
+
+
+# --- D-103: Tool 이 있는 턴의 "지식 불필요" -------------------------------------
+
+TOOL_HINTS = ["hello.now: 서버 PC 의 현재 시각을 돌려줍니다"]
+
+
+async def test_empty_selection_with_tool_hints_abstains_and_searches_nothing() -> None:
+    adapter = FakeLLMAdapter()
+    adapter.tokens = _valid_json_tokens([], [c["knowledge_id"] for c in CANDIDATES])
+    result = await route_knowledge_candidates(
+        "현재 시간",
+        CANDIDATES,
+        adapter,
+        model_alias="default-chat",
+        timeout_seconds=5,
+        skip_threshold=2,
+        tool_hints=TOOL_HINTS,
+    )
+    assert result.status == "abstained"
+    assert result.selected_ids == []
+    # 미룬 검색이 전체를 다시 찾을 수 있도록 제외 목록에 전부 남는다.
+    assert {c["knowledge_id"] for c in result.excluded} == {c["knowledge_id"] for c in CANDIDATES}
+
+
+async def test_tool_hints_route_even_below_skip_threshold() -> None:
+    """지식 1개 + Tool 이면 "지식이 필요한가"를 판단해야 한다 — 건너뛰면 늘 검색한다."""
+    adapter = FakeLLMAdapter()
+    adapter.tokens = _valid_json_tokens([], [CANDIDATES[0]["knowledge_id"]])
+    result = await route_knowledge_candidates(
+        "현재 시간",
+        CANDIDATES[:1],
+        adapter,
+        model_alias="default-chat",
+        timeout_seconds=5,
+        skip_threshold=2,
+        tool_hints=TOOL_HINTS,
+    )
+    assert adapter.call_count == 1
+    assert result.status == "abstained"
+
+
+async def test_without_tool_hints_prompt_and_empty_selection_are_unchanged() -> None:
+    adapter = FakeLLMAdapter()
+    adapter.tokens = _valid_json_tokens([], [c["knowledge_id"] for c in CANDIDATES])
+    result = await route_knowledge_candidates(
+        "현재 시간",
+        CANDIDATES,
+        adapter,
+        model_alias="default-chat",
+        timeout_seconds=5,
+        skip_threshold=2,
+    )
+    assert result.status == "fallback"
+    assert result.fallback_reason == "abstained"
+    assert len(result.selected_ids) == len(CANDIDATES)
+    system = adapter.calls[0][0]["content"]
+    assert "Tool 로 답할 질문" not in system
+    assert "Tool:" not in adapter.calls[0][1]["content"]
+
+
+async def test_tool_name_in_selected_is_read_as_abstain_not_invalid_id() -> None:
+    """실측(gemma4, 2026-09-18): 모델이 지식은 excluded 에 옳게 넣고 "Tool 로 답하겠다"를
+    Tool 이름을 selected 에 넣어 표현했다. 이것을 '모르는 id → 전체 검색'으로 읽으면
+    abstain 이 한 번도 성립하지 않는다(실측 24회 중 0회였다)."""
+    import json
+
+    adapter = FakeLLMAdapter()
+    adapter.tokens = [
+        json.dumps(
+            {
+                "selected": [{"knowledge_id": "hello.now", "reason": "시각은 Tool 로"}],
+                "excluded": [{"knowledge_id": c["knowledge_id"], "reason": "무관"} for c in CANDIDATES],
+            },
+            ensure_ascii=False,
+        )
+    ]
+    result = await route_knowledge_candidates(
+        "현재 시간",
+        CANDIDATES,
+        adapter,
+        model_alias="default-chat",
+        timeout_seconds=5,
+        skip_threshold=2,
+        tool_hints=TOOL_HINTS,
+    )
+    assert result.status == "abstained"
+    assert result.selected_ids == []
+
+
+async def test_unknown_non_tool_id_still_falls_back_with_tool_hints() -> None:
+    """Tool 이름이 아닌 진짜 모르는 id 는 기존대로 전체 검색으로 되돌린다."""
+    adapter = FakeLLMAdapter()
+    adapter.tokens = _valid_json_tokens(["made-up-knowledge"], [])
+    result = await route_knowledge_candidates(
+        "현재 시간",
+        CANDIDATES,
+        adapter,
+        model_alias="default-chat",
+        timeout_seconds=5,
+        skip_threshold=2,
+        tool_hints=TOOL_HINTS,
+    )
+    assert result.status == "fallback"
+    assert result.fallback_reason == "invalid_ids"
+    assert len(result.selected_ids) == len(CANDIDATES)

@@ -12,6 +12,7 @@ import {
   buildHubQueryPreview,
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
+  markKnowledgeRouteAbstainReverted,
   describeToolRouteMcpToolsHint,
   describeToolRouteRejected,
   describeToolRouteSelected,
@@ -972,5 +973,33 @@ describe("insufficientEvidenceMessage — 검색하지 않은 지식 탓으로 �
     expect(text).not.toContain("등록된 Knowledge에서");
     expect(text).toContain("Tool");
     expect(text).toContain("MCP 도구");
+  });
+});
+
+// D-103 — 지식·Tool 이 둘 다 켜진 턴의 "지식 불필요".
+describe("knowledge route abstain display", () => {
+  const abstained = {
+    status: "abstained" as const,
+    fallback_reason: null,
+    selected: [],
+    excluded: [{ knowledge_id: "nexacro", reason: "Tool 로 답할 질문" }],
+  };
+
+  it("says the search was skipped — never '0개를 선택해 검색'", () => {
+    const display = describeKnowledgeRoute(abstained, { nexacro: "넥사크로 가이드" });
+    expect(display.status).toBe("abstained");
+    expect(display.headline).toContain("건너뛰었습니다");
+    expect(display.headline).not.toContain("0개");
+  });
+
+  it("switches to 'searched after all' when the server reverts the abstain", () => {
+    const display = describeKnowledgeRoute(abstained, { nexacro: "넥사크로 가이드" });
+    const reverted = markKnowledgeRouteAbstainReverted(display);
+    expect(reverted?.status).toBe("abstain_reverted");
+    expect(reverted?.headline).toContain("결국 지식 자산 1개를 검색");
+  });
+
+  it("does not invent a panel when there was none", () => {
+    expect(markKnowledgeRouteAbstainReverted(null)).toBeNull();
   });
 });
