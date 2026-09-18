@@ -1744,14 +1744,28 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         const controller = new AbortController();
         ollamaAbortRef.current = controller;
         const previewSettings = !bridge && browserSettingsBridge ? await browserSettingsBridge.getDesktopSettings() : null;
-        const result = bridge
-          ? await bridge.chatWithOllama(input)
-          : await chatWithOllama(
-              previewSettings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
-              previewSettings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
-              input,
-              controller.signal,
-            );
+        // 토큰이 오는 대로 화면에 붙인다(2026-09-18 실사용: "채팅 반응이 너무
+        // 느리다"). 이 경로는 agent-runtime 을 거치지 않아 SSE `answer.delta`
+        // 가 없고, 예전에는 답이 **다 만들어진 뒤에야** 한 번에 나타났다 —
+        // 로컬 모델에서는 그 시간이 통째로 빈 화면이다. 지식 검색을 켠 경로가
+        // 더 빨라 보이던 것도 이 때문이다.
+        const appendDelta = (delta: string) =>
+          patchMessage(id, (prev) => ({ answer: prev.answer + delta, status: "running" }));
+        const unsubscribe = bridge ? bridge.onOllamaChatDelta((event) => appendDelta(event.delta)) : null;
+        let result;
+        try {
+          result = bridge
+            ? await bridge.chatWithOllama(input)
+            : await chatWithOllama(
+                previewSettings?.ollamaBaseUrl ?? DEFAULT_OLLAMA_BASE_URL,
+                previewSettings?.chatModelAlias ?? DEFAULT_CHAT_MODEL_ALIAS,
+                input,
+                controller.signal,
+                appendDelta,
+              );
+        } finally {
+          unsubscribe?.();
+        }
         if (cancelledOllamaMessageIdsRef.current.has(id)) {
           cancelledOllamaMessageIdsRef.current.delete(id);
           ollamaAbortRef.current = null;

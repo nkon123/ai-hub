@@ -1066,12 +1066,40 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle("chat:ollama", async (_event, input: OllamaChatInput): Promise<OllamaChatResult> => {
+  ipcMain.handle("chat:ollama", async (event, input: OllamaChatInput): Promise<OllamaChatResult> => {
     const settings = getDesktopSettingsStore().getPublic();
     const controller = new AbortController();
     ollamaChatAbortController = controller;
+    // 이 경로는 agent-runtime 을 전혀 거치지 않는다(지식/도구를 아무것도 켜지
+    // 않은 기본 대화). 그래서 서버 쪽 `stage.timing` 로그에도 아무것도 남지
+    // 않아, "느리다"는 제보가 와도 근거가 없었다(2026-09-18 실사용: "hi 만
+    // 보냈는데 로그가 안 올라온다"). 질문·답변 원문은 남기지 않고 시간과
+    // 길이만 남긴다(로그 규칙).
+    const started = Date.now();
+    let firstDeltaAt: number | null = null;
     try {
-      return await chatWithOllama(settings.ollamaBaseUrl, settings.chatModelAlias, input, controller.signal);
+      const result = await chatWithOllama(
+        settings.ollamaBaseUrl,
+        settings.chatModelAlias,
+        input,
+        controller.signal,
+        (delta) => {
+          if (firstDeltaAt === null) firstDeltaAt = Date.now();
+          event.sender.send("chat:ollamaDelta", { delta });
+        },
+      );
+      getLogger().info(
+        "chat",
+        `Ollama 직접 대화 완료: 첫 글자 ${firstDeltaAt === null ? "-" : firstDeltaAt - started}ms, ` +
+          `전체 ${Date.now() - started}ms, 모델 ${result.model}, 답변 ${result.answer.length}자`,
+      );
+      return result;
+    } catch (err) {
+      getLogger().error(
+        "chat",
+        `Ollama 직접 대화 실패: ${Date.now() - started}ms 후 ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw err;
     } finally {
       if (ollamaChatAbortController === controller) ollamaChatAbortController = null;
     }

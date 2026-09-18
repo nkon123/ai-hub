@@ -69,6 +69,12 @@ const bridge: DesktopBridge = {
 
   importBundle: (filePath: string): Promise<ImportResult> => ipcRenderer.invoke("bundle:import", filePath),
 
+  onOllamaChatDelta: (cb: (event: { delta: string }) => void) => {
+    const listener = (_event: unknown, payload: { delta: string }) => cb(payload);
+    ipcRenderer.on("chat:ollamaDelta", listener);
+    return () => ipcRenderer.removeListener("chat:ollamaDelta", listener);
+  },
+
   onImportProgress: (cb: (event: ImportProgressEvent) => void) => {
     const listener = (_event: unknown, progress: ImportProgressEvent) => cb(progress);
     ipcRenderer.on("bundle:import-progress", listener);

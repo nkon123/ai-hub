@@ -1727,6 +1727,13 @@ export interface DesktopBridge {
   listOllamaModels(ollamaBaseUrl: string): Promise<OllamaModelsResult>;
   /** Knowledge 자산이 없을 때 설정된 Ollama 채팅 모델로 일반 대화한다. */
   chatWithOllama(input: OllamaChatInput): Promise<OllamaChatResult>;
+  /** D06 기본 대화(지식/도구를 켜지 않은 턴)의 **스트리밍** 토큰.
+   *
+   * 이 경로는 agent-runtime 을 거치지 않으므로 SSE(`answer.delta`)가 없다.
+   * 예전에는 `chatWithOllama` 가 완성된 답 하나를 돌려줄 때까지 화면에
+   * 아무것도 나오지 않았다 — 로컬 모델에서는 그 시간이 전부 빈 화면이다.
+   * 구독을 해제하는 함수를 돌려준다. */
+  onOllamaChatDelta(cb: (event: { delta: string }) => void): () => void;
   /** 진행 중인 Ollama 일반 대화를 취소한다. */
   cancelOllamaChat(): Promise<void>;
 

@@ -42,6 +42,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   checkAssetRemoval: true,
   getAssetManifest: true,
   getPromptTemplate: true,
+  onOllamaChatDelta: true,
   reverifyAssetChecksum: true,
   getAssetDependencies: true,
   getKnowledgeCandidates: true,
