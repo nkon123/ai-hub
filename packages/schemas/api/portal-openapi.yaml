@@ -296,6 +296,98 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorEnvelope"
 
+  /api/v1/assets/{asset_id}/mcp-server-versions:
+    post:
+      tags: [assets]
+      summary: MCP 서버 자산의 새 버전 만들기 — 코드·매니페스트 교체 (P06, D-101)
+      description: |
+        MCP 서버 자산 전용. 직전 버전을 소스로 새 DRAFT 버전을 만든다.
+        `POST /api/v1/assets/{asset_id}/versions`(범용)는 Manifest·파일을 복사하고
+        `version`/`changelog`만 바꾸므로, 서버 코드(`server.py` 등)나 Tool 선언·
+        권한(`declared_tools[].permissions`)을 바꾼 새 버전을 만들 수 없다.
+
+        `files_source`가 두 경우를 **명시적으로** 가른다:
+        - `UPLOAD` — 새 파일을 올린다(`files` 최소 1개 필수).
+        - `REUSE_PREVIOUS` — 직전 버전의 저장소 디렉터리를 복사한다(`files`를
+          함께 보내면 VALIDATION_ERROR). 직전 버전에 파일이 없으면(주소로 연결하는
+          HTTP 서버) 파일 없는 버전이 된다.
+
+        빈 `files`를 "복사 요청"으로 해석하지 않는다 — 업로드가 빠진 요청이 조용히
+        이전 코드 복사로 둔갑하면 등록자는 새 코드가 올라간 줄 안다.
+
+        `manifest`(선택)는 **새 버전의 전체 Manifest**(JSON 문자열)다. 생략하면
+        직전 버전 Manifest를 복사한다. `id`·`type`·`server_alias`는 바꿀 수 없다
+        (다르면 VALIDATION_ERROR — alias 가 바뀌면 다른 서버다). `version`은 폼의
+        `version`으로, `changelog`는 폼 값이 있으면 그것으로 덮어쓴 뒤 MCP Server
+        Schema로 검증한다.
+
+        코드 검사는 `POST /api/v1/assets`(D-096)와 **같은 규칙**을 새 버전의 최종
+        파일 목록에 적용한다: 코드 파일은 `transport.kind=STDIO`일 때만
+        (`ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT`), 선언한
+        `transport.entrypoint`가 파일 목록에 있어야 한다
+        (`ASSET_SOURCE_ENTRYPOINT_MISSING`) — `REUSE_PREVIOUS`에서 시작 파일만
+        바꾼 경우도 여기서 걸린다.
+
+        `version`은 기존 **모든** 버전보다 SemVer상 커야 한다. 호출자는 자산
+        소유자 본인 또는 ADMIN만 가능하다. 승인된 버전은 제자리 수정하지 않는다.
+      operationId: create_mcp_server_version
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [version, files_source]
+              properties:
+                version:
+                  type: string
+                  description: 새 SemVer 버전(major.minor.patch). 기존 모든 버전보다 커야 한다.
+                  example: "1.0.1"
+                files_source:
+                  type: string
+                  enum: [UPLOAD, REUSE_PREVIOUS]
+                manifest:
+                  type: string
+                  description: 새 버전의 전체 MCP Server Manifest(JSON 문자열). 생략하면 직전 버전 값.
+                changelog:
+                  type: string
+                files:
+                  type: array
+                  items:
+                    type: string
+                    format: binary
+      responses:
+        "201":
+          description: Created (DRAFT).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AssetVersion"
+        "400":
+          description: >
+            VALIDATION_ERROR(버전 형식/순서, `files_source`와 `files` 조합,
+            Manifest JSON 파싱 실패, `id`/`type`/`server_alias` 변경, 스키마 위반),
+            ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT, ASSET_SOURCE_ENTRYPOINT_MISSING,
+            또는 ASSET_UPLOAD_* (`POST /api/v1/assets`와 동일한 업로드 정책과 오류코드).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: >
+            ASSET_STATE_TRANSITION_INVALID — MCP 서버 자산이 아니거나 소스로 삼을
+            버전이 없다.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+
   /api/v1/assets/{asset_id}/versions/{version_id}:
     patch:
       tags: [assets]

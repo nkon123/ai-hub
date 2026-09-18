@@ -896,6 +896,63 @@ async def _save_uploads(
     return _SavedUploads(saved_files, checksums_by_relpath, written_paths), None
 
 
+def _mcp_source_violation(
+    manifest: dict,
+    file_names: list[str],
+    upload_policy: _AssetUploadPolicy,
+    asset_type: str,
+    trace_id: str,
+) -> JSONResponse | None:
+    """D-096: 코드 파일이 있다면 그것이 정말 이 서버가 실행할 코드인가.
+
+    확장자 예외만으로는 "이 자산 종류는 코드를 가질 수 있다"까지만 말한다.
+    두 가지를 더 본다: (1) 그 코드를 실제로 실행할 서버인가(HTTP 서버는 남의
+    PC 에서 이미 돌고 있으므로 코드를 나를 이유가 없다 — 실행하지 않을 코드를
+    받으면 검토는 늘고 얻는 것은 없다), (2) 매니페스트가 실행하겠다고 선언한
+    파일이 실제로 있는가. (2)가 없으면 진입점이 어디서 오는지 아무도 모르는
+    채로 "코드가 든 자산"이 만들어진다.
+
+    신규 등록(`create_asset`)과 새 버전(`create_mcp_server_version`)이 **같은
+    함수**를 쓴다 — 두 곳에 두면 한쪽만 고쳐져 "새 버전으로는 통과하는 코드"가
+    생긴다. 새 버전에서는 `file_names` 가 업로드한 것이 아니라 **새 버전의 최종
+    파일 목록**이다(재사용이면 직전 버전 파일).
+    """
+    source_exts = upload_policy.source_code_exception.get(asset_type, frozenset())
+    code_files = sorted(f for f in file_names if Path(f).suffix.lower() in source_exts)
+    if not code_files:
+        return None
+    transport = manifest.get("transport")
+    transport = transport if isinstance(transport, dict) else {}
+    if transport.get("kind") != "STDIO":
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT",
+            "이 서버는 주소로 연결하는 방식이라 코드를 함께 등록할 수 없습니다. "
+            "코드를 등록하려면 연결 방식이 '내 PC에서 직접 실행'이어야 합니다.",
+            trace_id,
+            details={"files": code_files},
+        )
+    entrypoint = transport.get("entrypoint")
+    entrypoint = Path(entrypoint).name if isinstance(entrypoint, str) else ""
+    if entrypoint not in file_names:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "ASSET_SOURCE_ENTRYPOINT_MISSING",
+            f"시작 파일로 선언한 '{entrypoint or '(없음)'}'이(가) 업로드한 파일에 없습니다. "
+            "실행할 파일은 반드시 함께 등록되어야 합니다.",
+            trace_id,
+            details={"declared_entrypoint": entrypoint, "uploaded": sorted(file_names)},
+        )
+    logger.info(
+        "asset.source_code_accepted trace_id=%s type=%s files=%d entrypoint=%s",
+        trace_id,
+        asset_type,
+        len(code_files),
+        entrypoint,
+    )
+    return None
+
+
 @router.post("/assets", response_model=AssetVersionOut, status_code=status.HTTP_201_CREATED)
 async def create_asset(
     manifest: str = Form(..., description="Asset manifest JSON string"),
@@ -998,40 +1055,12 @@ async def create_asset(
     # 실행하지 않을 코드를 받으면 검토는 늘고 얻는 것은 없다), (2) 매니페스트가
     # 실행하겠다고 선언한 파일이 실제로 올라왔는가. (2)가 없으면 진입점이
     # 어디서 오는지 아무도 모르는 채로 "코드가 든 자산"이 만들어진다.
-    source_exts = upload_policy.source_code_exception.get(asset_type, frozenset())
-    uploaded_source = sorted(f for f in saved_files if Path(f).suffix.lower() in source_exts)
-    if uploaded_source:
-        transport = manifest_dict.get("transport")
-        transport = transport if isinstance(transport, dict) else {}
-        if transport.get("kind") != "STDIO":
-            _cleanup_partial_upload()
-            return error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "ASSET_SOURCE_NOT_EXECUTED_BY_THIS_TRANSPORT",
-                "이 서버는 주소로 연결하는 방식이라 코드를 함께 등록할 수 없습니다. "
-                "코드를 등록하려면 연결 방식이 '내 PC에서 직접 실행'이어야 합니다.",
-                trace_id,
-                details={"files": uploaded_source},
-            )
-        entrypoint = transport.get("entrypoint")
-        entrypoint = Path(entrypoint).name if isinstance(entrypoint, str) else ""
-        if entrypoint not in saved_files:
-            _cleanup_partial_upload()
-            return error_response(
-                status.HTTP_400_BAD_REQUEST,
-                "ASSET_SOURCE_ENTRYPOINT_MISSING",
-                f"시작 파일로 선언한 '{entrypoint or '(없음)'}'이(가) 업로드한 파일에 없습니다. "
-                "실행할 파일은 반드시 함께 등록되어야 합니다.",
-                trace_id,
-                details={"declared_entrypoint": entrypoint, "uploaded": sorted(saved_files)},
-            )
-        logger.info(
-            "asset.source_code_accepted trace_id=%s type=%s files=%d entrypoint=%s",
-            trace_id,
-            asset_type,
-            len(uploaded_source),
-            entrypoint,
-        )
+    source_violation = _mcp_source_violation(
+        manifest_dict, saved_files, upload_policy, asset_type, trace_id
+    )
+    if source_violation is not None:
+        _cleanup_partial_upload()
+        return source_violation
 
     # sha256 per saved file, computed from the same streamed chunks
     # used to write the file (no re-read). Same on-disk line format as the
@@ -1636,6 +1665,285 @@ async def create_knowledge_version(
         new_manifest.get("indexing_profile"),
     )
 
+    return AssetVersionOut.model_validate(new_version)
+
+
+#: 새 버전에서 바꿀 수 없는 Manifest 필드. `server_alias` 는 agent-runtime 레지스트리의
+#: 키이고 Desktop 이 설치 기록과 서버 등록을 잇는 이름이다 — 바뀌면 "같은 자산의 새
+#: 버전"이 아니라 다른 서버다(새 자산으로 등록해야 한다).
+_MCP_SERVER_IMMUTABLE_FIELDS = ("id", "type", "server_alias")
+
+
+@router.post(
+    "/assets/{asset_id}/mcp-server-versions",
+    response_model=AssetVersionOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_mcp_server_version(
+    asset_id: str,
+    version: str = Form(...),
+    files_source: str = Form(...),
+    manifest: str | None = Form(default=None),
+    changelog: str | None = Form(default=None),
+    files: list[UploadFile] = File(default=[]),
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> AssetVersionOut | JSONResponse:
+    """P06 / D-101: MCP 서버 자산의 새 버전 — 코드와 매니페스트를 바꿀 수 있다.
+
+    `create_asset_version`(범용)은 파일과 Manifest를 복사하고 `version`/
+    `changelog`만 바꾼다. MCP 서버는 새 버전을 만드는 이유가 대개 **코드**
+    (`server.py`)나 **Tool 선언·권한**이 바뀌어서인데(2026-09-18 실사용:
+    hello-mcp 의 `allowed_roles` 에 USER 를 더해야 했다), 그 경로로는 둘 다
+    바꿀 수 없었다.
+
+    `create_knowledge_version`(D-097)과 같은 원칙: `files_source` 가 새 업로드와
+    재사용을 **명시적으로** 가르고, 빈 `files` 를 재사용으로 해석하지 않는다.
+    코드 검사는 신규 등록과 **같은 함수**(`_mcp_source_violation`)를 새 버전의
+    최종 파일 목록에 적용한다. 승인된 버전은 읽기만 하고 새 파일은 새
+    디렉터리(자산 유형/자산 id/새 버전 id)에 쓴다.
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db,
+        user,
+        Permission.ASSET_CREATE,
+        trace_id=trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
+    )
+    if denial:
+        return denial
+
+    asset, denial = await _require_asset_owner(
+        db,
+        user,
+        asset_id,
+        trace_id,
+        resource_type="ASSET",
+        resource_id=asset_id,
+        denied_event="ASSET_VERSION_CREATE_DENIED",
+        denied_message="본인이 소유한 자산만 새 버전을 만들 수 있습니다.",
+    )
+    if denial:
+        return denial
+    assert asset is not None
+
+    if asset.type != "mcp_server":
+        return error_response(
+            status.HTTP_409_CONFLICT,
+            "ASSET_STATE_TRANSITION_INVALID",
+            "이 기능은 MCP 서버 자산에서만 사용할 수 있습니다.",
+            trace_id,
+        )
+
+    mode = (files_source or "").strip().upper()
+    if mode not in {"UPLOAD", "REUSE_PREVIOUS"}:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "files_source는 UPLOAD 또는 REUSE_PREVIOUS여야 합니다.",
+            trace_id,
+        )
+    real_files = [f for f in files if f.filename]
+    if mode == "UPLOAD" and not real_files:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "새 파일을 올리는 방식에서는 파일이 최소 1개 필요합니다. "
+            "코드를 그대로 두고 매니페스트만 바꾸려면 files_source를 REUSE_PREVIOUS로 보내세요.",
+            trace_id,
+        )
+    if mode == "REUSE_PREVIOUS" and real_files:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "이전 파일을 재사용하는 방식에서는 파일을 함께 보낼 수 없습니다.",
+            trace_id,
+        )
+
+    existing = (
+        (
+            await db.execute(
+                select(AssetVersion)
+                .where(AssetVersion.asset_id == asset_id)
+                .order_by(AssetVersion.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not existing:
+        return error_response(
+            status.HTTP_409_CONFLICT,
+            "ASSET_STATE_TRANSITION_INVALID",
+            "소스로 삼을 버전이 없습니다.",
+            trace_id,
+        )
+    source = existing[0]
+
+    new_version_str = (version or "").strip()
+    for candidate in existing:
+        comparison = is_strictly_greater(new_version_str, candidate.version)
+        if comparison is None:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "버전 형식이 올바르지 않습니다. major.minor.patch 형식(예: 1.2.3)을 사용하세요.",
+                trace_id,
+            )
+        if not comparison:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                f"새 버전({new_version_str})은 기존 버전({candidate.version})보다 커야 합니다.",
+                trace_id,
+            )
+
+    # --- 새 Manifest: 보냈으면 그것, 아니면 직전 버전 복사 ----------------------
+    source_manifest = dict(source.manifest or {})
+    manifest_replaced = manifest is not None and bool(manifest.strip())
+    if manifest_replaced:
+        try:
+            new_manifest = json.loads(manifest)
+        except json.JSONDecodeError as e:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                f"Manifest가 올바른 JSON이 아닙니다: {e.msg}",
+                trace_id,
+            )
+        if not isinstance(new_manifest, dict):
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "Manifest는 JSON 객체여야 합니다.",
+                trace_id,
+            )
+        # 조용히 덮어쓰지 않는다 — 다른 값을 보냈다면 사용자는 그것이 반영될
+        # 줄 안다. 빠진 값만 직전 버전에서 채운다.
+        changed = [
+            field
+            for field in _MCP_SERVER_IMMUTABLE_FIELDS
+            if field in new_manifest and new_manifest[field] != source_manifest.get(field)
+        ]
+        if changed:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "VALIDATION_ERROR",
+                "새 버전에서는 id·type·server_alias를 바꿀 수 없습니다 "
+                f"(바뀐 항목: {', '.join(changed)}). 다른 서버라면 새 자산으로 등록하세요.",
+                trace_id,
+                details={"immutable_fields_changed": changed},
+            )
+        for field in _MCP_SERVER_IMMUTABLE_FIELDS:
+            if field in source_manifest:
+                new_manifest.setdefault(field, source_manifest[field])
+    else:
+        new_manifest = source_manifest
+    new_manifest["version"] = new_version_str
+    if changelog is not None:
+        new_manifest["changelog"] = changelog
+
+    try:
+        validate_manifest(new_manifest, SchemaType.MCP_SERVER)
+    except SchemaValidationError as e:
+        return error_response(
+            status.HTTP_400_BAD_REQUEST,
+            "VALIDATION_ERROR",
+            "Manifest가 스키마를 충족하지 않습니다.",
+            trace_id,
+            details={"errors": list(e.errors) if e.errors else [str(e)]},
+        )
+
+    # --- 파일 --------------------------------------------------------------------
+    new_version_id = str(uuid.uuid4())
+    # 경로는 id 로만 만든다 — 사용자가 준 버전 문자열·파일명으로 만들지 않는다.
+    storage_path = (settings.storage_root / asset.type / asset_id / new_version_id).resolve()
+    upload_policy = _read_asset_upload_policy()
+    stored_path: str | None = str(storage_path)
+
+    if mode == "UPLOAD":
+        if len(real_files) > upload_policy.max_file_count:
+            return error_response(
+                status.HTTP_400_BAD_REQUEST,
+                "ASSET_UPLOAD_TOO_MANY_FILES",
+                f"업로드 파일 개수({len(real_files)}개)가 허용된 최대치"
+                f"({upload_policy.max_file_count}개)를 초과했습니다.",
+                trace_id,
+            )
+        storage_path.mkdir(parents=True, exist_ok=True)
+        saved, upload_violation = await _save_uploads(
+            real_files, storage_path, upload_policy, asset.type, trace_id
+        )
+        if upload_violation is not None:
+            shutil.rmtree(storage_path, ignore_errors=True)
+            return upload_violation
+        assert saved is not None
+        file_names = list(saved.saved_files)
+        if saved.checksums_by_relpath:
+            (storage_path / "checksums.sha256").write_text(
+                _render_asset_checksums_file(saved.checksums_by_relpath), encoding="utf-8"
+            )
+    else:
+        source_dir = Path(source.storage_path) if source.storage_path else None
+        if source_dir is not None and source_dir.exists():
+            shutil.copytree(source_dir, storage_path)
+            file_names = sorted(
+                entry.name
+                for entry in storage_path.iterdir()
+                if entry.is_file() and entry.name != "checksums.sha256"
+            )
+        else:
+            # 주소로 연결하는(HTTP) 서버는 파일이 없을 수 있다 — 없는 것을 복사할
+            # 수는 없으니 파일 없는 버전이 된다(신규 등록도 파일 없는 등록을 받는다).
+            file_names = []
+            stored_path = None
+
+    source_violation = _mcp_source_violation(
+        new_manifest, file_names, upload_policy, asset.type, trace_id
+    )
+    if source_violation is not None:
+        if stored_path is not None:
+            shutil.rmtree(storage_path, ignore_errors=True)
+        return source_violation
+
+    canonical = json.dumps(new_manifest, sort_keys=True, ensure_ascii=False)
+    manifest_hash = hashlib.sha256(canonical.encode()).hexdigest()
+
+    new_version = AssetVersion(
+        id=new_version_id,
+        asset_id=asset_id,
+        version=new_version_str,
+        status=VersionStatus.DRAFT.value,
+        manifest=new_manifest,
+        manifest_hash=manifest_hash,
+        changelog=changelog if changelog is not None else source.changelog,
+        storage_path=stored_path,
+    )
+    db.add(new_version)
+    await db.commit()
+    await db.refresh(new_version)
+
+    await record_audit(
+        db,
+        event_type="ASSET_VERSION_CREATED",
+        actor=user,
+        resource_type="ASSET_VERSION",
+        resource_id=new_version.id,
+        result="SUCCESS",
+        trace_id=trace_id,
+        resource_version=new_version.version,
+        metadata={
+            "asset_id": asset_id,
+            "asset_type": asset.type,
+            "files_source": mode,
+            "file_count": len(file_names),
+            "manifest_replaced": manifest_replaced,
+            "source_version_id": source.id,
+            "source_version": source.version,
+        },
+    )
     return AssetVersionOut.model_validate(new_version)
 
 

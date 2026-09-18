@@ -45,6 +45,7 @@ import {
 import { formatDateTime } from "../../../_components/review-meta";
 import { canCreateDistribution, useRole } from "../../../_components/role-context";
 
+import { NewMcpServerVersionForm } from "../_components/new-mcp-server-version-form";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 interface VersionOut {
@@ -953,9 +954,17 @@ export default function AssetVersionsPage() {
     ? "취소할 대기 중인 검토 요청이 없습니다."
     : null;
 
-  const canCreateNewVersion = isOwnerOrAdmin && !!latestApproved;
+  // D-101: MCP 서버는 코드·매니페스트를 바꿀 수 있는 전용 경로를 쓴다. 그 경로는
+  // 지식 자산과 같이 "가장 최근 버전"을 소스로 삼으므로 승인 버전을 요구하지 않는다.
+  const isMcpServer = info?.type === "mcp_server";
+  const canCreateNewVersion =
+    isOwnerOrAdmin && (isMcpServer ? (info?.versions.length ?? 0) > 0 : !!latestApproved);
   const newVersionDisabledReason = !isOwnerOrAdmin
     ? "본인이 소유한 자산만 새 버전을 만들 수 있습니다."
+    : isMcpServer
+    ? (info?.versions.length ?? 0) > 0
+      ? null
+      : "소스로 삼을 버전이 없어 새 버전을 만들 수 없습니다."
     : !latestApproved
     ? "승인된 버전이 없어 새 버전을 만들 수 없습니다."
     : null;
@@ -988,7 +997,20 @@ export default function AssetVersionsPage() {
         />
       </div>
 
-      {showNewVersionForm && (
+      {showNewVersionForm && isMcpServer && (
+        <NewMcpServerVersionForm
+          assetId={assetId}
+          versions={info.versions}
+          onCancel={() => setShowNewVersionForm(false)}
+          onCreated={async (newVersionId) => {
+            setShowNewVersionForm(false);
+            setSelectedId(newVersionId);
+            await fetchInfo();
+          }}
+        />
+      )}
+
+      {showNewVersionForm && !isMcpServer && (
         <Section title="새 버전 만들기">
           <div className="space-y-3">
             <p className="text-caption text-text-secondary">

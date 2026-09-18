@@ -1,5 +1,14 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M01/M02 MCP 서버 새 버전에서 코드·매니페스트 교체 (D-101)
+
+- **요청**: "MCP 도 새로 버전 생성할 때 파일을 다시 올리는 게 필요하다."
+- **원인**: 범용 새 버전(`POST /assets/{id}/versions`)은 직전 버전의 Manifest·파일을 복사하고 `version`/`changelog`만 바꾼다. 그래서 hello-mcp 에 USER 역할을 더하는 것(D-100) 같은 변경을 새 버전으로 만들 방법이 없었다.
+- **M02 신규 엔드포인트** `POST /api/v1/assets/{asset_id}/mcp-server-versions`(OpenAPI 먼저 작성). `files_source=UPLOAD`(파일 1개 이상 필수)/`REUSE_PREVIOUS`(직전 저장소 복사, 파일 동봉 시 거부). `manifest`(선택, 전체 Manifest) — `id`/`type`/`server_alias` 변경은 `VALIDATION_ERROR` + `details.immutable_fields_changed`. MCP Server Schema 검증. D-096 코드 검사를 `_mcp_source_violation` 으로 뽑아 `create_asset` 과 공유하고 새 버전의 **최종 파일 목록**에 적용한다. 새 파일은 id 로만 만든 새 디렉터리에 쓰고 직전 버전은 읽기만 한다.
+- **M01 화면**: 버전 관리(`/assets/[id]/versions`)의 "새 버전 만들기"가 MCP 서버 자산이면 전용 폼(`new-mcp-server-version-form.tsx`)을 띄운다 — 새 버전, 코드 파일(새로 올림/그대로), 직전 버전으로 채운 Manifest JSON, Changelog. 바꿀 수 없는 필드와 시작 파일 누락은 화면에서도 미리 막고, 제출 전에 무엇을 하는지 문장으로 보여 준다. MCP 서버는 승인 버전이 없어도(가장 최근 버전을 소스로) 만들 수 있다.
+- **검증**: 신규 통합 테스트 12개(권한만 바꾼 재사용 버전 + 직전 버전 불변, 코드 교체 업로드, 빈 업로드 거부, 재사용+파일 거부, id/type·alias 변경 거부, 바뀐 시작 파일 누락, HTTP 서버에 코드, 스키마 위반, 버전 순서, 비소유자 403, 다른 자산 유형 409). portal-api integration+contract **573 → 585 passed, 실패 31건은 변경 전후 동일 집합**. `create_asset` 리팩터 후 기존 등록 테스트 40개 통과. **변이 검증 3건**: 새 버전 코드 검사 제거 / 불변 필드 검사 제거 / 빈 업로드를 재사용으로 둔갑 — 각각 테스트가 깨진다. portal-web `tsc --noEmit` 통과.
+- **확인하지 못한 것**: portal-web 에는 렌더링 테스트가 없고 이 세션에서 브라우저로 폼을 열어 보지 않았다 — 표시·입력 흐름은 육안 확인이 남아 있다. `ruff` 가 이 환경에 없어 lint 는 돌리지 못했다.
+
 ## 2026-09-18 M05/M04 hello-mcp `hello.now` 가 MCP_PERMISSION_DENIED — 로컬 사용자 역할 (D-100)
 
 - **제보**: "hello-mcp 를 골라 '지금 시간은?'을 물었더니 hello.now 가 제안됐는데 호출 권한이 없다(MCP_PERMISSION_DENIED)고 한다. MCP 전체로 두면 'Tool 호출이 필요하지 않다'고 판단하고 '등록된 Knowledge에서 근거를 찾지 못했다'가 뜬다."
