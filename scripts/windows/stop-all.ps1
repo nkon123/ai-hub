@@ -14,25 +14,27 @@
     죽이면 포트를 계속 잡은 고아가 남고, 다음 기동이 "포트 사용 중"으로
     실패한다.
 
-    Desktop Client(Electron)는 기본 대상이 아니다 — 사용자가 직접 띄운 앱
-    창일 수 있어서다. `-WithDesktop` 으로 포함한다.
+    Desktop Client(Electron)도 기본 대상이다 — `start-all-background.ps1` 이
+    기본으로 띄우기 때문이다. 다만 **이 스크립트가 기록한 PID 만** 종료한다
+    (포트가 없어 포트 탐색 경로가 없다) — 사용자가 따로 띄운 Electron 창은
+    건드리지 않는다.
 
-.PARAMETER WithDesktop
-    Desktop Client 프로세스도 함께 종료한다(기록된 PID 기준).
+.PARAMETER NoDesktop
+    Desktop Client 는 그대로 둔다.
 
 .PARAMETER Only
     일부만 종료한다(예: `-Only portal-web`).
 #>
 
 param(
-    [switch]$WithDesktop,
+    [switch]$NoDesktop,
     [string[]]$Only
 )
 
 . "$PSScriptRoot\_services.ps1"
 
 $PidFile = Get-HubPidFile
-$targets = Get-HubServices | Where-Object { $_.Kind -eq "service" -or $WithDesktop }
+$targets = Get-HubServices | Where-Object { $_.Kind -eq "service" -or (-not $NoDesktop) }
 if ($Only) {
     $targets = $targets | Where-Object { $Only -contains $_.Name }
 }

@@ -15,8 +15,9 @@
 .PARAMETER Background
     한 창 + 백그라운드 + 파일 로그로 기동한다.
 
-.PARAMETER WithDesktop
-    Desktop Client(Electron)도 함께 멈추고 다시 띄운다.
+.PARAMETER NoDesktop
+    Desktop Client(Electron)는 멈추지도, 다시 띄우지도 않는다. 기본은 함께
+    다룬다(`start-all.ps1`/`start-all-background.ps1` 과 같은 규칙).
 
 .PARAMETER Only
     일부 서비스만 재시작한다(예: `-Only agent-runtime`).
@@ -29,7 +30,7 @@
 
 param(
     [switch]$Background,
-    [switch]$WithDesktop,
+    [switch]$NoDesktop,
     [string[]]$Only,
     [int]$TimeoutSeconds = 20
 )
@@ -38,7 +39,7 @@ param(
 
 Write-Host "1/3 종료 중..." -ForegroundColor Cyan
 $stopArgs = @{}
-if ($WithDesktop) { $stopArgs["WithDesktop"] = $true }
+if ($NoDesktop) { $stopArgs["NoDesktop"] = $true }
 if ($Only) { $stopArgs["Only"] = $Only }
 & (Join-Path $PSScriptRoot "stop-all.ps1") @stopArgs
 
@@ -76,7 +77,7 @@ Write-Host "3/3 기동 중..." -ForegroundColor Cyan
 
 $startArgs = @{}
 if ($Background) {
-    if ($WithDesktop) { $startArgs["WithDesktop"] = $true }
+    if ($NoDesktop) { $startArgs["NoDesktop"] = $true }
     if ($Only) { $startArgs["Only"] = $Only }
     & (Join-Path $PSScriptRoot "start-all-background.ps1") @startArgs
 } else {
@@ -90,6 +91,6 @@ if ($Background) {
         }
         exit 1
     }
-    if (-not $WithDesktop) { $startArgs["NoDesktop"] = $true }
+    if ($NoDesktop) { $startArgs["NoDesktop"] = $true }
     & (Join-Path $PSScriptRoot "start-all.ps1") @startArgs
 }

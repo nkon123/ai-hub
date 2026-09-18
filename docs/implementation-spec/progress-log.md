@@ -12,7 +12,7 @@
 
 - **제보**: "모듈별로 PowerShell 창이 여러 개 뜬다. 하나로 올리고 백그라운드로 띄운 뒤 로그는 파일로 보면 되겠다. restart 도 필요하다."
 - 신규 4종(+ 공유 목록 `_services.ps1`):
-  - `start-all-background.ps1` — 같은 기동 스크립트들을 숨긴 프로세스로 띄우고 출력을 `logs\<서비스>.log` 로 보낸다. 창은 실행한 것 하나. `-Only` 로 일부만, `-WithDesktop` 으로 Desktop Client까지.
+  - `start-all-background.ps1` — 같은 기동 스크립트들을 숨긴 프로세스로 띄우고 출력을 `logs\<서비스>.log` 로 보낸다. 창은 실행한 것 하나. **Desktop Client 도 기본 포함**(맨 뒤, 서비스가 포트를 잡도록 5초 뒤 — 먼저 뜨면 기동 점검에서 "연결 끊김" 경고를 본다). `-NoDesktop` 으로 빼고, `-Only` 로 일부만.
   - `stop-all.ps1` — 기록된 PID + **포트를 실제로 듣고 있는 프로세스** 두 경로로 찾아 `taskkill /T`(트리)로 멈춘다. 이름으로 `python`/`node` 를 싹 죽이지 않는다(이 PC의 다른 작업까지 죽는다). 부모만 죽이면 `uvicorn --reload`/`pnpm` 의 자식이 포트를 잡은 채 남아 다음 기동이 실패한다.
   - `restart-all.ps1` — 멈춘 뒤 **포트가 실제로 풀릴 때까지 기다렸다가**(기본 20초) 띄운다. 재시작이 가장 흔하게 실패하는 지점이라 기다림을 넣었고, 시간 안에 안 풀리면 누가 잡고 있는지(PID) 알려주고 **기동을 시도하지 않는다**.
   - `logs.ps1` — 목록/마지막 N줄/`-Follow` 실시간/`-Errors`(.err.log)/`-Previous`(직전 기동)/`-Grep`(전체 검색).

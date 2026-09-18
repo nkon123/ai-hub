@@ -352,10 +352,12 @@ ollama serve
 창이 8개까지 뜨는 것이 불편하면 이쪽을 쓴다. 같은 기동 스크립트들을 숨긴 프로세스로 띄우고 출력을 `logs\<서비스>.log` 로 보낸다 — 창은 실행한 것 하나뿐이고, 무엇이 떴는지 표로 보여준 뒤 끝난다.
 
 ```powershell
-.\scripts\windows\start-all-background.ps1            # 서비스 7개
-.\scripts\windows\start-all-background.ps1 -WithDesktop  # Desktop Client까지
+.\scripts\windows\start-all-background.ps1              # 서비스 7개 + Desktop Client
+.\scripts\windows\start-all-background.ps1 -NoDesktop   # 서비스만
 .\scripts\windows\start-all-background.ps1 -Only portal-api,agent-runtime
 ```
+
+Desktop Client 는 **맨 뒤에**, 서비스가 포트를 잡을 시간을 5초 준 뒤 띄운다 — 먼저 뜨면 기동 시점 점검에서 "연결 끊김" 경고를 보고 시작하게 된다. `-WindowStyle Hidden` 이 숨기는 것은 PowerShell 콘솔이지 Electron 앱 창이 아니다(앱 창은 평소처럼 뜬다). Electron 바이너리가 없으면 그 이유가 `logs\desktop-client.log` 에 남는다.
 
 기동한 프로세스 ID는 `logs\running-services.json` 에 기록된다 — 종료·재시작이 **그 프로세스만** 정확히 멈추기 위해서다(이름으로 `python`/`node` 를 싹 죽이면 이 PC의 다른 작업까지 죽는다).
 
@@ -394,7 +396,7 @@ ollama serve
 
 ```powershell
 .\scripts\windows\stop-all.ps1
-.\scripts\windows\stop-all.ps1 -WithDesktop   # Desktop Client까지
+.\scripts\windows\stop-all.ps1 -NoDesktop   # Desktop Client 는 그대로 둔다
 .\scripts\windows\stop-all.ps1 -Only portal-web
 ```
 

@@ -19,10 +19,12 @@
     사전 준비는 `start-all.ps1` 과 같다(install-pip / pnpm install / migrate /
     Ollama). 이 스크립트도 Ollama 는 기동하지 않는다.
 
-.PARAMETER WithDesktop
-    Desktop Client(Electron)도 함께 띄운다. 기본은 제외다 — Electron 은 어차피
-    자기 창을 띄우므로 "창을 하나로 줄인다"는 이 스크립트의 목적과 무관하고,
-    바이너리가 없는 PC 에서는 실패 조건도 다르다.
+.PARAMETER NoDesktop
+    Desktop Client(Electron)를 띄우지 않는다. 기본은 **함께 띄운다**
+    (`start-all.ps1` 과 같은 규칙). `-WindowStyle Hidden` 이 숨기는 것은
+    PowerShell 콘솔이지 Electron 앱 창이 아니다 — 앱 창은 평소처럼 뜨고,
+    콘솔 창만 사라진다. Electron 바이너리가 없으면 그 이유가
+    `logs\desktop-client.log` 에 남는다.
 
 .PARAMETER Only
     일부만 기동한다(예: `-Only portal-api,agent-runtime`). 이름은
@@ -35,7 +37,7 @@
 #>
 
 param(
-    [switch]$WithDesktop,
+    [switch]$NoDesktop,
     [string[]]$Only
 )
 
@@ -54,7 +56,7 @@ Write-Host ""
 $LogDir = Get-HubLogDir
 $PidFile = Get-HubPidFile
 
-$targets = Get-HubServices | Where-Object { $_.Kind -eq "service" -or $WithDesktop }
+$targets = Get-HubServices | Where-Object { $_.Kind -eq "service" -or (-not $NoDesktop) }
 if ($Only) {
     $targets = $targets | Where-Object { $Only -contains $_.Name }
     if (-not $targets) {
@@ -76,8 +78,21 @@ if (Test-Path $PidFile) {
     }
 }
 
+# Desktop 은 맨 뒤로 민다. 기동 시점에 agent-runtime/search-runtime/
+# office-mcp-server 를 점검해 경고를 띄우므로, 서비스보다 먼저 뜨면 "연결
+# 끊김" 경고를 보고 시작하게 된다(start-all.ps1 이 5초를 기다리는 것과 같은
+# 이유다).
+# `Sort-Object` 를 쓰지 않는다 — PowerShell 5.1 의 정렬은 **안정적이지 않아**
+# 서비스 기동 순서(portal-api 가 먼저)가 조용히 뒤섞인다(실측). 두 목록으로
+# 나눠 이어 붙이면 선언 순서가 그대로 유지된다.
+$targets = @(@($targets | Where-Object { $_.Kind -ne "app" }) + @($targets | Where-Object { $_.Kind -eq "app" }))
+
 $started = @()
 foreach ($service in $targets) {
+    if ($service.Kind -eq "app" -and $started.Count -gt 0) {
+        Write-Host "  (서비스가 포트를 잡을 때까지 5초 대기)" -ForegroundColor DarkGray
+        Start-Sleep -Seconds 5
+    }
     $scriptPath = Join-Path $PSScriptRoot $service.Script
     $outLog = Get-HubServiceLogPath -Name $service.Name
     $errLog = Get-HubServiceErrorLogPath -Name $service.Name
@@ -114,6 +129,9 @@ $started | ConvertTo-Json -Depth 3 | Set-Content -Path $PidFile -Encoding utf8
 
 Write-Host ""
 Write-Host ("{0}개를 백그라운드로 기동했습니다. 이 창은 닫아도 됩니다." -f $started.Count) -ForegroundColor Green
+if ($started | Where-Object { $_.Name -eq "desktop-client" }) {
+    Write-Host "Desktop Client(Electron) 앱 창은 곧 뜹니다 — 뜨지 않으면 logs\desktop-client.log 에 이유가 있습니다." -ForegroundColor DarkGray
+}
 Write-Host ("로그 폴더: {0}" -f $LogDir)
 Write-Host ""
 Write-Host "다음 명령을 쓰세요:"
