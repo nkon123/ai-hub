@@ -347,13 +347,58 @@ ollama serve
 | portal-web (M01) | 3000 | `start-portal-web.ps1` |
 | **Desktop Client (M04)** | (창, 렌더러 5173) | `start-desktop-client.ps1` |
 
+### 5.2.1 창 하나로 띄우기(백그라운드 + 파일 로그)
+
+창이 8개까지 뜨는 것이 불편하면 이쪽을 쓴다. 같은 기동 스크립트들을 숨긴 프로세스로 띄우고 출력을 `logs\<서비스>.log` 로 보낸다 — 창은 실행한 것 하나뿐이고, 무엇이 떴는지 표로 보여준 뒤 끝난다.
+
+```powershell
+.\scripts\windows\start-all-background.ps1            # 서비스 7개
+.\scripts\windows\start-all-background.ps1 -WithDesktop  # Desktop Client까지
+.\scripts\windows\start-all-background.ps1 -Only portal-api,agent-runtime
+```
+
+기동한 프로세스 ID는 `logs\running-services.json` 에 기록된다 — 종료·재시작이 **그 프로세스만** 정확히 멈추기 위해서다(이름으로 `python`/`node` 를 싹 죽이면 이 PC의 다른 작업까지 죽는다).
+
+로그 보기:
+
+```powershell
+.\scripts\windows\logs.ps1                          # 어떤 로그가 있는지
+.\scripts\windows\logs.ps1 agent-runtime            # 마지막 80줄
+.\scripts\windows\logs.ps1 agent-runtime -Follow    # 실시간(Ctrl+C로 중단)
+.\scripts\windows\logs.ps1 portal-api -Errors       # 오류 출력 쪽(.err.log)
+.\scripts\windows\logs.ps1 search-runtime -Previous # 직전 기동의 로그
+.\scripts\windows\logs.ps1 -Grep "stage.timing"     # 전체에서 찾기
+```
+
+`Start-Process` 의 출력 리다이렉션은 기존 파일을 **덮어쓴다**(실측). 그래서 기동할 때마다 직전 로그를 `<서비스>.log.prev` 로 한 세대 옮겨 둔다 — 방금 죽은 이유가 다음 기동 순간 사라지지 않게 하기 위해서다.
+
+### 5.2.2 재시작
+
+```powershell
+.\scripts\windows\restart-all.ps1               # 창 모드(start-all.ps1)로 다시 띄운다
+.\scripts\windows\restart-all.ps1 -Background   # 한 창 + 파일 로그로 다시 띄운다
+.\scripts\windows\restart-all.ps1 -Background -Only agent-runtime
+```
+
+멈춘 뒤 **포트가 실제로 풀릴 때까지 기다렸다가** 띄운다(기본 20초). `uvicorn --reload` 와 `pnpm` 은 종료 신호를 받고도 잠깐 포트를 잡고 있어서, 곧바로 다시 띄우면 그 서비스만 "포트 사용 중"으로 죽는다 — 재시작이 가장 흔하게 실패하는 지점이다. 시간 안에 풀리지 않으면 어느 포트를 누가 잡고 있는지(PID) 알려주고 **기동을 시도하지 않는다**.
+
 개별 서비스만 띄우거나 재시작하고 싶으면 위 스크립트를 개별 실행해도 된다(`start-all.ps1`은 이 7개를 순서대로 새 창에서 호출하는 것뿐, 특별한 조율 로직은 없다).
 
 `uvicorn ... --reload`는 파일 변경 감지를 위해 `watchfiles`를 사용한다 — uvicorn/watchfiles 모두 Windows를 공식 지원하지만, **이 PoC에서 Windows상 `--reload` 동작 자체를 실행해 확인하지는 않았다**. 문제가 있으면 `--reload` 플래그를 빼고 실행해도 개발 편의성만 잃을 뿐 기능에는 영향 없다.
 
 ### 5.3 종료
 
-각 PowerShell 창에서 `Ctrl+C`로 프로세스를 멈춘 뒤 창을 닫는다. `start-all.ps1`은 7개의 독립 프로세스를 띄울 뿐 일괄 종료 기능은 제공하지 않는다.
+창으로 띄웠다면 각 PowerShell 창에서 `Ctrl+C` 로 멈춘 뒤 창을 닫는다.
+
+일괄 종료는 이쪽을 쓴다(창 모드로 띄운 것도 포트로 찾아 함께 정리한다):
+
+```powershell
+.\scripts\windows\stop-all.ps1
+.\scripts\windows\stop-all.ps1 -WithDesktop   # Desktop Client까지
+.\scripts\windows\stop-all.ps1 -Only portal-web
+```
+
+찾는 방법은 둘이다: `logs\running-services.json` 에 기록된 PID, 그리고 각 서비스 포트를 **실제로 듣고 있는** 프로세스. 종료는 `taskkill /T`(프로세스 트리)로 한다 — `uvicorn --reload` 와 `pnpm` 은 실제 작업을 자식 프로세스에서 하므로 부모만 죽이면 포트를 계속 잡은 고아가 남고, 다음 기동이 실패한다. 이름으로 `python`/`node` 를 싹 죽이지는 않는다(이 PC의 다른 작업까지 죽는다).
 
 ## 6. 검증
 

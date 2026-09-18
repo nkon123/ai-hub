@@ -22,7 +22,10 @@ out/
 data/indexes/
 data/bundles/
 data/agent-runtime/
-apps/portal-api/storage/
+apps/portal-api# 백그라운드 기동 스크립트(scripts/windows/start-all-background.ps1)가 남기는
+# 서비스별 로그. 런타임 산출물이다.
+/logs/
+/storage/
 # 저장소 루트에도 같은 것이 생긴다: `portal_api.config.Settings.storage_root`
 # 기본값이 `./storage`(CWD 기준)이라, 저장소 루트에서 테스트를 돌리면 여기에
 # 쌓인다. 마찬가지로 런타임 산출물이므로 제외한다.
