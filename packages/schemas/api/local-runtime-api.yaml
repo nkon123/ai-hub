@@ -564,6 +564,18 @@ components:
             tool_route:
               type: boolean
               default: false
+            mcp_tool_names:
+              type: array
+              description: >
+                사용자가 대화 화면에서 고른 MCP Tool 범위(D-094 이어 붙이기).
+                `tool_route: true` 일 때만 의미가 있고, 서버가 만든 후보 목록을
+                **좁히는 데만** 쓰인다 — 여기 적힌 이름이 후보에 없으면 그냥
+                버려진다(권한이 되지 않는다). 생략하면 이 배포가 허용하는 후보
+                전체(Office Profile + ACTIVE 로 등록된 MCP 서버의 Tool)가
+                대상이다. 빈 배열은 "고른 것이 없다"이므로 후보가 없고, 따라서
+                Tool 을 부르지 않는다(fail-closed).
+              items:
+                type: string
         trace_id:
           type: string
         user_context:

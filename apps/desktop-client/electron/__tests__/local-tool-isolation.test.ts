@@ -157,14 +157,21 @@ describe("D-084 local tool structural isolation", () => {
     // D-089 후속(통합 Tool 라우팅) — 이번 턴이 통합 라우팅에서 "MCP"로
     // 판정된 경우에도(handleLocalToolAutoRoute가 "mcp"를 반환해 아래로
     // 흘러 내려온 경우) 위 payload literal 검사가 여전히 유효하다는 것을
-    // 직접 고정한다: payload는 `turnMcpToolRouteForced`라는 지역 변수
-    // (로컬 Tool 정보를 전혀 담지 않는 boolean)만 참조하고, 로컬 Tool
-    // 식별자는 그 변수 이름에도, payload 리터럴 어디에도 등장하지 않는다.
-    it("an MCP-picked turn's startRun payload only ever carries the boolean turnMcpToolRouteForced — never a local-tool identifier", () => {
+    // 직접 고정한다: payload는 `toolRouteThisTurn`이라는 지역 변수(로컬 Tool
+    // 정보를 전혀 담지 않는 boolean)만 참조하고, 로컬 Tool 식별자는 그 변수
+    // 이름에도, payload 리터럴 어디에도 등장하지 않는다.
+    //
+    // D-094 이어 붙이기(2026-09-18) — 그 boolean 의 이름이
+    // `turnMcpToolRouteForced` 에서 `toolRouteThisTurn` 으로 바뀌었다(통합
+    // 라우팅 판정 **또는** 사용자가 "MCP 도구"에서 고른 범위, 둘 중 하나로
+    // 켜진다). 고정하려는 성질은 그대로다: payload 가 참조하는 것은 여전히
+    // boolean 하나와 Tool **이름 목록**뿐이고, 로컬 Tool 식별자는 어디에도
+    // 없다.
+    it("an MCP-picked turn's startRun payload only ever carries the boolean toolRouteThisTurn — never a local-tool identifier", () => {
       const start = chatScreen.indexOf("const created = await startRun({");
       const end = chatScreen.indexOf("runIdRef.current = created.id");
       const startRunPayload = chatScreen.slice(start, end);
-      expect(startRunPayload).toContain("turnMcpToolRouteForced");
+      expect(startRunPayload).toContain("toolRouteThisTurn");
       expect(startRunPayload).not.toMatch(/localTool|LocalTool|local-tool/);
     });
 

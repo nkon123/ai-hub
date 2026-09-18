@@ -188,6 +188,9 @@ export interface StartRunParams {
    * bypasses approval. Omitting it reproduces the exact prior
    * no-tool-routing behavior. */
   toolRoute?: boolean;
+  /** `toolRoute` 가 켜진 Run 에서 후보를 이 이름들로 좁힌다(D-094 이어 붙이기).
+   * 생략하면 이 배포가 허용하는 후보 전체가 대상이다 — "자동 선택". */
+  mcpToolNames?: string[];
   /** Desktop 대화 고도화 (additive/optional) — prior turns of this same
    * conversation, oldest first. Omitting it (every call site that predates
    * this feature) reproduces the exact prior single-turn request body. */
@@ -247,6 +250,13 @@ export async function startRun(params: StartRunParams): Promise<RunResponse> {
   // responsibility as `knowledgeCandidates` vs `knowledgeIds` above.
   if (params.toolRoute) {
     input.tool_route = true;
+  }
+  // D-094 이어 붙이기 — 사용자가 대화 화면에서 고른 MCP Tool 범위. 서버는 이
+  // 목록을 **좁히는 데만** 쓴다(local-runtime-api.yaml `mcp_tool_names`), 즉
+  // 여기 적힌 이름이 권한이 되지 않는다. 비어 있으면 아예 보내지 않는다 —
+  // 빈 배열은 서버에서 "고른 것이 없음"(후보 없음)이라는 다른 뜻이다.
+  if (params.mcpToolNames && params.mcpToolNames.length > 0) {
+    input.mcp_tool_names = params.mcpToolNames;
   }
   if (params.history && params.history.length > 0) {
     input.history = params.history;

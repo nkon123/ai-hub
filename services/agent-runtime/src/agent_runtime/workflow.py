@@ -550,6 +550,7 @@ async def run_knowledge_chat(
     allow_hub_lookup: bool = False,
     hub_search_adapter: HubSearchAdapter | None = None,
     tool_route_enabled: bool = False,
+    mcp_tool_scope: tuple[str, ...] | None = None,
     service_version: str | None = None,
 ) -> None:
     """`service_version` (additive/optional, D-034 (i) 남은 절반): the real
@@ -644,10 +645,18 @@ async def run_knowledge_chat(
     `mcp_tool_request` was NOT already supplied (an explicit caller-declared
     request always takes priority and disables routing entirely for that
     Run) and the resolved agent's `capabilities.mcp_allowed` is true.
-    Candidates are computed here, server-side, from `config.office_profile`
-    alone via `mcp_tools.list_candidate_tools` — never from anything the
-    caller sends — so the candidate set can never be wider than what this
-    deployment's Office Profile already permits. The routing call itself
+    Candidates are computed here, server-side, via
+    `mcp_tools.list_candidate_tools` — the deployment's Office Profile plus
+    the tools of every ACTIVE registered MCP server (D-094), never anything
+    the caller invents — so the candidate set can never be wider than what
+    this deployment already permits and already dispatches through
+    `resolve_allowed_alias`. `mcp_tool_scope` (additive/optional — the
+    servers/tools a user picked in the Desktop 대화 화면) only ever
+    **narrows** that list (`mcp_tools.filter_candidates_to_scope`): a name
+    the caller sends that is not already a candidate is dropped, never
+    added. An empty scope means "nothing selected", which yields no
+    candidates and therefore no tool call at all — the same fail-closed
+    outcome as routing declining. The routing call itself
     reads ONLY this call's `question` and each candidate's `tool_name`/
     `input_schema` — never Knowledge citations, tool results, or `history`.
     A successful proposal (`status="ran"`) is converted into the exact same
@@ -1000,7 +1009,12 @@ async def run_knowledge_chat(
         effective_mcp_tool_request = mcp_tool_request
         tool_route_is_ai_derived = False
         if mcp_tool_request is None and tool_route_enabled and mcp_allowed:
-            tool_candidates = mcp_tools.list_candidate_tools(config.office_profile)
+            # 후보는 언제나 서버가 만든다. `mcp_tool_scope`(사용자가 대화
+            # 화면에서 고른 서버/Tool)는 그 목록을 **좁히기만** 한다 —
+            # `filter_candidates_to_scope` 의 docstring 참고.
+            tool_candidates = mcp_tools.filter_candidates_to_scope(
+                mcp_tools.list_candidate_tools(config.office_profile), mcp_tool_scope
+            )
             tool_route_result: ToolRouteResult = await route_tool_call(
                 question,
                 tool_candidates,

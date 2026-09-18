@@ -352,6 +352,16 @@ async def start_run(
     # `mcp_tool_request` above is None (an explicit caller-declared tool
     # always wins) and the resolved agent allows MCP at all.
     tool_route_enabled = bool(body.input.get("tool_route", False))
+    # D-094 이어 붙이기 — 사용자가 대화 화면에서 고른 MCP Tool 범위.
+    # 없으면(`None`) 이 배포가 허용하는 후보 전체가 대상이고, 있으면 그 안에서만
+    # 고른다. 서버는 이 목록을 **좁히는 데만** 쓴다(`mcp_tools
+    # .filter_candidates_to_scope`) — 여기 적힌 이름이 권한이 되지 않는다.
+    raw_tool_scope = body.input.get("mcp_tool_names")
+    mcp_tool_scope: tuple[str, ...] | None = None
+    if isinstance(raw_tool_scope, list):
+        mcp_tool_scope = tuple(
+            name.strip() for name in raw_tool_scope if isinstance(name, str) and name.strip()
+        )
 
     asyncio.create_task(
         run_knowledge_chat(
@@ -380,6 +390,7 @@ async def start_run(
             allow_hub_lookup=allow_hub_lookup,
             hub_search_adapter=hub_search_adapter,
             tool_route_enabled=tool_route_enabled,
+            mcp_tool_scope=mcp_tool_scope,
         )
     )
 

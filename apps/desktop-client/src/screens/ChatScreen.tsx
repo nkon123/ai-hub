@@ -112,6 +112,14 @@ import {
   type LocalToolChatEntry,
 } from "./LocalToolInvokePanel";
 import { PromptPickerPanel } from "./PromptPickerPanel";
+import { McpToolPickerPanel } from "./McpToolPickerPanel";
+import {
+  SCOPE_OFF,
+  describeScopeBadge,
+  scopeToRunParams,
+  type McpServerOption,
+  type McpToolScope,
+} from "./mcpToolScopeTypes";
 // D-089 후속(통합 Tool 라우팅) — 로컬 Tool + 연결된 MCP Tool 후보를 하나로
 // 합쳐 "이번 턴에 어느 쪽을 쓸지"를 판단하는 순수 HTTP 모듈. agent-runtime을
 // 전혀 모른다(위 로컬 Tool 격리 원칙과 동일한 이유로 이 파일도 그 경계를
@@ -733,6 +741,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // --- MCP Tool 호출 확인. 브라우저 Preview에서는 기존 개발용 DB Tool을,
   // Electron에서는 Hub에서 설치되고 agent-runtime에 연결된 고정 계산기
   // 샘플만 노출한다. 임의 Tool 이름이나 자유형 JSON 입력을 받지 않는다.
+  // D-094 이어 붙이기 — 이번 대화에서 AI 가 고를 수 있는 MCP Tool 범위.
+  // 세션 상태로만 둔다(설정에 저장하지 않는다): "이 질문에는 이 서버만" 같은
+  // 선택이 다음 실행에도 남아 있으면 사용자가 켠 줄 모르는 상태가 된다.
+  const [mcpScope, setMcpScope] = useState<McpToolScope>(SCOPE_OFF);
+  const [mcpServerOptions, setMcpServerOptions] = useState<McpServerOption[]>([]);
   const [mcpDevEnabled, setMcpDevEnabled] = useState(false);
   const [mcpDevTool, setMcpDevTool] = useState<"calculator.add" | "table_count.query" | "db_metadata.get_columns">(
     "table_count.query",
@@ -863,6 +876,24 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const unifiedToolRouteApplicable =
     !!bridge && unifiedToolRouteHasCandidates && !mcpDevActive && !localAgentActive;
   const unifiedToolRouteActive = unifiedToolRouteEnabledSetting && unifiedToolRouteApplicable;
+
+  // 고른 범위는 "이 턴에 TOOL_ROUTE 를 켠다"는 뜻이다(`scopeToRunParams`).
+  // 명시적 Tool 호출(mcpDev)과 Local Agent 선택과는 서로 배타적이다 — 셋 중
+  // 둘이 동시에 켜지면 무엇이 적용됐는지 화면이 설명할 수 없다.
+  const mcpScopeSelectable = !mcpDevActive && !localAgentActive;
+  const mcpScopeDisabledReason = mcpDevActive
+    ? "개발 확인용 Tool 호출이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
+    : localAgentActive
+      ? "Local Agent를 선택한 동안은 사용할 수 없습니다 — 먼저 표준 Agent로 되돌리세요."
+      : null;
+  const mcpScopeBadge = describeScopeBadge(mcpScope, mcpServerOptions);
+
+  // 고를 수 없는 상태로 바뀌면 범위를 비운다 — 꺼진 줄 모르는 선택이 다음
+  // 전송에 조용히 실려 가지 않게 한다(허브 토글이 hubLookupApplicable 에서
+  // 이미 지키는 규칙과 같다).
+  useEffect(() => {
+    if (!mcpScopeSelectable && mcpScope.kind !== "off") setMcpScope(SCOPE_OFF);
+  }, [mcpScopeSelectable, mcpScope.kind]);
 
   const localAgentSelectionDisabledReason =
     mcpDevActive || unifiedToolRouteActive
@@ -1670,7 +1701,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // 직통 경로로 새면 TOOL_ROUTE 자체가 실행되지 않는다. D-034 해석 경로
     // 4(localAgentActive) 역시 agent-runtime을 거쳐야만 그 Agent+Prompt
     // 짝이 적용된다 — Ollama 직통 경로로 새면 표준 Agent와 구분되지 않는다.
-    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !turnMcpToolRouteForced && !localAgentActive;
+    // 고른 MCP 범위가 있으면 이번 턴은 TOOL_ROUTE 를 켠다. 통합 라우팅
+    // (`turnMcpToolRouteForced`)이 이미 "mcp"를 골랐어도 같은 곳으로 합류하고,
+    // 범위는 그 후보를 좁히는 값으로 함께 실린다.
+    const mcpScopeRun = scopeToRunParams(mcpScope);
+    const toolRouteThisTurn = turnMcpToolRouteForced || mcpScopeRun.toolRoute;
+    const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteThisTurn && !localAgentActive;
     const serviceId = ollamaOnly
       ? `${SERVICE_ID_PREFIX}:ollama-default`
       : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
@@ -1684,7 +1720,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // 이 필드를 직접 표시하지 않는다, localAgentLabelUsed가 실제 표시를
     // 담당).
     const agentProfile: ChatMessage["agentProfile"] =
-      mcpDevActive || turnMcpToolRouteForced ? "standard-db-agent" : "standard-agent";
+      mcpDevActive || toolRouteThisTurn ? "standard-db-agent" : "standard-agent";
     // Desktop 대화 고도화(멀티턴) — 지금까지의 완료된 턴을 agent-runtime에
     // `input.history`로 함께 보낸다(additive/optional, local-runtime-api.yaml
     // ConversationTurnInput). Electron 브릿지 유무와 무관하게 항상 동작한다
@@ -1808,13 +1844,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   : { schema: mcpDevSchema.trim(), table: mcpDevTable.trim() },
                 mcpConfirmed: false,
               }
-            : turnMcpToolRouteForced
+            : toolRouteThisTurn
               ? // D-083: 명시적 mcpTool은 절대 함께 보내지 않는다 — 무엇을 부를지
                 // 사용자가 아니라 TOOL_ROUTE가 이번 질문에서 고르게 한다.
-                // D-089 후속 — 이 값은 통합 라우팅이 이번 턴 "mcp"를 골랐을
-                // 때만 참이다(위 통합 라우팅 판정 함수의 반환값, 정적 토글이
-                // 아니다).
-                { agentProfile: "standard-db-agent" as const, toolRoute: true }
+                // D-089 후속 — 통합 라우팅이 이번 턴 "mcp"를 골랐거나(정적
+                // 토글이 아니라 그 턴의 판정 결과), 사용자가 "MCP 도구"에서
+                // 범위를 골랐을 때 참이다.
+                // D-094 이어 붙이기 — `mcpToolNames`는 후보를 **좁히기만**
+                // 한다(서버 `filter_candidates_to_scope`). "자동 선택"이면
+                // 아예 보내지 않는다 — 생략이 "후보 전체"다.
+                {
+                  agentProfile: "standard-db-agent" as const,
+                  toolRoute: true,
+                  ...(mcpScopeRun.mcpToolNames ? { mcpToolNames: mcpScopeRun.mcpToolNames } : {}),
+                }
               : {}),
       });
       runIdRef.current = created.id;
@@ -2734,6 +2777,20 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     disabled={isRunning}
                     currentQuestion={question}
                     onApply={setQuestion}
+                  />
+
+                  {/* D-094 이어 붙이기 — 이번 대화에서 AI가 고를 수 있는 MCP
+                      Tool 범위. 프롬프트 버튼과 같은 자리지만 성격이 다르다:
+                      저쪽은 입력창 텍스트를, 이쪽은 런타임 후보를 바꾼다. */}
+                  <McpToolPickerPanel
+                    scope={mcpScope}
+                    onScopeChange={setMcpScope}
+                    disabled={isRunning || !mcpScopeSelectable}
+                    disabledReason={
+                      isRunning ? "이미 실행 중입니다." : mcpScopeDisabledReason
+                    }
+                    badge={mcpScopeBadge}
+                    onServersLoaded={setMcpServerOptions}
                   />
 
                   {settingsBridge ? (

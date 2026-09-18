@@ -226,8 +226,10 @@ def confirmation_policy_for(tool_name: str) -> str | None:
 
 
 def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]:
-    """D-083 TOOL_ROUTE candidate set: exactly the Office Profile's
-    `allowed_mcp_servers[].allowed_tools`, intersected with every
+    """D-083 TOOL_ROUTE candidate set: the Office Profile's
+    `allowed_mcp_servers[].allowed_tools` **plus the tools of every ACTIVE
+    registered MCP server** (D-094 이어 붙이기 — 함수 끝의 주석 참고),
+    intersected with every
     `tool_name` this Runtime actually has a schema for (`_spec_for` — the
     same built-in-first-then-registry resolution `validate_tool_input`/
     `confirmation_policy_for` use). Routing can only ever narrow what the
@@ -273,4 +275,57 @@ def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]
             if isinstance(description, str) and description.strip():
                 candidate["description"] = description
             candidates.append(candidate)
+
+    # D-094 이어 붙이기 — **등록된 MCP 서버**가 제공하는 Tool 도 후보에 넣는다.
+    #
+    # 이 함수가 Office Profile 만 보던 동안, 서버를 설치하고 등록까지 마쳐도
+    # 대화에서는 그 Tool 이 존재하지 않는 것과 같았다(실사용 2026-09-18:
+    # hello-mcp 를 등록했는데 채팅에서 쓸 방법이 없었다). `resolve_allowed_alias`
+    # 는 이미 등록된 서버의 Tool 을 허용하고 있었으므로, 여기만 Office Profile
+    # 에 묶여 있어 "부를 수는 있는데 고를 수는 없는" 상태였다.
+    #
+    # 경계가 넓어지는 것이 아니다: 후보가 되는 것은 **ACTIVE 로 등록된** 서버가
+    # 매니페스트에 선언한 Tool 뿐이고(등록 자체가 매니페스트 승인·연결 경계·
+    # 핸드셰이크 대조·거버넌스 메타데이터 네 겹을 지난다), 실제 호출은 여전히
+    # `resolve_allowed_alias` -> `validate_tool_input` -> `confirmation_policy_for`
+    # 를 그대로 지난다. 후보에 오른다는 것은 "라우터가 이름을 볼 수 있다"는
+    # 뜻이지 "호출해도 된다"는 뜻이 아니다.
+    from agent_runtime.mcp_server_registry import get_registry as _get_server_registry
+
+    for server in _get_server_registry().list_servers():
+        if server.state != "ACTIVE":
+            continue
+        for tool_name in server.tool_names:
+            if not isinstance(tool_name, str) or tool_name in seen:
+                continue
+            spec = _spec_for(tool_name)
+            if spec is None:
+                continue
+            seen.add(tool_name)
+            candidate = {"tool_name": tool_name, "input_schema": spec["input_schema"]}
+            description = spec.get("description") or spec.get("label")
+            if isinstance(description, str) and description.strip():
+                candidate["description"] = description
+            candidates.append(candidate)
+
     return candidates
+
+
+def filter_candidates_to_scope(
+    candidates: list[dict[str, Any]], scope: tuple[str, ...] | None
+) -> list[dict[str, Any]]:
+    """사용자가 대화에서 고른 Tool 범위로 후보를 **좁힌다**.
+
+    `scope` 가 `None` 이면(고르지 않음) 후보를 그대로 둔다. 비어 있는 튜플은
+    "고를 수 있는 것이 없다"이므로 빈 후보를 돌려준다 — 라우터는 후보가 없으면
+    아무것도 제안하지 않는다(fail-closed).
+
+    **교집합만 한다.** 호출자가 보낸 이름이 후보에 없으면 그냥 버린다 — 후보
+    목록은 이 배포가 허용한 것에서만 나오고, 사용자의 선택은 그것을 넓히는
+    수단이 될 수 없다. 넓힐 수 있게 하면 "화면에서 고른 이름"이 곧 권한이
+    된다.
+    """
+    if scope is None:
+        return candidates
+    wanted = {name for name in scope if isinstance(name, str) and name.strip()}
+    return [candidate for candidate in candidates if candidate["tool_name"] in wanted]

@@ -1,5 +1,16 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M04/M05 대화에서 MCP 도구 범위를 고른다 (D-099)
+
+- **없던 경로였다**: 샘플 MCP 서버(hello-mcp)를 설치·등록해도 대화에서 쓸 방법이 없었다. `resolve_allowed_alias`는 이미 등록 서버의 Tool을 허용하는데 `list_candidate_tools`만 Office Profile에 묶여 있어 라우터에게는 그 Tool이 존재하지 않았다 — "부를 수는 있는데 고를 수는 없는" 상태. 화면 쪽도 마찬가지로 옛 `mcp_tool` 자산만 세고 있어서 "Tool 자동 선택" 토글 자체가 그려지지 않았다.
+- **M05**: `list_candidate_tools`가 (Office Profile ∪ ACTIVE 등록 서버의 `declared_tools`)로 후보를 만든다. 스키마·확인정책은 여전히 **승인된 매니페스트**에서 오고, 호출은 `resolve_allowed_alias → validate_tool_input → confirmation_policy_for` 초크포인트를 그대로 지난다 — 후보에 오른다는 것은 "이름을 볼 수 있다"이지 "호출해도 된다"가 아니다.
+- **M05 계약**: `input.mcp_tool_names`(local-runtime-api.yaml) 신설 — 사용자가 고른 범위. `filter_candidates_to_scope`가 **교집합만** 한다(넓히지 못한다: 화면에서 보낸 문자열이 권한이 되면 안 된다). 세 경우가 서로 다른 뜻이다 — **생략=후보 전체**, 목록=그만큼, 빈 배열=고른 것 없음(후보 0, fail-closed).
+- **M04**: 입력창에 **"MCP 도구"** 버튼 추가(프롬프트 버튼 옆). 첫 줄이 "자동 선택 — 연결된 도구 전체에서 AI가 고릅니다", 그 아래가 등록된 서버 목록(서버명 클릭 = 전체, 펼치면 도구별 체크). 등록됐지만 ACTIVE가 아닌 서버는 기존 `describeServerStatus` 문구 그대로 비활성. 범위 계산은 `mcpToolScopeTypes.ts`(순수), 목록은 `GET /local/v1/mcp-servers`.
+- 명시적 Tool 호출(개발 확인용)·Local Agent 선택과는 서로 배타적이고, 고를 수 없게 되면 범위를 자동으로 비운다 — 꺼진 줄 모르는 선택이 다음 전송에 실려 가지 않게 한다.
+- **검증**: 신규 테스트 28개(서버 8 + 렌더러 20). Python unit+integration+contract 1582 → **1590 passed**(실패 105건 기준선 동일), 데스크톱 vitest 1062 → **1082 passed**(실패 12건 기준선 동일). 구조 테스트 `local-tool-isolation.test.ts`가 payload 변수명 변경으로 깨져 **지우지 않고 새 이름으로 고쳤다**(고정하려는 성질은 그대로: payload에 로컬 Tool 식별자가 없다).
+- **라이브 확인**(별도 포트 8101로 임시 기동, 8100 서비스는 건드리지 않음): hello-mcp 등록 → `state: ACTIVE`, `tool_names: [hello.echo, hello.now]`. 범위 `["hello.now"]`로 Run → TOOL_ROUTE가 **후보를 갖고** 모델 호출까지 감(`reason=error_or_timeout` — 이 PC에 Ollama가 떠 있지 않아 거기서 멈춤). 대조군으로 없는 이름을 범위로 주면 `reason=no_candidate_tools`로 **건너뛴다** — 두 사유가 갈리는 것이 "등록 서버 Tool이 후보가 됐고, 범위가 넓히지는 않는다"의 실측 증거다. 확인 후 임시 인스턴스는 정리했다.
+- **확인하지 못한 것**: Ollama가 없어 실제 Tool 실행·답변까지는 못 갔고, 렌더링 테스트가 없는 저장소라 버튼·모달의 실제 표시는 육안 확인이 남아 있다.
+
 ## 2026-09-18 M05 `.env` 목록 설정 때문에 agent-runtime이 기동하지 못하던 것
 
 - **증상(사내 PC 실사용 제보)**: 기동 중 `SettingsError: error parsing value for field "mcp_server_install_roots" from source "DotEnvSettingsSource"`. 서비스가 아예 뜨지 않는다.

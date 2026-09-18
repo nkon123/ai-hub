@@ -78,9 +78,12 @@ loopback, `hosted` 모드는 0.0.0.0 — `main.py` 모듈 docstring).
 - `mcp_tools.py` — office-mcp-server Tool 계약의 **손으로 복사한 정적 사본**
   (`MCP_TOOL_SPECS`) — M10이 Tool을 바꾸면 이 파일도 수동 갱신해야 한다
   (drift risk, open-decisions.md 기록). `list_candidate_tools`(D-083)가
-  TOOL_ROUTE 후보 집합을 계산하는 유일한 경로 — Office Profile의
-  `allowed_mcp_servers[].allowed_tools`와 이 파일이 스키마를 아는 Tool의
-  교집합이며, 호출자가 보낸 무엇으로도 넓어지지 않는다.
+  TOOL_ROUTE 후보 집합을 계산하는 유일한 경로 — (Office Profile의
+  `allowed_mcp_servers[].allowed_tools` ∪ ACTIVE로 등록된 MCP 서버의
+  `declared_tools`, D-094 이어 붙이기)와 이 파일이 스키마를 아는 Tool의
+  교집합이며, 호출자가 보낸 무엇으로도 넓어지지 않는다. 사용자가 고른 범위
+  (`input.mcp_tool_names`)는 `filter_candidates_to_scope`가 **좁히는 데만**
+  쓴다.
 - `run_store.py`/`chat_sessions.py` — in-memory `RunStore`/
   `ChatSessionStore`(PoC, 영속성 없음).
 - `config/` — 기동 시 로드·검증하는 표준 정의 사본: `standard-agent`,
@@ -225,6 +228,22 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   "설정은 했는데 아무것도 안 잡힌다", (b) 제어문자가 섞인 값 — `.env`에서
   큰따옴표로 감싸면 python-dotenv가 `\a`/`\t`를 해석해 없는 경로를 만든다.
   `tests/unit/agent_runtime/test_settings_list_parsing.py`가 고정한다.
+
+- **TOOL_ROUTE 후보의 출처는 두 곳이다(2026-09-18, D-094 이어 붙이기).**
+  `mcp_tools.list_candidate_tools` 는 Office Profile 의
+  `allowed_mcp_servers[].allowed_tools` **와** ACTIVE 로 등록된 MCP 서버의
+  `declared_tools` 를 합친다. 한동안 앞엣것만 봤는데, 그 동안 서버를 설치하고
+  등록까지 마쳐도 대화에서는 그 Tool 이 존재하지 않는 것과 같았다 —
+  `resolve_allowed_alias` 는 이미 등록 서버를 허용하고 있었으므로 "부를 수는
+  있는데 고를 수는 없는" 상태였다(실사용 제보: hello-mcp 샘플). 후보를 넓히는
+  코드를 건드릴 때는 **부를 수 있는 것과 고를 수 있는 것이 갈라지지 않는지**를
+  먼저 본다.
+- **사용자가 보낸 Tool 목록(`input.mcp_tool_names`)은 후보를 좁히기만 한다.**
+  `filter_candidates_to_scope` 가 교집합만 하고, 후보에 없는 이름은 버린다 —
+  넓힐 수 있게 하면 화면에서 보낸 문자열이 곧 권한이 된다. 빈 목록은 "고른 것이
+  없음"이라 후보가 0개가 되고(fail-closed), 필드를 **생략**하는 것이 "후보
+  전체"다. 이 셋(생략 / 빈 목록 / 일부)이 서로 다른 뜻이라는 것을
+  `tests/unit/agent_runtime/test_mcp_tool_candidates_scope.py` 가 고정한다.
 
 ## 완료 전 확인
 
