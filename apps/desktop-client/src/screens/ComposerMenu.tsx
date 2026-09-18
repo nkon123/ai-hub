@@ -13,7 +13,7 @@
 // 이 저장소에는 렌더링 테스트가 없어서(vitest `environment: "node"`) 판단을
 // 화면에 두면 아무도 고정할 수 없다.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { BookOpenCheck, FileText, Globe2, Plus, Server, Sparkles, Terminal } from "lucide-react";
 import {
   itemAvailability,
@@ -105,11 +105,38 @@ export function ComposerMenu({
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  // 버튼 기준 위치를 직접 계산해 **fixed** 로 띄운다.
+  //
+  // 왜 `absolute` 가 아닌가(실사용 제보 2026-09-18 "+ 버튼 누르면 리스트가
+  // 깨진다"): 입력창은 `overflow-hidden` 컨테이너(대화 열) 안에 있고, 위로
+  // 펼쳐지는 absolute 메뉴는 그 컨테이너 위쪽 경계에서 **잘린다**. `fixed` 는
+  // 그 클리핑을 받지 않는다(같은 이유로 `ui.tsx` 의 Modal 도 fixed 다).
+  // 높이도 화면에 남은 공간으로 제한하고 넘치면 스크롤한다 — 창이 작으면
+  // 어차피 다 보여줄 수 없는데, 잘린 채로 두면 아래 항목이 있는 줄도 모른다.
+  const [anchor, setAnchor] = useState<{ left: number; bottom: number; maxHeight: number } | null>(
+    null,
+  );
+
+  const measure = useCallback(() => {
+    const element = triggerRef.current;
+    if (!element) return;
+    const rect = element.getBoundingClientRect();
+    const gap = 8;
+    const margin = 12;
+    setAnchor({
+      left: Math.max(margin, Math.min(rect.left, window.innerWidth - 320 - margin)),
+      bottom: Math.max(margin, window.innerHeight - rect.top + gap),
+      maxHeight: Math.max(160, rect.top - gap - margin),
+    });
+  }, []);
 
   // 바깥을 누르거나 Esc 로 닫는다. 메뉴가 열린 채 대화상자가 뜨면 두 겹이
   // 겹치므로, 항목을 고르는 즉시 닫는다(아래 `choose`).
   useEffect(() => {
     if (!open) return;
+    measure();
+    window.addEventListener("resize", measure);
     function onPointerDown(event: MouseEvent) {
       if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
     }
@@ -119,10 +146,11 @@ export function ComposerMenu({
     document.addEventListener("mousedown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
     return () => {
+      window.removeEventListener("resize", measure);
       document.removeEventListener("mousedown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
     };
-  }, [open]);
+  }, [open, measure]);
 
   const availability = (key: ComposerMenuItemKey) => itemAvailability(key, state);
   const choose = (action: () => void) => {
@@ -135,6 +163,7 @@ export function ComposerMenu({
   return (
     <div className="relative" ref={rootRef}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((prev) => !prev)}
         aria-haspopup="menu"
@@ -150,11 +179,12 @@ export function ComposerMenu({
         <Plus size={16} />
       </button>
 
-      {open && (
+      {open && anchor && (
         <div
           role="menu"
           aria-label="대화에 사용할 것"
-          className="absolute bottom-10 left-0 z-40 w-80 rounded-card border border-border bg-surface p-1.5 shadow-xl"
+          style={{ left: anchor.left, bottom: anchor.bottom, maxHeight: anchor.maxHeight }}
+          className="fixed z-40 w-80 overflow-y-auto rounded-card border border-border bg-surface p-1.5 shadow-xl"
         >
           <SectionLabel>지식</SectionLabel>
           <MenuRow
