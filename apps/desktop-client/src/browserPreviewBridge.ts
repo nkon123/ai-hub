@@ -360,6 +360,17 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
     async getAssetManifest() {
       return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, manifest: null };
     },
+    async getPromptTemplate() {
+      // 브라우저 개발 모드에는 설치된 자산 폴더가 없다 — 빈 본문으로 성공한
+      // 척하면 입력창에 아무것도 안 들어오고 이유도 알 수 없다.
+      return {
+        available: false,
+        reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE,
+        system: null,
+        body: null,
+        variables: [],
+      };
+    },
     async reverifyAssetChecksum() {
       return { available: false, reason: DESKTOP_RUNTIME_REQUIRED_MESSAGE, result: null };
     },

@@ -18,6 +18,7 @@ import {
 import { findReferencingServices, parseServiceDefinition, type InstalledServiceBindings } from "./service-dependencies";
 import { evaluateAssetRemoval, type ActivePointerInput } from "./removal-guard";
 import { computeManifestDiff, manifestFileNameHint } from "./version-diff";
+import { summarizePromptManifest, templatePathWithinAsset } from "./prompt-template";
 import { buildKnowledgeCandidates } from "./knowledge-candidates";
 import type {
   ActivateVersionResult,
@@ -30,6 +31,7 @@ import type {
   InstalledAsset,
   InstalledAssetWithStatus,
   KnowledgeEmbedModelInfo,
+  PromptTemplateResult,
   KnowledgeCandidate,
   OrphanedInstallCleanupResult,
 } from "./types";
@@ -255,6 +257,88 @@ export function readAssetManifest(layout: InstallRootLayout, asset: InstalledAss
     };
   }
   return { available: true, reason: null, manifest };
+}
+
+/** D06 대화 — 설치된 Prompt 자산의 본문과 역할 지침을 읽는다.
+ *
+ * 왜 `readAssetManifest`로 충분하지 않은가: Prompt Manifest에는 본문 파일의
+ * **이름**(`template.file`)만 있고 내용은 그 옆 파일에 있다. 렌더러는
+ * 파일시스템에 닿을 수 없으므로(contextIsolation) 여기서 읽어 돌려준다.
+ *
+ * 실패를 예외로 던지지 않는 이유: 호출자가 대화 화면이고, 프롬프트 하나를
+ * 못 읽는 것이 대화 자체를 막을 이유는 없다. 대신 **왜** 못 읽는지를
+ * 구분해 돌려준다 — "설치는 됐는데 본문 파일이 없다"와 "Manifest가 애초에
+ * 본문을 선언하지 않았다"는 사용자가 할 수 있는 일이 다르다(전자는 재설치,
+ * 후자는 그 자산 자체의 문제). */
+export function readPromptTemplate(layout: InstallRootLayout, asset: InstalledAsset): PromptTemplateResult {
+  const empty = { system: null, body: null, variables: [] };
+  const manifestResult = readAssetManifest(layout, asset);
+  if (!manifestResult.available) {
+    return { available: false, reason: manifestResult.reason, ...empty };
+  }
+
+  const summary = summarizePromptManifest(manifestResult.manifest);
+  if (!summary) {
+    return {
+      available: false,
+      reason: "이 자산의 Manifest는 프롬프트 형식이 아닙니다.",
+      ...empty,
+    };
+  }
+
+  const variables = summary.variables.map((v) => ({
+    name: v.name,
+    type: v.type,
+    required: v.required,
+    description: v.description,
+  }));
+
+  if (!summary.templateFile) {
+    return {
+      available: false,
+      reason: "이 프롬프트는 본문 파일(template.file)을 선언하지 않았습니다.",
+      system: summary.system,
+      body: null,
+      variables,
+    };
+  }
+
+  const assetDir = assetInstallDir(layout, asset.assetType, asset.assetId, asset.version);
+  const templatePath = templatePathWithinAsset(assetDir, summary.templateFile);
+  if (!templatePath) {
+    return {
+      available: false,
+      reason: "본문 파일 경로가 자산 폴더를 벗어납니다 — 읽지 않았습니다.",
+      system: summary.system,
+      body: null,
+      variables,
+    };
+  }
+
+  let body: string;
+  try {
+    body = fs.readFileSync(templatePath, "utf-8");
+  } catch {
+    return {
+      available: false,
+      reason: `설치된 자산 폴더에서 본문 파일(${summary.templateFile})을 읽지 못했습니다.`,
+      system: summary.system,
+      body: null,
+      variables,
+    };
+  }
+
+  if (!body.trim()) {
+    return {
+      available: false,
+      reason: `본문 파일(${summary.templateFile})이 비어 있습니다.`,
+      system: summary.system,
+      body: null,
+      variables,
+    };
+  }
+
+  return { available: true, reason: null, system: summary.system, body, variables };
 }
 
 // ---------------------------------------------------------------------------

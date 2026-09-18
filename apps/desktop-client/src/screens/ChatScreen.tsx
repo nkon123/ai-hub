@@ -111,6 +111,7 @@ import {
   type LocalToolAutoRouteEntry,
   type LocalToolChatEntry,
 } from "./LocalToolInvokePanel";
+import { PromptPickerPanel } from "./PromptPickerPanel";
 // D-089 후속(통합 Tool 라우팅) — 로컬 Tool + 연결된 MCP Tool 후보를 하나로
 // 합쳐 "이번 턴에 어느 쪽을 쓸지"를 판단하는 순수 HTTP 모듈. agent-runtime을
 // 전혀 모른다(위 로컬 Tool 격리 원칙과 동일한 이유로 이 파일도 그 경계를
@@ -2723,6 +2724,16 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       connectedNames: mcpToolConnectionSummary.connected.map((a) => a.name),
                       installedNotConnectedCount: mcpToolConnectionSummary.installedNotConnectedCount,
                     }}
+                  />
+
+                  {/* 허브에서 받은 프롬프트를 골라 입력창에 넣는다. 위
+                      토글들과 달리 런타임 동작을 바꾸지 않는다 — 보내는
+                      것은 언제나 사용자가 입력창에서 확인한 텍스트다. */}
+                  <PromptPickerPanel
+                    bridge={bridge}
+                    disabled={isRunning}
+                    currentQuestion={question}
+                    onApply={setQuestion}
                   />
 
                   {settingsBridge ? (

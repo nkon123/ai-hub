@@ -8,6 +8,7 @@ import type {
   AgentDraftUploadResult,
   AssetDependencyView,
   AssetManifestResult,
+  PromptTemplateResult,
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
@@ -93,6 +94,8 @@ const bridge: DesktopBridge = {
 
   getAssetManifest: (assetType: string, assetId: string, version: string): Promise<AssetManifestResult> =>
     ipcRenderer.invoke("assets:getManifest", assetType, assetId, version),
+  getPromptTemplate: (assetId: string, version: string): Promise<PromptTemplateResult> =>
+    ipcRenderer.invoke("prompts:getTemplate", assetId, version),
 
   reverifyAssetChecksum: (
     assetType: string,

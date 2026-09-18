@@ -30,6 +30,7 @@ import {
   listInstalledAssetsWithStatus,
   listKnowledgeEmbedModels,
   readAssetManifest,
+  readPromptTemplate,
   recoverLegacyKnowledgeAssetVersionIds,
   reverifyAssetChecksum,
 } from "./asset-management";
@@ -68,6 +69,7 @@ import type {
   AgentDraftUploadResult,
   AssetDependencyView,
   AssetManifestResult,
+  PromptTemplateResult,
   AssetRemovalCheck,
   AssetVersionDiffResponse,
   ChecksumVerification,
@@ -483,6 +485,26 @@ function registerIpcHandlers(): void {
         return { available: false, reason: "설치된 자산을 찾을 수 없습니다.", manifest: null };
       }
       return readAssetManifest(layout, asset);
+    },
+  );
+
+  ipcMain.handle(
+    "prompts:getTemplate",
+    async (_event, assetId: string, version: string): Promise<PromptTemplateResult> => {
+      const layout = getLayout();
+      const store = new InstalledAssetsStore(layout.stateDir);
+      const asset = store.find("prompt", assetId, version);
+      if (!asset) {
+        return {
+          available: false,
+          reason: "설치된 프롬프트 자산을 찾을 수 없습니다.",
+          system: null,
+          body: null,
+          variables: [],
+        };
+      }
+      // 본문(Prompt 원문)은 로그에 남기지 않는다 — 루트 CLAUDE.md 로그 규칙.
+      return readPromptTemplate(layout, asset);
     },
   );
 

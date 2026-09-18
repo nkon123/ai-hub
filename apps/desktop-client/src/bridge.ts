@@ -41,6 +41,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   getInstallRootPath: true,
   checkAssetRemoval: true,
   getAssetManifest: true,
+  getPromptTemplate: true,
   reverifyAssetChecksum: true,
   getAssetDependencies: true,
   getKnowledgeCandidates: true,

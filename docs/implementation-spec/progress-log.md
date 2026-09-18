@@ -1,5 +1,15 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M04 대화 화면 — 허브에서 받은 프롬프트를 입력창에 넣기 (D-098)
+
+- 대화(D06) 입력창 버튼 줄에 **"프롬프트"** 버튼 추가(로컬 Tool 버튼과 같은 자리·같은 모양). 누르면 설치된 Prompt 자산 목록이 뜨고, 고르면 미리보기를 거쳐 **질문 입력창에 본문이 들어간다**. 목록은 **최근에 쓴 것이 위**(최대 10건 기억)이고 그 아래가 나머지 허브 프롬프트다.
+- **런타임 적용이 아니다**(D-098): agent-runtime의 system prompt/템플릿 교체 경로(D-034 경로 2/4)는 Agent+Prompt를 짝으로만 받아 프롬프트 하나만 갈아끼울 수 없다. 이번 버튼은 서버 계약을 건드리지 않고, 보내는 것은 언제나 사용자가 입력창에서 확인한 텍스트다 — 화면 문구도 "적용"이 아니라 "입력창에 넣기"로 적었다.
+- 본문 조립 규칙(순수 함수 + 테스트로 고정): `{{question}}` 자리에는 입력창에 쓰던 글을 넣고(질문을 두 번 쓰게 하지 않는다), 입력창이 비어 있으면 그 자리를 **남긴다**(지우면 어디에 쓸지 사라진다), 자리가 없으면 쓰던 글을 본문 뒤에 붙인다(사용자가 쓴 글을 버리지 않는다), `{{context_chunks}}`처럼 남은 자리는 **지우지 않고 경고**한다(엔진이 채워 주지 않는 텍스트다).
+- 신규 IPC `getPromptTemplate`(`prompts:getTemplate`) — Manifest에는 본문 파일 **이름**만 있어 `getAssetManifest`로는 내용을 알 수 없다. 실패는 예외가 아니라 `available:false` + 사유(Manifest 없음/본문 미선언/파일 없음/빈 파일/폴더 밖)로 돌아온다. `template.file`은 설치된 Manifest에 적힌 문자열이므로 **자산 폴더 담기 검사**를 통과할 때만 읽는다(agent-runtime `local_agent_registry`의 `_is_contained`와 같은 규칙). 본문(Prompt 원문)은 로그에 남기지 않는다.
+- 최근 사용 기록은 D10 설정이 아니라 렌더러 localStorage에 둔다 — 사용자가 고르는 값이 아니라 사용 흔적이고, 읽기/쓰기 실패는 "최근 목록 없음"으로 degrade한다(프롬프트는 이미 입력창에 들어갔는데 기록 실패로 되돌릴 이유가 없다).
+- **검증**: 신규 테스트 23개(`electron/__tests__/prompt-template.test.ts` 8 + `src/screens/promptPickerTypes.test.ts` 15). 전체 vitest 변경 전 **1039 passed / 12 failed** → 변경 후 **1062 passed / 12 failed**(+23 = 신규, 실패 집합 동일한 기존 실패). `pnpm typecheck` 통과. **변이 검증 2건**: 경로 담기 검사를 빼면 traversal 테스트가, 입력창에 쓰던 글을 버리게 하면 조립 테스트가 각각 깨진다. `tsc -p tsconfig.electron.json`으로 `dist/electron/preload.js` 재빌드(새 채널 포함 확인), `vite build`로 렌더러 번들에 패널이 들어간 것까지 확인.
+- **확인하지 못한 것**: 이 저장소에는 렌더링(jsdom/React) 테스트가 없고 이 세션에서 Electron 창이나 브라우저 렌더러를 눈으로 열지 못했다 — 버튼·모달의 실제 표시는 육안 확인이 남아 있다.
+
 ## 2026-09-17 M01/M02 지식 재색인 — 문서 교체와 색인 전략 변경 (D-097)
 
 - **없던 경로였다**: `/knowledge/new` 는 매번 새 asset id·version 1.0.0 고정이라 항상 **새 자산**을 만들고, `POST /assets/{id}/versions` 는 Manifest·파일을 복사만 하고 색인을 걸지 않는다(`_trigger_indexing` 호출부가 `POST /assets` 한 곳뿐이었다). 그래서 "문서를 갱신해 다시 색인"과 "청킹 전략만 바꿔 다시 색인"을 화면에서 할 수 없었고, 사용자는 같은 지식을 자산 id가 다른 둘로 만들 수밖에 없었다.

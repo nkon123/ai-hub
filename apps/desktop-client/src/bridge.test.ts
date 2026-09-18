@@ -118,6 +118,9 @@ function createCompleteBridge(): DesktopBridge {
     async getAssetManifest() {
       return { available: false, reason: null, manifest: null };
     },
+    async getPromptTemplate() {
+      return { available: false, reason: null, system: null, body: null, variables: [] };
+    },
     async reverifyAssetChecksum() {
       return { available: false, reason: null, result: null };
     },

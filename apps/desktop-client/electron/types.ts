@@ -378,6 +378,36 @@ export interface AssetManifestResult {
   manifest: unknown | null;
 }
 
+/** D06 대화 — 설치된 Prompt 자산(허브에서 받은 것) 한 건의 "쓸 수 있는 형태".
+ *
+ * `available: false`면 `reason`이 **왜 쓸 수 없는지**를 한국어로 말한다
+ * (Manifest 없음/손상, `template.file` 미선언, 본문 파일 없음, 자산 폴더 밖을
+ * 가리킴). 빈 본문을 돌려주고 조용히 성공한 척하지 않는다 — 대화 입력창에
+ * 아무것도 안 들어오면 사용자는 앱이 멈춘 줄 안다.
+ *
+ * `body`는 Prompt 본문(`template.file`의 내용) 원문이다. 이 값은 화면에
+ * 보여주고 입력창에 넣기 위한 것이며, **로그에 남기지 않는다**(루트 CLAUDE.md
+ * 로그 규칙: Prompt 원문 미저장). */
+export interface PromptTemplateResult {
+  available: boolean;
+  reason: string | null;
+  /** `template.system` — 역할 지침. 선언되지 않았으면 `null`. */
+  system: string | null;
+  /** `template.file`의 본문. `available: false`면 `null`. */
+  body: string | null;
+  variables: PromptTemplateVariable[];
+}
+
+/** `PromptTemplateResult.variables` 한 건 — Manifest의 `variables[]`. 본문의
+ * `{{name}}` 자리와 짝을 이룬다(입력창에 넣은 뒤 무엇을 채워야 하는지
+ * 알려주는 용도). */
+export interface PromptTemplateVariable {
+  name: string;
+  type: string;
+  required: boolean;
+  description: string | null;
+}
+
 /** One installed, chat-usable Knowledge offered to agent-runtime's
  * KNOWLEDGE_ROUTE stage (agentic Knowledge selection,
  * `agent_runtime.knowledge_router`, `KnowledgeCandidateInput` in
@@ -1543,6 +1573,12 @@ export interface DesktopBridge {
    * path-safety re-check at the point of extraction). */
   checkAssetRemoval(assetType: string, assetId: string, version: string): Promise<AssetRemovalCheck>;
   getAssetManifest(assetType: string, assetId: string, version: string): Promise<AssetManifestResult>;
+  /** D06 대화 — 설치된 Prompt 자산의 본문(`template.file`)과 역할 지침을
+   * 읽는다. `getAssetManifest`로는 본문 파일 내용을 알 수 없어(Manifest에는
+   * 파일 **이름**만 있다) 별도 채널이 필요하다. 실패는 예외가 아니라
+   * `available: false` + 사유로 돌아온다 — 대화 화면이 이 호출 하나 때문에
+   * 무너지지 않게 한다. */
+  getPromptTemplate(assetId: string, version: string): Promise<PromptTemplateResult>;
   reverifyAssetChecksum(
     assetType: string,
     assetId: string,

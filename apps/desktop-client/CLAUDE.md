@@ -40,6 +40,7 @@ Electron Desktop 앱. Offline Bundle Import, 로컬 자산 관리, 로컬/Hosted
 
 - `electron/`은 두 종류가 섞여 있다: fs/electron/node를 import하는 **Main process 전용** 모듈(`main.ts`, `bundle-install.ts`, `app-logger.ts`, `conversation-store.ts`, `desktop-settings.ts`, `installed-assets-store.ts`, `active-version-store.ts`, `portal-settings.ts`, `service-detail.ts`, `system-info.ts`, `preload.ts`)과, fs/electron import가 전혀 없는 **순수 함수/타입** 모듈(`network-policy.ts`, `bundle-verify.ts`, `connections.ts`, `log-filter.ts`, `log-sanitizer.ts`, `removal-guard.ts`, `service-dependencies.ts`, `store-install.ts`, `asset-status.ts`, `version-diff.ts`, `types.ts`, `portal-client.ts`). 후자는 렌더러(`src/`)가 상대경로로 직접 import해도 안전하다(예: `src/screens/ChatScreen.tsx`가 `../../electron/connections`의 `checkAllConnections`를 직접 씀). 새 Main 전용 로직을 순수 모듈 파일에 섞지 않는다 — Vite가 그 파일을 렌더러 번들에 그대로 넣는다.
 - 렌더러 화면은 `src/screens/*.tsx`(D00~D13에 대응) + `src/App.tsx`가 라우팅한다. `src/bridge.ts`의 `getDesktopBridge()`를 거쳐서만 `window.desktop`(preload가 노출한 IPC)에 접근한다 — 화면에서 `window.desktop`을 직접 참조하지 않는다.
+- 대화 화면의 "프롬프트" 버튼(`src/screens/PromptPickerPanel.tsx`)은 허브에서 받은 Prompt 자산을 골라 **질문 입력창에 문구를 넣기만 한다** — agent-runtime의 system prompt/템플릿으로 적용하지 않는다(그 경로는 D-034 해석 경로 2/4의 Agent+Prompt 짝이며 이 버튼과 무관하다). 문구를 "적용"이라고 부르지 않는 이유가 이것이다: 보내는 것은 언제나 사용자가 입력창에서 눈으로 확인한 텍스트다. 목록 정렬·텍스트 조립·최근 사용 기록은 `src/screens/promptPickerTypes.ts`(순수, 테스트가 고정)에 있고, 본문 파일 읽기는 `getPromptTemplate` IPC → `electron/asset-management.ts::readPromptTemplate` → `electron/prompt-template.ts`(경로 담기 검사)다. 최근 사용 기록은 D10 설정이 아니라 렌더러 `localStorage`에 둔다(사용자가 고르는 값이 아니라 사용 흔적이며, 읽기/쓰기 실패는 "최근 목록 없음"으로 degrade한다).
 - 새 IPC 채널은 **네** 곳을 함께 바꾼다: `electron/types.ts`(`DesktopBridge`에 메서드 선언) → `electron/main.ts`(`ipcMain.handle`) → `electron/preload.ts`(`contextBridge`로 메서드 추가) → **`src/browserPreviewBridge.ts`**(브라우저 개발 모드용 구현 추가, 아래 참고). 넷 중 하나만 바꾸면 타입은 있는데 실제로는 호출 불가능한 상태가 된다.
 - `src/browserPreviewBridge.ts`의 `BrowserSettingsBridge`는 `DesktopBridge`와 **동일한 타입**이다(`Pick<...>`으로 일부만 고르지 않는다). 브라우저 개발 모드가 실제로 수행할 수 없는 동작(파일 설치, Portal Store, Knowledge 활성화 등)은 조용히 성공한 척하지 않고 "Desktop 앱에서 실행하세요" 모양의 정직한 실패/빈 결과를 돌려주는 실제 구현을 채운다 — 메서드 자체를 빠뜨리지 않는다. 이렇게 두면 `DesktopBridge`에 메서드가 하나 추가될 때 이 파일이 갱신되지 않는 순간 `pnpm typecheck`가 즉시 실패한다(아래 "이 모듈에서 반복해서 틀렸던 것" 참고).
 - `dist/`, `release/`는 빌드 산출물이다(`vite build`→`dist/renderer`, `tsc -p tsconfig.electron.json`→`dist/electron`, electron-builder→`release/`). 소스를 여기에 두지 않는다.
@@ -152,7 +153,7 @@ pnpm test        # vitest — 기준선 453개 통과(2026-08-13 기준, 계속 
 
 ## 완료 전 확인
 
-- 새 IPC 채널을 추가했다면 `types.ts`/`main.ts`/`preload.ts`/`browserPreviewBridge.ts` 네 곳을 모두 갱신했는가(마지막 하나를 빠뜨려도 `pnpm typecheck`가 잡아준다 — `BrowserSettingsBridge`가 `DesktopBridge` 전체 타입이기 때문).
+- 새 IPC 채널을 추가했다면 `types.ts`/`main.ts`/`preload.ts`/`browserPreviewBridge.ts` 네 곳을 모두 갱신했는가(`src/bridge.ts`의 `Record<keyof DesktopBridge, true>` 맵과 `src/bridge.test.ts`의 가짜 bridge도 함께 — 둘 다 `pnpm typecheck`가 즉시 잡는다)(마지막 하나를 빠뜨려도 `pnpm typecheck`가 잡아준다 — `BrowserSettingsBridge`가 `DesktopBridge` 전체 타입이기 때문).
 - IPC 채널을 추가/변경했다면 `dist/electron/preload.js`를 다시 빌드했는가(`tsc -p tsconfig.electron.json`, 또는 `pnpm dev`) — stale 빌드 산출물은 소스가 맞아도 실제 Electron 실행에서는 여전히 옛 메서드로 동작한다.
 - 렌더러 코드에서 `fs`/`node:*`/`electron`을 직접 import하지 않았는가(순수 모듈에 Main 전용 코드를 섞지 않았는가).
 - Hub 조회 관련 변경이면 `chatTypes.ts`의 `buildHubQueryPreview`가 여전히 사용자 질문 텍스트만 읽는가(위 D-078 규칙 4항 — 확신이 없으면 되묻는다).
