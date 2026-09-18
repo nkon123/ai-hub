@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from agent_runtime.adapters import LLMAdapter
+from agent_runtime.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ class OllamaLLMAdapter(LLMAdapter):
         messages: list[dict[str, Any]],
         model_alias: str,
         stream: bool = True,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         alias_config = self._model_aliases.get(model_alias)
         if alias_config is None:
@@ -79,7 +81,12 @@ class OllamaLLMAdapter(LLMAdapter):
         endpoint = alias_config["endpoint"]
 
         async for token in self._stream_chat(
-            endpoint, model_id, messages, model_alias=model_alias, transport=self._transport
+            endpoint,
+            model_id,
+            messages,
+            model_alias=model_alias,
+            transport=self._transport,
+            max_output_tokens=max_output_tokens,
         ):
             yield token
 
@@ -91,12 +98,24 @@ class OllamaLLMAdapter(LLMAdapter):
         *,
         model_alias: str,
         transport: httpx.BaseTransport | None = None,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
+        # `keep_alive` 를 명시하는 이유: 기본값(5분)으로 두면 대화가 잠깐만
+        # 뜸해도 모델이 내려가고, 다음 질문의 첫 토큰이 모델 로딩 시간을 통째로
+        # 기다린다. 값은 설정(`AGENT_RUNTIME_OLLAMA_KEEP_ALIVE`)이며, 빈 값으로
+        # 두면 이 필드를 아예 보내지 않는다(= Ollama 기본값, 기존 동작).
+        body: dict[str, Any] = {"model": model_id, "messages": messages, "stream": True}
+        if settings.ollama_keep_alive:
+            body["keep_alive"] = settings.ollama_keep_alive
+        if max_output_tokens is not None:
+            # 라우팅처럼 짧은 JSON 하나면 끝나는 호출에만 온다 — 그 자리에
+            # 상한이 없으면 모델이 계속 쓰다 타임아웃까지 간다(ABC docstring).
+            body["options"] = {"num_predict": max_output_tokens}
         async with httpx.AsyncClient(timeout=None, transport=transport) as client:
             async with client.stream(
                 "POST",
                 f"{endpoint}/api/chat",
-                json={"model": model_id, "messages": messages, "stream": True},
+                json=body,
             ) as response:
                 if response.status_code == 404:
                     # Ollama's own /api/chat route always exists (a GET to it

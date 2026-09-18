@@ -19,7 +19,18 @@ class LLMAdapter(ABC):
         messages: list[dict[str, Any]],
         model_alias: str,
         stream: bool = True,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
+        """`max_output_tokens` (additive/optional, 2026-09-18) — 이 호출이
+        생성할 토큰 수 상한.
+
+        라우팅 호출(KNOWLEDGE_ROUTE/TOOL_ROUTE/질의 재작성)은 JSON 한 줄이면
+        끝나는데 상한이 없으면 모델이 장황하게 이어 써서 **타임아웃까지 가는
+        일이 실제로 있었다**(실측 `latency_ms=8010` = tool_route 타임아웃 8초
+        전부). 그때 사용자가 잃는 것은 그 8초 전체다 — 결과는 어차피 버려진다.
+
+        `None` 이면 상한을 보내지 않는다(기존 동작 그대로 — 답변 생성은 길이를
+        미리 자르면 안 되므로 항상 `None` 이다)."""
         ...
 
 

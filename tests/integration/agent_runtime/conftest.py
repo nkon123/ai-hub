@@ -97,6 +97,7 @@ class FakeLLMAdapter(LLMAdapter):
         messages: list[dict[str, Any]],
         model_alias: str,
         stream: bool = True,
+        max_output_tokens: int | None = None,
     ) -> AsyncIterator[str]:
         self.calls.append(messages)
         call_index = self.call_count

@@ -171,7 +171,7 @@ async def test_timeout_yields_no_tool_never_calls_the_only_candidate() -> None:
 
 async def test_llm_error_yields_no_tool() -> None:
     class _RaisingAdapter(FakeLLMAdapter):
-        async def generate(self, messages, model_alias, stream=True):  # type: ignore[override]
+        async def generate(self, messages, model_alias, stream=True, max_output_tokens=None):  # type: ignore[override]
             raise RuntimeError("boom")
             yield ""  # pragma: no cover - unreachable, keeps this an async generator
 

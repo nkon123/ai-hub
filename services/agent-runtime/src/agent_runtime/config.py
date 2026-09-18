@@ -168,6 +168,21 @@ class AgentRuntimeSettings(BaseSettings):
     # is an action, unlike a Knowledge search, so "guess and call anyway" is
     # not an acceptable fallback here (see tool_router.py).
     tool_route_timeout_seconds: float = 8.0
+
+    # --- 로컬 모델 지연 (2026-09-18 실사용: "채팅 반응이 너무 느리다") -------
+    #
+    # 라우팅 3종(KNOWLEDGE_ROUTE/TOOL_ROUTE/질의 재작성)은 JSON 한 줄을 받으려고
+    # 답변과 **같은 채팅 모델**을 부른다. 상한이 없으면 모델이 계속 이어 써서
+    # 위 타임아웃까지 가고, 그 시간 전체가 사용자 대기 시간이 된다(실측:
+    # `tool.route.no_tool reason=error_or_timeout latency_ms=8010`). 0 이하로
+    # 두면 상한을 보내지 않는다(기존 동작).
+    #
+    # 답변 생성에는 적용하지 않는다 — 답을 길이로 자르면 잘린 답이 나온다.
+    router_max_output_tokens: int = 160
+    # Ollama `keep_alive`. 기본값(5분)이면 대화가 잠깐 뜸한 사이 모델이
+    # 내려가고 다음 질문이 로딩 시간을 통째로 기다린다. 빈 문자열이면 필드를
+    # 보내지 않는다(= Ollama 기본값).
+    ollama_keep_alive: str = "30m"
     # D-083 follow-up: bounds each candidate's human-readable `description`
     # (built-in `MCP_TOOL_SPECS` text or a D-080 registration's `label`)
     # before `tool_router._normalize_candidates` renders it into the routing

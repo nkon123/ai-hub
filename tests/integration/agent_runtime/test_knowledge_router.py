@@ -96,7 +96,7 @@ async def test_above_threshold_calls_llm_and_selects_subset() -> None:
 
 async def test_llm_error_falls_back_to_searching_every_candidate() -> None:
     class _RaisingAdapter(FakeLLMAdapter):
-        async def generate(self, messages, model_alias, stream=True):  # type: ignore[override]
+        async def generate(self, messages, model_alias, stream=True, max_output_tokens=None):  # type: ignore[override]
             self.call_count += 1
             raise RuntimeError("llm unavailable")
             yield ""  # pragma: no cover - unreachable, keeps this an async generator

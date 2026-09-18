@@ -122,7 +122,11 @@ async def test_rewrite_query_for_search_falls_back_to_original_on_timeout() -> N
 async def test_rewrite_query_for_search_falls_back_to_original_on_adapter_error() -> None:
     class ExplodingLLMAdapter(FakeLLMAdapter):
         async def generate(  # type: ignore[override]
-            self, messages: list[dict[str, Any]], model_alias: str, stream: bool = True
+            self,
+            messages: list[dict[str, Any]],
+            model_alias: str,
+            stream: bool = True,
+            max_output_tokens: int | None = None,
         ):
             raise RuntimeError("ollama unreachable")
             yield ""  # pragma: no cover - makes this an async generator

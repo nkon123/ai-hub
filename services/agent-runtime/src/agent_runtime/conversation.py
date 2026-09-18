@@ -33,6 +33,7 @@ import logging
 import time
 from contextlib import suppress
 from typing import Any, TypedDict
+from agent_runtime.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +153,17 @@ async def rewrite_query_for_search(
     ]
 
     started = time.monotonic()
-    agen = llm_adapter.generate(messages, model_alias=model_alias, stream=True)
+    # 이 호출이 받아야 하는 것은 JSON 한 줄이다. 상한이 없으면 모델이 계속
+    # 이어 쓰다 타임아웃까지 가고, 그 시간 전체가 사용자 대기 시간이 된다
+    # (`LLMAdapter.generate` 의 `max_output_tokens` docstring).
+    agen = llm_adapter.generate(
+        messages,
+        model_alias=model_alias,
+        stream=True,
+        max_output_tokens=settings.router_max_output_tokens
+        if settings.router_max_output_tokens > 0
+        else None,
+    )
     parts: list[str] = []
     try:
 

@@ -530,6 +530,21 @@ async def _run_mcp_tool_call(
     return {"tool_name": tool_name, "output": result.get("output"), "truncated": truncated}
 
 
+# --- 단계별 소요시간 (2026-09-18 실사용: "채팅 반응이 너무 느리다") ---------
+#
+# 왜 필요했나: 한 턴이 답변 전에 모델을 최대 세 번(KNOWLEDGE_ROUTE / 질의
+# 재작성 / TOOL_ROUTE) 부르는데, **성공 경로에는 소요시간 기록이 없었다** —
+# 실패·폴백 경로에만 `latency_ms` 가 있어서 "느리다"는 제보가 오면 어디가
+# 느린지 추측할 수밖에 없었다. 최적화를 하든 안 하든, 먼저 보이게 만든다.
+#
+# 로그에는 **시간과 단계 이름만** 남긴다 — 질문·문서·Tool 인자는 넣지 않는다
+# (루트 CLAUDE.md 로그 규칙).
+def _log_stage(run_id: str, stage: str, started: float, **extra: object) -> None:
+    latency_ms = int((time.monotonic() - started) * 1000)
+    suffix = "".join(f" {key}={value}" for key, value in extra.items())
+    logger.info("stage.timing run_id=%s stage=%s latency_ms=%d%s", run_id, stage, latency_ms, suffix)
+
+
 async def run_knowledge_chat(
     run_id: str,
     service_id: str,
@@ -808,6 +823,7 @@ async def run_knowledge_chat(
             # is always safe to search directly, in every status.
             route_result: KnowledgeRouteResult | None = None
             if knowledge_candidates:
+                knowledge_route_started = time.monotonic()
                 route_result = await route_knowledge_candidates(
                     question,
                     knowledge_candidates,
@@ -815,6 +831,13 @@ async def run_knowledge_chat(
                     model_alias="default-chat",
                     timeout_seconds=settings.knowledge_route_timeout_seconds,
                     skip_threshold=settings.knowledge_route_skip_threshold,
+                )
+                _log_stage(
+                    run_id,
+                    "knowledge_route",
+                    knowledge_route_started,
+                    candidates=len(knowledge_candidates),
+                    status=route_result.status,
                 )
                 run_store.append_event(
                     run_id,
@@ -850,6 +873,7 @@ async def run_knowledge_chat(
             # docstring reference to the measurement backing this choice).
             search_query = question
             if bounded_history:
+                rewrite_started = time.monotonic()
                 search_query, rewrite_meta = await rewrite_query_for_search(
                     question,
                     bounded_history,
@@ -857,6 +881,7 @@ async def run_knowledge_chat(
                     model_alias="default-chat",
                     timeout_seconds=settings.query_rewrite_timeout_seconds,
                 )
+                _log_stage(run_id, "query_rewrite", rewrite_started, turns=len(bounded_history))
                 run_store.append_event(run_id, "knowledge.query_rewritten", rewrite_meta)
 
             # Stage 1 fan-out: searches every id in `ids_to_search` with the
@@ -916,6 +941,7 @@ async def run_knowledge_chat(
                     payload["min_relevance_score"] = raw_min_score
                 return await knowledge_adapter.search(payload)
 
+            search_started = time.monotonic()
             try:
                 search_results = await asyncio.gather(*(_search_one(kid) for kid in ids_to_search))
             except KnowledgeSearchError as exc:
@@ -927,6 +953,8 @@ async def run_knowledge_chat(
                 # path fires on a real integration/config bug, not normal use.
                 _fail(run_store, run_id, trace_id, exc.code, exc.message)
                 return
+
+            _log_stage(run_id, "knowledge_search", search_started, ids=len(ids_to_search))
 
             citations = [
                 {**citation, "source": "local"}
@@ -1015,6 +1043,7 @@ async def run_knowledge_chat(
             tool_candidates = mcp_tools.filter_candidates_to_scope(
                 mcp_tools.list_candidate_tools(config.office_profile), mcp_tool_scope
             )
+            tool_route_started = time.monotonic()
             tool_route_result: ToolRouteResult = await route_tool_call(
                 question,
                 tool_candidates,
@@ -1032,6 +1061,13 @@ async def run_knowledge_chat(
                     "reason": tool_route_result.reason,
                     "tool_name": tool_route_result.tool_name,
                 },
+            )
+            _log_stage(
+                run_id,
+                "tool_route",
+                tool_route_started,
+                candidates=len(tool_candidates),
+                status=tool_route_result.status,
             )
             logger.info(
                 "tool.route run_id=%s status=%s reason=%s tool_name=%s",
@@ -1140,6 +1176,8 @@ async def run_knowledge_chat(
             history=bounded_history,
         )
 
+        answer_started = time.monotonic()
+        first_token_logged = False
         answer_parts: list[str] = []
         # Cast: the ABC declares AsyncIterator[str], but adapters are implemented
         # as async generator functions, which additionally support aclose() —
@@ -1155,12 +1193,19 @@ async def run_knowledge_chat(
                     run_store.set_status(run_id, "CANCELLED")
                     run_store.append_event(run_id, "run.cancelled", {"trace_id": trace_id})
                     return
+                if not first_token_logged:
+                    # 사용자가 실제로 체감하는 지점 — 여기까지가 "기다린 시간"이고
+                    # 그 뒤는 글자가 흘러나오는 시간이다. 둘을 한 숫자로 합치면
+                    # 어디를 고쳐야 하는지 알 수 없다.
+                    _log_stage(run_id, "answer_first_token", answer_started)
+                    first_token_logged = True
                 answer_parts.append(token)
                 run_store.append_event(run_id, "answer.delta", {"delta": token})
         finally:
             await agen.aclose()
 
         full_answer = "".join(answer_parts)
+        _log_stage(run_id, "answer_total", answer_started, answer_len=len(full_answer))
         logger.info("run.answer_generate run_id=%s answer_len=%d", run_id, len(full_answer))
 
         # --- OUTPUT_VALIDATE ---

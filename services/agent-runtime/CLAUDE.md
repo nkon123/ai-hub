@@ -245,6 +245,24 @@ tests/integration/agent_runtime/ -q` — 확인 시점 74개 통과.
   전체"다. 이 셋(생략 / 빈 목록 / 일부)이 서로 다른 뜻이라는 것을
   `tests/unit/agent_runtime/test_mcp_tool_candidates_scope.py` 가 고정한다.
 
+- **한 턴이 답변 전에 모델을 최대 세 번 부른다(KNOWLEDGE_ROUTE / 질의 재작성 /
+  TOOL_ROUTE).** 로컬 모델에서는 이것이 체감 지연의 대부분이다. 2026-09-18에
+  두 가지를 넣었다: (a) 라우팅 호출에 생성 토큰 상한
+  (`settings.router_max_output_tokens` → `LLMAdapter.generate(max_output_tokens=)`
+  → Ollama `options.num_predict`) — 상한이 없으면 모델이 이어 쓰다 타임아웃까지
+  가고 **그 시간 전체가 대기 시간**이 된다(실측 `latency_ms=8010`). 답변 생성에는
+  절대 상한을 걸지 않는다. (b) `settings.ollama_keep_alive` — 기본 5분이면 대화가
+  잠깐 뜸한 사이 모델이 내려간다.
+  **단계별 소요시간은 `workflow._log_stage` 가 `stage.timing` 한 줄로 남긴다**
+  (`knowledge_route`/`query_rewrite`/`knowledge_search`/`tool_route`/
+  `answer_first_token`/`answer_total`). 느리다는 제보가 오면 추측하지 말고 이
+  줄부터 grep 한다 — 전에는 실패·폴백 경로에만 `latency_ms` 가 있어서 성공한
+  느린 턴은 아무 흔적도 남지 않았다.
+  **병렬화는 아직 하지 않았다**: 세 호출은 서로 독립이지만 Ollama 가 요청을
+  직렬 처리하면(`OLLAMA_NUM_PARALLEL`) `asyncio.gather` 로 묶어도 벽시계 시간이
+  줄지 않고, GPU 한 장에서는 동시 실행이 연산을 나눠 쓸 뿐이다. 하려면 그 값부터
+  확인하고, 위 `stage.timing` 으로 전후를 비교한다.
+
 ## 완료 전 확인
 
 - `mcp_tools.py`의 `MCP_TOOL_SPECS`를 office-mcp-server의
