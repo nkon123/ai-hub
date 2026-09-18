@@ -933,6 +933,33 @@ export function describeCitationChip(citation: Citation): CitationChipLabel {
   };
 }
 
+/** 출처 칩을 처음에 몇 개까지 펼쳐 둘지. 10개가 한꺼번에 깔리면 답변보다
+ * 출처가 더 커 보인다(2026-09-18 "출처 칩이 너무 커진다"). */
+export const CITATION_CHIPS_COLLAPSED_LIMIT = 4;
+
+/** 보이는 칩과 접힌 개수. 접을 것이 1개뿐이면 그냥 다 보인다 — "+1개" 버튼이
+ * 칩 하나와 같은 자리를 차지하면 접는 의미가 없다. */
+export function citationChipsToShow<T>(
+  citations: T[],
+  expanded: boolean,
+  limit: number = CITATION_CHIPS_COLLAPSED_LIMIT,
+): { visible: T[]; hiddenCount: number } {
+  if (expanded || citations.length <= limit + 1) return { visible: citations, hiddenCount: 0 };
+  return { visible: citations.slice(0, limit), hiddenCount: citations.length - limit };
+}
+
+/** 출처 머리줄 — "출처 5 · 로컬 4 · 허브 1". 로컬/허브 구분(D-078)은 칩마다
+ * 배지로도 남지만, 한 줄 요약이 있어야 허브 결과가 섞였는지 한눈에 보인다.
+ * 한쪽뿐이면 그쪽만 적는다. */
+export function summarizeCitationSources(citations: Array<{ source?: string | null }>): string {
+  const hub = citations.filter((c) => c.source === "hub").length;
+  const local = citations.length - hub;
+  const parts = [`출처 ${citations.length}`];
+  if (local > 0) parts.push(`로컬 ${local}`);
+  if (hub > 0) parts.push(`허브 ${hub}`);
+  return parts.join(" · ");
+}
+
 export function hasLowConfidenceCitation(citations: Citation[]): boolean {
   return citations.some((c) => c.similarity !== null && c.similarity < 0.5);
 }

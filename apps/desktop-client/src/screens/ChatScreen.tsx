@@ -78,6 +78,8 @@ import {
   describeKnowledgeRoute,
   describeToolRouteRejected,
   describeCitationChip,
+  citationChipsToShow,
+  summarizeCitationSources,
   describeToolRouteSelected,
   downloadMarkdown,
   groupExcludedKnowledgeByReason,
@@ -3051,6 +3053,8 @@ function ChatTurn({
 }) {
   const isInFlight = message.status === "running" || message.status === "waiting_for_user";
   const isTerminal = !isInFlight;
+  const [citationsExpanded, setCitationsExpanded] = useState(false);
+  const citationChips = citationChipsToShow(message.citations, citationsExpanded);
   const lowConfidence = message.status === "succeeded" && hasLowConfidenceCitation(message.citations);
 
   return (
@@ -3188,40 +3192,61 @@ function ChatTurn({
           </p>
         )}
 
-        {/* 출처 칩 — **무엇이 검색됐는지**를 칩에서 바로 읽을 수 있어야 한다.
-            예전에는 파일명만 보여서, 같은 문서에서 여러 조각이 걸리면 칩이 전부
-            같은 글자로 나왔다(2026-09-18 실사용 제보). 지금은 주제(섹션)를
-            앞세우고 문서명과 발췌 한 조각을 덧붙인다 — 라벨 계산은
-            `describeCitationChip`(순수 함수, 테스트가 고정). 전체 발췌는 클릭해
-            여는 모달이 그대로 보여준다. 로컬/허브 구분(D-078)은 칩 안에 그대로
-            남는다. */}
+        {/* 출처 칩 — 작은 알약 한 줄(2026-09-18 "출처 칩이 너무 커진다").
+            칩에는 **무엇이 검색됐는지**(번호·주제·페이지)만 두고, 문서명과
+            발췌는 툴팁(hover)과 클릭 모달로 보낸다 — 예전엔 칩마다 발췌 한
+            줄까지 붙인 전체 폭 카드라 출처가 답변보다 커 보였다. 라벨은
+            `describeCitationChip`, 접기는 `citationChipsToShow`(둘 다 순수 함수,
+            테스트 고정). 로컬/허브 구분(D-078)은 머리줄 요약과 칩 배지 두 곳에
+            남는다 — 허브 칩만 색으로 구분하고 로컬은 조용한 기본값이다. */}
         {message.citations.length > 0 && (
-          <div className="flex flex-col gap-1">
-            {message.citations.map((c, idx) => {
-              const label = describeCitationChip(c);
-              return (
-                <button
-                  key={c.chunk_id || idx}
-                  type="button"
-                  onClick={() => onCitationClick(c)}
-                  title={`${label.tooltip}\n\n(${c.source === "hub" ? "허브" : "로컬"} 검색 결과 — 클릭하면 전체 발췌)`}
-                  className="flex w-full max-w-full items-start gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1.5 text-left text-[11px] text-text-secondary transition-colors hover:border-brand-300 hover:bg-brand-50"
-                >
-                  <FileSearch size={11} className="mt-0.5 shrink-0 text-text-muted" aria-hidden="true" />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex flex-wrap items-baseline gap-x-1.5">
-                      <span className="font-medium text-text-primary">{label.primary}</span>
-                      {label.document && <span className="text-text-muted">{label.document}</span>}
-                      {label.page && <span className="text-text-muted">{label.page}</span>}
-                    </span>
-                    {label.preview && <span className="mt-0.5 block truncate text-text-muted">{label.preview}</span>}
-                  </span>
-                  <span className={`shrink-0 font-semibold ${c.source === "hub" ? "text-brand-600" : "text-text-muted"}`}>
-                    {c.source === "hub" ? "허브" : "로컬"}
-                  </span>
-                </button>
-              );
-            })}
+          <div className="space-y-1.5">
+            <p className="text-[11px] font-medium text-text-muted">{summarizeCitationSources(message.citations)}</p>
+            <ul className="flex flex-wrap gap-1.5" aria-label="답변 출처">
+              {citationChips.visible.map((c, idx) => {
+                const label = describeCitationChip(c);
+                const hub = c.source === "hub";
+                return (
+                  <li key={c.chunk_id || idx} className="min-w-0 max-w-full">
+                    <button
+                      type="button"
+                      onClick={() => onCitationClick(c)}
+                      title={`${label.tooltip}\n\n(${hub ? "허브" : "로컬"} 검색 결과 — 클릭하면 전체 발췌)`}
+                      className={`group/chip inline-flex h-6 max-w-[18rem] items-center gap-1.5 rounded-full border pl-1 pr-2.5 text-[11px] transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500 ${
+                        hub
+                          ? "border-brand-200 bg-brand-50 text-brand-700 hover:border-brand-400"
+                          : "border-border bg-slate-50 text-text-secondary hover:border-brand-300 hover:bg-white"
+                      }`}
+                    >
+                      <span
+                        aria-hidden="true"
+                        className={`flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full px-1 text-[10px] font-semibold tabular-nums ${
+                          hub ? "bg-brand-500 text-white" : "bg-white text-text-muted ring-1 ring-border"
+                        }`}
+                      >
+                        {idx + 1}
+                      </span>
+                      <span className="truncate font-medium group-hover/chip:text-text-primary">{label.primary}</span>
+                      {label.page && <span className="shrink-0 text-text-muted">{label.page}</span>}
+                      <span className={`shrink-0 text-[10px] ${hub ? "font-semibold" : "text-text-muted"}`}>
+                        {hub ? "허브" : "로컬"}
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+              {citationChips.hiddenCount > 0 && (
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setCitationsExpanded(true)}
+                    className="inline-flex h-6 items-center rounded-full border border-dashed border-border px-2.5 text-[11px] text-text-muted transition-colors hover:border-brand-300 hover:text-brand-700"
+                  >
+                    +{citationChips.hiddenCount}개
+                  </button>
+                </li>
+              )}
+            </ul>
           </div>
         )}
 

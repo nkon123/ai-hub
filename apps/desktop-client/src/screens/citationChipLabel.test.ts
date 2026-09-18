@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { describeCitationChip } from "./chatTypes";
+import { citationChipsToShow, describeCitationChip, summarizeCitationSources } from "./chatTypes";
 import type { Citation } from "../agentRuntime";
 
 /**
@@ -95,5 +95,37 @@ describe("describeCitationChip", () => {
     const label = describeCitationChip(citation({ section: "인사규정.md" }));
     expect(label.primary).toBe("인사규정.md");
     expect(label.document).toBeNull();
+  });
+});
+
+// 2026-09-18 "출처 칩이 너무 커진다" — 칩을 작은 알약으로 바꾸면서 많을 때 접는다.
+describe("citationChipsToShow", () => {
+  const list = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+
+  it("shows everything when there are few", () => {
+    expect(citationChipsToShow(list(4), false)).toEqual({ visible: list(4), hiddenCount: 0 });
+  });
+
+  it("does not collapse just one extra chip — '+1' would take the same room as the chip", () => {
+    expect(citationChipsToShow(list(5), false)).toEqual({ visible: list(5), hiddenCount: 0 });
+  });
+
+  it("collapses the rest behind a count", () => {
+    expect(citationChipsToShow(list(10), false)).toEqual({ visible: list(4), hiddenCount: 6 });
+  });
+
+  it("shows everything once expanded", () => {
+    expect(citationChipsToShow(list(10), true)).toEqual({ visible: list(10), hiddenCount: 0 });
+  });
+});
+
+describe("summarizeCitationSources — 허브가 섞였는지 한 줄로(D-078)", () => {
+  it("names only the sources present", () => {
+    expect(summarizeCitationSources([{ source: "local" }, { source: "local" }])).toBe("출처 2 · 로컬 2");
+    expect(summarizeCitationSources([{ source: "hub" }])).toBe("출처 1 · 허브 1");
+  });
+
+  it("counts both when mixed, treating a missing source as local", () => {
+    expect(summarizeCitationSources([{ source: "hub" }, { source: null }, {}])).toBe("출처 3 · 로컬 2 · 허브 1");
   });
 });
