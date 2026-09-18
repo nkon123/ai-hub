@@ -185,6 +185,21 @@ async def test_trace_id_propagates_into_mcp_request_context(
     assert audit_context["user"]["roles"] == ["USER"]
 
 
+async def test_local_user_roles_come_from_settings(
+    client: httpx.AsyncClient, fake_mcp_adapter: FakeMCPAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """역할이 고정 상수였을 때는 CREATOR/ADMIN 만 허용하는 서버(hello-mcp 1.0.0)를
+    Desktop 대화에서 어떤 설정으로도 부를 수 없었다(2026-09-18 실사용:
+    MCP_PERMISSION_DENIED). 운영자가 준 역할이 그대로 인가 판정에 들어가야 한다."""
+    monkeypatch.setattr(settings, "poc_mcp_user_roles", ("USER", "CREATOR"))
+
+    resp = await _start_db_agent_run(client)
+    assert resp.status_code == 202
+    await _read_all_sse_events(client, resp.json()["id"])
+
+    assert fake_mcp_adapter.calls[0]["audit_context"]["user"]["roles"] == ["USER", "CREATOR"]
+
+
 # --- Refusals before any network call ---
 
 

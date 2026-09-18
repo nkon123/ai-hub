@@ -82,6 +82,12 @@ curl http://localhost:8100/local/v1/mcp-servers
   `mcp` 만 씁니다.
 - **선언한 Tool 만 쓰입니다.** 이 서버가 나중에 Tool 을 늘려도 매니페스트의
   `declared_tools` 에 없으면 등록되지 않습니다(교집합).
+- **누가 부를 수 있는가**: 두 Tool 모두 역할 `USER`/`CREATOR`/`ADMIN`, 조직
+  `miracom` 을 허용합니다(1.0.1). 1.0.0 은 `CREATOR`/`ADMIN` 만 허용해서,
+  역할이 `USER` 로 고정된 Desktop 대화에서는 Tool 이 제안돼도
+  `MCP_PERMISSION_DENIED` 로 거부됐습니다. 이미 1.0.0 을 설치했다면 1.0.1 로
+  다시 등록·설치하거나, agent-runtime 에
+  `AGENT_RUNTIME_POC_MCP_USER_ROLES=USER,CREATOR` 를 주세요(D-100).
 - `provenance` 가 `INTERNAL` 이라 호출자 신원이 `_meta` 로 전달됩니다.
   `THIRD_PARTY` 로 바꾸면 전달하지 않습니다(D-095).
 

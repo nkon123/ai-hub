@@ -1,5 +1,16 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M05/M04 hello-mcp `hello.now` 가 MCP_PERMISSION_DENIED — 로컬 사용자 역할 (D-100)
+
+- **제보**: "hello-mcp 를 골라 '지금 시간은?'을 물었더니 hello.now 가 제안됐는데 호출 권한이 없다(MCP_PERMISSION_DENIED)고 한다. MCP 전체로 두면 'Tool 호출이 필요하지 않다'고 판단하고 '등록된 Knowledge에서 근거를 찾지 못했다'가 뜬다."
+- **원인 1 (권한)**: agent-runtime 이 Desktop 대화 사용자를 역할 `["USER"]` 상수로 판정하는데(D-015), hello-mcp 1.0.0 은 두 Tool 모두 `CREATOR`/`ADMIN` 만 허용한다 → `role_not_permitted` → `MCP_PERMISSION_DENIED`. 조직(`miracom`)·등급은 통과.
+- **원인 2 (문구)**: 직전 변경(지식 검색을 끈 턴에는 지식을 싣지 않음)으로 Tool 이 선택되지 않은 턴이 "근거 부족"으로 끝나는데, 화면 문구가 그대로 "등록된 Knowledge에서 근거를 찾지 못했습니다"였다 — `086b5f6` 에서 `insufficientEvidenceMessage` 로 고쳤다(지식을 실은 턴만 기존 문구).
+- **"MCP 전체"에서 Tool 을 안 고른 것**은 코드 결함이 아니라 라우터 모델 판단이다 — 후보 5개(DB 3 + hello 2)에서 로컬 모델이 거절했고, hello-mcp 2개로 좁히면 골랐다. 라우터 프롬프트는 D-083 대로 "확신이 없으면 호출하지 않는다"로 보수적이다. 바꾸지 않았다.
+- **고친 것(사용자 결정 "둘 다")**: (1) `AGENT_RUNTIME_POC_MCP_USER_ROLES`(기본 `USER`, 쉼표/세미콜론/JSON, 대문자 정규화, 빈 값은 기동 거부) — `workflow._build_mcp_audit_context` 가 이 값을 쓴다. (2) `samples/mcp-servers/hello-mcp` 매니페스트 1.0.1 — 두 Tool 에 `USER` 추가(스키마 검증 통과). 승인된 1.0.0(portal-api storage)은 건드리지 않았다.
+- **검증**: 신규 단위 7개(기본값 불변, 표기 5종 동일 결과, 빈 값 거부, 깨진 JSON 안내) + 통합 1개(설정한 역할이 감사 컨텍스트에 그대로). agent-runtime unit+integration+contract **558 → 567 passed, 실패 19건은 변경 전후 동일 집합**(stash 로 비교). **변이 검증**: 역할을 다시 상수로 돌리면 통합 테스트가 깨진다. contract 실패 17건도 매니페스트 변경 전후 동일. 이 환경에서 pytest 기본 임시 폴더가 권한 거부라 `--basetemp` 를 scratch 로 줘서 돌렸다.
+- **적용 방법**: (a) 가장 빠른 것 — `services/agent-runtime/.env` 에 `AGENT_RUNTIME_POC_MCP_USER_ROLES=USER,CREATOR` 후 agent-runtime 재시작. (b) 또는 1.0.1 매니페스트로 다시 등록/설치.
+- **확인하지 못한 것**: 실제 앱에서 hello.now 호출까지 다시 해 보지 않았다.
+
 ## 2026-09-18 M12 재시작 시 "Object[] → Int32 변환 불가" + Desktop 로그 `Move-Item` 실패
 
 - **제보**: "리스타트하니 종료는 되는 것 같은데 'System.Object[] 유형의 값을 System.Int32 유형으로 변환할 수 없다'가 나오고, desktop-client 로그에서 'Move-Item: 파일이 다른 프로세스에서 사용되고 있다'가 나온다."

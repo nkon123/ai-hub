@@ -321,6 +321,52 @@ class AgentRuntimeSettings(BaseSettings):
     # 등록 요청이 매달려 있지 않게 한다.
     mcp_connect_timeout_seconds: float = 20.0
 
+    #: MCP Tool 인가(`mcp_client.policy._authorization_denial`)에 쓰는 **로컬
+    #: 사용자 역할**. 이 Runtime 에는 아직 호출자 신원 어댑터가 없어(D-015 PoC
+    #: Mock User Context, D-035 미인증) 모든 대화가 같은 고정 사용자로 판정된다.
+    #:
+    #: 예전에는 `workflow.py` 의 상수 `["USER"]` 였다. 그래서 `CREATOR`/`ADMIN`
+    #: 만 허용하는 서버(예: hello-mcp 1.0.0)는 Desktop 대화에서 **어떤 설정으로도**
+    #: 부를 수 없었다(2026-09-18 실사용: `hello.now` 가 제안됐는데
+    #: MCP_PERMISSION_DENIED). 운영자가 이 PC 의 역할을 정할 수 있게 설정으로 뺐다.
+    #: 기본값은 그대로 `USER` — 설정하지 않으면 동작이 바뀌지 않는다.
+    #:
+    #: 모든 등록 서버의 판정에 영향을 준다(서버마다 따로 줄 수 없다). 받는 모양:
+    #: `USER,CREATOR` / `USER;CREATOR` / `["USER", "CREATOR"]`. 대문자로 맞춘다.
+    poc_mcp_user_roles: Annotated[tuple[str, ...], NoDecode] = ("USER",)
+
+    @field_validator("poc_mcp_user_roles", mode="before")
+    @classmethod
+    def _parse_roles(cls, value: object) -> object:
+        if isinstance(value, str):
+            text = value.strip()
+            if text.startswith("["):
+                try:
+                    parsed = json.loads(text)
+                except json.JSONDecodeError as e:
+                    raise ValueError(
+                        f'역할을 JSON 배열로 읽지 못했습니다({e.msg}). 예: ["USER", "CREATOR"] '
+                        "또는 대괄호 없이 USER,CREATOR"
+                    ) from e
+                if not isinstance(parsed, list):
+                    raise ValueError('JSON 으로 쓸 경우 배열이어야 합니다(예: ["USER", "CREATOR"]).')
+                items = [str(item) for item in parsed]
+            else:
+                items = text.replace(";", ",").split(",")
+        elif isinstance(value, (list, tuple)):
+            items = [str(item) for item in value]
+        else:
+            return value
+        roles = tuple(dict.fromkeys(item.strip().strip('"').strip("'").upper() for item in items if item.strip()))
+        # 비어 있으면 Default Deny 로 **모든** Tool 이 조용히 거부된다 — 설정 실수가
+        # "권한 없음"으로만 보이지 않게 기동 시점에 말한다.
+        if not roles:
+            raise ValueError(
+                "역할이 비어 있습니다 — 이대로면 모든 MCP Tool 이 거부됩니다. "
+                "기본값(USER)을 쓰려면 이 설정을 지우세요."
+            )
+        return roles
+
     # --- 목록 설정을 사람이 쓰는 모양 그대로 받는다 -------------------------
     #
     # 위 세 필드는 `.env` 나 환경변수로 들어온다. pydantic-settings 는 기본적으로

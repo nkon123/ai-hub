@@ -3,7 +3,7 @@
   "id": "c1a7f4e2-9b38-4d61-8f20-7e5a3c9b1d64",
   "type": "mcp_server",
   "name": "연결 확인용 예제 서버",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "owner": {
     "org": "miracom",
     "team": "platform",
@@ -36,7 +36,7 @@
       },
       "risk_level": "READ_ONLY",
       "permissions": {
-        "allowed_roles": ["CREATOR", "ADMIN"],
+        "allowed_roles": ["USER", "CREATOR", "ADMIN"],
         "allowed_orgs": ["miracom"]
       },
       "data_classification": "PUBLIC_INTERNAL",
@@ -57,7 +57,7 @@
       },
       "risk_level": "READ_ONLY",
       "permissions": {
-        "allowed_roles": ["CREATOR", "ADMIN"],
+        "allowed_roles": ["USER", "CREATOR", "ADMIN"],
         "allowed_orgs": ["miracom"]
       },
       "data_classification": "PUBLIC_INTERNAL",

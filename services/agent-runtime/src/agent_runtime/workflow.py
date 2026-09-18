@@ -128,9 +128,10 @@ def _derive_service_uuid(service_id: str) -> str:
 
 # PoC Mock User Context (D-015) — agent-runtime has no caller-identity
 # adapter yet (D-035: unauthenticated). A real identity/auth layer would
-# supply these instead of a fixed constant.
+# supply these instead of a fixed constant. 역할은 설정값이다
+# (`settings.poc_mcp_user_roles`, 기본 `USER`) — 고정 상수였을 때는
+# CREATOR/ADMIN 만 허용하는 서버를 어떤 설정으로도 부를 수 없었다.
 _POC_MCP_USER_ID = "poc-local-runtime-user"
-_POC_MCP_USER_ROLES = ["USER"]
 
 # Placeholder — there is no ServiceVersion Registry lookup available to this
 # Runtime yet (D-034), so no real version string exists for an opaque
@@ -340,7 +341,7 @@ def _build_mcp_audit_context(
             "id": _POC_MCP_USER_ID,
             "organization_id": office_profile.get("org", "unknown-org"),
             "site_id": sites[0],
-            "roles": list(_POC_MCP_USER_ROLES),
+            "roles": list(settings.poc_mcp_user_roles),
         },
         "requested_tool": tool_name,
     }
