@@ -470,6 +470,18 @@ export function knowledgeForRun(
   return { knowledgeId: "", knowledgeIds: [], knowledgeCandidates: [] };
 }
 
+/** 근거 부족으로 끝난 턴의 안내 문구.
+ *
+ * 지식을 싣지 않은 턴(지식 검색을 끈 Tool 턴 — `knowledgeForRun` 참고)에서
+ * "등록된 Knowledge에서 근거를 찾지 못했습니다"라고 하면 검색하지도 않은
+ * 지식 탓으로 읽힌다(2026-09-18 실사용: "지금 시간은?"에 Tool 이 선택되지
+ * 않자 이 문구가 떴다). 그 경우에는 실제로 무엇이 없었는지 — Tool 결과 — 와
+ * 할 수 있는 일을 말한다. */
+export function insufficientEvidenceMessage(message: Pick<ChatMessage, "knowledgeIdUsed">): string {
+  if (message.knowledgeIdUsed) return "등록된 Knowledge에서 근거를 찾지 못했습니다.";
+  return "지식 검색을 켜지 않았고 호출된 Tool도 없어 답할 근거가 없습니다. \"+\" 메뉴의 MCP 도구에서 쓸 서버를 골라 다시 물어보거나, 지식 검색을 켜 보세요.";
+}
+
 // --- MCP 서버 등록 복구 ----------------------------------------------------------
 // agent-runtime 의 MCP 서버 레지스트리는 메모리에만 있어 재시작하면 빈다.
 // 대화/자산 화면을 열 때 Main process 에 "빠진 것을 다시 등록"을 맡긴다

@@ -90,6 +90,7 @@ import {
   resolveReconcileNotice,
   restoreMcpServerRegistrations,
   knowledgeForRun,
+  insufficientEvidenceMessage,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -3094,7 +3095,7 @@ function ChatTurn({
 
         {message.status === "insufficient_evidence" && (
           <div className="rounded-xl border border-warning/30 bg-warning/5 px-4 py-2.5 text-body text-warning">
-            등록된 Knowledge에서 근거를 찾지 못했습니다.
+            {insufficientEvidenceMessage(message)}
           </div>
         )}
 

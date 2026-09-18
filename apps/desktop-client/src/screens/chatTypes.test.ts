@@ -26,6 +26,7 @@ import {
   resolveReconcileNotice,
   restoreMcpServerRegistrations,
   knowledgeForRun,
+  insufficientEvidenceMessage,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -958,5 +959,18 @@ describe("knowledgeForRun — 지식 검색을 켠 턴에만 Knowledge 를 싣�
 
   it("keeps the previous behavior for a Local Agent turn (its manifest may require knowledge)", () => {
     expect(knowledgeForRun({ knowledgeLookupActive: false, localAgentActive: true }, available)).toBe(available);
+  });
+});
+
+describe("insufficientEvidenceMessage — 검색하지 않은 지식 탓으로 말하지 않는다", () => {
+  it("keeps the knowledge wording when knowledge was actually searched", () => {
+    expect(insufficientEvidenceMessage({ knowledgeIdUsed: "k1" })).toBe("등록된 Knowledge에서 근거를 찾지 못했습니다.");
+  });
+
+  it("says no tool ran (not 'no knowledge evidence') for a turn sent without knowledge", () => {
+    const text = insufficientEvidenceMessage({ knowledgeIdUsed: "" });
+    expect(text).not.toContain("등록된 Knowledge에서");
+    expect(text).toContain("Tool");
+    expect(text).toContain("MCP 도구");
   });
 });
