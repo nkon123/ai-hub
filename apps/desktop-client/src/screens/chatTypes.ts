@@ -5,7 +5,7 @@
 // to record the server's authoritative `completed_at`).
 import type { Citation, ConversationTurnInput, PendingConfirmation, RunEventLogItem, RunResponse } from "../agentRuntime";
 import type { StageMap } from "../runStages";
-import type { ConversationRecord, InstalledAsset, ToolExecutionRecord } from "../../electron/types";
+import type { ConversationRecord, InstalledAsset, KnowledgeCandidate, ToolExecutionRecord } from "../../electron/types";
 
 export type ChatMessageStatus =
   | "running"
@@ -443,6 +443,31 @@ export async function resolveReconcileNotice(bridge: ReconcileCapableBridge | nu
   } catch (err) {
     return err instanceof Error ? err.message : RECONCILE_UNAVAILABLE_NOTICE;
   }
+}
+
+// --- 이번 턴에 실어 보낼 Knowledge ---------------------------------------------
+// 2026-09-18 실사용 제보: "'지금 시간은'이라고 물었는데 지식 검색을 켜지도 않았는데
+// 검색이 돈다." — "Tool 자동 선택"이 이 질문을 MCP 쪽으로 보내면 턴이
+// agent-runtime 을 거치는데, 그때 설치된 Knowledge **전체**를 토글과 무관하게
+// `knowledge_candidates`/`knowledge_ids` 로 실어 보냈고, agent-runtime 은
+// 받은 것이 있으면 검색한다(`workflow.py` 의 `has_knowledge_id`).
+//
+// 규칙: 지식 검색 토글이 실제로 켜진 턴(`knowledgeLookupActive`)에만 보낸다.
+// 예외는 Local Agent 턴 하나 — 그 Agent 의 매니페스트가 Knowledge 를 필수로
+// 요구할 수 있어(`knowledge_required`) 빼면 서버가 "knowledge_id is required"
+// 로 거절한다. 그 경로는 이전 동작을 그대로 둔다.
+export interface RunKnowledge {
+  knowledgeId: string;
+  knowledgeIds: string[];
+  knowledgeCandidates: KnowledgeCandidate[];
+}
+
+export function knowledgeForRun(
+  turn: { knowledgeLookupActive: boolean; localAgentActive: boolean },
+  available: RunKnowledge,
+): RunKnowledge {
+  if (turn.knowledgeLookupActive || turn.localAgentActive) return available;
+  return { knowledgeId: "", knowledgeIds: [], knowledgeCandidates: [] };
 }
 
 // --- MCP 서버 등록 복구 ----------------------------------------------------------

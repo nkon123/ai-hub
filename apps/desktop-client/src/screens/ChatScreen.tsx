@@ -89,6 +89,7 @@ import {
   resolveReconcileCaption,
   resolveReconcileNotice,
   restoreMcpServerRegistrations,
+  knowledgeForRun,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -1667,9 +1668,16 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     const mcpScopeRun = scopeToRunParams(mcpScope);
     const toolRouteThisTurn = turnMcpToolRouteForced || mcpScopeRun.toolRoute;
     const ollamaOnly = !knowledgeLookupActive && !mcpDevActive && !toolRouteThisTurn && !localAgentActive;
+    // 지식 검색을 켜지 않은 턴(예: Tool 자동 선택이 MCP 로 보낸 턴)에는
+    // Knowledge 를 싣지 않는다 — 실으면 agent-runtime 이 검색한다(chatTypes 참고).
+    const runKnowledge = knowledgeForRun(
+      { knowledgeLookupActive, localAgentActive },
+      { knowledgeId, knowledgeIds, knowledgeCandidates },
+    );
+    const knowledgeSent = runKnowledge.knowledgeIds.length > 0 || runKnowledge.knowledgeCandidates.length > 0;
     const serviceId = ollamaOnly
       ? `${SERVICE_ID_PREFIX}:ollama-default`
-      : `${SERVICE_ID_PREFIX}:${knowledgeId || "mcp-dev-trigger"}`;
+      : `${SERVICE_ID_PREFIX}:${runKnowledge.knowledgeId || "mcp-dev-trigger"}`;
     // standard-agent는 capabilities.mcp_allowed=false라 TOOL_ROUTE가 아예
     // 실행되지 않는다(config/standard-agent/agent-manifest.json) — turnMcpToolRouteForced도
     // mcpDevActive와 같은 이유로 standard-db-agent가 필요하다(Task Brief D:
@@ -1703,8 +1711,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     const newMessage: ChatMessage = {
       id,
       question: q,
-      knowledgeIdUsed: knowledgeId,
-      knowledgeLabelUsed: ollamaOnly ? "기본 Ollama 대화" : knowledgeLabel,
+      knowledgeIdUsed: runKnowledge.knowledgeId,
+      knowledgeLabelUsed: ollamaOnly ? "기본 Ollama 대화" : knowledgeSent ? knowledgeLabel : "Tool 사용 (지식 검색 없음)",
       serviceId,
       agentProfile,
       localAgentIdUsed: selectedLocalAgent?.assetId ?? null,
@@ -1719,7 +1727,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       // `knowledgeCandidates` 값, agentRuntime.ts).
       stages: ollamaOnly
         ? ollamaChatStages("running")
-        : initialStages({ routingExpected: knowledgeCandidates.length > 0 }),
+        : initialStages({ routingExpected: runKnowledge.knowledgeCandidates.length > 0 }),
       eventLog: [],
       pendingConfirmation: null,
       runId: null,
@@ -1794,12 +1802,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
 
       const created = await startRun({
         serviceId,
-        knowledgeId,
-        knowledgeIds,
+        knowledgeId: runKnowledge.knowledgeId,
+        knowledgeIds: runKnowledge.knowledgeIds,
         // KNOWLEDGE_ROUTE(agentic Knowledge 선택) — 비어 있으면 `startRun`이
         // 기존 `knowledgeIds` fan-out을 그대로 보낸다(agentRuntime.ts 참고,
         // 절대 둘 다 보내지 않는다).
-        knowledgeCandidates,
+        knowledgeCandidates: runKnowledge.knowledgeCandidates,
         question: q,
         allowHubLookup,
         ...(history.length > 0 ? { history } : {}),

@@ -1,5 +1,13 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M04 지식 검색을 켜지 않았는데 검색이 돌던 것
+
+- **제보**: "'지금 시간은'이라고 물었는데 지식 검색이 바로 된다. 켜지도 않았는데."
+- **원인**: "Tool 자동 선택"이 질문을 MCP 쪽으로 보내면(`turnMcpToolRouteForced`) 그 턴은 agent-runtime 을 거친다. 그때 `startRun` 에 설치된 Knowledge **전체**(`knowledgeCandidates`/`knowledgeIds`)를 지식 검색 토글과 무관하게 실어 보냈고, agent-runtime 은 받은 것이 있으면 검색한다(`workflow.py` 의 `has_knowledge_id`). 토글은 Ollama 직통 여부(`ollamaOnly`)에만 쓰이고 payload 에는 쓰이지 않았다.
+- **고친 것**: `chatTypes.knowledgeForRun`(순수) — 지식 검색이 실제로 켜진 턴(`knowledgeLookupActive`)에만 Knowledge 를 싣는다. Tool 라우팅 턴이 쓰는 `standard-db-agent` 는 `knowledge_required: false` 라 빈 채로 보내도 거절되지 않는다. **예외**: Local Agent 턴은 그 Agent 매니페스트가 Knowledge 를 필수로 요구할 수 있어 이전 동작을 유지했다. 지식 없이 나간 턴은 메시지 라벨을 "Tool 사용 (지식 검색 없음)"으로 표시한다(예전에는 지식 이름이 붙어 검색한 것처럼 보였다).
+- **검증**: 신규 테스트 3개. vitest **1120 → 1123 passed / 12 failed**(기존 실패 동일). typecheck 통과. **변이 검증**: 토글 조건을 빼면 "Tool 턴에는 아무것도 싣지 않는다" 테스트가 깨진다.
+- **확인하지 못한 것**: 실제 앱에서 같은 질문을 다시 보내 보지 않았다(렌더러 재로드 필요). Local Agent 턴에서도 토글을 존중해야 하는지는 그 Agent 가 Knowledge 를 필수로 요구할 때의 안내 문구와 함께 정해야 해서 남겨 두었다.
+
 ## 2026-09-18 M12 `restart-all-background.ps1` 추가
 
 - **요청**: "restart 쉘도 백그라운드 버전으로 만들어 달라."

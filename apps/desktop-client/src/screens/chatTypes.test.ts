@@ -25,6 +25,7 @@ import {
   resolveReconcileCaption,
   resolveReconcileNotice,
   restoreMcpServerRegistrations,
+  knowledgeForRun,
   selectRegisteredLocalAgents,
   summarizeMcpToolConnections,
 } from "./chatTypes";
@@ -931,5 +932,31 @@ describe("restoreMcpServerRegistrations — 목록 로딩을 절대 막지 않�
       },
     };
     expect(await restoreMcpServerRegistrations(throwing)).toBeNull();
+  });
+});
+
+// 2026-09-18 실사용: "'지금 시간은'이라고 물었는데 지식 검색을 켜지도 않았는데 검색이 돈다."
+// Tool 자동 선택이 MCP 로 보낸 턴에 설치된 Knowledge 전체가 실려 나갔다.
+describe("knowledgeForRun — 지식 검색을 켠 턴에만 Knowledge 를 싣는다", () => {
+  const available = {
+    knowledgeId: "k1",
+    knowledgeIds: ["k1", "k2"],
+    knowledgeCandidates: [{ knowledge_id: "k1", name: "인사 규정" }],
+  };
+
+  it("sends nothing for a Tool-routed turn with the knowledge toggle off", () => {
+    expect(knowledgeForRun({ knowledgeLookupActive: false, localAgentActive: false }, available)).toEqual({
+      knowledgeId: "",
+      knowledgeIds: [],
+      knowledgeCandidates: [],
+    });
+  });
+
+  it("sends everything when knowledge search is on", () => {
+    expect(knowledgeForRun({ knowledgeLookupActive: true, localAgentActive: false }, available)).toBe(available);
+  });
+
+  it("keeps the previous behavior for a Local Agent turn (its manifest may require knowledge)", () => {
+    expect(knowledgeForRun({ knowledgeLookupActive: false, localAgentActive: true }, available)).toBe(available);
   });
 });
