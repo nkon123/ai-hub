@@ -240,14 +240,11 @@ export class ConversationStore {
     return updated;
   }
 
-  /** CLAUDE.md: 폐기(삭제)는 확인과 사유를 요구한다 — `reason`이 비어 있으면
-   * 저장하지 않고 실패를 반환한다(렌더러의 `ReasonConfirmDialog`가 이미
-   * 빈 사유를 막지만, `assets:remove`와 동일하게 여기서도 다시 검증하는
-   * 방어적 이중 검사). */
-  remove(id: string, reason: string): { ok: boolean; error: string | null } {
-    if (!reason || !reason.trim()) {
-      return { ok: false, error: "삭제 사유를 입력해야 합니다." };
-    }
+  /** 내 대화 삭제. 확인은 렌더러가 받고(`ConfirmDialog`), **사유는 받지
+   * 않는다**(2026-09-18 사용자 결정: "삭제할 때 사유 묻는 게 불편하다") —
+   * 공유 자산의 승인·반려·폐기가 아니라 이 PC 의 내 대화 정리라 사유가 남길
+   * 정보가 없다. */
+  remove(id: string): { ok: boolean; error: string | null } {
     const all = this.readAll();
     const exists = all.some((r) => r.id === id);
     if (!exists) {

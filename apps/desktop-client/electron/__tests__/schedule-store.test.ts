@@ -144,20 +144,21 @@ describe("ScheduleStore — Tool risk acknowledgement gate (F)", () => {
 });
 
 describe("ScheduleStore — CRUD and reason-required actions", () => {
-  it("rejects removal without a reason", () => {
+  it("removes without asking for a reason (2026-09-18 사용자 결정)", () => {
     const created = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe()), { acknowledgedToolRisk: false });
     if (!created.ok) throw new Error("setup failed");
-    const result = store.remove(created.schedule.id, "");
-    expect(result.ok).toBe(false);
-    expect(store.list()).toHaveLength(1);
-  });
-
-  it("removes with a reason", () => {
-    const created = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe()), { acknowledgedToolRisk: false });
-    if (!created.ok) throw new Error("setup failed");
-    const result = store.remove(created.schedule.id, "더 이상 필요하지 않음");
+    const result = store.remove(created.schedule.id);
     expect(result.ok).toBe(true);
     expect(store.list()).toHaveLength(0);
+  });
+
+  it("removes only the chosen schedule and reports an unknown id", () => {
+    const first = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe()), { acknowledgedToolRisk: false });
+    const second = store.saveWithToolRiskAck(saveInput(knowledgeOnlyRecipe()), { acknowledgedToolRisk: false });
+    if (!first.ok || !second.ok) throw new Error("setup failed");
+    expect(store.remove("does-not-exist")).toEqual({ ok: false, error: "스케줄을 찾을 수 없습니다." });
+    expect(store.remove(first.schedule.id).ok).toBe(true);
+    expect(store.list().map((s) => s.id)).toEqual([second.schedule.id]);
   });
 
   it("setActive requires a reason and updates nextRunAt on reactivation", () => {

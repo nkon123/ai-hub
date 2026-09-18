@@ -600,8 +600,7 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       persistConversations(conversations);
       return updated;
     },
-    async deleteConversation(id, reason) {
-      if (!reason.trim()) return { ok: false, error: "삭제 사유를 입력해야 합니다." };
+    async deleteConversation(id) {
       const conversations = readConversations();
       if (!conversations.some((conversation) => conversation.id === id)) {
         return { ok: false, error: "대화를 찾을 수 없습니다." };

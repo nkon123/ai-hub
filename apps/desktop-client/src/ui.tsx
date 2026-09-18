@@ -193,6 +193,7 @@ export function ConfirmDialog({
   description,
   confirmLabel = "확인",
   submitting = false,
+  error = null,
   onConfirm,
   onCancel,
 }: {
@@ -201,6 +202,8 @@ export function ConfirmDialog({
   description?: ReactNode;
   confirmLabel?: string;
   submitting?: boolean;
+  /** 확인 후 실패했을 때의 안내. 창을 닫지 않고 여기 보여 준다 — 실패를 삼키지 않는다. */
+  error?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -210,6 +213,11 @@ export function ConfirmDialog({
       <div className="w-full max-w-sm rounded-card bg-surface p-5 shadow-xl">
         <h3 className="text-card-title font-semibold text-text-primary">{title}</h3>
         {description && <div className="mt-1.5 text-body text-text-secondary">{description}</div>}
+        {error && (
+          <div className="mt-3">
+            <ErrorBanner message={error} />
+          </div>
+        )}
         <div className="mt-5 flex justify-end gap-2">
           <Button variant="secondary" onClick={onCancel} disabled={submitting}>
             취소

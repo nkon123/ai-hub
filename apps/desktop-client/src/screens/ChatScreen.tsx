@@ -41,7 +41,7 @@ import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
 import { AgentDraftDialog } from "./AgentDraftDialog";
 import { AnswerMarkdown } from "./AnswerMarkdown";
-import { Button, ErrorBanner, LoadingState, ReasonConfirmDialog } from "../ui";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState } from "../ui";
 import {
   SCHEDULE_HISTORY_OUTCOME_LABELS,
   SCHEDULE_HISTORY_OUTCOME_TONE,
@@ -1435,12 +1435,12 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     setDeleteConversationError(null);
   }
 
-  async function handleConfirmDeleteConversation(reason: string): Promise<void> {
+  async function handleConfirmDeleteConversation(): Promise<void> {
     if (!conversationBridge || !deletingConversation) return;
     setDeleteConversationBusy(true);
     setDeleteConversationError(null);
     try {
-      const result = await conversationBridge.deleteConversation(deletingConversation.id, reason);
+      const result = await conversationBridge.deleteConversation(deletingConversation.id);
       if (!result.ok) {
         setDeleteConversationError(result.error ?? "대화를 삭제하지 못했습니다.");
         return;
@@ -2837,16 +2837,14 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
         <AgentDraftDialog messages={messages} onClose={() => setAgentDraftDialogOpen(false)} />
       )}
 
-      <ReasonConfirmDialog
+      <ConfirmDialog
         open={deletingConversation !== null}
         title={`'${deletingConversation?.title ?? ""}' 대화를 삭제할까요?`}
         description="삭제된 대화는 복구할 수 없습니다."
         confirmLabel="삭제"
-        reasonLabel="삭제 사유"
-        reasonPlaceholder="예: 더 이상 필요하지 않은 대화 정리"
         submitting={deleteConversationBusy}
         error={deleteConversationError}
-        onConfirm={(reason) => void handleConfirmDeleteConversation(reason)}
+        onConfirm={() => void handleConfirmDeleteConversation()}
         onCancel={() => {
           setDeletingConversation(null);
           setDeleteConversationError(null);

@@ -93,27 +93,30 @@ describe("ConversationStore", () => {
     expect(ids[1]).toBe(older.id);
   });
 
-  it("remove() requires a non-empty reason (CLAUDE.md: 폐기는 확인과 사유를 요구한다)", () => {
+  it("remove() deletes the conversation without asking for a reason (2026-09-18 사용자 결정)", () => {
     const store = new ConversationStore(stateDir);
     const created = store.create("know-1", "label");
-    expect(store.remove(created.id, "")).toEqual({ ok: false, error: "삭제 사유를 입력해야 합니다." });
-    expect(store.remove(created.id, "   ")).toEqual({ ok: false, error: "삭제 사유를 입력해야 합니다." });
-    expect(store.get(created.id)).not.toBeNull(); // not deleted
-  });
-
-  it("remove() deletes the conversation when given a reason", () => {
-    const store = new ConversationStore(stateDir);
-    const created = store.create("know-1", "label");
-    const result = store.remove(created.id, "더 이상 필요하지 않음");
+    const result = store.remove(created.id);
     expect(result).toEqual({ ok: true, error: null });
     expect(store.get(created.id)).toBeNull();
     expect(store.list()).toEqual([]);
   });
 
+  it("remove() deletes only the chosen conversation and survives a restart", () => {
+    const store = new ConversationStore(stateDir);
+    const keep = store.create("know-1", "남길 대화");
+    const drop = store.create("know-1", "지울 대화");
+    expect(store.remove(drop.id).ok).toBe(true);
+    // 새 인스턴스(앱 재시작)에서도 지운 것은 없고 남긴 것은 있다.
+    const reopened = new ConversationStore(stateDir);
+    expect(reopened.get(drop.id)).toBeNull();
+    expect(reopened.get(keep.id)).not.toBeNull();
+  });
+
   it("remove() on an unknown id fails without touching other conversations", () => {
     const store = new ConversationStore(stateDir);
     const created = store.create("know-1", "label");
-    const result = store.remove("does-not-exist", "사유");
+    const result = store.remove("does-not-exist");
     expect(result).toEqual({ ok: false, error: "대화를 찾을 수 없습니다." });
     expect(store.get(created.id)).not.toBeNull();
   });

@@ -48,7 +48,7 @@ function MenuRow({
       role="menuitem"
       onClick={onSelect}
       disabled={disabled}
-      title={reason ?? undefined}
+      title={reason ?? description}
       aria-checked={checked}
       className="flex w-full items-start gap-2.5 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-55 disabled:hover:bg-transparent"
     >
@@ -62,8 +62,17 @@ function MenuRow({
             </span>
           )}
         </span>
-        {(reason ?? description) && (
-          <span className="block text-caption text-text-secondary">{reason ?? description}</span>
+        {/* 설명은 화면에 늘어놓지 않는다(2026-09-18 사용자 요청: "상세 설명들은
+            빼 줘, UX 가 이상하다") — 줄마다 두 줄씩 붙어 메뉴가 길고 읽히지
+            않았다. 설명은 마우스를 올리면 뜨는 title 과 화면 낭독기용 텍스트로만
+            남긴다: 허브 항목의 "로컬 문서 내용은 전송되지 않습니다"는 D-078 상
+            접근성 트리에서 사라지면 안 된다(desktop CLAUDE.md 규칙 3).
+            **비활성 이유는 그대로 보인다** — 왜 못 누르는지는 눌러 보기 전에
+            알아야 한다. */}
+        {reason ? (
+          <span className="block text-caption text-text-secondary">{reason}</span>
+        ) : (
+          description && <span className="sr-only">{description}</span>
         )}
       </span>
       {detail && (

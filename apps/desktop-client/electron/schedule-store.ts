@@ -180,11 +180,10 @@ export class ScheduleStore {
     return { ok: true, schedule: record, error: null, requiresToolRiskAck: false };
   }
 
-  /** CLAUDE.md: 폐기는 확인과 사유를 요구한다. */
-  remove(id: string, reason: string): { ok: boolean; error: string | null } {
-    if (!reason || !reason.trim()) {
-      return { ok: false, error: "삭제 사유를 입력해야 합니다." };
-    }
+  /** 내 스케줄 삭제. 확인은 렌더러가 받고 사유는 받지 않는다(2026-09-18
+   * 사용자 결정 — 대화 삭제와 같은 이유). 실행 이력은 남는다. 비활성화
+   * (`setActive`)는 예정된 실행을 멈추는 결정이라 사유를 그대로 요구한다. */
+  remove(id: string): { ok: boolean; error: string | null } {
     const all = this.readAll();
     if (!all.some((r) => r.id === id)) {
       return { ok: false, error: "스케줄을 찾을 수 없습니다." };

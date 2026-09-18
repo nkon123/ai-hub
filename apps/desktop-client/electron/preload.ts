@@ -250,8 +250,8 @@ const bridge: DesktopBridge = {
     },
   ): Promise<ConversationRecord | null> => ipcRenderer.invoke("conversations:appendTurn", conversationId, turn),
 
-  deleteConversation: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
-    ipcRenderer.invoke("conversations:delete", id, reason),
+  deleteConversation: (id: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("conversations:delete", id),
 
   // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
   generateAgentDraftSystemPrompt: (liveQuestions: string[]): Promise<OllamaChatResult> =>
@@ -312,8 +312,8 @@ const bridge: DesktopBridge = {
   saveSchedule: (input: ScheduleSaveInput, ack: { acknowledgedToolRisk: boolean }): Promise<ScheduleSaveResult> =>
     ipcRenderer.invoke("schedule:save", input, ack),
 
-  removeSchedule: (id: string, reason: string): Promise<{ ok: boolean; error: string | null }> =>
-    ipcRenderer.invoke("schedule:remove", id, reason),
+  removeSchedule: (id: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("schedule:remove", id),
 
   setScheduleActive: (id: string, active: boolean, reason: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("schedule:setActive", id, active, reason),

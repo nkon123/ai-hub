@@ -1286,13 +1286,10 @@ function registerIpcHandlers(): void {
 
   ipcMain.handle(
     "conversations:delete",
-    async (_event, id: string, reason: string): Promise<{ ok: boolean; error: string | null }> => {
-      // CLAUDE.md: 삭제는 확인과 사유를 요구한다 — 렌더러(`ReasonConfirmDialog`)가
-      // 이미 빈 사유를 막지만, `assets:remove`와 동일하게 여기서도 다시
-      // 검증한다(방어적 이중 검사).
-      const result = getConversationStore().remove(id, reason);
+    async (_event, id: string): Promise<{ ok: boolean; error: string | null }> => {
+      const result = getConversationStore().remove(id);
       if (result.ok) {
-        getLogger().info("conversation-store", `대화 삭제됨: ${id} (사유: ${reason.trim()})`);
+        getLogger().info("conversation-store", `대화 삭제됨: ${id}`);
       }
       return result;
     },
@@ -1613,8 +1610,8 @@ function registerIpcHandlers(): void {
     },
   );
 
-  ipcMain.handle("schedule:remove", async (_event, id: string, reason: string): Promise<{ ok: boolean; error: string | null }> => {
-    const result = getScheduleStore().remove(id, reason);
+  ipcMain.handle("schedule:remove", async (_event, id: string): Promise<{ ok: boolean; error: string | null }> => {
+    const result = getScheduleStore().remove(id);
     if (result.ok) {
       getLogger().info("schedule", `스케줄 삭제됨: ${id}`);
     }

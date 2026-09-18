@@ -1780,7 +1780,7 @@ export interface DesktopBridge {
   /** CLAUDE.md: 삭제는 확인과 사유를 요구한다 — `reason`이 비어 있으면
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
    * 이중 검사). */
-  deleteConversation(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
+  deleteConversation(id: string): Promise<{ ok: boolean; error: string | null }>;
 
   // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
   /** 라이브 턴의 질문 텍스트만으로 시스템 프롬프트 초안을 Ollama에게
@@ -1890,7 +1890,7 @@ export interface DesktopBridge {
   saveSchedule(input: ScheduleSaveInput, ack: { acknowledgedToolRisk: boolean }): Promise<ScheduleSaveResult>;
   /** CLAUDE.md: 폐기는 확인과 사유를 요구한다 — `reason`이 비어 있으면
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증). */
-  removeSchedule(id: string, reason: string): Promise<{ ok: boolean; error: string | null }>;
+  removeSchedule(id: string): Promise<{ ok: boolean; error: string | null }>;
   /** 활성/비활성 전환도 CLAUDE.md의 "중단은 확인과 사유를 요구한다"를 따른다 —
    * 비활성화는 예약된 실행을 중단시키는 조치이지 사소한 토글이 아니다. */
   setScheduleActive(id: string, active: boolean, reason: string): Promise<{ ok: boolean; error: string | null }>;

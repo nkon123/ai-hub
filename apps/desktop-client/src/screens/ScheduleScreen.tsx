@@ -23,6 +23,7 @@ import {
   Button,
   BridgeUnavailableState,
   Card,
+  ConfirmDialog,
   EmptyState,
   ErrorBanner,
   LabeledInput,
@@ -276,12 +277,12 @@ export function ScheduleScreen() {
     }
   }
 
-  async function handleDelete(reason: string) {
+  async function handleDelete() {
     if (!bridge || !deleteTarget) return;
     setDeleteBusy(true);
     setDeleteError(null);
     try {
-      const result = await bridge.removeSchedule(deleteTarget.id, reason);
+      const result = await bridge.removeSchedule(deleteTarget.id);
       if (!result.ok) {
         setDeleteError(result.error ?? "삭제하지 못했습니다.");
         return;
@@ -434,12 +435,11 @@ export function ScheduleScreen() {
         />
       )}
 
-      <ReasonConfirmDialog
+      <ConfirmDialog
         open={deleteTarget !== null}
         title="스케줄 삭제"
         description={deleteTarget ? `'${deleteTarget.name}' 스케줄을 삭제합니다. 실행 이력은 남습니다.` : undefined}
         confirmLabel="삭제"
-        reasonLabel="삭제 사유"
         submitting={deleteBusy}
         error={deleteError}
         onConfirm={handleDelete}
