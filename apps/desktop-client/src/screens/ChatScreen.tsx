@@ -77,6 +77,7 @@ import {
   chatMessageFromStoredTurn,
   describeKnowledgeRoute,
   describeToolRouteRejected,
+  describeCitationChip,
   describeToolRouteSelected,
   downloadMarkdown,
   groupExcludedKnowledgeByReason,
@@ -3140,25 +3141,40 @@ function ChatTurn({
           </p>
         )}
 
-        {/* 출처는 제목 칩으로 접어 보여주고, 발췌/섹션은 클릭했을 때 모달에서
-            본다. 로컬/허브 구분(D-078)은 칩 안에 그대로 남는다. */}
+        {/* 출처 칩 — **무엇이 검색됐는지**를 칩에서 바로 읽을 수 있어야 한다.
+            예전에는 파일명만 보여서, 같은 문서에서 여러 조각이 걸리면 칩이 전부
+            같은 글자로 나왔다(2026-09-18 실사용 제보). 지금은 주제(섹션)를
+            앞세우고 문서명과 발췌 한 조각을 덧붙인다 — 라벨 계산은
+            `describeCitationChip`(순수 함수, 테스트가 고정). 전체 발췌는 클릭해
+            여는 모달이 그대로 보여준다. 로컬/허브 구분(D-078)은 칩 안에 그대로
+            남는다. */}
         {message.citations.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {message.citations.map((c, idx) => (
-              <button
-                key={c.chunk_id || idx}
-                type="button"
-                onClick={() => onCitationClick(c)}
-                title={`${c.document_title || c.document_path || "제목 없음"}${c.section ? ` · ${c.section}` : ""} — ${c.source === "hub" ? "허브" : "로컬"} 검색 결과`}
-                className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border bg-white px-2.5 py-1 text-[11px] text-text-secondary transition-colors hover:bg-slate-50"
-              >
-                <FileSearch size={11} className="shrink-0 text-text-muted" aria-hidden="true" />
-                <span className="min-w-0 truncate">{c.document_title || c.document_path || "제목 없음"}</span>
-                <span className={`shrink-0 font-semibold ${c.source === "hub" ? "text-brand-600" : "text-text-muted"}`}>
-                  {c.source === "hub" ? "허브" : "로컬"}
-                </span>
-              </button>
-            ))}
+          <div className="flex flex-col gap-1">
+            {message.citations.map((c, idx) => {
+              const label = describeCitationChip(c);
+              return (
+                <button
+                  key={c.chunk_id || idx}
+                  type="button"
+                  onClick={() => onCitationClick(c)}
+                  title={`${label.tooltip}\n\n(${c.source === "hub" ? "허브" : "로컬"} 검색 결과 — 클릭하면 전체 발췌)`}
+                  className="flex w-full max-w-full items-start gap-1.5 rounded-lg border border-border bg-white px-2.5 py-1.5 text-left text-[11px] text-text-secondary transition-colors hover:border-brand-300 hover:bg-brand-50"
+                >
+                  <FileSearch size={11} className="mt-0.5 shrink-0 text-text-muted" aria-hidden="true" />
+                  <span className="min-w-0 flex-1">
+                    <span className="flex flex-wrap items-baseline gap-x-1.5">
+                      <span className="font-medium text-text-primary">{label.primary}</span>
+                      {label.document && <span className="text-text-muted">{label.document}</span>}
+                      {label.page && <span className="text-text-muted">{label.page}</span>}
+                    </span>
+                    {label.preview && <span className="mt-0.5 block truncate text-text-muted">{label.preview}</span>}
+                  </span>
+                  <span className={`shrink-0 font-semibold ${c.source === "hub" ? "text-brand-600" : "text-text-muted"}`}>
+                    {c.source === "hub" ? "허브" : "로컬"}
+                  </span>
+                </button>
+              );
+            })}
           </div>
         )}
 

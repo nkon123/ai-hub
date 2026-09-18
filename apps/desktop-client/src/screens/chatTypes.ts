@@ -803,6 +803,72 @@ export function mergeCitations(existing: Citation[], incoming: Citation[]): Cita
  * below the mid-confidence line, or absent entirely (a BM25-only match with
  * relevance filtering off). Derived only from data the search already
  * returned — not a fabricated confidence score. */
+/** 출처 칩 한 개에 보여줄 것.
+ *
+ * **왜 파일명만으로는 안 되는가(2026-09-18 실사용)**: 같은 문서에서 여러
+ * 조각이 걸리면 칩이 전부 같은 파일명으로 나와, 무엇이 검색됐는지 구분할 수
+ * 없다 — "무엇을 근거로 답했는가"가 이 화면의 핵심인데 그 자리가 비어 있었다.
+ * 그래서 **주제(섹션)를 앞세우고** 발췌 한 조각을 덧붙인다. 전체 내용은
+ * 클릭했을 때 여는 모달이 그대로 보여준다(칩은 한 줄로 유지).
+ */
+export interface CitationChipLabel {
+  /** 앞에 오는 이름 — 섹션(주제)이 있으면 그것, 없으면 문서 제목/파일명. */
+  primary: string;
+  /** `primary` 가 섹션일 때의 문서 이름. 같은 값이면 `null`(두 번 쓰지 않는다). */
+  document: string | null;
+  /** 한 줄 미리보기(줄바꿈·연속 공백을 접고 잘라낸 발췌). 없으면 `null`. */
+  preview: string | null;
+  /** 페이지가 있으면 `p.3` 형태. */
+  page: string | null;
+  /** hover 로 보는 전체 문구 — 잘리지 않은 제목·섹션·발췌를 담는다. */
+  tooltip: string;
+}
+
+const CITATION_PREVIEW_MAX_CHARS = 60;
+
+function collapseWhitespace(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
+}
+
+function documentNameOf(citation: Citation): string {
+  const title = (citation.document_title ?? "").trim();
+  if (title) return title;
+  const path = (citation.document_path ?? "").trim();
+  if (!path) return "";
+  // 경로가 오면 파일명만 — 칩 한 줄에 전체 경로가 들어가면 정작 주제가 밀린다.
+  const segments = path.split(/[\\/]/).filter(Boolean);
+  return segments.length > 0 ? segments[segments.length - 1] : path;
+}
+
+export function describeCitationChip(citation: Citation): CitationChipLabel {
+  const section = collapseWhitespace(citation.section ?? "");
+  const document = documentNameOf(citation);
+  const excerpt = collapseWhitespace(citation.excerpt ?? "");
+  const page = typeof citation.page === "number" && citation.page > 0 ? `p.${citation.page}` : null;
+
+  // 섹션이 있으면 그것이 "무엇에 대한 조각인가"를 가장 잘 말한다. 없으면
+  // 문서 이름으로 떨어지고, 그것도 없으면 "제목 없음"이다 — 지어내지 않는다.
+  const primary = section || document || "제목 없음";
+  const preview =
+    excerpt.length > CITATION_PREVIEW_MAX_CHARS
+      ? `${excerpt.slice(0, CITATION_PREVIEW_MAX_CHARS)}…`
+      : excerpt || null;
+
+  const tooltipParts = [document || "제목 없음"];
+  if (section) tooltipParts.push(section);
+  if (page) tooltipParts.push(page);
+  const header = tooltipParts.join(" · ");
+  const tooltip = excerpt ? `${header}\n\n${excerpt}` : header;
+
+  return {
+    primary,
+    document: section && document && document !== section ? document : null,
+    preview,
+    page,
+    tooltip,
+  };
+}
+
 export function hasLowConfidenceCitation(citations: Citation[]): boolean {
   return citations.some((c) => c.similarity !== null && c.similarity < 0.5);
 }
