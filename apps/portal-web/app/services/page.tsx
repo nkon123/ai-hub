@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Layers, Plus } from "lucide-react";
+import { Bot, Layers, MessageSquarePlus, Plus } from "lucide-react";
 import {
   Badge,
   Button,
@@ -91,14 +91,30 @@ export default function ServicesListPage() {
 
   return (
     <div>
+      {/* 좌측 Nav "자산 > 서비스"의 목적지. 만들기 진입점 셋을 여기 모았다 —
+          챗봇 빠른 만들기와 AI Service Composer는 이 목록에 결과가 나타나고,
+          "에이전트 만들기"(Agent 자산 등록)는 서비스가 아니라 서비스의 구성
+          요소를 만드는 것이라 결과가 "내 자산"에 나타난다. 같은 자리에 두되
+          그 차이를 설명 문구로 밝힌다 — 만들고 나서 목록에 없으면 실패한 줄
+          안다. */}
       <PageHeader
-        title="AI Service"
-        description="Agent·Knowledge·MCP Tool·Prompt·모델 정책을 조합해 구성한 업무 서비스 목록입니다."
+        title="서비스"
+        description="Agent·Knowledge·MCP·Prompt·모델 정책을 조합해 구성한 업무 서비스 목록입니다. 등록한 에이전트 자산은 이 목록이 아니라 “내 자산”에 나타납니다."
         actions={
-          <Button href="/services/new">
-            <Plus size={16} />
-            새 서비스 만들기
-          </Button>
+          <>
+            <Button href="/chatbots/new" variant="secondary">
+              <MessageSquarePlus size={16} />
+              챗봇 만들기
+            </Button>
+            <Button href="/assets/new/agent" variant="secondary">
+              <Bot size={16} />
+              에이전트 만들기
+            </Button>
+            <Button href="/services/new">
+              <Plus size={16} />
+              AI Service 만들기
+            </Button>
+          </>
         }
       />
 

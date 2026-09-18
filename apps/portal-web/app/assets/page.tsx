@@ -2,62 +2,17 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { BookOpen, Bot, Inbox, Lightbulb, Plus, Search, Server, Settings, Wrench } from "lucide-react";
+import { Inbox, Plus, Search, Wrench } from "lucide-react";
 import {
   Button,
-  Card,
   EmptyState,
   ErrorBanner,
   LoadingState,
   PageHeader,
-  StatusBadge,
   inputClass,
 } from "../_components/ui";
 import { useRole } from "../_components/role-context";
-
-interface AssetVersion {
-  id: string;
-  version: string;
-  status: string;
-  created_at: string;
-}
-
-interface Asset {
-  id: string;
-  type: string;
-  name: string;
-  owner_org: string;
-  classification: string;
-  created_at: string;
-  versions: AssetVersion[];
-}
-
-const TYPE_ICON: Record<string, typeof BookOpen> = {
-  knowledge: BookOpen,
-  agent: Bot,
-  prompt: Lightbulb,
-  mcp_tool: Wrench,
-  mcp_server: Server,
-  service: Settings,
-};
-
-const TYPE_LABEL: Record<string, string> = {
-  knowledge: "Knowledge",
-  agent: "Agent",
-  prompt: "Prompt",
-  mcp_tool: "MCP Tool",
-  mcp_server: "MCP 서버",
-  service: "AI Service",
-};
-
-const TYPE_TONE: Record<string, string> = {
-  knowledge: "bg-asset-knowledge/10 text-asset-knowledge",
-  mcp_tool: "bg-asset-tool/10 text-asset-tool",
-  mcp_server: "bg-asset-tool/10 text-asset-tool",
-  agent: "bg-asset-agent/10 text-asset-agent",
-  prompt: "bg-asset-prompt/10 text-asset-prompt",
-  service: "bg-asset-workflow/10 text-asset-workflow",
-};
+import { AssetList, assetDetailHref, type Asset } from "../_components/asset-list";
 
 export default function AssetsPage() {
   const router = useRouter();
@@ -92,9 +47,6 @@ export default function AssetsPage() {
       setLoading(false);
     }
   }
-
-  const latestVersion = (asset: Asset) =>
-    asset.versions.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
 
   return (
     <div>
@@ -132,7 +84,8 @@ export default function AssetsPage() {
           <option value="knowledge">Knowledge</option>
           <option value="agent">Agent</option>
           <option value="prompt">Prompt</option>
-          <option value="mcp_tool">MCP 도구</option>
+          <option value="mcp_server">MCP 서버</option>
+          <option value="mcp_tool">MCP Tool (이전 방식)</option>
           <option value="service">서비스</option>
         </select>
       </div>
@@ -151,38 +104,7 @@ export default function AssetsPage() {
         />
       )}
 
-      <div className="grid gap-3">
-        {assets.map((asset) => {
-          const ver = latestVersion(asset);
-          const TypeIcon = TYPE_ICON[asset.type] ?? BookOpen;
-          return (
-            <Card
-              key={asset.id}
-              onClick={() => router.push(asset.type === "knowledge" ? `/assets/${asset.id}` : `/assets/${asset.id}/versions`)}
-              className="flex items-center gap-4 px-5 py-4"
-            >
-              <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-lg ${TYPE_TONE[asset.type] ?? "bg-slate-100 text-text-muted"}`}>
-                <TypeIcon size={19} strokeWidth={1.75} />
-              </span>
-              <div className="flex-1">
-                <div className="text-card-title font-semibold text-text-primary">{asset.name}</div>
-                <div className="mt-0.5 text-caption text-text-secondary">
-                  {TYPE_LABEL[asset.type] ?? asset.type} · {asset.owner_org} · {new Date(asset.created_at).toLocaleDateString("ko-KR")}
-                </div>
-              </div>
-              {ver && (
-                <div className="flex items-center gap-2">
-                  <span className="text-caption text-text-secondary">v{ver.version}</span>
-                  <StatusBadge status={ver.status} />
-                </div>
-              )}
-              <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-text-secondary">
-                {asset.classification}
-              </span>
-            </Card>
-          );
-        })}
-      </div>
+      <AssetList assets={assets} onSelect={(asset) => router.push(assetDetailHref(asset))} />
     </div>
   );
 }
