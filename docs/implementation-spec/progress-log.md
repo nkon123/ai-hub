@@ -1,5 +1,12 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M12 `restart-all-background.ps1` 추가
+
+- **요청**: "restart 쉘도 백그라운드 버전으로 만들어 달라."
+- `restart-all.ps1 -Background` 가 이미 같은 일을 하므로 새 로직을 만들지 않고, `start-all-background.ps1` 과 이름을 맞춘 **얇은 래퍼**로 두었다 — `-NoDesktop`/`-Only`/`-TimeoutSeconds` 를 그대로 넘기고 종료 코드도 그대로 돌려준다. 로직을 두 파일에 두면 갈라진다.
+- 기존 스크립트들과 같은 UTF-8 BOM + CRLF.
+- **검증**: PowerShell 파서 구문 검사 통과, `Get-Help` 한글 정상. 가짜 `restart-all.ps1` 을 옆에 둔 임시 폴더에서 실행해 인자 전달(기본값 / `-NoDesktop -Only a,b -TimeoutSeconds 40`)과 종료 코드 전달을 확인. **실 서비스에 대고 재시작하지는 않았다**(래퍼가 부르는 `restart-all.ps1` 은 변경 없음).
+
 ## 2026-09-18 M04 MCP 서버가 "다시 확인"을 눌러야만 활성화되던 것
 
 - **제보**: "데스크톱 클라이언트에서 MCP 서버가 바로 안 뜬다. 자산 허브 > 설치된 자산에서 '다시 확인'을 한 번 눌러야 그 뒤부터 활성화된다."

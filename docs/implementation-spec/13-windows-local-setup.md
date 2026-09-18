@@ -380,7 +380,11 @@ Desktop Client 는 **맨 뒤에**, 서비스가 포트를 잡을 시간을 5초 
 .\scripts\windows\restart-all.ps1               # 창 모드(start-all.ps1)로 다시 띄운다
 .\scripts\windows\restart-all.ps1 -Background   # 한 창 + 파일 로그로 다시 띄운다
 .\scripts\windows\restart-all.ps1 -Background -Only agent-runtime
+.\scripts\windows\restart-all-background.ps1                   # = restart-all.ps1 -Background
+.\scripts\windows\restart-all-background.ps1 -Only agent-runtime
 ```
+
+`restart-all-background.ps1` 은 `start-all-background.ps1` 과 짝을 맞춘 이름일 뿐이다 — `restart-all.ps1 -Background` 에 인자(`-NoDesktop`, `-Only`, `-TimeoutSeconds`)를 그대로 넘기는 래퍼이고, 종료·포트 대기·기동 로직을 따로 갖지 않는다.
 
 멈춘 뒤 **포트가 실제로 풀릴 때까지 기다렸다가** 띄운다(기본 20초). `uvicorn --reload` 와 `pnpm` 은 종료 신호를 받고도 잠깐 포트를 잡고 있어서, 곧바로 다시 띄우면 그 서비스만 "포트 사용 중"으로 죽는다 — 재시작이 가장 흔하게 실패하는 지점이다. 시간 안에 풀리지 않으면 어느 포트를 누가 잡고 있는지(PID) 알려주고 **기동을 시도하지 않는다**.
 
