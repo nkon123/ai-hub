@@ -45,6 +45,9 @@ export function PromptPickerPanel({
   disabled,
   currentQuestion,
   onApply,
+  externalOpen = false,
+  onExternalOpenChange,
+  showTrigger = true,
 }: {
   /** `null`이면(브라우저 개발 모드) 설치된 자산 폴더가 없다 — 버튼은 보이되
    * 비활성 + 사유(Permission 상태). */
@@ -54,6 +57,10 @@ export function PromptPickerPanel({
   currentQuestion: string;
   /** 완성된 텍스트를 입력창에 넣는다. 보내지는 않는다. */
   onApply: (text: string) => void;
+  /** 입력창 "+" 메뉴에서 열 때 — 트리거 버튼은 그 메뉴가 갖고 있다. */
+  externalOpen?: boolean;
+  onExternalOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [prompts, setPrompts] = useState<SortedPromptEntry[] | null>(null);
@@ -92,8 +99,15 @@ export function PromptPickerPanel({
     if (open) void load();
   }, [open, load]);
 
+  // "+" 메뉴에서 연 경우. 내부 상태를 그대로 쓰므로 여는 방법만 둘이 되고
+  // 닫는 경로(취소/적용/바깥 클릭)는 하나로 남는다.
+  useEffect(() => {
+    if (externalOpen) setOpen(true);
+  }, [externalOpen]);
+
   function close() {
     setOpen(false);
+    onExternalOpenChange?.(false);
     setSelected(null);
     setTemplate(null);
     setTemplateLoading(false);
@@ -134,6 +148,7 @@ export function PromptPickerPanel({
 
   return (
     <>
+      {showTrigger && (
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -151,6 +166,7 @@ export function PromptPickerPanel({
         <FileText size={15} aria-hidden="true" />
         프롬프트
       </button>
+      )}
 
       <Modal
         open={open}

@@ -40,6 +40,9 @@ export function McpToolPickerPanel({
   disabledReason,
   badge,
   onServersLoaded,
+  externalOpen = false,
+  onExternalOpenChange,
+  showTrigger = true,
 }: {
   scope: McpToolScope;
   onScopeChange: (next: McpToolScope) => void;
@@ -50,6 +53,10 @@ export function McpToolPickerPanel({
   badge: string | null;
   /** 부모(ChatScreen)가 같은 목록으로 표시 문구를 만들 수 있게 올려 준다. */
   onServersLoaded: (servers: McpServerOption[]) => void;
+  /** 입력창 "+" 메뉴에서 열 때 — 트리거 버튼은 그 메뉴가 갖고 있다. */
+  externalOpen?: boolean;
+  onExternalOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   // entry 를 그대로 들고 있는다 — 선택 로직은 `optionFromEntry` 로 옮긴
@@ -80,11 +87,21 @@ export function McpToolPickerPanel({
     if (open) void load();
   }, [open, load]);
 
+  useEffect(() => {
+    if (externalOpen) setOpen(true);
+  }, [externalOpen]);
+
+  function close() {
+    setOpen(false);
+    onExternalOpenChange?.(false);
+  }
+
   const servers: McpServerOption[] | null = entries === null ? null : entries.map(optionFromEntry);
   const usable = (servers ?? []).filter(isServerSelectable);
 
   return (
     <>
+      {showTrigger && (
       <button
         type="button"
         onClick={() => setOpen(true)}
@@ -105,8 +122,9 @@ export function McpToolPickerPanel({
         MCP 도구
         {badge && <span className="rounded-full bg-white/70 px-1.5 text-[11px]">{badge}</span>}
       </button>
+      )}
 
-      <Modal open={open} title="MCP 도구 고르기" onClose={() => setOpen(false)}>
+      <Modal open={open} title="MCP 도구 고르기" onClose={close}>
         <div className="space-y-3">
           <p className="text-caption text-text-secondary">
             여기서 정하는 것은 <strong>후보 범위</strong>입니다. 그 안에서 이번 질문에 맞는 도구를
@@ -257,7 +275,7 @@ export function McpToolPickerPanel({
             >
               선택 해제
             </Button>
-            <Button onClick={() => setOpen(false)}>확인</Button>
+            <Button onClick={close}>확인</Button>
           </div>
         </div>
       </Modal>

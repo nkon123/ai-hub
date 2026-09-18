@@ -292,6 +292,9 @@ export function LocalToolInvokePanel({
   onEntryStart,
   onEntryFinish,
   mcpToolsSummary,
+  externalOpen = false,
+  onExternalOpenChange,
+  showTrigger = true,
 }: {
   /** `null`이면(Electron 런타임 밖 — 브라우저 개발 모드) 실행 경로 자체가
    * 없다 — Permission 상태(버튼은 보이되 비활성 + 사유)로 표시한다. */
@@ -308,6 +311,10 @@ export function LocalToolInvokePanel({
    * (`undefined`) MCP Tool 정보를 모르는 것으로 취급해 원래 빈 상태
    * 문구만 보여준다. */
   mcpToolsSummary?: McpToolsSummaryForLocalToolEmptyState;
+  /** 입력창 "+" 메뉴에서 열 때 — 트리거 버튼은 그 메뉴가 갖고 있다. */
+  externalOpen?: boolean;
+  onExternalOpenChange?: (open: boolean) => void;
+  showTrigger?: boolean;
 }) {
   const [step, setStep] = useState<PanelStep>("closed");
   const [tools, setTools] = useState<LocalTool[] | null>(null);
@@ -340,6 +347,12 @@ export function LocalToolInvokePanel({
     if (step === "selecting") void load();
   }, [step, load]);
 
+  // "+" 메뉴에서 연 경우. 여는 방법만 둘이고 닫는 경로는 `close()` 하나로
+  // 남는다(그 안에서 메뉴 쪽 상태도 함께 되돌린다).
+  useEffect(() => {
+    if (externalOpen && bridge) setStep((prev) => (prev === "closed" ? "selecting" : prev));
+  }, [externalOpen, bridge]);
+
   function open() {
     if (!bridge) return;
     setStep("selecting");
@@ -347,6 +360,7 @@ export function LocalToolInvokePanel({
 
   function close() {
     setStep("closed");
+    onExternalOpenChange?.(false);
     setSelectedTool(null);
     setFormValues({});
     setFieldErrors({});
@@ -464,6 +478,7 @@ export function LocalToolInvokePanel({
 
   return (
     <>
+      {showTrigger && (
       <button
         type="button"
         onClick={open}
@@ -481,6 +496,7 @@ export function LocalToolInvokePanel({
         <FileCode2 size={15} aria-hidden="true" />
         로컬 Tool
       </button>
+      )}
 
       <Modal open={modalOpen} title={modalTitle} onClose={close}>
         {step === "selecting" && (

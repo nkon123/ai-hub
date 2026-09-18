@@ -20,7 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
-import { AlertTriangle, BookOpenCheck, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -113,6 +113,8 @@ import {
 } from "./LocalToolInvokePanel";
 import { PromptPickerPanel } from "./PromptPickerPanel";
 import { McpToolPickerPanel } from "./McpToolPickerPanel";
+import { ComposerChipButton, ComposerMenu } from "./ComposerMenu";
+import { buildActiveChips, type ComposerMenuState } from "./composerMenuTypes";
 import {
   SCOPE_OFF,
   describeScopeBadge,
@@ -167,61 +169,6 @@ const CALCULATOR_SAMPLE_ASSET_ID = "8c1d2b2f-4be6-4dc4-948e-308df4903a32";
 // still read as one product.
 const fieldClass =
   "w-full rounded-lg border border-border bg-white px-3 py-2.5 text-body text-text-primary placeholder:text-text-muted focus:border-brand-500 focus:outline-none focus:ring-1 focus:ring-brand-500 disabled:bg-slate-50 disabled:text-text-muted";
-
-function ComposerToggle({
-  id,
-  label,
-  description,
-  icon,
-  pressed,
-  disabled,
-  onChange,
-  activeLabel,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  icon: ReactNode;
-  pressed: boolean;
-  disabled: boolean;
-  onChange: (next: boolean) => void;
-  /** 켜져 있을 때 아이콘 옆에 붙는 짧은 상태 텍스트(예: "지식 3개"). 이
-   *  화면에서 "지금 무엇이 켜져 있는가"를 알려주는 유일한 상시 표시이므로,
-   *  꺼져 있을 때는 아이콘만 남겨 조용히 둔다(안내 문구 최소화, 2026-08-14). */
-  activeLabel?: string;
-}) {
-  const showLabel = pressed && Boolean(activeLabel);
-  return (
-    <div className="group relative">
-      <button
-        type="button"
-        aria-label={label}
-        aria-pressed={pressed}
-        aria-describedby={`${id}-tooltip`}
-        disabled={disabled}
-        onClick={() => onChange(!pressed)}
-        className={`flex h-8 items-center justify-center gap-1.5 rounded-full border text-caption font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1 ${
-          showLabel ? "px-2.5" : "w-8"
-        } ${
-          pressed
-            ? "border-brand-200 bg-brand-50 text-brand-700"
-            : "border-transparent bg-slate-100 text-text-secondary hover:bg-slate-200 hover:text-text-primary"
-        } disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-text-muted`}
-      >
-        {icon}
-        {showLabel && <span className="whitespace-nowrap">{activeLabel}</span>}
-      </button>
-      <div
-        id={`${id}-tooltip`}
-        role="tooltip"
-        className="pointer-events-none absolute bottom-full left-0 z-30 mb-2 w-72 translate-y-1 rounded-lg border border-slate-200 bg-slate-900 px-3 py-2.5 text-left text-xs text-slate-50 opacity-0 shadow-lg transition duration-150 group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:translate-y-0 group-focus-within:opacity-100"
-      >
-        <p className="font-semibold">{label}</p>
-        <p className="mt-1 leading-5 text-slate-200">{description}</p>
-      </div>
-    </div>
-  );
-}
 
 // 이슈가 있을 때만 뜨는 한 줄 알림(2026-08-14 "안내 문구가 너무 많다"). 정상
 // 상태를 설명하는 상시 배너는 이 화면에서 전부 걷어냈고, 남은 것은 사용자가
@@ -746,6 +693,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // 선택이 다음 실행에도 남아 있으면 사용자가 켠 줄 모르는 상태가 된다.
   const [mcpScope, setMcpScope] = useState<McpToolScope>(SCOPE_OFF);
   const [mcpServerOptions, setMcpServerOptions] = useState<McpServerOption[]>([]);
+  // "+" 메뉴에서 연 대화상자. 트리거는 메뉴가 갖고 패널은 항상 마운트돼
+  // 있다 — 메뉴가 닫히면서 패널까지 사라지면 방금 연 대화상자가 같이
+  // 사라진다.
+  const [openPanel, setOpenPanel] = useState<"prompt" | "mcp" | "localTool" | null>(null);
   const [mcpDevEnabled, setMcpDevEnabled] = useState(false);
   const [mcpDevTool, setMcpDevTool] = useState<"calculator.add" | "table_count.query" | "db_metadata.get_columns">(
     "table_count.query",
@@ -887,6 +838,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       ? "Local Agent를 선택한 동안은 사용할 수 없습니다 — 먼저 표준 Agent로 되돌리세요."
       : null;
   const mcpScopeBadge = describeScopeBadge(mcpScope, mcpServerOptions);
+
 
   // 고를 수 없는 상태로 바뀌면 범위를 비운다 — 꺼진 줄 모르는 선택이 다음
   // 전송에 조용히 실려 가지 않게 한다(허브 토글이 hubLookupApplicable 에서
@@ -1989,6 +1941,40 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // buildHubQueryPreview). 토글이 꺼져 있으면 전송될 것이 없으므로 계산하지
   // 않는다.
   const hubQueryPreview = allowHubLookup ? buildHubQueryPreview(question, messages) : "";
+  // 메뉴 항목의 활성/비활성과 그 사유는 전부 `composerMenuTypes`가 정한다 —
+  // 화면은 그리기만 한다(이 저장소에는 렌더링 테스트가 없다).
+  const composerMenuState: ComposerMenuState = {
+    running: isRunning,
+    knowledge: {
+      on: useKnowledge,
+      usable: hasUsableKnowledge && !mcpDevActive,
+      loading: installedKnowledge === null && !!bridge,
+      count: knowledgeIds.length,
+    },
+    hub: { on: allowHubLookup, applicable: hubLookupApplicable },
+    toolAuto: {
+      on: unifiedToolRouteEnabledSetting,
+      hasCandidates: unifiedToolRouteHasCandidates,
+      applicable: unifiedToolRouteApplicable,
+      blockedReason: !bridge
+        ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
+        : "개발 확인용 Tool 호출/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요.",
+    },
+    mcp: {
+      badge: mcpScopeBadge,
+      selectable: mcpScopeSelectable,
+      blockedReason: mcpScopeDisabledReason,
+    },
+    prompt: { available: !!bridge },
+    localTool: { available: !!bridge },
+  };
+  const composerChips = buildActiveChips(composerMenuState);
+  const removeChip = (key: (typeof composerChips)[number]["key"]) => {
+    if (key === "knowledge") setUseKnowledge(false);
+    else if (key === "hub") setAllowHubLookup(false);
+    else if (key === "toolAuto") void handleUnifiedToolRouteToggle(false);
+    else if (key === "mcp") setMcpScope(SCOPE_OFF);
+  };
 
   // "대화로 Agent 초안 만들기" 진입점 — 저장된 지난 대화를 복원해 보는 중인
   // 메시지(restored===true)는 citations/toolRoute/stages가 애초에 저장되지
@@ -2679,85 +2665,60 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   className="w-full resize-none bg-transparent px-4 pt-3 pb-1 text-body text-text-primary placeholder:text-text-muted focus:outline-none disabled:text-text-muted"
                   disabled={isRunning}
                 />
-                <div className="flex items-center gap-1.5 px-2.5 pb-2.5">
-                  <ComposerToggle
-                    id="knowledge-toggle"
-                    label="보유 Knowledge에서 찾기"
-                    description={
-                      hasUsableKnowledge
-                        ? "사내 지식에 근거한 답변이 필요할 때 켭니다. 끄면 선택한 Ollama 모델과 바로 대화합니다."
-                        : installedKnowledge === null && bridge
-                          ? "보유 Knowledge를 확인하는 중입니다. Ollama 일반 대화는 바로 사용할 수 있습니다."
-                          : "검색 가능한 Knowledge가 없어 현재는 Ollama 일반 대화만 사용할 수 있습니다."
+                <div className="flex flex-wrap items-center gap-1.5 px-2.5 pb-2.5">
+                  {/* 실사용 제보(2026-09-18) "메뉴가 많아져서 보기가 힘들다" —
+                      켤 수 있는 것은 "+" 메뉴 하나로 접고(지식/프롬프트/도구/
+                      검색(허브)), **켜진 것만** 칩으로 남긴다. 접어서 안 보이면
+                      켠 줄 모르는 채로 질문을 보내게 되고, 이 줄에는 허브 전송
+                      동의처럼 의미가 큰 것도 있다. 모델 선택과 전송 버튼은
+                      그대로 둔다(매 턴 보는 값이라 접지 않는다). */}
+                  <ComposerMenu
+                    state={composerMenuState}
+                    knowledgeDetail={useKnowledge ? `${knowledgeIds.length}개` : null}
+                    toolAutoDetail={
+                      unifiedToolRouteHasCandidates
+                        ? describeUnifiedToolRouteCandidates(registeredLocalTools, connectedMcpToolNames)
+                        : null
                     }
-                    icon={<BookOpenCheck size={15} aria-hidden="true" />}
-                    pressed={useKnowledge}
-                    disabled={isRunning || !hasUsableKnowledge || mcpDevActive}
-                    onChange={setUseKnowledge}
-                    activeLabel={`지식 ${knowledgeIds.length}개`}
+                    mcpDetail={mcpScopeBadge}
+                    onToggleKnowledge={setUseKnowledge}
+                    onToggleHub={setAllowHubLookup}
+                    onToggleToolAuto={(next) => void handleUnifiedToolRouteToggle(next)}
+                    onOpenPrompt={() => setOpenPanel("prompt")}
+                    onOpenMcp={() => setOpenPanel("mcp")}
+                    onOpenLocalTool={() => setOpenPanel("localTool")}
                   />
 
-                  {/* 허브 조회 동의(Stage 2, D-078) — 기본 꺼짐과 세션별 초기화,
-                      사용자 질문 텍스트만 전송하는 경계는 그대로 유지한다. 긴
-                      설명은 제거하지 않고 hover/focus 툴팁으로 점진 공개한다. */}
-                  <ComposerToggle
-                    id="hub-toggle"
-                    label="허브에도 물어보기"
-                    description={
-                      hubLookupApplicable
-                        ? "로컬 Knowledge에서 답을 찾지 못한 경우에만 사용자가 입력한 질문 텍스트를 허브로 전송합니다. 로컬 문서 내용은 전송되지 않습니다."
-                        : "보유 Knowledge 검색을 먼저 켜야 사용할 수 있습니다. 기본적으로 꺼져 있으며 로컬 문서 내용은 허브로 전송되지 않습니다."
-                    }
-                    icon={<Globe2 size={15} aria-hidden="true" />}
-                    pressed={allowHubLookup}
-                    disabled={isRunning || !hubLookupApplicable}
-                    onChange={setAllowHubLookup}
-                    activeLabel="허브"
-                  />
-
-                  {/* D-089 후속(통합 Tool 라우팅, 2026-08-20 승인 설계) — 옛
-                      "필요하면 Tool 자동 제안"(MCP)과 "로컬 Tool 인자 자동
-                      채우기"(로컬) 두 토글을 하나로 합쳤다. 어느 종류의
-                      Tool을 쓸지는 구현 세부사항이지 사용자가 미리 알아야
-                      할 선택이 아니다 — 후보(등록된 로컬 Tool + 연결된 MCP
-                      Tool)가 하나도 없으면 토글 자체를 그리지 않고
-                      (`unifiedToolRouteHasCandidates`, Task Brief E), 켜져
-                      있을 때는 두 종류 후보 이름을 그대로 보여준다(무엇이
-                      자동 실행될 수 있는지 모르는 상태를 만들지 않는다).
-                      기본 켜짐 + 사용자가 끄면 설정에 저장되어 유지된다
-                      (`unifiedToolRouteEnabledSetting`) — 실행을 막는 것은
-                      이 토글이 아니라 승인이다: MCP Tool은 실행 전 항상
-                      승인/거부 확인 Panel을 다시 거치고, 로컬 Tool은 미리
-                      허용해 둔 것만(`approval`, D-084 후속 3) 대화상자 없이
-                      실행된다. */}
-                  {unifiedToolRouteHasCandidates && (
-                    <ComposerToggle
-                      id="unified-tool-route-toggle"
-                      label="필요하면 Tool 자동 선택"
-                      description={
-                        unifiedToolRouteApplicable
-                          ? `이 질문에 맞는 Tool을 AI가 후보 중에서 하나 고릅니다 — 사내 등록 Tool과 겹치면 항상 사내 등록 Tool을 먼저 씁니다. 사내 Tool은 실행 전 항상 승인/거부를 다시 확인하고, 로컬 Tool은 '실행 허용됨' 표시가 있는 것만 승인 대화상자 없이 실행되며 나머지는 매번 다시 확인합니다. 후보: ${describeUnifiedToolRouteCandidates(registeredLocalTools, connectedMcpToolNames)}.${unifiedToolRouteSaveError ? ` (설정 저장 실패: ${unifiedToolRouteSaveError})` : ""}`
-                          : !bridge
-                            ? "이 기능은 Desktop 앱에서만 사용할 수 있습니다."
-                            : "개발 확인용 Tool 호출/Local Agent 선택이 켜져 있는 동안은 사용할 수 없습니다 — 먼저 끄세요."
-                      }
-                      icon={<Wrench size={15} aria-hidden="true" />}
-                      pressed={unifiedToolRouteEnabledSetting}
-                      disabled={isRunning || !unifiedToolRouteApplicable}
-                      onChange={(next) => void handleUnifiedToolRouteToggle(next)}
-                      activeLabel="Tool 자동"
+                  {composerChips.map((chip) => (
+                    <ComposerChipButton
+                      key={chip.key}
+                      label={chip.label}
+                      disabled={isRunning}
+                      onRemove={() => removeChip(chip.key)}
                     />
-                  )}
-                  {unifiedToolRouteSaveError && (
-                    <p className="w-full basis-full text-caption text-danger">
-                      Tool 자동 선택 설정을 저장하지 못했습니다: {unifiedToolRouteSaveError}
-                    </p>
-                  )}
+                  ))}
 
-                  {/* D-084 — 로컬 Tool을 직접 골라 인자를 채우고 매번 새로
-                      승인해야만 실행되는 수동 경로. 위 통합 토글은 선택과
-                      인자를 AI가 대신하는 별도 경로다 — 이 버튼은 그대로
-                      남긴다(대체가 아니라 추가). */}
+                  {/* 대화상자는 메뉴 밖에 항상 마운트해 둔다(위 openPanel 주석). */}
+                  <PromptPickerPanel
+                    bridge={bridge}
+                    disabled={isRunning}
+                    currentQuestion={question}
+                    onApply={setQuestion}
+                    showTrigger={false}
+                    externalOpen={openPanel === "prompt"}
+                    onExternalOpenChange={(next) => !next && setOpenPanel(null)}
+                  />
+                  <McpToolPickerPanel
+                    scope={mcpScope}
+                    onScopeChange={setMcpScope}
+                    disabled={isRunning || !mcpScopeSelectable}
+                    disabledReason={isRunning ? "이미 실행 중입니다." : mcpScopeDisabledReason}
+                    badge={mcpScopeBadge}
+                    onServersLoaded={setMcpServerOptions}
+                    showTrigger={false}
+                    externalOpen={openPanel === "mcp"}
+                    onExternalOpenChange={(next) => !next && setOpenPanel(null)}
+                  />
                   <LocalToolInvokePanel
                     bridge={bridge}
                     disabled={isRunning}
@@ -2767,31 +2728,16 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       connectedNames: mcpToolConnectionSummary.connected.map((a) => a.name),
                       installedNotConnectedCount: mcpToolConnectionSummary.installedNotConnectedCount,
                     }}
+                    showTrigger={false}
+                    externalOpen={openPanel === "localTool"}
+                    onExternalOpenChange={(next) => !next && setOpenPanel(null)}
                   />
 
-                  {/* 허브에서 받은 프롬프트를 골라 입력창에 넣는다. 위
-                      토글들과 달리 런타임 동작을 바꾸지 않는다 — 보내는
-                      것은 언제나 사용자가 입력창에서 확인한 텍스트다. */}
-                  <PromptPickerPanel
-                    bridge={bridge}
-                    disabled={isRunning}
-                    currentQuestion={question}
-                    onApply={setQuestion}
-                  />
-
-                  {/* D-094 이어 붙이기 — 이번 대화에서 AI가 고를 수 있는 MCP
-                      Tool 범위. 프롬프트 버튼과 같은 자리지만 성격이 다르다:
-                      저쪽은 입력창 텍스트를, 이쪽은 런타임 후보를 바꾼다. */}
-                  <McpToolPickerPanel
-                    scope={mcpScope}
-                    onScopeChange={setMcpScope}
-                    disabled={isRunning || !mcpScopeSelectable}
-                    disabledReason={
-                      isRunning ? "이미 실행 중입니다." : mcpScopeDisabledReason
-                    }
-                    badge={mcpScopeBadge}
-                    onServersLoaded={setMcpServerOptions}
-                  />
+                  {unifiedToolRouteSaveError && (
+                    <p className="w-full basis-full text-caption text-danger">
+                      Tool 자동 선택 설정을 저장하지 못했습니다: {unifiedToolRouteSaveError}
+                    </p>
+                  )}
 
                   {settingsBridge ? (
                     <div className="flex min-w-0 items-center gap-1 rounded-full px-1.5 py-1 transition-colors hover:bg-slate-100">
