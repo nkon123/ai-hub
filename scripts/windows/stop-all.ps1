@@ -15,9 +15,9 @@
     실패한다.
 
     Desktop Client(Electron)도 기본 대상이다 — `start-all-background.ps1` 이
-    기본으로 띄우기 때문이다. 다만 **이 스크립트가 기록한 PID 만** 종료한다
-    (포트가 없어 포트 탐색 경로가 없다) — 사용자가 따로 띄운 Electron 창은
-    건드리지 않는다.
+    기본으로 띄우기 때문이다. 기록된 PID 트리, Vite 포트(5173), 그리고 그래도
+    남은 **이 저장소 폴더 안의** `electron.exe` 순서로 찾는다 — VS Code 같은
+    이 PC 의 다른 Electron 앱은 건드리지 않는다.
 
 .PARAMETER NoDesktop
     Desktop Client 는 그대로 둔다.
@@ -42,7 +42,7 @@ if ($Only) {
 $recorded = @()
 if (Test-Path $PidFile) {
     try {
-        $recorded = @(Get-Content $PidFile -Raw | ConvertFrom-Json)
+        $recorded = @(Read-HubPidRecords)
     } catch {
         Write-Host ("[경고] PID 기록을 읽지 못했습니다({0}) — 포트로만 찾습니다." -f $_.Exception.Message) -ForegroundColor Yellow
     }
@@ -66,6 +66,18 @@ foreach ($service in $targets) {
         if ($killed -contains [int]$processId) { continue }
         if (Stop-HubProcessTree -ProcessId ([int]$processId)) {
             $killed += [int]$processId
+        }
+    }
+
+    # Desktop 의 마지막 안전망 — 부모가 먼저 죽어 트리가 끊겼으면 위 두 경로로는
+    # Electron 이 안 보인다. 살아남으면 로그 파일을 잡고 있어 다음 기동이
+    # 로그를 옮기지 못한다(2026-09-18 실측).
+    if ($service.Kind -eq "app") {
+        foreach ($processId in (Get-HubDesktopElectronProcessIds)) {
+            if ($killed -contains [int]$processId) { continue }
+            if (Stop-HubProcessTree -ProcessId ([int]$processId)) {
+                $killed += [int]$processId
+            }
         }
     }
 

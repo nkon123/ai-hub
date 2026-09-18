@@ -1,5 +1,17 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-18 M12 재시작 시 "Object[] → Int32 변환 불가" + Desktop 로그 `Move-Item` 실패
+
+- **제보**: "리스타트하니 종료는 되는 것 같은데 'System.Object[] 유형의 값을 System.Int32 유형으로 변환할 수 없다'가 나오고, desktop-client 로그에서 'Move-Item: 파일이 다른 프로세스에서 사용되고 있다'가 나온다."
+- **원인(하나가 둘을 만들었다)**: PowerShell 5.1 의 `ConvertFrom-Json` 은 JSON 배열을 파이프라인에 **객체 하나(Object[])** 로 내보낸다. `@(Get-Content ... | ConvertFrom-Json)` 은 "원소 하나짜리 배열 안에 전체 배열"이 되고, 서비스별로 고른 `.ProcessId` 가 **모든 PID 의 배열**이라 `[int]` 변환이 실패했다(직접 재현). 그래서 기록된 PID 로는 아무것도 종료되지 않았다. HTTP 서비스는 포트 경로로 따로 죽어 "종료는 되는 것처럼" 보였지만, 포트가 없던(`Port = 0`) Desktop Client 는 **살아남아** `desktop-client.log` 를 잡고 있었고, 이어진 기동의 로그 회전(`Move-Item`)이 실패했다. 확인 시점에 이 저장소의 `electron.exe` 4개가 실제로 떠 있었다.
+- **고친 것**:
+  - `_services.ps1`: `Read-HubPidRecords`(변수에 받은 뒤 한 번 더 펼친다)를 공유하고 `stop-all`/`start-all-background` 가 이것만 쓴다. Desktop 의 `Port` 를 Vite 5173 으로 두었다. `Get-HubDesktopElectronProcessIds` 는 실행 파일이 **저장소 폴더 안**인 `electron.exe` 만 찾는다(다른 Electron 앱은 건드리지 않음).
+  - `stop-all.ps1`: Desktop 은 PID 트리 → 5173 → 저장소 Electron 순으로 찾는다.
+  - `start-all-background.ps1`: 로그를 옮기지 못하면 빨간 예외 대신 그 항목만 건너뛰고 `stop-all.ps1 -Only <이름>` 을 안내한다(같은 파일로 출력을 돌릴 수 없어 어차피 실패한다).
+  - `restart-all.ps1`: Desktop 의 5173 도 풀릴 때까지 기다린다(Vite `strictPort`).
+- **검증**: 5개 스크립트 파서 구문 검사 통과. `Read-HubPidRecords` 를 여러 개/한 개/파일 없음으로 실행해 PID 를 정수로 읽는 것 확인(예전 방식은 같은 입력에서 위 오류를 재현). 잠긴 파일에 대한 `Move-Item` 이 예외 없이 "건너뜀"으로 가는 것 확인. 스크립트를 임시 폴더로 복사해 포트·Electron 탐색을 비운 채 `stop-all.ps1` 을 더미 프로세스 트리 2개에 대고 실행 — 둘 다 종료, 기록 삭제, 실제 Electron 은 그대로. `Get-HubDesktopElectronProcessIds` 는 읽기만 해서 저장소 Electron 4개를 정확히 골라내는 것 확인.
+- **확인하지 못한 것**: 실제 스택에 대고 `restart-all-background.ps1` 을 돌리지는 않았다(떠 있는 사용자 세션을 내리게 된다).
+
 ## 2026-09-18 M04 지식 검색을 켜지 않았는데 검색이 돌던 것
 
 - **제보**: "'지금 시간은'이라고 물었는데 지식 검색이 바로 된다. 켜지도 않았는데."

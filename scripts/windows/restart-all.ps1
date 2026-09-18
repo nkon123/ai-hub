@@ -46,7 +46,8 @@ if ($Only) { $stopArgs["Only"] = $Only }
 Write-Host ""
 Write-Host "2/3 포트가 풀리기를 기다리는 중..." -ForegroundColor Cyan
 
-$watched = Get-HubServices | Where-Object { $_.Kind -eq "service" -and $_.Port -gt 0 }
+# Desktop 의 5173(Vite)도 기다린다 — Vite 는 `strictPort` 라 잡혀 있으면 죽는다.
+$watched = Get-HubServices | Where-Object { $_.Port -gt 0 -and ($_.Kind -eq "service" -or (-not $NoDesktop)) }
 if ($Only) { $watched = $watched | Where-Object { $Only -contains $_.Name } }
 
 $deadline = (Get-Date).AddSeconds($TimeoutSeconds)

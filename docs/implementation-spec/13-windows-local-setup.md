@@ -406,6 +406,8 @@ Desktop Client 는 **맨 뒤에**, 서비스가 포트를 잡을 시간을 5초 
 
 찾는 방법은 둘이다: `logs\running-services.json` 에 기록된 PID, 그리고 각 서비스 포트를 **실제로 듣고 있는** 프로세스. 종료는 `taskkill /T`(프로세스 트리)로 한다 — `uvicorn --reload` 와 `pnpm` 은 실제 작업을 자식 프로세스에서 하므로 부모만 죽이면 포트를 계속 잡은 고아가 남고, 다음 기동이 실패한다. 이름으로 `python`/`node` 를 싹 죽이지는 않는다(이 PC의 다른 작업까지 죽는다).
 
+Desktop Client 는 기록된 PID 트리 → Vite 포트(5173) → **이 저장소 폴더 안의** `electron.exe` 순서로 찾는다. 마지막 경로는 부모 PowerShell 이 먼저 죽어 트리가 끊긴 경우를 위한 것이고, 실행 파일 경로로 범위를 좁혀 VS Code 같은 다른 Electron 앱은 건드리지 않는다. Desktop 이 살아남으면 `desktop-client.log` 를 잡고 있어 다음 기동이 로그를 옮기지 못한다 — 그때 `start-all-background.ps1` 은 그 항목만 **건너뛰고** `stop-all.ps1 -Only desktop-client` 를 안내한다.
+
 ## 6. 검증
 
 ### 6.1 Health Check

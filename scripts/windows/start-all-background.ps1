@@ -69,7 +69,8 @@ if ($Only) {
 # 이전 실행 기록에 살아 있는 프로세스가 있으면 알려준다 — 모르고 두 번 띄우면
 # 뒤엣것이 "포트 사용 중"으로 죽고, 사용자는 로그에서 그 이유를 찾아야 한다.
 if (Test-Path $PidFile) {
-    $previous = @(Get-Content $PidFile -Raw | ConvertFrom-Json)
+    $previous = @()
+    try { $previous = @(Read-HubPidRecords) } catch { $previous = @() }
     $alive = @($previous | Where-Object { $_.ProcessId -gt 0 -and (Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue) })
     if ($alive.Count -gt 0) {
         Write-Host ("[경고] 이전에 기동한 프로세스 {0}개가 아직 살아 있습니다: {1}" -f $alive.Count, (($alive | ForEach-Object { $_.Name }) -join ", ")) -ForegroundColor Yellow
@@ -101,10 +102,24 @@ foreach ($service in $targets) {
     # (실측). 그대로 두면 방금 왜 죽었는지가 다음 기동 순간 사라지므로,
     # 직전 로그를 `<서비스>.prev.log` 로 옮겨 둔다 — 한 세대만 남긴다
     # (더 쌓아 두면 아무도 지우지 않아 로그 폴더가 계속 커진다).
+    #
+    # 옮기지 못하면(파일을 아직 누가 쓰고 있다 = 이전 프로세스가 살아 있다)
+    # 그 서비스는 띄우지 않는다 — 같은 파일로 출력을 돌릴 수 없어 어차피
+    # 실패하고, 떠도 포트 충돌로 죽는다. 빨간 예외 대신 무엇을 하면 되는지 적는다.
+    $locked = $false
     foreach ($pair in @(@{ From = $outLog; To = "$outLog.prev" }, @{ From = $errLog; To = "$errLog.prev" })) {
         if ((Test-Path $pair.From) -and ((Get-Item $pair.From).Length -gt 0)) {
-            Move-Item -Path $pair.From -Destination $pair.To -Force
+            try {
+                Move-Item -Path $pair.From -Destination $pair.To -Force -ErrorAction Stop
+            } catch {
+                $locked = $true
+            }
         }
+    }
+    if ($locked) {
+        Write-Host ("  건너뜀 {0,-20} 이전 프로세스가 아직 로그 파일을 쓰고 있습니다." -f $service.Name) -ForegroundColor Yellow
+        Write-Host ("         .\scripts\windows\stop-all.ps1 -Only {0} 로 정리한 뒤 다시 실행하세요." -f $service.Name) -ForegroundColor Yellow
+        continue
     }
 
     $process = Start-Process powershell `

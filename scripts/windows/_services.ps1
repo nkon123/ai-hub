@@ -34,8 +34,11 @@ function Get-HubPidFile {
 .DESCRIPTION
     `Kind`:
       - `service` : HTTP 서비스. health-check 대상이고 포트로도 찾을 수 있다.
-      - `app`     : Desktop Client(Electron). 포트가 없고 창을 직접 띄우므로
-                    백그라운드 기동 대상에서 기본 제외한다.
+      - `app`     : Desktop Client(Electron). HTTP 서비스가 아니라 창을 띄운다.
+                    `Port` 5173 은 함께 뜨는 Vite 렌더러 포트다 — health-check
+                    대상은 아니지만, 종료할 때 기록된 PID 가 없어도 찾을 수
+                    있게 하고, 재시작할 때 이 포트가 풀릴 때까지 기다리게
+                    한다(Vite 는 `strictPort` 라 5173 이 잡혀 있으면 죽는다).
 #>
 function Get-HubServices {
     return @(
@@ -46,8 +49,51 @@ function Get-HubServices {
         [pscustomobject]@{ Name = "distribution-service"; Script = "start-distribution-service.ps1"; Port = 8400; Kind = "service" },
         [pscustomobject]@{ Name = "office-mcp-server";    Script = "start-office-mcp-server.ps1";    Port = 8500; Kind = "service" },
         [pscustomobject]@{ Name = "portal-web";           Script = "start-portal-web.ps1";           Port = 3000; Kind = "service" },
-        [pscustomobject]@{ Name = "desktop-client";       Script = "start-desktop-client.ps1";       Port = 0;    Kind = "app" }
+        [pscustomobject]@{ Name = "desktop-client";       Script = "start-desktop-client.ps1";       Port = 5173; Kind = "app" }
     )
+}
+
+<#
+.SYNOPSIS
+    `running-services.json` 의 기록을 **평평한 배열**로 읽는다.
+.DESCRIPTION
+    PowerShell 5.1 의 `ConvertFrom-Json` 은 JSON 배열을 파이프라인에 **객체
+    하나(Object[])** 로 내보낸다. 그래서 `@(Get-Content ... | ConvertFrom-Json)`
+    은 "원소 하나짜리 배열 안에 전체 배열"이 되고, 거기서 `.ProcessId` 를 읽으면
+    모든 PID 의 배열이 나와 `[int]` 변환이 실패한다(2026-09-18 실측:
+    "System.Object[] 유형의 값을 System.Int32 유형으로 변환할 수 없습니다").
+    그 결과 기록된 PID 로는 아무것도 종료되지 않았고, 포트가 없는 Desktop
+    Client 는 살아남아 로그 파일을 잡고 있었다.
+
+    변수에 받은 뒤 한 번 더 펼친다. 파일이 없으면 빈 배열, 읽지 못하면 예외를
+    그대로 던진다 — 호출자가 "포트로만 찾는다"고 알린다.
+#>
+function Read-HubPidRecords {
+    $pidFile = Get-HubPidFile
+    if (-not (Test-Path $pidFile)) { return @() }
+    $parsed = Get-Content $pidFile -Raw | ConvertFrom-Json
+    return @($parsed | ForEach-Object { $_ } | Where-Object { $null -ne $_ })
+}
+
+<#
+.SYNOPSIS
+    **이 저장소에서** 실행 중인 Electron 프로세스 ID들.
+.DESCRIPTION
+    Desktop Client 의 마지막 안전망이다 — 기록된 PID 트리와 5173 포트로도
+    못 찾았을 때(부모 PowerShell 이 먼저 죽어 트리가 끊긴 경우) 쓴다. 실행
+    파일 경로가 저장소 폴더 안에 있는 `electron.exe` 만 고른다 — VS Code,
+    Slack 같은 이 PC 의 다른 Electron 앱은 건드리지 않는다.
+#>
+function Get-HubDesktopElectronProcessIds {
+    $root = (Get-HubRepoRoot).TrimEnd('\') + '\'
+    try {
+        $processes = Get-CimInstance Win32_Process -Filter "Name = 'electron.exe'" -ErrorAction Stop
+    } catch {
+        return @()
+    }
+    return @($processes |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) } |
+        Select-Object -ExpandProperty ProcessId)
 }
 
 function Get-HubServiceLogPath {
