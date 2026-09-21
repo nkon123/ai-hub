@@ -310,6 +310,14 @@ type ExampleState =
   | { status: "ok"; data: WizardExample[] }
   | { status: "error"; message: string };
 
+// 유형별 개발 가이드(원문 마크다운). 가이드가 없는 유형은 "none" — 오류가 아니라
+// 아직 문서가 없는 정상 상태라서 화면에 아무것도 띄우지 않는다.
+type GuideState =
+  | { status: "loading" }
+  | { status: "none" }
+  | { status: "ok"; path: string; markdown: string }
+  | { status: "error"; message: string };
+
 function downloadTextFile(name: string, content: string) {
   const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
   const url = URL.createObjectURL(blob);
@@ -573,6 +581,40 @@ function Wizard({ type }: { type: WizardType }) {
   // 사용자 피드백("어떤 파일을 올려야 하는지 모르겠다")에 대한 응답이라
   // Wizard 진입과 함께 미리 불러와 둔다 — 2단계(Manifest)와 3단계(파일
   // 업로드) 양쪽에서 같은 데이터를 쓴다.
+  // 유형별 개발 가이드 — GET /assets/new/{type}/guide 가 docs/ 의 실제 md 를 그대로
+  // 읽어 돌려준다. 화면이 경로만 문자열로 보여 주던 것을 대신한다(폐쇄망 PC 에서
+  // 저장소를 받아 두지 않은 사람에게 경로는 아무것도 아니다).
+  const [guide, setGuide] = useState<GuideState>({ status: "loading" });
+  useEffect(() => {
+    let cancelled = false;
+    setGuide({ status: "loading" });
+    fetch(`/assets/new/${type}/guide`)
+      .then(async (res) => {
+        const body = await safeJson(res);
+        if (cancelled) return;
+        if (res.status === 404) {
+          setGuide({ status: "none" });
+          return;
+        }
+        if (!res.ok || typeof body?.markdown !== "string") {
+          setGuide({
+            status: "error",
+            message: body?.error?.message ?? "개발 가이드를 불러오지 못했습니다.",
+          });
+          return;
+        }
+        setGuide({ status: "ok", path: body.path, markdown: body.markdown });
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setGuide({ status: "error", message: "개발 가이드를 불러오지 못했습니다." });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [type]);
+
   const [example, setExample] = useState<ExampleState>({ status: "loading" });
   useEffect(() => {
     let cancelled = false;
@@ -918,6 +960,7 @@ function Wizard({ type }: { type: WizardType }) {
             onReset={regenerateSkeleton}
             parsed={parsed}
             example={example}
+            guide={guide}
           />
         )}
 
@@ -1067,6 +1110,7 @@ function StepManifest({
   onReset,
   parsed,
   example,
+  guide,
 }: {
   type: WizardType;
   manifestText: string;
@@ -1074,6 +1118,7 @@ function StepManifest({
   onReset: () => void;
   parsed: ParseResult;
   example: ExampleState;
+  guide: GuideState;
 }) {
   // 고급 편집기에서 JSON이 깨진 채로 구조화 폼을 조작하면, 폼이 자기가
   // 읽어낸 빈 객체 위에 patch를 얹어 저장해 사용자가 쓰던 내용을 조용히
@@ -1176,6 +1221,10 @@ function StepManifest({
           </p>
         </div>
 
+        {/* 예시보다 가이드가 먼저다 — 예시는 "이 칸에 무엇을 쓰는가"를 알려주지만,
+            아직 서버 코드가 없는 사람에게 필요한 것은 "무엇을 지켜야 통과하는가"다. */}
+        <GuidePanel guide={guide} />
+
         {/* MCP 서버만 예시를 "고급 설정" 안이 아니라 맨 위에 둔다 — HTTP 로
             붙는 서버와 내 PC 에서 직접 실행하는 서버는 채워야 할 값이 거의
             겹치지 않아서, 빈 폼에서 시작하면 어느 칸이 자기 경우에
@@ -1266,6 +1315,8 @@ function StepManifest({
           기본값으로 재설정
         </Button>
       </div>
+
+      <GuidePanel guide={guide} />
 
       <ExamplePanel type={type} example={example} onFill={onChange} />
 
@@ -2422,6 +2473,78 @@ function McpManifestFields({
         안전 정책에 따라 이 PoC에서는 읽기 전용 Tool만 등록됩니다.
       </div>
     </div>
+  );
+}
+
+/**
+ * 개발 가이드 원문 패널 — 접힌 상태가 기본이다.
+ *
+ * 마크다운을 렌더링하지 않는다. 이 문서의 주된 쓰임이 읽는 것이 아니라 **AI 코딩 도구에
+ * 붙여넣는 것**이라 원문이 맞고, 렌더러를 넣으면 새 의존성과 폐쇄망 설치 절차가 따라온다.
+ * 그래서 "전체 복사"가 여기서 가장 중요한 버튼이다.
+ */
+function GuidePanel({ guide }: { guide: GuideState }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  // 가이드가 없는 유형에서는 자리도 차지하지 않는다.
+  if (guide.status === "none") return null;
+  if (guide.status === "loading") {
+    return (
+      <Card className="p-4">
+        <LoadingState label="개발 가이드 불러오는 중..." />
+      </Card>
+    );
+  }
+  if (guide.status === "error") return <ErrorBanner message={guide.message} />;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(guide.markdown);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // 클립보드 권한이 없는 브라우저/환경 — 내용을 펼쳐 직접 복사할 수 있게 한다.
+      setOpen(true);
+    }
+  };
+
+  return (
+    <Card className="p-4">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <p className="text-body font-semibold text-text-primary">개발 가이드</p>
+          <p className="mt-0.5 text-caption text-text-secondary">
+            이 화면을 통과하는 서버를 만들기 위한 지시문입니다. 전체를 복사해 AI 코딩 도구에
+            붙여넣고 맨 끝의 &quot;만들 서버&quot;만 채우세요.
+          </p>
+          <p className="mt-0.5 text-caption text-text-muted">
+            <code>{guide.path}</code>
+          </p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setOpen(!open)}>
+            {open ? "접기" : "내용 보기"}
+          </Button>
+          <Button size="sm" onClick={copy}>
+            {copied ? "복사됨" : "전체 복사"}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => downloadTextFile(guide.path.split("/").pop() ?? "guide.md", guide.markdown)}
+          >
+            <Download size={13} />
+            md
+          </Button>
+        </div>
+      </div>
+      {open && (
+        <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-lg bg-slate-900 p-3 text-[11px] leading-relaxed text-slate-100">
+          {guide.markdown}
+        </pre>
+      )}
+    </Card>
   );
 }
 
