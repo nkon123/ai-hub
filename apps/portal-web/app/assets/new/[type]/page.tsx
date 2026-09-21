@@ -2516,7 +2516,7 @@ function GuidePanel({ guide }: { guide: GuideState }) {
           <p className="text-body font-semibold text-text-primary">개발 가이드</p>
           <p className="mt-0.5 text-caption text-text-secondary">
             이 화면을 통과하는 서버를 만들기 위한 지시문입니다. 전체를 복사해 AI 코딩 도구에
-            붙여넣고 맨 끝의 &quot;만들 서버&quot;만 채우세요.
+            붙여넣고 맨 앞의 &quot;아이디어&quot;만 채우세요 — 목적, 흐름, 제공할 기능.
           </p>
           <p className="mt-0.5 text-caption text-text-muted">
             <code>{guide.path}</code>
