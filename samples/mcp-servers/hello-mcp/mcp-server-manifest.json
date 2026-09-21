@@ -31,7 +31,7 @@
         "additionalProperties": false,
         "required": ["message"],
         "properties": {
-          "message": { "type": "string" }
+          "message": { "type": "string", "description": "되돌려 줄 문장" }
         }
       },
       "risk_level": "READ_ONLY",

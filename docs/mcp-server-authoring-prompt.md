@@ -130,6 +130,17 @@ ai-hub 화면에서만 확인할 수 있는 서버는 만들지 않는다. **등
 - `--call` 은 매니페스트에 `risk_level: READ_ONLY` 로 선언된 Tool만 인자 없이 호출할 수 있게 한다.
   `WRITE` Tool 은 `--yes` 를 추가로 요구한다 — 터미널에서도 부작용은 확인을 거친다.
 - 출력에 비밀값·내부 주소·개인정보를 넣지 않는다. 오류는 무엇을 고쳐야 하는지까지 말한다.
+- **점검 모드 시작에서 출력 인코딩을 UTF-8 로 고정한다.** 배포 대상이 사내 Windows PC 라
+  콘솔·파이프 기본 인코딩이 `cp949` 이고, 한국어를 그냥 `print` 하면 `UnicodeEncodeError` 로
+  점검이 죽는다(예제에서 실제로 겪었다). 서버 모드는 건드리지 않는다 — 거기 stdout 은 SDK 것이다.
+
+  ```python
+  for stream in (sys.stdout, sys.stderr):
+      try:
+          stream.reconfigure(encoding="utf-8", errors="replace")
+      except (AttributeError, ValueError):
+          pass
+  ```
 
 `--check` 가 반드시 잡아야 하는 것(등록·실행에서 실제로 막히는 항목이다):
 
@@ -255,11 +266,10 @@ ai-hub 화면에서만 확인할 수 있는 서버는 만들지 않는다. **등
 
 ## 참고할 최소 예제
 
-저장소의 `samples/mcp-servers/hello-mcp/` 가 등록 규격을 통과하는 가장 작은 예제다.
-서버 구조와 매니페스트 형태가 애매하면 그것을 따른다.
+저장소의 `samples/mcp-servers/hello-mcp/` 가 이 규격을 통과하는 가장 작은 예제다.
+서버 구조, 매니페스트, **터미널 점검 모드까지** 그대로 들어 있으니 애매하면 그것을 따른다.
 
-단, **그 예제에는 터미널 점검 모드가 없다** — 이 요건보다 먼저 만들어졌기 때문이다.
-점검 모드는 예제를 보고 베낄 수 없으니 위 규격대로 직접 구현한다.
+    uv run python samples/mcp-servers/hello-mcp/server.py --check
 
 ## 복사 끝
 
