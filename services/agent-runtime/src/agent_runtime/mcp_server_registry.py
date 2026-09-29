@@ -36,6 +36,7 @@ from ai_asset_schemas.validator import SchemaType, ValidationError, validate
 
 from agent_runtime.config import settings as default_settings
 from agent_runtime.mcp_client import (
+    HandshakeResult,
     MCPRegistrationError,
     MCPRegistrationReason,
     ToolPolicy,
@@ -50,7 +51,45 @@ _logger = logging.getLogger("agent_runtime")
 #: 계약(`mcp-server-registration.schema.json`)의 `source` 허용값.
 #: Portal 배포와 Desktop 설치만 인정한다 — 임의 URL 에서 끌어오는 경로를
 #: 만들지 않는다(루트 CLAUDE.md 구현 원칙 7).
-ALLOWED_SOURCES = ("PORTAL_DISTRIBUTION", "DESKTOP_INSTALL", "OFFLINE_BUNDLE")
+#:
+#: `DESKTOP_LOCAL`(D-107)은 그 원칙의 사용자 결정 예외다: Desktop 사용자가
+#: 허브 승인 없이 직접 추가한 서버. 매니페스트는 Desktop 이 `probe` 결과로
+#: 만든 것이라 "승인이 곧 허가"는 성립하지 않지만, 아래 `register` 의 나머지
+#: 검사(스키마, 설치 루트, 인터프리터, 도구 교집합)와 PEP 는 똑같이 적용된다.
+#:
+#: NOTE: 계약의 열거(`DESKTOP_OFFLINE_BUNDLE`)와 이 목록은 D-107 이전부터
+#: 갈라져 있다 — open-decisions.md D-107 참고. 여기서는 새 값만 더한다.
+ALLOWED_SOURCES = ("PORTAL_DISTRIBUTION", "DESKTOP_INSTALL", "OFFLINE_BUNDLE", "DESKTOP_LOCAL")
+
+
+def _probe_manifest(transport: dict) -> dict:
+    """`transport` 만 사용자가 준 값인, 스키마를 통과하는 최소 매니페스트.
+
+    probe 는 매니페스트가 아직 없는 서버에 닿는다. 그래도 transport 모양
+    검사를 따로 만들지 않고 **등록과 같은 스키마**로 검사하려고, 나머지 필수
+    필드를 자리표시자로 채운 매니페스트를 만든다. 이 매니페스트는 등록되지
+    않고 어떤 정책의 근거도 되지 않는다(도구 권한이 전원 거부 모양이다).
+    """
+    return {
+        "schema_version": "1.0",
+        "id": "00000000-0000-4000-8000-000000000000",
+        "type": "mcp_server",
+        "name": "probe",
+        "version": "0.0.0",
+        "owner": {"org": "probe", "creator_id": "probe"},
+        "classification": "INTERNAL",
+        "server_alias": "probe",
+        "provenance": "THIRD_PARTY",
+        "protocol_version": "2025-06-18",
+        "transport": transport,
+        "declared_tools": [
+            {
+                "tool_name": "probe",
+                "risk_level": "READ_ONLY",
+                "permissions": {"allowed_roles": [], "allowed_orgs": []},
+            }
+        ],
+    }
 
 
 @dataclass
@@ -217,6 +256,38 @@ class MCPServerRegistry:
             len(declared_tools), len(result.tools),
         )
         return entry
+
+    async def probe(
+        self,
+        transport: dict,
+        install_path: str | None,
+        *,
+        settings=None,
+    ) -> HandshakeResult:
+        """D-107. 연결 → `initialize` → `tools/list` 만 하고 **등록하지 않는다**.
+
+        무엇을 실행할지는 `register` 와 같은 경로로만 정한다: 스키마 검사 →
+        `resolve_connection_target`(등록 스위치, hosted 의 stdio 거부, 설치 루트,
+        entrypoint 포함, 설정된 인터프리터). 목록에도 남기지 않는다 — 실패한
+        probe 가 "등록 실패" 로 화면에 보이면 사용자는 추가하지도 않은 서버를
+        보게 된다.
+        """
+        settings = settings or default_settings
+        if not isinstance(transport, dict):
+            raise MCPRegistrationError(MCPRegistrationReason.MANIFEST_INVALID)
+        manifest = _probe_manifest(transport)
+        try:
+            validate(manifest, SchemaType.MCP_SERVER)
+        except ValidationError as exc:
+            raise MCPRegistrationError(
+                MCPRegistrationReason.MANIFEST_INVALID, detail="; ".join(exc.errors[:5])
+            ) from exc
+        target = resolve_connection_target(manifest, install_path, settings=settings)
+        result = await handshake(target, timeout_seconds=settings.mcp_connect_timeout_seconds)
+        _logger.info(
+            "mcp.server.probed transport=%s tools=%d", transport.get("kind"), len(result.tools)
+        )
+        return result
 
     def _remember_failure(
         self, manifest: dict, transport_kind: str, exc: MCPRegistrationError

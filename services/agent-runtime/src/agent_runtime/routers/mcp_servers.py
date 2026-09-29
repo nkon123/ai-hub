@@ -23,6 +23,7 @@ from observability import bind_trace_id
 from pydantic import BaseModel
 
 from agent_runtime.config import settings
+from agent_runtime.manifests import get_standard_config
 from agent_runtime.mcp_client import MCPRegistrationError
 from agent_runtime.mcp_server_registry import get_registry
 
@@ -43,6 +44,16 @@ class RegisterMcpServerRequest(BaseModel):
     manifest: dict
     install_path: str | None = None
     source: str
+    trace_id: str | None = None
+
+
+class ProbeMcpServerRequest(BaseModel):
+    """D-107 계약의 `ProbeMcpServerRequest`. 등록 요청과 같은 이유로 명령·
+    인터프리터·환경변수 필드가 없다 — 무엇을 실행할지는 매니페스트 모양의
+    `transport` 를 등록과 같은 규칙으로 해석해서만 정해진다."""
+
+    transport: dict
+    install_path: str | None = None
     trace_id: str | None = None
 
 
@@ -90,6 +101,46 @@ async def register_mcp_server(req: RegisterMcpServerRequest) -> JSONResponse:
         )
 
     return JSONResponse({"entry": entry.to_entry(), "trace_id": trace_id})
+
+
+@router.post("/mcp-servers/probe")
+async def probe_mcp_server(req: ProbeMcpServerRequest) -> JSONResponse:
+    trace_id = req.trace_id or str(uuid.uuid4())
+    bind_trace_id(trace_id)
+
+    try:
+        result = await get_registry().probe(req.transport, req.install_path, settings=settings)
+    except MCPRegistrationError as exc:
+        return _error_envelope(
+            _status_for(str(exc.reason)), str(exc.reason), str(exc), trace_id
+        )
+
+    # 이 Runtime 의 대화 사용자가 PEP 에서 누구로 판정되는가(workflow 가 감사
+    # 컨텍스트에 넣는 값과 같은 출처). Desktop 이 만든 매니페스트의 권한이 실제
+    # 호출자를 가리켜야 Default Deny 에 전부 막히지 않는다.
+    office_profile = get_standard_config().office_profile
+    return JSONResponse(
+        {
+            "protocol_version": result.protocol_version,
+            "server_name": result.server_name,
+            "tools": [
+                {
+                    "tool_name": t.tool_name,
+                    "description": t.description,
+                    "input_schema": t.input_schema,
+                    "read_only_hint": t.read_only_hint,
+                    "destructive_hint": t.destructive_hint,
+                }
+                for t in result.tools
+            ],
+            "tools_snapshot_hash": result.snapshot_hash,
+            "local_user_context": {
+                "organization_id": office_profile.get("org", "unknown-org"),
+                "roles": list(settings.poc_mcp_user_roles),
+            },
+            "trace_id": trace_id,
+        }
+    )
 
 
 @router.get("/mcp-servers")

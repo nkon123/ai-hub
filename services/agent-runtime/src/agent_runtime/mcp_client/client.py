@@ -36,6 +36,13 @@ logger = logging.getLogger(__name__)
 class DiscoveredTool:
     tool_name: str
     input_schema: dict
+    # D-107: what the server says about itself. Shown to a user who adds a
+    # server locally, never read as policy, and NOT part of the snapshot hash
+    # (`compute_tools_snapshot_hash` hashes name + input_schema only), so a
+    # server that rewords a description does not become "a different server".
+    description: str | None = None
+    read_only_hint: bool | None = None
+    destructive_hint: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -146,6 +153,9 @@ async def discover(client: Any) -> HandshakeResult:
         DiscoveredTool(
             tool_name=t.name,
             input_schema=dict(t.input_schema or {}),
+            description=t.description,
+            read_only_hint=getattr(t.annotations, "read_only_hint", None),
+            destructive_hint=getattr(t.annotations, "destructive_hint", None),
         )
         for t in listed.tools
     )
