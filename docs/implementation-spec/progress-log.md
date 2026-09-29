@@ -1,5 +1,12 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-29 M10 예제 MCP 서버 `outlook-mail` — 기간별 Outlook 메일 조회
+
+- `samples/mcp-servers/outlook-mail/` (server.py + 매니페스트, 저작 가이드 규격). 읽기 전용 Tool 2개: `outlook.list_messages`(start_date~end_date 또는 최근 days일, inbox/sent, 안 읽은 것만, 최대 100통, 미리보기 200자), `outlook.get_message`(id로 본문·받는 사람·첨부 파일 이름, 본문 최대 20,000자).
+- 클래식 Outlook 을 COM(pywin32 — Windows 에서 `mcp` 가 함께 설치)으로 읽는다. 네트워크·계정 정보 없음, `env={}` 호환(동적 디스패치로 gen_py 쓰기 없음). 로캘 의존적인 `Restrict` 날짜 필터 대신 최신순 정렬 후 시작일보다 오래된 메일에서 멈춘다. pywin32 가 Outlook 현지 시각에 UTC 표시를 붙이는 특성을 표시만 떼어 처리.
+- **검증**: `--check` 통과, 매니페스트 스키마 검증 통과, 가짜 Outlook 객체로 로직 19개 확인(기간 포함 경계, 조기 종료, 안 읽은 것만, 개수 상한, Exchange 발신자 SMTP 변환, 잘못된 기간 거부). 동봉 Python Runtime 의 probe(`env={}`)로 Tool 2개 인식, `env={}` stdio 호출에서 pywin32 로드 확인.
+- **확인하지 못한 것**: 실제 Outlook 메일함 조회 — 이 개발 PC 에는 Outlook 이 없다(COM 미등록). 새 Outlook(olk)은 COM 이 없어 지원하지 않는다.
+
 ## 2026-09-29 M04/M05 설치본에서 MCP Tool을 못 찾던 것 — Runtime 채팅 모델 (0.1.5)
 
 - **증상(사내 PC 실사용)**: 직접 추가한 hello-mcp를 "자동 선택"/"hello-mcp 전체"/"hello.now" 어느 범위로 골라도 Tool을 찾지 못함.
