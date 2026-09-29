@@ -243,6 +243,9 @@ resources/
 2. **경로/바로가기**: 설치 후 `%ProgramFiles%`(Per-machine이므로) 하위에 앱이 존재하고, 시작 메뉴/바탕화면 바로가기가 생성된다(옵션에 따름).
 3. **실행**: 설치된 실행 파일이 정상 기동해 D02(홈) 화면이 표시된다 — 이 시점에 Local Agent Runtime/Ollama가 없어도 앱 자체는 죽지 않고 D09에서 실패 상태 + 복구 안내를 보여줘야 한다(CLAUDE.md: "Desktop은 Runtime 장애 시 종료되지 않고 복구 안내를 제공한다").
 4. **Offline Bundle Import**: E2E-03(패키지 변조) 시나리오 — 정상 Bundle은 Import 성공, 1바이트 변조 Bundle은 Checksum 실패로 Quarantine에 남고 앱이 크래시하지 않는다.
+3-1. **동봉 Runtime (D-047 A)**: 첫 실행 후 30초 안에 `http://127.0.0.1:8100/health`가 200이고, 응답의 `version`이 설치 파일 버전, `commit_sha`가 `resources/runtime/runtime-manifest.json`과 같다. `%APPDATA%\AI Asset Hub 데스크톱\state\logs\agent-runtime.log`가 생긴다. 앱을 닫으면 `python.exe` 프로세스가 남지 않는다.
+3-2. **렌더러 Origin (D-104)**: 패키징된 창의 `location.origin`이 `app://desktop`이고, 그 창에서 `fetch('http://127.0.0.1:8100/local/v1/health')`가 200이다(`--remote-debugging-port`로 확인 가능).
+3-3. **저장소 밖에서 실행**: 위 항목은 저장소 밖으로 복사한 `win-unpacked` 또는 실제 설치본으로만 판정한다 — 저장소 안에서는 빠진 파일이 상위 폴더에서 우연히 채워진다(0.1.0 사고).
 5. **제거**: 언인스톨러가 앱 자체는 제거하되(§2 `deleteAppDataOnUninstall: false`), `assets/`·`state/` 하위 로컬 자산 데이터는 보존한다.
 6. **재서명 확인**(회사 인증서 확보 후): `signtool verify /pa`로 설치 파일 서명이 유효한지 확인한다.
 

@@ -1,5 +1,14 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-29 M04 설치 파일에 agent-runtime 동봉 (D-047 A 구현) + 설치본 기동 실패 수정
+
+- **0.1.0 설치본은 어느 PC에서도 시작되지 않았다**: `bundle-verify.ts`가 정책 파일을 찾으려고 `pnpm-workspace.yaml`까지 거슬러 올라갔는데, 설치본 주변에는 저장소가 없다. 저장소 안 `release/win-unpacked`로 확인하면 상위 폴더에서 우연히 찾아져 드러나지 않았다. 정책 JSON을 `extraResources`(`resources/policies/`)로 넣어 0.1.1로 수정했다(`5c986a8`).
+- **D-047 A 구현** (설계: `11-desktop-packaging-and-distribution.md` §6.1): `pnpm build:runtime`이 PSF 서명 임베디드 Python 3.14.7(SHA256 고정) + `uv.lock` 해시 고정 의존성(72MB) + 저장소 배치 그대로의 워크스페이스 소스를 `build/runtime/`에 만들고 `resources/runtime/`으로 넣는다. Python 코드는 바꾸지 않았다. `electron/runtime-supervisor.ts`가 패키징된 앱에서만 `127.0.0.1:<설정 포트>`에 띄우고(이미 응답하는 Runtime은 채택), 1/2/4/8/16초 백오프로 재시작하고, 종료 시 프로세스 트리째 정리한다.
+- **D-104 (PoC 가정)**: `file://` 렌더러의 `Origin: null`은 agent-runtime CORS가 400으로 거부해 Runtime을 띄워도 대화가 불가능했다. 렌더러를 `app://desktop/`(`electron/renderer-protocol.ts`)으로 로드하고 동봉 Runtime은 그 Origin 하나만 허용한다. `null` 허용은 채택하지 않았다(웹페이지가 sandbox iframe으로 만들 수 있다).
+- **검증**: 저장소 밖으로 복사한 `win-unpacked`를 격리된 `--user-data-dir`로 실행 — 약 2초 만에 `/health` 200(버전 0.1.1, 번들 커밋), CDP로 창 안에서 `location.origin === "app://desktop"`, `fetch(127.0.0.1:8100/local/v1/health)` 200, `/local/v1/models`로 Ollama 모델 조회, CORS/CSP 오류 없음. 앱 종료 후 `python.exe` 잔존 없음. Desktop vitest 변경 전 **1134 passed / 12 failed** → **1157 passed / 12 failed**(실패 집합 동일한 기존 실패), typecheck 통과.
+- **확인하지 못한 것**: 관리자 권한이 필요한 NSIS 설치(`Program Files`) 자체와 WDAC가 켜진 사내 PC에서의 실행, agent-runtime을 거치는 실제 대화 1턴(Knowledge 모드는 search-runtime이 없어 `blocked` — D-105 미결정).
+- **남은 것**: D-105(search-runtime 동봉 여부), 설정에서 Runtime 주소·Ollama 주소를 바꾸면 앱 재시작 후에 반영된다(Runtime 즉시 재기동은 미구현).
+
 ## 2026-09-21 M01/M12 MCP 서버 개발 프롬프트 + 등록 화면에서 원문 보기
 
 - **요청**: "다른 사람들이 MCP 메뉴 조건에 맞춰 mcp-server 를 개발할 수 있도록 프롬프트를 만들어 달라. ai-hub 에서도 볼 수 있고, md 로 정의해 놓을 것."
