@@ -55,6 +55,9 @@ DEFAULT_MANIFEST = pathlib.Path(__file__).with_name("mcp-server-manifest.json")
 MAX_RESULTS_LIMIT = 100
 MAX_DAYS = 366
 PREVIEW_CHARS = 200
+# 목록의 받는 사람 요약(앞 3명, 최대 60자 + "외 N명").
+RECIPIENT_NAMES = 3
+RECIPIENT_CHARS = 60
 BODY_DEFAULT_CHARS = 4000
 BODY_MAX_CHARS = 20000
 
@@ -155,6 +158,25 @@ def resolve_range(arguments: dict, today: dt.date) -> tuple[dt.datetime, dt.date
     )
 
 
+def summarize_recipients(
+    raw: Any, max_names: int = RECIPIENT_NAMES, max_chars: int = RECIPIENT_CHARS
+) -> str:
+    """목록에는 받는 사람을 다 싣지 않는다 — 앞의 몇 명과 나머지 수만.
+
+    전체 수신인은 단체 메일에서 수백 명이 되기도 해 목록 결과를 부풀리고, 모델
+    입력 한도와 `execution_guards.max_bytes` 를 먼저 채운다. 전체가 필요하면
+    `outlook.get_message` 가 준다.
+    """
+    names = [n.strip() for n in str(raw or "").split(";") if n.strip()]
+    if not names:
+        return ""
+    shown = "; ".join(names[:max_names])
+    if len(shown) > max_chars:
+        shown = shown[:max_chars].rstrip() + "…"
+    rest = len(names) - min(len(names), max_names)
+    return f"{shown} 외 {rest}명" if rest else shown
+
+
 def local_naive(value: Any) -> dt.datetime | None:
     """Outlook 이 주는 시각 → 현지 naive datetime.
 
@@ -245,7 +267,7 @@ class OutlookMailbox:
                             "time": when.isoformat(timespec="minutes"),
                             "from": str(getattr(item, "SenderName", "") or ""),
                             "from_email": self._sender_email(item),
-                            "to": str(getattr(item, "To", "") or ""),
+                            "to": summarize_recipients(getattr(item, "To", "")),
                             "subject": str(getattr(item, "Subject", "") or ""),
                             "unread": bool(getattr(item, "UnRead", False)),
                             "has_attachments": int(
@@ -349,9 +371,14 @@ async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
         tools=[
             types.Tool(
                 name="outlook.list_messages",
+                # 라우터는 이 설명의 앞 160자만 본다(agent-runtime
+                # `tool_route_description_max_chars`). "메일 가져와줘"처럼 기간이 없는
+                # 요청에도 부를 수 있다는 것을 그 안에 먼저 말한다 — 말하지 않으면
+                # 신중한 모델(exaone 등)은 "기간을 모르니 호출하지 않는다"로 기운다.
                 description=(
-                    "이 PC 의 Outlook 에서 기간을 정해 메일 목록을 가져옵니다(받은편지함/보낸편지함). "
-                    "날짜를 모르면 days(최근 N일)를 쓰세요. 결과의 id 로 본문을 읽을 수 있습니다."
+                    "Outlook 메일 가져오기/보여주기/확인(새 메일, 받은 메일, 보낸 메일). "
+                    "기간이 없으면 인자 없이 호출(오늘 받은 메일), 최근 N일은 days=N, "
+                    "보낸 메일은 folder=sent. 결과의 id 로 본문을 읽는다."
                 ),
                 input_schema=LIST_SCHEMA,
                 annotations=types.ToolAnnotations(read_only_hint=True),

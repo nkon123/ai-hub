@@ -3,7 +3,7 @@
   "id": "7c473b66-b691-43ea-b530-a4703428730b",
   "type": "mcp_server",
   "name": "Outlook 메일 조회 (기간별)",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "owner": {
     "org": "miracom",
     "team": "platform",
@@ -30,7 +30,7 @@
   "declared_tools": [
     {
       "tool_name": "outlook.list_messages",
-      "label": "기간을 정해 Outlook 메일 목록을 가져옵니다",
+      "label": "Outlook 메일 가져오기·보여주기(오늘·최근 N일·기간, 받은·보낸 메일)",
       "input_schema": {
         "type": "object",
         "additionalProperties": false,
