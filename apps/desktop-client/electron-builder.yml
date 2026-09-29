@@ -93,6 +93,15 @@ win:
   #                         # Until then, electron-builder falls back to the
   #                         # default Electron icon with a build-time warning
   #                         # (not a failure).
+  # D-047 A: the Local Agent Runtime (embeddable Python + agent-runtime
+  # sources + locked deps), produced by `pnpm build:runtime` into
+  # build/runtime/ (git-ignored). Windows-only, so it lives here and not in
+  # the top-level extraResources the mac build also reads. electron/
+  # runtime-supervisor.ts starts it from <resources>/runtime/. See
+  # docs/implementation-spec/11-desktop-packaging-and-distribution.md §6.1.
+  extraResources:
+    - from: build/runtime
+      to: runtime
   signingHashAlgorithms:
     - sha256
   # --- Code signing placeholders -------------------------------------------

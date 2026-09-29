@@ -288,6 +288,19 @@ describe("shared bundle-install-policy contract (CLAUDE.md 원칙 2/3)", () => {
     });
   });
 
+  // D-047 A: the Windows installer carries the Local Agent Runtime built by
+  // scripts/build-python-runtime.mjs (11-desktop-packaging §6.1.2).
+  it("electron-builder.yml ships build/runtime to <resources>/runtime on Windows, and dist:win builds it first", () => {
+    const desktopDir = path.join(__dirname, "..", "..");
+    const config = YAML.parse(fs.readFileSync(path.join(desktopDir, "electron-builder.yml"), "utf-8")) as {
+      win?: { extraResources?: { from: string; to: string }[] };
+    };
+    expect(config.win?.extraResources).toContainEqual({ from: "build/runtime", to: "runtime" });
+    const pkg = JSON.parse(fs.readFileSync(path.join(desktopDir, "package.json"), "utf-8")) as { scripts: Record<string, string> };
+    expect(pkg.scripts["build:runtime"]).toBe("node scripts/build-python-runtime.mjs");
+    expect(pkg.scripts["dist:win"]).toMatch(/build:runtime.*electron-builder/);
+  });
+
   it("ARCHIVE_EXTENSIONS/EXECUTABLE_EXTENSIONS used by checkNoNestedArchives/checkExecutablePolicy come from the shared file", () => {
     // checkNoNestedArchives/checkExecutablePolicy don't expose their extension
     // lists directly, so this drives them with one entry per shared-policy
