@@ -66,6 +66,10 @@ export interface RuntimeLaunchInput {
    * never look at two different Ollama servers. */
   ollamaBaseUrl: string;
   stateDir: string;
+  /** `<assetsDir>/mcp-servers` — where Bundle/Store installs put MCP server
+   * code (`ASSET_TYPE_FOLDER.mcp_server`). The only place the bundled runtime
+   * may start stdio servers from. */
+  mcpServerInstallRoot: string;
   appVersion: string;
 }
 
@@ -116,6 +120,16 @@ export function planRuntimeLaunch(input: RuntimeLaunchInput): RuntimeLaunchPlanR
         AGENT_RUNTIME_BUILD_VERSION: input.appVersion,
         AGENT_RUNTIME_COMMIT_SHA: input.runtime.commitSha,
         AIHUB_OLLAMA_CONFIG: ollamaConfigPath,
+        // D-094 stdio MCP servers, on by default in the installer (user
+        // decision 2026-09-29, 11-desktop-packaging §6.1.7): Portal approval
+        // is the control point, and an MCP server installed from the hub runs
+        // on this PC without per-PC admin setup. Still bounded by D-094's
+        // other layers — only code under the install root, only the bundled
+        // interpreter (it already carries the MCP SDK), never PATH lookup.
+        AGENT_RUNTIME_RUNTIME_MODE: "local",
+        AGENT_RUNTIME_MCP_SERVER_REGISTRATION_ENABLED: "true",
+        AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS: JSON.stringify([input.mcpServerInstallRoot]),
+        AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH: input.runtime.pythonExe,
       },
       healthUrl: `${url.origin}/health`,
       logPath: path.join(input.stateDir, "logs", "agent-runtime.log"),

@@ -230,6 +230,22 @@ resources/
 4. `app://` 스킴 로드 + 동봉 Runtime CORS(D-104).
 5. §7 Smoke Test에 Runtime 항목 추가 + 저장소 밖 복사본으로 실제 기동 검증.
 
+#### 6.1.7 설치본의 stdio MCP 서버 기본 허용 (D-106, 사용자 결정 2026-09-29)
+
+D-094는 "운영자가 PC마다 명시적으로 켜야 서드파티 MCP 서버 코드가 실행된다"를 기본으로 두었다(`mcp_server_registration_enabled=false`, `runtime_mode=hosted`). 설치본에서는 사용자 결정(선택지 B)에 따라 Desktop이 동봉 Runtime을 띄울 때 다음을 넘긴다(`runtime-supervisor.ts`):
+
+| 변수 | 값 |
+|---|---|
+| `AGENT_RUNTIME_RUNTIME_MODE` | `local` |
+| `AGENT_RUNTIME_MCP_SERVER_REGISTRATION_ENABLED` | `true` |
+| `AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS` | `["<설치 루트>\assets\mcp-servers"]` (Bundle/Store 설치 위치 하나) |
+| `AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH` | 동봉 `python.exe` (MCP SDK 포함) |
+
+- **통제 지점이 바뀐다**: PC별 운영자 opt-in 대신 **Portal 승인**(검토자가 `permissions`/`risk_level` 확인)이 "이 코드가 사용자 PC에서 실행돼도 되는가"의 유일한 관문이 된다.
+- **남는 경계**: 허용 루트 밖의 코드는 거부(`install_path_outside_allowed_roots`), 인터프리터는 동봉 Python 하나(PATH 탐색 없음, Node 서버는 인터프리터 미설정으로 거부), stdio 서버는 `env={}`로 기동, 호출마다 D-100 역할 인가.
+- 환경변수가 `.env`보다 우선하므로 이 네 값은 관리자 `.env`로 끌 수 없다. 끄는 수단이 필요해지면 별도 결정으로 다룬다.
+- 실측(2026-09-29): 한글 경로(`AI Asset Hub 데스크톱`) 아래 설치 루트에 둔 `hello-mcp`가 동봉 Python으로 `ACTIVE` 등록(`hello.echo`, `hello.now`), 루트 밖 경로는 HTTP 403.
+
 #### 6.1.6 범위 밖으로 남기는 것 (D-105)
 
 - **search-runtime**: Knowledge 모드 대화는 search-runtime(`:8300`)이 없으면 막힌다(`connections.ts::assessChatConnections`). search-runtime은 `chromadb`에 의존해 크기와 네이티브 의존성이 agent-runtime과 차원이 다르므로 같은 방식으로 넣을지 별도로 정한다. 그 전까지 동봉 Runtime만으로는 **Ollama 모드 대화**와 MCP Tool 경로가 대상이다.

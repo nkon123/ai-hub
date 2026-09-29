@@ -33,6 +33,7 @@ function input(overrides: Partial<RuntimeLaunchInput> = {}): RuntimeLaunchInput 
     agentRuntimeBaseUrl: "http://127.0.0.1:8100",
     ollamaBaseUrl: "http://127.0.0.1:11434/",
     stateDir: tempDir(),
+    mcpServerInstallRoot: path.join(tempDir(), "assets", "mcp-servers"),
     appVersion: "0.1.1",
     ...overrides,
   };
@@ -82,6 +83,19 @@ describe("planRuntimeLaunch", () => {
     const result = planRuntimeLaunch(input());
     if (!result.ok) throw new Error(result.message);
     expect(JSON.parse(result.plan.env.AGENT_RUNTIME_CORS_ORIGINS)).toEqual([DESKTOP_APP_ORIGIN]);
+  });
+
+  it("turns on stdio MCP servers, bounded to the install root and the bundled interpreter (D-094, option B)", () => {
+    const i = input();
+    const result = planRuntimeLaunch(i);
+    if (!result.ok) throw new Error(result.message);
+    const env = result.plan.env;
+    expect(env.AGENT_RUNTIME_RUNTIME_MODE).toBe("local");
+    expect(env.AGENT_RUNTIME_MCP_SERVER_REGISTRATION_ENABLED).toBe("true");
+    // JSON array: survives Windows backslashes and the Korean product folder name.
+    expect(JSON.parse(env.AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS)).toEqual([i.mcpServerInstallRoot]);
+    expect(env.AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH).toBe(i.runtime.pythonExe);
+    expect(env.AGENT_RUNTIME_MCP_NODE_INTERPRETER_PATH).toBeUndefined();
   });
 
   it("hands the runtime the Desktop's own Ollama setting, in the form ollama_config.py accepts", () => {

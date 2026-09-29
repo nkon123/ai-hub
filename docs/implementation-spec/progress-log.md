@@ -1,5 +1,11 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-29 M04 설치본에서 stdio MCP 서버 기본 허용 (D-106, 0.1.3)
+
+- **사용자 결정(선택지 B)**: 설치본의 동봉 agent-runtime을 띄울 때 `RUNTIME_MODE=local`, `MCP_SERVER_REGISTRATION_ENABLED=true`, 설치 루트 `<userData>/assets/mcp-servers` 하나, 동봉 Python을 넘긴다(`runtime-supervisor.ts`). PC별 `.env` opt-in 대신 Portal 승인이 통제 지점이다. 동봉 Python에는 이미 MCP SDK가 있어 별도 인터프리터가 필요 없다.
+- **검증**: 동봉 Python + 같은 환경변수로 띄운 Runtime에 Desktop과 같은 `POST /local/v1/mcp-servers`로 `hello-mcp`를 등록 — 한글 경로(`AI Asset Hub 데스크톱`) 아래 설치 루트에서 `ACTIVE`, `tools=[hello.echo, hello.now]`. 루트 밖 경로는 403 `install_path_outside_allowed_roots`. 단위 테스트 1건 추가.
+- **확인하지 못한 것**: 설치본 exe를 띄운 전체 흐름(Portal 등록→승인→Store 설치→대화에서 호출) — 이 PC의 Smart App Control이 서명 없는 새 빌드를 막는다. 사용자가 사내 PC에서 hello-mcp로 확인 예정.
+
 ## 2026-09-29 M04 설치 파일에 agent-runtime 동봉 (D-047 A 구현) + 설치본 기동 실패 수정
 
 - **0.1.0 설치본은 어느 PC에서도 시작되지 않았다**: `bundle-verify.ts`가 정책 파일을 찾으려고 `pnpm-workspace.yaml`까지 거슬러 올라갔는데, 설치본 주변에는 저장소가 없다. 저장소 안 `release/win-unpacked`로 확인하면 상위 폴더에서 우연히 찾아져 드러나지 않았다. 정책 JSON을 `extraResources`(`resources/policies/`)로 넣어 0.1.1로 수정했다(`5c986a8`).

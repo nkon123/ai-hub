@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import {
+  ASSET_TYPE_FOLDER,
   freeBytesAt,
   importBundle,
   resolveInstallRoot,
@@ -1742,6 +1743,7 @@ function startBundledRuntime(): void {
       agentRuntimeBaseUrl: settings.agentRuntimeBaseUrl,
       ollamaBaseUrl: settings.ollamaBaseUrl,
       stateDir: getLayout().stateDir,
+      mcpServerInstallRoot: path.join(getLayout().assetsDir, ASSET_TYPE_FOLDER.mcp_server),
       appVersion: app.getVersion(),
     },
     getLogger(),
