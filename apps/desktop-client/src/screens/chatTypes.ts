@@ -722,6 +722,17 @@ export function describeToolRouteSelected(event: ToolRouteSelectedEventData): To
       toolName: null,
     };
   }
+  // "모델이 필요 없다고 판단함"과 "모델을 부르지 못함"은 다른 일이다. 뒤의 것을
+  // 앞의 문구로 보여 주면 설치되지 않은 모델 같은 실제 원인이 가려진다
+  // (2026-09-29 실사용: 설치본 Runtime이 없는 모델을 불러 매번 이 문구가 떴다).
+  if (event.reason === "error_or_timeout") {
+    return {
+      status: "no_tool",
+      headline:
+        "Tool을 고르는 AI 호출이 실패해 Tool을 선택하지 못했습니다. 대화 화면의 채팅 모델이 설치되어 있는지 확인하고, 계속되면 agent-runtime.log를 확인하세요.",
+      toolName: null,
+    };
+  }
   return {
     status: "no_tool",
     headline: "이번 질문에는 Tool 호출이 필요하지 않다고 판단해 아무 Tool도 선택하지 않았습니다.",

@@ -14,7 +14,13 @@ import {
 import { activateInstalledMcpServer, listRegisteredMcpServerAliases } from "./mcp-server-activation";
 import { LocalMcpServerStore, reconcileLocalMcpServers } from "./local-mcp-servers";
 import { LocalMcpServerManager } from "./local-mcp-server-manager";
-import { findBundledRuntime, RuntimeSupervisor, runtimeSettingsChanged, type RuntimeLaunchInput } from "./runtime-supervisor";
+import {
+  findBundledRuntime,
+  resolveRuntimeChatModel,
+  RuntimeSupervisor,
+  runtimeSettingsChanged,
+  type RuntimeLaunchInput,
+} from "./runtime-supervisor";
 import { APP_SCHEME, RENDERER_ENTRY_URL, resolveRendererAsset } from "./renderer-protocol";
 import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
@@ -1824,33 +1830,63 @@ async function reconcileMcpServersOnStartup(attempts = 24, intervalMs = 5_000): 
 // changed setting takes effect at the next app start.
 let runtimeSupervisor: RuntimeSupervisor | null = null;
 
-function bundledRuntimeInput(): RuntimeLaunchInput | null {
+async function bundledRuntimeInput(): Promise<RuntimeLaunchInput | null> {
   const runtime = app.isPackaged ? findBundledRuntime(process.resourcesPath) : null;
   if (!runtime) return null;
   const settings = getDesktopSettingsStore().getPublic();
+  const models = await listOllamaModels(settings.ollamaBaseUrl);
+  const chatModelId = resolveRuntimeChatModel(settings.chatModelAlias, models.ok ? models.models : null);
   return {
     runtime,
     agentRuntimeBaseUrl: settings.agentRuntimeBaseUrl,
     ollamaBaseUrl: settings.ollamaBaseUrl,
     stateDir: getLayout().stateDir,
     mcpServerInstallRoot: path.join(getLayout().assetsDir, ASSET_TYPE_FOLDER.mcp_server),
-    chatModelId: settings.chatModelAlias,
+    chatModelId,
     appVersion: app.getVersion(),
   };
 }
 
-function startBundledRuntime(): void {
-  runtimeSupervisor = new RuntimeSupervisor(bundledRuntimeInput(), getLogger());
-  void runtimeSupervisor.start();
+function logRuntimeChatModel(input: RuntimeLaunchInput | null): void {
+  if (input) getLogger().info("agent-runtime-supervisor", `Runtime 채팅 모델: ${input.chatModelId ?? "(office-profile 기본값)"}`);
+}
+
+async function startBundledRuntime(): Promise<void> {
+  const input = await bundledRuntimeInput();
+  logRuntimeChatModel(input);
+  runtimeSupervisor = new RuntimeSupervisor(input, getLogger());
+  await runtimeSupervisor.start();
+  if (input && input.chatModelId === null) void retryRuntimeChatModel();
+}
+
+/** Ollama was not answering (or had no chat model) when the runtime started,
+ * so it runs on office-profile's default model, which the PC may not have.
+ * Ollama is often started after the app: look again for a while and restart
+ * the runtime once a model can be resolved. */
+async function retryRuntimeChatModel(attempts = 30, intervalMs = 10_000): Promise<void> {
+  for (let i = 0; i < attempts; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    const input = await bundledRuntimeInput();
+    if (input?.chatModelId) {
+      applySettingsToBundledRuntime();
+      return;
+    }
+  }
 }
 
 /** Address, Ollama or chat model changed: restart the bundled runtime so it
  * uses them, then put back the MCP servers its in-memory registry lost. */
 function applySettingsToBundledRuntime(): void {
   if (!runtimeSupervisor) return;
-  void runtimeSupervisor.restartWith(bundledRuntimeInput()).then((status) => {
-    if (status.state === "running") void reconcileMcpServersOnStartup();
-  });
+  const supervisor = runtimeSupervisor;
+  void bundledRuntimeInput()
+    .then((input) => {
+      logRuntimeChatModel(input);
+      return supervisor.restartWith(input);
+    })
+    .then((status) => {
+      if (status.state === "running") void reconcileMcpServersOnStartup();
+    });
 }
 
 app.on("before-quit", () => {
@@ -1862,7 +1898,7 @@ app.whenReady().then(() => {
   if (!isDev) registerRendererProtocol();
   // Before the window: the renderer's first connection check then finds the
   // runtime already starting. start() never throws (it resolves "failed").
-  startBundledRuntime();
+  void startBundledRuntime();
   createWindow();
   void reconcileMcpServersOnStartup();
   // D14 — 앱이 실행되는 동안에만 동작하는 Main-process 스케줄러. 놓친 실행

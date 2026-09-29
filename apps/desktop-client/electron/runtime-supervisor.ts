@@ -16,6 +16,7 @@ import { spawn as nodeSpawn, spawnSync, type ChildProcess } from "node:child_pro
 import fs from "node:fs";
 import path from "node:path";
 
+import { DEFAULT_CHAT_MODEL_ALIAS, selectOllamaChatModel } from "./ollama-chat";
 import { DESKTOP_APP_ORIGIN } from "./renderer-protocol";
 
 /** The packaged renderer's origin (D-104, `renderer-protocol.ts`) is the only
@@ -77,6 +78,20 @@ export interface RuntimeLaunchInput {
    * Ollama chat (which uses this setting) works (2026-09-29 report). */
   chatModelId: string | null;
   appVersion: string;
+}
+
+/** The Ollama model the runtime should chat with: the same rule plain Ollama
+ * chat uses (`selectOllamaChatModel` — the saved model if installed, else the
+ * first installed chat model). The saved `chatModelAlias` defaults to the
+ * alias name "default-chat", not a model, and the chat screen only *displays*
+ * its fallback without saving it — passing the raw setting sent the runtime a
+ * model that does not exist (0.1.5, 2026-09-29 report). `installed` is null
+ * when Ollama could not be listed: then only a concrete saved model is passed,
+ * and otherwise the runtime keeps its own office-profile default. */
+export function resolveRuntimeChatModel(preferred: string, installed: readonly string[] | null): string | null {
+  const saved = preferred.trim();
+  if (installed === null) return saved && saved !== DEFAULT_CHAT_MODEL_ALIAS ? saved : null;
+  return selectOllamaChatModel(installed, saved);
 }
 
 /** Settings that are baked into the runtime process at start. A change to

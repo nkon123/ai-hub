@@ -9,6 +9,7 @@ import {
   RuntimeSupervisor,
   findBundledRuntime,
   planRuntimeLaunch,
+  resolveRuntimeChatModel,
   restartDelayMs,
   runtimeSettingsChanged,
   type BundledRuntime,
@@ -109,6 +110,18 @@ describe("planRuntimeLaunch", () => {
       if (!without.ok) throw new Error(without.message);
       expect(without.plan.env).not.toHaveProperty("AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE");
     }
+  });
+
+  it("resolves the runtime chat model the way plain Ollama chat does, never the bare alias", () => {
+    const installed = ["qwen3-embedding:0.6b", "gemma4:latest", "exaone3.5:7.8b"];
+    // Default setting is the alias name, not a model: use the first installed chat model.
+    expect(resolveRuntimeChatModel("default-chat", installed)).toBe("gemma4:latest");
+    expect(resolveRuntimeChatModel("exaone3.5:7.8b", installed)).toBe("exaone3.5:7.8b");
+    expect(resolveRuntimeChatModel("not-installed:1b", installed)).toBe("gemma4:latest");
+    expect(resolveRuntimeChatModel("default-chat", ["qwen3-embedding:0.6b"])).toBeNull();
+    // Ollama unreachable: only a concrete saved model is passed on.
+    expect(resolveRuntimeChatModel("default-chat", null)).toBeNull();
+    expect(resolveRuntimeChatModel("gemma4:latest", null)).toBe("gemma4:latest");
   });
 
   it("knows which settings need a runtime restart", () => {

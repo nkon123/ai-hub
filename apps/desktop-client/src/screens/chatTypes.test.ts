@@ -766,6 +766,17 @@ describe("describeToolRouteSelected (D-083 TOOL_ROUTE)", () => {
     expect(result.headline).not.toMatch(/오류|실패|다시 시도/);
   });
 
+  it("says the routing call itself failed (not 'no tool needed') when the model could not be called", () => {
+    // 2026-09-29: the bundled runtime called an uninstalled model; the screen
+    // said "Tool 호출이 필요하지 않다고 판단" and hid the real cause.
+    const result = describeToolRouteSelected({ status: "no_tool", reason: "error_or_timeout", tool_name: null });
+    expect(result.status).toBe("no_tool");
+    expect(result.headline).toContain("실패");
+    expect(result.headline).toContain("채팅 모델");
+    expect(result.headline).not.toContain("필요하지 않다고");
+    expect(result.headline).not.toContain("error_or_timeout");
+  });
+
   it("never echoes the server's internal English reason code verbatim into the Korean headline", () => {
     const result = describeToolRouteSelected({
       status: "no_tool",
