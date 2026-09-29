@@ -4,14 +4,17 @@
 // `mcpServersTypes.ts` 의 순수 함수가 만든다(vitest 가 `environment: "node"` 라
 // 컴포넌트를 렌더링할 수 없어서, 판정이 JSX 안에 있으면 테스트할 수 없다).
 //
-// **등록 버튼이 없는 것은 의도다.** 등록은 자산을 설치할 때 일어난다 —
-// 여기서 임의의 서버를 손으로 붙일 수 있게 하면 승인된 자산만 활성화된다는
-// 전제가 무너진다. 이 화면은 "무엇이 연결됐고 무엇이 왜 안 됐는가"를 보여 주고
-// 해제만 할 수 있다.
+// 허브에서 설치한 서버는 설치할 때 자동으로 연결된다. D-107(2026-09-29 사용자
+// 결정)부터는 일반 MCP 클라이언트처럼 **"서버 추가"로 직접 붙일 수도 있다** —
+// 예전에 이 자리에 있던 "등록 버튼이 없는 것은 의도다"는 그 결정으로 바뀌었다.
+// 직접 추가한 서버는 "직접 추가" 표시가 붙고, 삭제하면 복사본까지 지운다.
 import React, { useCallback, useEffect, useState } from "react";
 
 import { deregisterMcpServer, listMcpServers } from "../agentRuntime";
+import type { LocalMcpServerSummary } from "../../electron/types";
+import { getDesktopBridge } from "../bridge";
 import { Button, Card, EmptyState, ErrorBanner, LoadingState } from "../ui";
+import { LocalMcpServerAddPanel } from "./LocalMcpServerAddPanel";
 import {
   describeEmptyState,
   describeProvenance,
@@ -51,10 +54,15 @@ export function McpServersScreen() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [busyAlias, setBusyAlias] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [localServers, setLocalServers] = useState<LocalMcpServerSummary[]>([]);
+  const [adding, setAdding] = useState(false);
+  const bridge = getDesktopBridge();
 
   const load = useCallback(async () => {
     setState({ kind: "loading" });
     try {
+      // 직접 추가 목록은 Main process 기록이라 Runtime 장애와 무관하게 읽힌다.
+      setLocalServers(bridge ? await bridge.listLocalMcpServers().catch(() => []) : []);
       setState({ kind: "ready", response: await listMcpServers() });
     } catch (e) {
       // 런타임 장애로 화면이 죽지 않는다 — 복구 안내를 보여 준다
@@ -73,11 +81,18 @@ export function McpServersScreen() {
     void load();
   }, [load]);
 
+  const localAliases = new Set(localServers.map((s) => s.alias));
+
   async function handleDeregister(entry: McpServerEntry) {
     setBusyAlias(entry.server_alias);
     setActionError(null);
     try {
-      await deregisterMcpServer(entry.server_alias);
+      if (bridge && localAliases.has(entry.server_alias)) {
+        const result = await bridge.removeLocalMcpServer(entry.server_alias);
+        if (!result.ok) setActionError(result.message);
+      } else {
+        await deregisterMcpServer(entry.server_alias);
+      }
       await load();
     } catch (e) {
       setActionError(e instanceof Error ? e.message : "연결 해제에 실패했습니다.");
@@ -105,12 +120,30 @@ export function McpServersScreen() {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3">
         <p className="text-body text-text-secondary">
-          설치된 MCP 서버의 연결 상태입니다. 연결은 자산을 설치할 때 자동으로 이뤄집니다.
+          MCP 서버의 연결 상태입니다. 허브에서 설치한 서버는 자동으로 연결되고, "서버 추가"로 직접 연결할 수도 있습니다.
         </p>
-        <Button variant="secondary" onClick={() => void load()}>
-          새로고침
-        </Button>
+        <div className="flex shrink-0 gap-2">
+          <Button variant="secondary" onClick={() => void load()}>
+            새로고침
+          </Button>
+          <Button onClick={() => setAdding(true)} disabled={!bridge || !response.mcp_server_registration_enabled}>
+            서버 추가
+          </Button>
+        </div>
       </div>
+
+      {!response.mcp_server_registration_enabled && (
+        <p className="text-caption text-text-muted">이 PC의 Runtime에서 MCP 서버 등록이 꺼져 있어 서버를 추가할 수 없습니다.</p>
+      )}
+
+      <LocalMcpServerAddPanel
+        open={adding}
+        onClose={() => setAdding(false)}
+        onAdded={() => {
+          setAdding(false);
+          void load();
+        }}
+      />
 
       {stdioNotice && (
         <div className="rounded-lg border border-warning/30 bg-warning/5 px-3 py-2.5 text-caption text-warning">
@@ -128,13 +161,14 @@ export function McpServersScreen() {
             const status = describeServerStatus(entry);
             const provenance = describeProvenance(entry);
             return (
-              <Card key={entry.server_alias}>
+              <Card key={entry.server_alias} className="p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div className="min-w-0">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-semibold text-text-primary">{entry.server_alias}</span>
                       <StatusChip tone={status.tone}>{status.label}</StatusChip>
                       {provenance && <StatusChip tone="neutral">{provenance}</StatusChip>}
+                      {localAliases.has(entry.server_alias) && <StatusChip tone="warning">직접 추가</StatusChip>}
                     </div>
                     <div className="mt-1 text-caption text-text-secondary">
                       {summarizeTools(entry)}
@@ -161,7 +195,11 @@ export function McpServersScreen() {
                       onClick={() => void handleDeregister(entry)}
                       disabled={busyAlias !== null}
                     >
-                      {busyAlias === entry.server_alias ? "해제 중..." : "연결 해제"}
+                      {busyAlias === entry.server_alias
+                        ? "처리 중..."
+                        : localAliases.has(entry.server_alias)
+                          ? "삭제"
+                          : "연결 해제"}
                     </Button>
                   </div>
                 </div>

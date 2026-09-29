@@ -20,6 +20,12 @@ import type {
   DeactivateKnowledgeResult,
   ActivateMcpServerResult,
   ReconcileMcpServersResult,
+  LocalMcpServerInput,
+  LocalMcpToolChoice,
+  PrepareLocalMcpServerResult,
+  AddLocalMcpServerResult,
+  LocalMcpServerSummary,
+  RemoveLocalMcpServerResult,
   DisconnectMcpToolResult,
   DesktopBridge,
   DesktopSettingsInput,
@@ -144,6 +150,17 @@ const bridge: DesktopBridge = {
 
   reconcileMcpServerActivations: (): Promise<ReconcileMcpServersResult> =>
     ipcRenderer.invoke("mcpServer:reconcile"),
+
+  // --- D-107 MCP servers added in Desktop directly ----------------------------
+  pickLocalMcpServerFile: (): Promise<string | null> => ipcRenderer.invoke("localMcpServer:pickFile"),
+  prepareLocalMcpServer: (input: LocalMcpServerInput): Promise<PrepareLocalMcpServerResult> =>
+    ipcRenderer.invoke("localMcpServer:prepare", input),
+  addLocalMcpServer: (draftId: string, choices: LocalMcpToolChoice[]): Promise<AddLocalMcpServerResult> =>
+    ipcRenderer.invoke("localMcpServer:add", draftId, choices),
+  cancelLocalMcpServer: (draftId: string): Promise<void> => ipcRenderer.invoke("localMcpServer:cancel", draftId),
+  listLocalMcpServers: (): Promise<LocalMcpServerSummary[]> => ipcRenderer.invoke("localMcpServer:list"),
+  removeLocalMcpServer: (alias: string): Promise<RemoveLocalMcpServerResult> =>
+    ipcRenderer.invoke("localMcpServer:remove", alias),
 
   // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
   registerLocalAgent: (

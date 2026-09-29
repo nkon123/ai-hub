@@ -425,6 +425,25 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       return { checked: false, restoredCount: 0, failedCount: 0, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
     },
 
+    // --- D-107 MCP 서버 직접 추가 ----------------------------------------------
+    // 파일을 설치 루트로 복사해야 하므로 브라우저 모드에서는 할 수 없다.
+    async pickLocalMcpServerFile() {
+      return null;
+    },
+    async prepareLocalMcpServer() {
+      return { ok: false as const, message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async addLocalMcpServer() {
+      return { ok: false as const, message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+    async cancelLocalMcpServer() {},
+    async listLocalMcpServers() {
+      return [];
+    },
+    async removeLocalMcpServer() {
+      return { ok: false, message: DESKTOP_RUNTIME_REQUIRED_MESSAGE };
+    },
+
     // --- D-034 해석 경로 4: Local Agent 등록 -----------------------------------
     async registerLocalAgent() {
       return { ok: false, registration: null, error: DESKTOP_RUNTIME_REQUIRED_MESSAGE };

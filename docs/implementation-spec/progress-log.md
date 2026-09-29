@@ -1,5 +1,15 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-29 M04/M05/M06 Desktop에서 MCP 서버 직접 추가 (D-107)
+
+- **사용자 결정**: 일반 MCP 클라이언트처럼 Desktop에서 실행 파일(Python)이나 HTTP 주소만으로 MCP 서버를 붙이는 정식 기능. 허브 경로와 병행. 도구는 기본 매번 확인, 도구별 해제 가능(WRITE는 항상 확인). 루트 CLAUDE.md 원칙 7과 D-106의 예외로 D-107에 기록.
+- **계약**(`c936fac`): `source`에 `DESKTOP_LOCAL`, `POST /local/v1/mcp-servers/probe`(등록 없이 initialize + tools/list, 등록과 같은 `resolve_connection_target`, 명령·인터프리터·env 필드 없음, 응답에 정책 없음 + `local_user_context`).
+- **Runtime**(`70cef78`): probe 엔드포인트, 도구 설명·readOnly/destructive 힌트, `DESKTOP_LOCAL`. 신규 7 tests(실제 hello-mcp probe 포함), agent_runtime+contract **351 → 371 passed**.
+- **Desktop**: 매니페스트 생성·폴더 복사(.venv/캐시/.git 제외, 50MB·2,000개 상한)·기록·재등록·삭제, "서버 추가" 대화상자. 신규 테스트 17개(main 13 + 화면 로직 4), vitest **1134/12 failed → 1175/12 failed**(기존 실패 동일), typecheck 통과. 같은 화면의 카드에 안쪽 여백이 없던 기존 표시 결함(`Card`에 `p-4` 누락)도 고쳤다.
+- **실측**: 개발 Electron + 동봉 Python Runtime(D-106 설정)에서 hello-mcp(STDIO)와 임시 HTTP MCP 서버를 추가 → 둘 다 ACTIVE, 화면 스크린샷으로 대화상자·도구 선택·목록 확인. Runtime 재시작 후 두 서버 복구(`restoredCount: 2`). 삭제 시 등록·복사본 제거, 원본 유지, 자식 프로세스 잔존 0.
+- **확인하지 못한 것**: 설치본 exe에서의 동일 흐름(Smart App Control), 추가한 도구를 대화에서 실제로 호출하는 1턴(LLM 라우팅 경유).
+- **발견**: 계약의 `source` 열거와 Runtime `ALLOWED_SOURCES`가 D-107 이전부터 갈라져 있다(D-107 참고). **남은 것**: "다시 불러오기"(원본 수정 반영), 이 기능을 끄는 관리자 수단.
+
 ## 2026-09-29 M04 설치본에서 stdio MCP 서버 기본 허용 (D-106, 0.1.3)
 
 - **사용자 결정(선택지 B)**: 설치본의 동봉 agent-runtime을 띄울 때 `RUNTIME_MODE=local`, `MCP_SERVER_REGISTRATION_ENABLED=true`, 설치 루트 `<userData>/assets/mcp-servers` 하나, 동봉 Python을 넘긴다(`runtime-supervisor.ts`). PC별 `.env` opt-in 대신 Portal 승인이 통제 지점이다. 동봉 Python에는 이미 MCP SDK가 있어 별도 인터프리터가 필요 없다.

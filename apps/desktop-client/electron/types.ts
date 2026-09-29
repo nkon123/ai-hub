@@ -580,6 +580,49 @@ export interface ConnectMcpToolResult {
  * `activation: null`(그때는 기록도 남기지 않는다). `message` 는 사유를 옮긴
  * 것이 아니라 **조치**다(`mcp-server-activation.ts` 가 만든다) — 화면은 그것을
  * 다시 요약하지 말고 그대로 보여 준다. */
+// --- D-107 MCP servers added in Desktop directly (no Portal approval) --------
+// Design: docs/implementation-spec/05-mcp-security-governance.md §15.
+
+export type LocalMcpServerInput =
+  | { kind: "STDIO"; alias: string; entryFile: string }
+  | { kind: "HTTP"; alias: string; endpoint: string };
+
+export interface LocalMcpToolDraft {
+  toolName: string;
+  description: string | null;
+  riskLevel: "READ_ONLY" | "WRITE";
+  /** Can the tool be registered at all (name fits the manifest pattern)? */
+  registrable: boolean;
+  /** WRITE tools are always confirmed; the user cannot turn it off. */
+  confirmLocked: boolean;
+}
+
+export interface LocalMcpToolChoice {
+  toolName: string;
+  enabled: boolean;
+  confirm: boolean;
+}
+
+export type PrepareLocalMcpServerResult =
+  | { ok: true; draftId: string; serverName: string | null; tools: LocalMcpToolDraft[]; choices: LocalMcpToolChoice[]; warnings: string[] }
+  | { ok: false; message: string };
+
+export type AddLocalMcpServerResult = { ok: true; alias: string; toolNames: string[] } | { ok: false; message: string };
+
+export interface LocalMcpServerSummary {
+  alias: string;
+  kind: "STDIO" | "HTTP";
+  /** The original .py file or the endpoint the user pointed at. */
+  source: string;
+  toolCount: number;
+  addedAt: string;
+}
+
+export interface RemoveLocalMcpServerResult {
+  ok: boolean;
+  message: string;
+}
+
 export interface ActivateMcpServerResult {
   ok: boolean;
   activation: KnowledgeActivation | null;
@@ -1660,6 +1703,21 @@ export interface DesktopBridge {
    * 등록한다. agent-runtime 의 서버 레지스트리는 메모리에만 있어 재시작하면
    * 비기 때문이다. 앱 시작 때 Main process 가 스스로도 한 번 돌린다. */
   reconcileMcpServerActivations(): Promise<ReconcileMcpServersResult>;
+
+  // --- D-107 MCP servers added in Desktop directly ----------------------------
+  /** Native file picker for a Python MCP server file (.py). */
+  pickLocalMcpServerFile(): Promise<string | null>;
+  /** STDIO: copy the file's folder under the install root, then probe it.
+   * HTTP: probe the address. Registers nothing. */
+  prepareLocalMcpServer(input: LocalMcpServerInput): Promise<PrepareLocalMcpServerResult>;
+  /** Generate the manifest from the prepared draft + the user's choices and
+   * register it with source DESKTOP_LOCAL; recorded so startup re-registers it. */
+  addLocalMcpServer(draftId: string, choices: LocalMcpToolChoice[]): Promise<AddLocalMcpServerResult>;
+  /** Drop an unfinished draft and its copied files. */
+  cancelLocalMcpServer(draftId: string): Promise<void>;
+  listLocalMcpServers(): Promise<LocalMcpServerSummary[]>;
+  /** Deregister, forget, and delete the copy (never the user's original). */
+  removeLocalMcpServer(alias: string): Promise<RemoveLocalMcpServerResult>;
 
   // --- D-034 해석 경로 4: Local Agent 등록 ---------------------------------------
   /** "설치됨"과 "실행에 쓸 수 있음"은 서로 다른 사실이다 — 설치된 Agent와

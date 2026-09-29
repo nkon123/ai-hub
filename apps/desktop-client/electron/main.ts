@@ -11,7 +11,9 @@ import {
   type InstallRootLayout,
   type McpServerActivator,
 } from "./bundle-install";
-import { activateInstalledMcpServer } from "./mcp-server-activation";
+import { activateInstalledMcpServer, listRegisteredMcpServerAliases } from "./mcp-server-activation";
+import { LocalMcpServerStore, reconcileLocalMcpServers } from "./local-mcp-servers";
+import { LocalMcpServerManager } from "./local-mcp-server-manager";
 import { findBundledRuntime, RuntimeSupervisor } from "./runtime-supervisor";
 import { APP_SCHEME, RENDERER_ENTRY_URL, resolveRendererAsset } from "./renderer-protocol";
 import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
@@ -90,6 +92,12 @@ import type {
   DiskSpaceInfo,
   ActivateMcpServerResult,
   ReconcileMcpServersResult,
+  LocalMcpServerInput,
+  LocalMcpToolChoice,
+  PrepareLocalMcpServerResult,
+  AddLocalMcpServerResult,
+  LocalMcpServerSummary,
+  RemoveLocalMcpServerResult,
   DisconnectMcpToolResult,
   ReconcileMcpToolConnectionsResult,
   ImportProgressEvent,
@@ -211,6 +219,25 @@ function agentRuntimeBaseUrl(): string {
  * 주소로 계속 시도한다. */
 function mcpServerActivator(): McpServerActivator {
   return (target) => activateInstalledMcpServer(agentRuntimeBaseUrl(), target);
+}
+
+let localMcpServerManager: LocalMcpServerManager | null = null;
+
+function localMcpServerStore(): LocalMcpServerStore {
+  return new LocalMcpServerStore(getLayout().stateDir);
+}
+
+/** D-107. Same install root the bundled runtime allows (runtime-supervisor). */
+function getLocalMcpServerManager(): LocalMcpServerManager {
+  if (!localMcpServerManager) {
+    localMcpServerManager = new LocalMcpServerManager({
+      mcpServersRoot: path.join(getLayout().assetsDir, ASSET_TYPE_FOLDER.mcp_server),
+      store: localMcpServerStore(),
+      agentRuntimeBaseUrl,
+      listRegisteredAliases: (baseUrl) => listRegisteredMcpServerAliases(baseUrl),
+    });
+  }
+  return localMcpServerManager;
 }
 
 function getConversationStore(): ConversationStore {
@@ -720,6 +747,51 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle("mcpServer:reconcile", (): Promise<ReconcileMcpServersResult> => reconcileMcpServers());
+
+  // --- D-107 MCP servers added in Desktop directly -----------------------------
+  ipcMain.handle("localMcpServer:pickFile", async (): Promise<string | null> => {
+    const win = mainWindow;
+    if (!win) return null;
+    const result = await dialog.showOpenDialog(win, {
+      title: "MCP 서버 파일 선택",
+      filters: [{ name: "Python MCP 서버 (.py)", extensions: ["py"] }],
+      properties: ["openFile"],
+    });
+    if (result.canceled || result.filePaths.length === 0) return null;
+    return result.filePaths[0];
+  });
+  ipcMain.handle(
+    "localMcpServer:prepare",
+    async (_event, input: LocalMcpServerInput): Promise<PrepareLocalMcpServerResult> => {
+      const result = await getLocalMcpServerManager().prepare(input);
+      // 이름과 종류만 남긴다 — 경로·주소는 로그에 남기지 않는다.
+      getLogger()[result.ok ? "info" : "warn"](
+        "local-mcp-server",
+        `MCP 서버 연결 시험(${input.kind}) ${input.alias}: ${result.ok ? `도구 ${result.tools.length}개` : "실패"}`,
+      );
+      return result;
+    },
+  );
+  ipcMain.handle(
+    "localMcpServer:add",
+    async (_event, draftId: string, choices: LocalMcpToolChoice[]): Promise<AddLocalMcpServerResult> => {
+      const result = await getLocalMcpServerManager().add(draftId, choices);
+      getLogger()[result.ok ? "info" : "warn"](
+        "local-mcp-server",
+        result.ok ? `MCP 서버 직접 추가: ${result.alias} (도구 ${result.toolNames.length}개)` : "MCP 서버 직접 추가 실패",
+      );
+      return result;
+    },
+  );
+  ipcMain.handle("localMcpServer:cancel", (_event, draftId: string): void => {
+    getLocalMcpServerManager().cancel(draftId);
+  });
+  ipcMain.handle("localMcpServer:list", (): LocalMcpServerSummary[] => getLocalMcpServerManager().list());
+  ipcMain.handle("localMcpServer:remove", async (_event, alias: string): Promise<RemoveLocalMcpServerResult> => {
+    const result = await getLocalMcpServerManager().remove(alias);
+    getLogger().info("local-mcp-server", `직접 추가한 MCP 서버 삭제: ${alias}`);
+    return result;
+  });
 
   ipcMain.handle("mcpTool:reconcileConnections", async (): Promise<ReconcileMcpToolConnectionsResult> => {
     const layout = getLayout();
@@ -1692,9 +1764,23 @@ function reconcileMcpServers(): Promise<ReconcileMcpServersResult> {
     const layout = getLayout();
     const store = new InstalledAssetsStore(layout.stateDir);
     const activeVersions = new ActiveVersionStore(layout.stateDir);
-    const result = await reconcileInstalledMcpServers(layout, store, agentRuntimeBaseUrl(), (type, id) =>
+    const installed = await reconcileInstalledMcpServers(layout, store, agentRuntimeBaseUrl(), (type, id) =>
       activeVersions.get(type, id),
     );
+    // D-107: servers the user added in Desktop are not installed assets, so
+    // the loop above does not know them. Same reason, same moment.
+    let result = installed;
+    if (installed.checked) {
+      const remote = await listRegisteredMcpServerAliases(agentRuntimeBaseUrl());
+      if (remote.ok) {
+        const local = await reconcileLocalMcpServers(localMcpServerStore(), agentRuntimeBaseUrl(), remote.aliases);
+        result = {
+          ...installed,
+          restoredCount: installed.restoredCount + local.restoredCount,
+          failedCount: installed.failedCount + local.failedCount,
+        };
+      }
+    }
     if (result.checked && (result.restoredCount > 0 || result.failedCount > 0)) {
       getLogger()[result.failedCount > 0 ? "warn" : "info"](
         "mcp-server-activation",

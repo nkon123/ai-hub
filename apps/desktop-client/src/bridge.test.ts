@@ -157,6 +157,22 @@ function createCompleteBridge(): DesktopBridge {
     async reconcileMcpServerActivations() {
       return { checked: true, restoredCount: 0, failedCount: 0, error: null };
     },
+    async pickLocalMcpServerFile() {
+      return null;
+    },
+    async prepareLocalMcpServer() {
+      return { ok: false as const, message: "" };
+    },
+    async addLocalMcpServer() {
+      return { ok: false as const, message: "" };
+    },
+    async cancelLocalMcpServer() {},
+    async listLocalMcpServers() {
+      return [];
+    },
+    async removeLocalMcpServer() {
+      return { ok: true, message: "" };
+    },
     async registerLocalAgent() {
       return { ok: false, registration: null, error: null };
     },
