@@ -375,17 +375,23 @@ async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
                 # `tool_route_description_max_chars`). "메일 가져와줘"처럼 기간이 없는
                 # 요청에도 부를 수 있다는 것을 그 안에 먼저 말한다 — 말하지 않으면
                 # 신중한 모델(exaone 등)은 "기간을 모르니 호출하지 않는다"로 기운다.
+                # "가져와서 요약해줘"처럼 후처리가 붙은 요청도 먼저 이 도구다 —
+                # 말하지 않으면 모델이 요약을 보고 본문 도구(get_message)로 가거나
+                # 아무것도 고르지 않았다(exaone, 2026-09-29 실측).
                 description=(
-                    "Outlook 메일 가져오기/보여주기/확인(새 메일, 받은 메일, 보낸 메일). "
-                    "기간이 없으면 인자 없이 호출(오늘 받은 메일), 최근 N일은 days=N, "
-                    "보낸 메일은 folder=sent. 결과의 id 로 본문을 읽는다."
+                    "Outlook 메일 목록. '메일 가져와줘', '메일 확인해줘', '메일 보여줘', '새 메일 있어?', "
+                    "'메일 요약해줘' 같은 요청에 쓴다(요약도 먼저 이 도구). 인자 없으면 오늘, "
+                    "어제 온 메일은 days=2, 최근 N일은 days=N, 보낸 메일은 folder=sent."
                 ),
                 input_schema=LIST_SCHEMA,
                 annotations=types.ToolAnnotations(read_only_hint=True),
             ),
             types.Tool(
                 name="outlook.get_message",
-                description="outlook.list_messages 가 준 id 로 메일 한 통의 본문·받는 사람·첨부 파일 이름을 읽습니다.",
+                description=(
+                    "메일 한 통의 전체 본문 읽기. 이미 받은 outlook.list_messages 결과의 id 가 "
+                    "있을 때만 쓴다. 메일 목록 가져오기·요약에는 쓰지 않는다."
+                ),
                 input_schema=GET_SCHEMA,
                 annotations=types.ToolAnnotations(read_only_hint=True),
             ),
