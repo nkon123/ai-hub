@@ -115,7 +115,11 @@ class OllamaLLMAdapter(LLMAdapter):
         if max_output_tokens is not None:
             # 라우팅처럼 짧은 JSON 하나면 끝나는 호출에만 온다 — 그 자리에
             # 상한이 없으면 모델이 계속 쓰다 타임아웃까지 간다(ABC docstring).
-            body["options"] = {"num_predict": max_output_tokens}
+            # `temperature: 0` — 이 호출들은 고르기(Tool/Knowledge 라우팅, 질의
+            # 재작성)라 같은 질문에는 같은 답이 나와야 한다. 기본 샘플링에서는
+            # exaone3.5 가 "메일 가져와줘 그리고 한 줄로 요약해줘"를 다섯 번 중
+            # 한두 번만 거절하는 식으로 같은 문장에 매번 다르게 답했다(2026-09-29).
+            body["options"] = {"num_predict": max_output_tokens, "temperature": 0}
             # 상한을 준 호출은 **생각(thinking)을 끈다.** 생각하는 모델(gemma4,
             # qwen3 등)은 답 전에 숨은 추론을 쓰는데 그것도 `num_predict` 를
             # 소비한다 — 160 토큰을 추론에 다 쓰고 JSON 을 한 글자도 못 쓴 채

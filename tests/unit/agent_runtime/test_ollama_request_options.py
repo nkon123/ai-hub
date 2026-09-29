@@ -50,10 +50,12 @@ async def _drain(adapter: OllamaLLMAdapter, **kwargs: Any) -> list[str]:
     ]
 
 
-async def test_routing_call_carries_the_output_cap() -> None:
+async def test_routing_call_carries_the_output_cap_and_is_deterministic() -> None:
+    """라우팅은 고르기다 — 같은 질문에 매번 다른 Tool 을 고르면 안 된다
+    (2026-09-29 exaone3.5 실측: 같은 문장이 샘플링에 따라 선택/거절을 오갔다)."""
     sent: list[dict[str, Any]] = []
     await _drain(_capturing_adapter(sent), max_output_tokens=160)
-    assert sent[0]["options"] == {"num_predict": 160}
+    assert sent[0]["options"] == {"num_predict": 160, "temperature": 0}
 
 
 async def test_answer_generation_sends_no_cap() -> None:
