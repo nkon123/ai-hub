@@ -1,5 +1,13 @@
 # 구현 진행 현황 (Progress Log)
 
+## 2026-09-29 M04/M05 설치본에서 MCP Tool을 못 찾던 것 — Runtime 채팅 모델 (0.1.5)
+
+- **증상(사내 PC 실사용)**: 직접 추가한 hello-mcp를 "자동 선택"/"hello-mcp 전체"/"hello.now" 어느 범위로 골라도 Tool을 찾지 못함.
+- **원인**: 후보에는 들어 있었다(`candidates=5`). Tool 라우팅 LLM 호출이 9~12ms 만에 실패(`error_or_timeout`) — 동봉 Runtime이 office-profile.json의 `default-chat` = `exaone3.5:7.8b`를 호출했고 그 모델이 설치돼 있지 않았다(`OllamaModelNotFoundError`). Ollama 직접 대화는 Desktop 설정 모델(gemma4)을 써서 정상이라 드러나지 않았다.
+- **숨은 결함**: 이를 바꾸는 `AGENT_RUNTIME_CHAT_MODEL_ID`(문서·.env.example·로그 표기)는 실제로 **무시**되고 있었다 — 필드가 env_prefix+필드명 규칙으로 `AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE`만 읽었다. 기존 테스트는 속성을 직접 바꿔 이름을 검사하지 않았다. `AliasChoices`로 두 이름 모두 받게 하고 이름 자체를 검사하는 테스트 4개 추가.
+- **수정**: Desktop이 동봉 Runtime에 `chatModelAlias`를 넘기고, Runtime 주소·Ollama·채팅 모델이 바뀌면 동봉 Runtime을 재기동 후 MCP 서버를 다시 등록한다.
+- **검증**: 동봉 Python Runtime + 앱이 만드는 것과 같은 DESKTOP_LOCAL 매니페스트 + 앱과 같은 run 요청으로 재현 → 수정 전 `INSUFFICIENT_EVIDENCE`(라우팅 실패), 수정 후 `tool_name=hello.now` 선택 → `WAITING_FOR_USER`(매번 확인) → 승인 → `SUCCEEDED`, 답변 "현재 시간은 2026년 09월 29일 15시 16분 12초". Desktop vitest 1179/12 failed(기존 실패 동일), runtime unit+integration+contract 623 passed / 1 failed(`test_symlink_escaping_the_allowed_root_is_refused` — Windows 심볼릭 링크 권한, 변경과 무관). `config/ollama.json` 의 다른 세션 미커밋 변경(172.30.0.1) 때문에 `test_override_replaces_only_default_chat_model_id` 가 이 작업 트리에서만 실패함을 확인(루프백 설정으로 통과).
+
 ## 2026-09-29 M04/M05/M06 Desktop에서 MCP 서버 직접 추가 (D-107)
 
 - **사용자 결정**: 일반 MCP 클라이언트처럼 Desktop에서 실행 파일(Python)이나 HTTP 주소만으로 MCP 서버를 붙이는 정식 기능. 허브 경로와 병행. 도구는 기본 매번 확인, 도구별 해제 가능(WRITE는 항상 확인). 루트 CLAUDE.md 원칙 7과 D-106의 예외로 D-107에 기록.

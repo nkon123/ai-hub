@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode
 
 from agent_runtime.ollama_config import load_ollama_endpoint
@@ -233,7 +233,22 @@ class AgentRuntimeSettings(BaseSettings):
     # office-profile.json. Portal 설정이 비어 있으면(`configured_model:
     # null`) 이 값이 여전히 그대로 적용된다 — 이 필드 자체의 동작은 바뀌지
     # 않았다.
-    chat_model_id_override: str | None = None
+    #
+    # 환경변수 이름(2026-09-29 수정): 문서·`.env.example`·로그는 모두
+    # `AGENT_RUNTIME_CHAT_MODEL_ID` 라고 적었지만, 이 필드는 env_prefix + 필드명
+    # 규칙에 따라 `AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE` 만 읽고 있었다 — 문서대로
+    # 설정하면 **아무 오류 없이 무시**되어, 설치되지 않은 office-profile 모델로
+    # 모든 Runtime 턴(MCP Tool 라우팅 포함)이 실패했다. 두 이름을 모두 받는다
+    # (먼저 적힌 문서 이름이 우선). 기존 테스트가 속성을 직접 바꿔 이름을 한 번도
+    # 검사하지 않았던 것이 원인이라 `test_chat_model_override_env_names` 가 고정한다.
+    chat_model_id_override: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "AGENT_RUNTIME_CHAT_MODEL_ID",
+            "AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE",
+            "chat_model_id_override",
+        ),
+    )
 
     # Shared config/ollama.json endpoint for chat and model discovery.
     # manifests applies this to Ollama aliases; the existing environment
