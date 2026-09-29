@@ -98,6 +98,8 @@ describe("planRuntimeLaunch", () => {
     // JSON array: survives Windows backslashes and the Korean product folder name.
     expect(JSON.parse(env.AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS)).toEqual([i.mcpServerInstallRoot]);
     expect(env.AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH).toBe(i.runtime.pythonExe);
+    // A cold model load must not turn the first tool question into "no tool".
+    expect(Number(env.AGENT_RUNTIME_TOOL_ROUTE_TIMEOUT_SECONDS)).toBeGreaterThanOrEqual(30);
     expect(env.AGENT_RUNTIME_MCP_NODE_INTERPRETER_PATH).toBeUndefined();
   });
 

@@ -168,6 +168,11 @@ export function planRuntimeLaunch(input: RuntimeLaunchInput): RuntimeLaunchPlanR
         // field name). The docs long said AGENT_RUNTIME_CHAT_MODEL_ID, which
         // older runtimes silently ignore; this name works in every version.
         ...(input.chatModelId?.trim() ? { AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE: input.chatModelId.trim() } : {}),
+        // The first Tool routing call after idle includes loading the model
+        // into Ollama (exaone3.5:7.8b took longer than the runtime's 8s default
+        // on a dev PC), so it failed closed as "no tool" every first time. On
+        // a single-user PC waiting for the load beats silently skipping the tool.
+        AGENT_RUNTIME_TOOL_ROUTE_TIMEOUT_SECONDS: "30",
       },
       healthUrl: `${url.origin}/health`,
       logPath: path.join(input.stateDir, "logs", "agent-runtime.log"),

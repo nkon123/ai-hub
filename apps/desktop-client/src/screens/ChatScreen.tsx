@@ -2114,7 +2114,9 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 disabled={isRunning}
               />
             )}
-            <div className="flex-1 space-y-1 overflow-y-auto pr-1">
+            {/* 목록은 카드가 아니라 꽉 찬 행 + 구분선이다(2026-09-29 요청). `-mr-3` 은
+                aside 의 `pr-3` 을 상쇄해 행이 오른쪽 경계선까지 닿게 한다. */}
+            <div className="-mr-3 flex-1 divide-y divide-border overflow-y-auto border-y border-border">
               {/* 스케줄봇은 봇 탭에만 있다(예전에는 대화 목록 맨 위에 고정돼
                   대화와 섞여 보였다). 이력이 0건이어도 항목은 보인다 — 클릭하면
                   명확한 빈 상태 문구가 나온다(2026-08-19 요구 2 유지). */}
@@ -2123,10 +2125,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                   type="button"
                   onClick={handleSelectScheduleBot}
                   disabled={isRunning}
-                  className={`mb-2 w-full rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                  className={`w-full px-3 py-2.5 text-left text-caption transition-colors ${
                     scheduleBotSelected
-                      ? "border-brand-500 bg-brand-50 text-brand-700"
-                      : "border-border bg-white text-text-secondary hover:bg-slate-50"
+                      ? "bg-brand-50 text-brand-700"
+                      : "bg-transparent text-text-secondary hover:bg-slate-50"
                   }`}
                 >
                   <span className="flex items-center gap-1.5 font-medium">
@@ -2160,10 +2162,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       type="button"
                       onClick={() => void handleSelectConversation(c.id)}
                       disabled={isRunning}
-                      className={`w-full rounded-lg border px-3 py-2 text-left text-caption transition-colors ${
+                      className={`w-full px-3 py-2.5 text-left text-caption transition-colors ${
                         currentConversationId === c.id
-                          ? "border-brand-500 bg-brand-50 text-brand-700"
-                          : "border-border bg-white text-text-secondary hover:bg-slate-50"
+                          ? "bg-brand-50 text-brand-700"
+                          : "bg-transparent text-text-secondary hover:bg-slate-50"
                       }`}
                     >
                       {/* 겹쳐 놓은 버튼이 긴 제목을 가리지 않도록, 버튼이
