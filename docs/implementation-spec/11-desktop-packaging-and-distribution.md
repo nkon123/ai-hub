@@ -169,6 +169,72 @@ CLAUDE.md 원칙("새 의존성을 추가할 때 이유와 폐쇄망 설치 방�
 
 현재 §4.2의 반입 순서는 **B를 가정한 서술**로 작성했다(가장 적은 코드 변경으로 문서화 가능하고, 현재 구현 상태(Runtime을 Electron이 기동/동봉하지 않음)와 가장 가깝기 때문) — 하지만 이는 PoC 진행 편의를 위한 서술상의 가정일 뿐 **결정이 아니다**. 실제 결정은 D-047에 기록하고 운영 전환 전 재검토한다.
 
+> **2026-08-20 이후**: D-047은 **A로 결정**됐다(Ollama 본체·모델은 제외, D-093 경로). 위 표와 서술은 결정 당시의 비교 기록으로 남기고, 구현 설계는 §6.1에 둔다.
+
+### 6.1 D-047 A 구현 설계 (2026-09-29)
+
+**목표**: 설치 파일 하나로 Desktop을 깔면, 앱이 시작될 때 Local Agent Runtime(`services/agent-runtime`)이 `127.0.0.1:8100`에 함께 뜬다. Ollama는 범위 밖(D-093), search-runtime은 §6.1.6.
+
+#### 6.1.1 인터프리터: python.org **임베디드 배포본**(3.14.7, x64)
+
+- `python-3.14.7-embed-amd64.zip`, SHA256 `d297e5ff019966817ad8502465176139f2d3d840fa4ed84b13bed399a6ab1f15`(빌드 스크립트에 고정, 불일치 시 빌드 중단).
+- **python-build-standalone을 쓰지 않는 이유**: 사내 PC는 WDAC(애플리케이션 제어)가 켜져 있고, 개발 PC에서도 서명 없는 uv 설치 Python이 차단된 전례가 있다. 임베디드 배포본의 `python.exe`/`python314.dll`은 **Python Software Foundation 서명**(Authenticode Valid, 2026-09-29 확인)이라 같은 정책에서 통과할 가능성이 가장 높다.
+- 버전은 저장소 개발 환경(`.venv`, 3.14.7)과 같게 맞춘다 — 테스트가 검증한 인터프리터와 배포되는 인터프리터가 다르면 테스트가 배포본을 대변하지 못한다.
+
+#### 6.1.2 설치 파일 안의 배치
+
+```text
+resources/
+  app.asar
+  policies/bundle-install-policy.json
+  runtime/
+    runtime-manifest.json        # Python 버전·zip SHA256·커밋·uv.lock SHA256
+    python/                      # 임베디드 배포본 + Lib/site-packages(제3자 의존성)
+      python314._pth             # 아래 app/ 의 src 경로를 추가하고 `import site`
+    app/                         # 저장소 배치를 그대로 옮긴 워크스페이스 소스
+      config/ollama.json
+      packages/{schemas,security-policy,observability}/
+      services/agent-runtime/{src,config}/
+```
+
+- **워크스페이스 패키지는 wheel로 만들지 않고 저장소 배치 그대로 복사한다.** `ai_asset_schemas/validator.py`는 `Path(__file__)` 기준 세 단계 위의 `manifests/*.schema.json`을, `agent_runtime/config.py`는 다섯 단계 위를 저장소 루트로 본다. wheel로 설치하면 이 경로가 `site-packages` 밖을 가리켜 깨진다. 배치를 유지하면 **Python 코드를 한 줄도 바꾸지 않고** 같은 상대 경로가 성립한다.
+- 제3자 의존성은 `uv export --package agent-runtime --no-dev --frozen --no-emit-workspace`로 **`uv.lock` 고정 버전과 해시**를 뽑아 `pip install --require-hashes --only-binary=:all: --target python/Lib/site-packages`로 설치한다. 소스 빌드(sdist)는 허용하지 않는다(빌드 머신 컴파일러에 따라 산출물이 달라진다).
+- 산출물은 `apps/desktop-client/build/runtime/`(이미 `.gitignore`의 `build/`)에 만들고 `electron-builder.yml`의 `extraResources`로 `runtime/`에 넣는다.
+- 실측(2026-09-29): `site-packages` 72MB, 소스 1.1MB, 인터프리터 약 20MB. 저장소 밖 임시 폴더에서 `/health`·`/local/v1/models`(Ollama 연동)·`/local/v1/mcp-servers`가 정상 응답했다.
+
+#### 6.1.3 Electron Main의 기동 규칙 (`electron/runtime-supervisor.ts`)
+
+- **패키징된 앱에서만**, 그리고 `resources/runtime/python/python.exe`가 있을 때만 기동한다. 개발 모드(`pnpm dev`)는 지금처럼 `scripts/windows/start-*.ps1`로 띄운 Runtime을 쓴다.
+- 기동 전에 설정된 `agentRuntimeBaseUrl`의 `/health`를 먼저 부른다. **이미 응답하는 Runtime이 있으면 띄우지 않고 그것을 쓴다**(수동으로 띄운 Runtime과 충돌하지 않게). 주소가 loopback이 아니면 띄우지 않는다.
+- 명령: `python.exe -E -s -B -X utf8 -m uvicorn agent_runtime.main:app --host 127.0.0.1 --port <설정 포트>`.
+  - `-E -s`: 사용자 PC의 `PYTHONPATH`·사용자 site-packages(`%APPDATA%\Python`)가 섞이지 않게 한다 — 실측에서 `-s` 없이는 사용자 site-packages가 `sys.path`에 들어왔다.
+  - `-B`: `Program Files` 아래에 `__pycache__`를 쓰려 하지 않는다(일반 사용자 권한으로는 쓸 수 없다).
+- 쓰기 경로는 전부 설치 루트의 `state/agent-runtime/`으로 돌린다: `AGENT_RUNTIME_MCP_TOOL_REGISTRY_PATH`, `AGENT_RUNTIME_LOCAL_AGENT_REGISTRY_PATH`, 그리고 D10 설정의 `ollamaBaseUrl`로 만든 `ollama.json`을 `AIHUB_OLLAMA_CONFIG`로 넘긴다(Desktop 설정과 Runtime이 서로 다른 Ollama를 보지 않도록 한 곳에서 정한다).
+- PC별 관리자 설정(`AGENT_RUNTIME_LOCAL_AGENT_ROOTS`, stdio MCP 허용 루트 등)은 `resources/runtime/app/services/agent-runtime/.env`에 둔다 — `config.py`가 이미 이 위치의 `.env`를 읽는다. `Program Files` 아래라 **관리자만 바꿀 수 있다**는 점이 의도한 성질이다.
+- 표준 출력·오류는 `state/logs/agent-runtime.log`로 보낸다(시작 시 5MB를 넘으면 `.1`로 한 번 돌린다).
+- 비정상 종료 시 1·2·4·8·16초 간격으로 최대 5번 재기동하고, 그 뒤에는 멈춘 채 D09에 실패와 로그 경로를 보여 준다. **Desktop 자체는 어떤 경우에도 종료되지 않는다**(루트 CLAUDE.md).
+- 앱 종료 시 `taskkill /PID <pid> /T /F`로 프로세스 트리째 정리한다 — Runtime이 띄운 stdio MCP 서버 자식까지 남지 않게 한다.
+
+#### 6.1.4 패키징된 렌더러의 Origin (D-059 후속, D-104)
+
+패키징된 렌더러는 `file://`에서 로드되어 `Origin: null`을 보낸다. 실측(2026-09-29): 동봉 Runtime에 `Origin: null` Preflight를 보내면 **400**으로 거부된다 — Runtime을 띄워도 대화가 되지 않는다.
+
+- **`null`을 허용 목록에 넣지 않는다.** 인터넷의 아무 웹페이지나 sandbox iframe으로 `Origin: null`을 만들 수 있어, 사용자가 브라우저로 그런 페이지를 여는 것만으로 `127.0.0.1:8100`을 호출할 수 있게 된다.
+- 대신 렌더러를 **특권 커스텀 스킴 `app://desktop/`**(`protocol.registerSchemesAsPrivileged` + `protocol.handle`, `dist/renderer`만 서빙)으로 로드하고, 동봉 Runtime의 `AGENT_RUNTIME_CORS_ORIGINS`를 `["app://desktop"]` **하나로** 준다. 동봉 Runtime은 이 PC의 Desktop만 쓰므로 Portal Web(`:3000`) Origin도 필요 없다.
+
+#### 6.1.5 작업 순서 (한 PR에 한 기능)
+
+1. 이 설계 문서와 결정 기록(D-047 상태, D-104, D-105).
+2. 런타임 번들 빌드 스크립트(`scripts/build-python-runtime.mjs`) + `extraResources` + `dist:win` 연결.
+3. `runtime-supervisor.ts` + `main.ts` 연결 + 단위 테스트.
+4. `app://` 스킴 로드 + 동봉 Runtime CORS(D-104).
+5. §7 Smoke Test에 Runtime 항목 추가 + 저장소 밖 복사본으로 실제 기동 검증.
+
+#### 6.1.6 범위 밖으로 남기는 것 (D-105)
+
+- **search-runtime**: Knowledge 모드 대화는 search-runtime(`:8300`)이 없으면 막힌다(`connections.ts::assessChatConnections`). search-runtime은 `chromadb`에 의존해 크기와 네이티브 의존성이 agent-runtime과 차원이 다르므로 같은 방식으로 넣을지 별도로 정한다. 그 전까지 동봉 Runtime만으로는 **Ollama 모드 대화**와 MCP Tool 경로가 대상이다.
+- **Office MCP Server**(`:8500`)는 여기서 다루지 않는다 — 사업장 공용 서버로 둘지 PC별로 둘지는 별개의 배치 결정이다.
+
 ## 7. 검증: Windows Installer Smoke Test
 
 `06-quality-delivery.md`는 Release Candidate 단계에 "Windows Desktop Installer Smoke Test"를 명시하지만 구체적 Assertion 목록은 정의하지 않는다. 이 문서에서 다음을 Smoke Test 최소 범위로 제안한다(구현은 범위 밖 — 실제 Windows 빌드 환경이 있어야 실행 가능):
