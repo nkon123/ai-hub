@@ -76,7 +76,38 @@ def test_register_request_is_closed(schema: dict) -> None:
 def test_source_is_a_closed_enum(schema: dict) -> None:
     """모르는 출처를 '분류되지 않음'으로 받아들이지 않는다."""
     source = _defs(schema, "RegisterMcpServerRequest")["properties"]["source"]
-    assert source["enum"] == ["DESKTOP_OFFLINE_BUNDLE"]
+    assert source["enum"] == ["DESKTOP_OFFLINE_BUNDLE", "DESKTOP_LOCAL"]
+
+
+# --- D-107: probe 도 실행 대상을 따로 지정할 수 없다 ----------------------
+
+
+@pytest.mark.parametrize(
+    "forbidden",
+    ["command", "args", "argv", "shell", "interpreter_path", "python_path", "node_path", "env", "environment", "cwd"],
+)
+def test_probe_request_cannot_name_what_to_run(schema: dict, forbidden: str) -> None:
+    """probe 는 매니페스트가 아직 없는 서버에 닿는 유일한 경로다. 여기에
+    명령/인터프리터/환경변수 필드가 생기면 등록 계약이 막아 둔 것을 이쪽으로
+    돌아 들어올 수 있다. 무엇을 실행할지는 매니페스트 모양의 `transport` 와
+    배포 설정(인터프리터 절대경로, 설치 루트)만 정한다."""
+    props = _defs(schema, "ProbeMcpServerRequest")["properties"]
+    assert forbidden not in props
+    assert set(props) == {"transport", "install_path", "trace_id"}
+
+
+def test_probe_request_is_closed(schema: dict) -> None:
+    assert _defs(schema, "ProbeMcpServerRequest")["additionalProperties"] is False
+
+
+def test_probe_response_carries_no_policy(schema: dict) -> None:
+    """서버가 스스로를 설명한 것은 힌트일 뿐이다 — 위험도·권한·확인 정책은
+    호출자(Desktop 사용자 선택)가 정한다. 응답에 그런 필드가 있으면 그대로
+    매니페스트로 옮겨 적는 코드가 곧 생긴다."""
+    tool_props = set(_defs(schema, "ProbedTool")["properties"])
+    for policy_field in ("risk_level", "permissions", "confirmation_policy", "allowed_roles", "llm_routable"):
+        assert policy_field not in tool_props
+        assert policy_field not in _defs(schema, "ProbeMcpServerResponse")["properties"]
 
 
 # --- 쓰기 Tool 은 모델이 고를 수 없다 ---------------------------------------
@@ -176,6 +207,14 @@ def test_openapi_exposes_the_three_endpoints(openapi: dict) -> None:
     assert "post" in paths["/local/v1/mcp-servers"]
     assert "get" in paths["/local/v1/mcp-servers"]
     assert "delete" in paths["/local/v1/mcp-servers/{server_alias}"]
+    assert "post" in paths["/local/v1/mcp-servers/probe"]  # D-107
+
+
+def test_openapi_probe_request_matches_the_schema_file(openapi: dict, schema: dict) -> None:
+    openapi_props = set(openapi["components"]["schemas"]["ProbeMcpServerRequest"]["properties"])
+    assert openapi_props == set(_defs(schema, "ProbeMcpServerRequest")["properties"])
+    source = openapi["components"]["schemas"]["RegisterMcpServerRequest"]["properties"]["source"]
+    assert source["enum"] == _defs(schema, "RegisterMcpServerRequest")["properties"]["source"]["enum"]
 
 
 def test_openapi_register_request_matches_the_schema_file(openapi: dict, schema: dict) -> None:

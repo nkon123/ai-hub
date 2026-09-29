@@ -83,8 +83,8 @@
         },
         "source": {
           "type": "string",
-          "enum": ["DESKTOP_OFFLINE_BUNDLE"],
-          "description": "How this server arrived. A closed enum: a value this runtime does not know is refused rather than accepted as unclassified."
+          "enum": ["DESKTOP_OFFLINE_BUNDLE", "DESKTOP_LOCAL"],
+          "description": "How this server arrived. A closed enum: a value this runtime does not know is refused rather than accepted as unclassified. DESKTOP_LOCAL (D-107): the user added this server in Desktop directly, without Portal approval. Desktop generated the manifest from `POST /local/v1/mcp-servers/probe` plus the user's choices, so layer (1) of this file's boundary ('approval is the grant') does not hold for it; the other layers do: STDIO code must still sit under an allowed install root and run on a configured interpreter, and every call still passes the Policy Enforcement Point (Desktop defaults each tool to confirmation_policy ALWAYS)."
         },
         "trace_id": { "type": ["string", "null"] }
       },
@@ -135,6 +135,59 @@
         "trace_id": { "type": "string" }
       },
       "description": "DELETE /local/v1/mcp-servers/{server_alias}. Terminates a running stdio child before removing the entry — an orphaned child would keep a reviewed-then-revoked server alive with no record that it is running. Never deletes installed files (D-079's rule: unregistering is not uninstalling)."
+    },
+    "ProbeMcpServerRequest": {
+      "type": "object",
+      "required": ["transport"],
+      "additionalProperties": false,
+      "description": "D-107. `POST /local/v1/mcp-servers/probe`: connect once (`initialize` + `tools/list`) and report what the server offers, WITHOUT registering it. Desktop uses this to build a manifest for a server the user adds locally. Same resolution path as registration (`resolve_connection_target`): the registration switch, hosted-mode STDIO refusal, install-root containment, entrypoint containment and the configured interpreter all apply. Like RegisterMcpServerRequest it has no command/args/env/interpreter_path/cwd field: the only way to name what runs is a manifest-shaped `transport` resolved under those rules.",
+      "properties": {
+        "transport": {
+          "type": "object",
+          "description": "Exactly the `transport` object of `mcp-server-manifest.schema.json` (HTTP with `endpoint`, or STDIO with `interpreter` + relative `entrypoint`), validated against that schema."
+        },
+        "install_path": {
+          "type": ["string", "null"],
+          "description": "As in RegisterMcpServerRequest: required for STDIO, ignored for HTTP; containment is checked after path resolution."
+        },
+        "trace_id": { "type": ["string", "null"] }
+      }
+    },
+    "ProbedTool": {
+      "type": "object",
+      "required": ["tool_name", "input_schema"],
+      "additionalProperties": false,
+      "description": "One entry of the server's `tools/list`, as the server described itself. Server-supplied and unreviewed: `description` and the hints are shown to the user as hints only and never become policy without the user's choice.",
+      "properties": {
+        "tool_name": { "type": "string" },
+        "description": { "type": ["string", "null"] },
+        "input_schema": { "type": "object" },
+        "read_only_hint": { "type": ["boolean", "null"], "description": "MCP `annotations.readOnlyHint`, if the server sent one." },
+        "destructive_hint": { "type": ["boolean", "null"], "description": "MCP `annotations.destructiveHint`, if the server sent one." }
+      }
+    },
+    "ProbeMcpServerResponse": {
+      "type": "object",
+      "required": ["protocol_version", "tools", "tools_snapshot_hash", "local_user_context", "trace_id"],
+      "additionalProperties": false,
+      "description": "200 when the handshake and `tools/list` succeeded. Refusals use the same Error Envelope and `MCPRegistrationRefusalReason` values as registration (those that can occur before a manifest exists). Carries no governance metadata on purpose: risk level, permissions and confirmation are decided by the caller, never reported by the server.",
+      "properties": {
+        "protocol_version": { "type": "string" },
+        "server_name": { "type": ["string", "null"] },
+        "tools": { "type": "array", "items": { "$ref": "#/definitions/ProbedTool" } },
+        "tools_snapshot_hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+        "local_user_context": {
+          "type": "object",
+          "required": ["organization_id", "roles"],
+          "additionalProperties": false,
+          "description": "Who this runtime's chat user is when the Policy Enforcement Point authorizes a call: the Office Profile `org` and `poc_mcp_user_roles` (D-100). Reported so a locally added server's generated `permissions` name the user who will actually call it; otherwise Default Deny refuses every call (`org_not_permitted`). Describes the caller, not the server: it is not policy.",
+          "properties": {
+            "organization_id": { "type": "string" },
+            "roles": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "trace_id": { "type": "string" }
+      }
     },
     "MCPToolDispatchDecision": {
       "type": "object",

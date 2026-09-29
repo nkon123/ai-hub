@@ -512,3 +512,32 @@ Revocation 대상:
 - 승인되지 않거나 Revoked Package/Service/Tool이 배포·실행되지 않는다.
 - Knowledge ACL과 MCP Permission이 Service 대상 사용자와 일치하는지 검토된다.
 - 주요 12개 위협 시나리오가 자동 또는 재현 가능한 수동 테스트로 통과한다.
+
+## 15. Desktop에서 사용자가 직접 추가하는 MCP 서버 (D-107)
+
+일반 MCP 클라이언트(Claude Desktop, Cursor 등)처럼, 사용자가 Desktop에서 **실행 파일(Python) 또는 HTTP 주소만** 지정해 MCP 서버를 붙인다. 허브(Portal 승인 → 배포)를 거치는 기존 경로는 그대로 두고, 둘 중 편한 쪽을 쓴다.
+
+### 15.1 흐름
+
+1. 사용자가 **MCP 서버 > 서버 추가**에서 종류(로컬 Python 파일 / HTTP 주소), 파일 또는 주소, 이름(`server_alias`)을 넣는다.
+2. **STDIO**: Desktop이 고른 파일이 있는 폴더를 설치 루트 아래 `assets/mcp-servers/_local/<alias>/<version>/source/`로 **복사**한다(원본 폴더는 설치 루트 밖이라 그대로는 실행할 수 없다 — D-094 경계). `.venv`/`venv`/`__pycache__`/`.git`/`node_modules`와 심볼릭 링크는 제외하고, 총 50MB·파일 2,000개를 넘으면 거부한다. 원본을 고친 뒤에는 "다시 불러오기"로 다시 복사한다.
+3. Desktop이 `POST /local/v1/mcp-servers/probe`로 한 번 연결해 `tools/list`를 받는다(등록하지 않음). 실행 경로 판정은 등록과 같은 `resolve_connection_target`을 탄다.
+4. 화면이 도구 목록을 보여 주고, 사용자가 쓸 도구와 **도구별 확인 여부**를 정한다.
+5. Desktop이 매니페스트를 만들어 `POST /local/v1/mcp-servers`에 `source=DESKTOP_LOCAL`로 등록하고, `state/local-mcp-servers.json`에 기록해 앱·Runtime 재시작 후에도 다시 등록한다.
+
+### 15.2 Desktop이 만드는 매니페스트의 정책 기본값
+
+| 항목 | 값 | 이유 |
+|---|---|---|
+| `provenance` | `THIRD_PARTY` | 검토되지 않은 코드다 |
+| `classification` / 도구 `data_classification` | `INTERNAL` | 로컬 PC 사용자의 기본 등급 |
+| `permissions.allowed_roles` / `allowed_orgs` | probe 응답의 `local_user_context`(Office Profile `org`, D-100 역할) | 이 PC의 대화 사용자가 실제로 호출할 수 있어야 한다 — 비우면 Default Deny로 전부 거부된다 |
+| `risk_level` | 서버의 `readOnlyHint=true`면 `READ_ONLY`, `destructiveHint=true` 또는 `readOnlyHint=false`면 `WRITE`, 힌트가 없으면 `READ_ONLY` | WRITE는 모델 자동 선택 대상이 아니므로(§5, D-083), 힌트 없는 도구까지 WRITE로 두면 쓸 수 없다. 대신 확인 기본값으로 보완한다 |
+| `confirmation_policy` | 기본 **`ALWAYS`**, 사용자가 도구별로 `NEVER`로 바꿀 수 있음. **WRITE 도구는 항상 `ALWAYS`**(스키마 규칙) | 사용자 결정(2026-09-29): 기본 매번 확인, 도구별 해제 |
+| `tools_snapshot_hash` | probe가 돌려준 값 | 이후 서버가 도구를 바꾸면 기존 규칙대로 `tools_snapshot_mismatch` — "다시 불러오기"로 재확인 |
+
+### 15.3 남는 경계와 바뀌는 것
+
+- **바뀌는 것**: `DESKTOP_LOCAL`에서는 "승인이 곧 허가"(mcp-server-registration 경계 (1))가 성립하지 않는다. 이 PC 사용자가 고른 코드가 이 PC에서 사용자 권한으로 실행된다 — 일반 MCP 클라이언트와 같은 위험이다. 루트 `CLAUDE.md` 원칙 7("승인되지 않은 임의 Python 실행 기능을 만들지 않는다")의 예외이며, 사용자 결정으로 D-107에 기록한다.
+- **남는 것**: 설치 루트 밖 코드 실행 금지(복사본만 실행), 동봉 Python만 사용(PATH 탐색 없음, Node는 미설정이라 거부), stdio 자식은 `env={}`, 모든 호출이 PEP를 통과(역할 인가·확인·실행 통제·감사), hosted 모드 Runtime에서는 STDIO 거부.
+- **HTTP 주소**: 사용자가 입력한 주소로 Runtime이 연결한다. 루트 원칙 7("승인되지 않은 외부 URL 기능 금지")의 예외이며 같은 결정에 포함된다. 화면은 주소가 이 PC(loopback)가 아니면 경고를 보여 준다.
