@@ -12,6 +12,8 @@ dist/
 build/
 out/
 *.tsbuildinfo
+# electron-builder 설치 파일 출력 (GitHub Release에 첨부해 배포)
+apps/desktop-client/release/
 
 # ── 런타임 상태 (소스가 아님) ────────────────────────────────────────
 # 아래 항목은 서비스가 실행 중에 생성하는 데이터다. 소스 관리 대상이 아닐 뿐
