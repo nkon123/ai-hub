@@ -10,6 +10,7 @@ import {
   type McpServerActivator,
 } from "./bundle-install";
 import { activateInstalledMcpServer } from "./mcp-server-activation";
+import { findBundledRuntime, RuntimeSupervisor } from "./runtime-supervisor";
 import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
@@ -1708,8 +1709,37 @@ async function reconcileMcpServersOnStartup(attempts = 24, intervalMs = 5_000): 
   getLogger().warn("mcp-server-activation", "시작 시 agent-runtime에 연결하지 못해 MCP 서버 등록 복구를 건너뜁니다.");
 }
 
+// D-047 A — the installer's own agent-runtime (11-desktop-packaging §6.1.3).
+// Only a packaged app with <resources>/runtime starts one; dev keeps using the
+// runtime from scripts/windows. Address and Ollama are read once here, so a
+// changed setting takes effect at the next app start.
+let runtimeSupervisor: RuntimeSupervisor | null = null;
+
+function startBundledRuntime(): void {
+  const runtime = app.isPackaged ? findBundledRuntime(process.resourcesPath) : null;
+  const settings = getDesktopSettingsStore().getPublic();
+  runtimeSupervisor = new RuntimeSupervisor(
+    runtime && {
+      runtime,
+      agentRuntimeBaseUrl: settings.agentRuntimeBaseUrl,
+      ollamaBaseUrl: settings.ollamaBaseUrl,
+      stateDir: getLayout().stateDir,
+      appVersion: app.getVersion(),
+    },
+    getLogger(),
+  );
+  void runtimeSupervisor.start();
+}
+
+app.on("before-quit", () => {
+  runtimeSupervisor?.stop();
+});
+
 app.whenReady().then(() => {
   registerIpcHandlers();
+  // Before the window: the renderer's first connection check then finds the
+  // runtime already starting. start() never throws (it resolves "failed").
+  startBundledRuntime();
   createWindow();
   void reconcileMcpServersOnStartup();
   // D14 — 앱이 실행되는 동안에만 동작하는 Main-process 스케줄러. 놓친 실행
