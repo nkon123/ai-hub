@@ -49,6 +49,15 @@ files:
   - package.json
   - "!**/*.map"
 
+# Shared policy read at startup by electron/bundle-verify.ts. It lives in
+# packages/schemas (single source of truth, also read by portal-api), which
+# is outside this app's "files", so it is copied next to app.asar as
+# <resources>/policies/bundle-install-policy.json. Without it the installed
+# app throws at launch ("repo root(pnpm-workspace.yaml)를 ... 찾지 못했습니다").
+extraResources:
+  - from: ../../packages/schemas/policies/bundle-install-policy.json
+    to: policies/bundle-install-policy.json
+
 # No native (compiled) modules among the runtime dependencies — adm-zip and
 # yaml (used by electron/bundle-install.ts, the main-process side) are pure
 # JS, and react/react-dom/lucide-react are bundled into dist/renderer by

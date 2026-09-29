@@ -1,8 +1,11 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import YAML from "yaml";
 import {
   BUNDLE_INSTALL_POLICY,
+  resolveBundleInstallPolicyPath,
   DEFAULT_SIZE_CAP_OPTIONS,
   checkChecksums,
   checkExecutablePolicy,
@@ -255,6 +258,34 @@ describe("shared bundle-install-policy contract (CLAUDE.md 원칙 2/3)", () => {
 
   it("BUNDLE_INSTALL_POLICY (bundle-verify.ts's own loaded copy) matches an independent read of the JSON file", () => {
     expect(BUNDLE_INSTALL_POLICY).toEqual(rawPolicy);
+  });
+
+  // Regression: the installed app (app.asar under Program Files) has no
+  // pnpm-workspace.yaml above it, and threw at launch before this existed.
+  describe("installed app: policy is read from <resources>/policies", () => {
+    it("prefers the packaged copy when resourcesPath has it", () => {
+      const resources = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-policy-"));
+      fs.mkdirSync(path.join(resources, "policies"));
+      const packaged = path.join(resources, "policies", "bundle-install-policy.json");
+      fs.copyFileSync(policyPath, packaged);
+      // startDir outside any repo, like C:\Program Files\...\resources\app.asar\dist\electron
+      expect(resolveBundleInstallPolicyPath(os.tmpdir(), resources)).toBe(packaged);
+    });
+
+    it("falls back to the repo copy in dev/tests (no resourcesPath, or no packaged file)", () => {
+      expect(resolveBundleInstallPolicyPath(__dirname, undefined)).toBe(path.resolve(policyPath));
+      expect(resolveBundleInstallPolicyPath(__dirname, os.tmpdir())).toBe(path.resolve(policyPath));
+    });
+
+    it("electron-builder.yml ships the policy file to policies/ as extraResources", () => {
+      const config = YAML.parse(fs.readFileSync(path.join(__dirname, "..", "..", "electron-builder.yml"), "utf-8")) as {
+        extraResources?: { from: string; to: string }[];
+      };
+      const entry = config.extraResources?.find((r) => r.to === "policies/bundle-install-policy.json");
+      expect(entry).toBeDefined();
+      const from = path.resolve(path.join(__dirname, "..", ".."), entry!.from);
+      expect(from).toBe(path.resolve(policyPath));
+    });
   });
 
   it("ARCHIVE_EXTENSIONS/EXECUTABLE_EXTENSIONS used by checkNoNestedArchives/checkExecutablePolicy come from the shared file", () => {
