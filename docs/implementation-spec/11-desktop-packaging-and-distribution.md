@@ -210,6 +210,7 @@ resources/
   - `-E -s`: 사용자 PC의 `PYTHONPATH`·사용자 site-packages(`%APPDATA%\Python`)가 섞이지 않게 한다 — 실측에서 `-s` 없이는 사용자 site-packages가 `sys.path`에 들어왔다.
   - `-B`: `Program Files` 아래에 `__pycache__`를 쓰려 하지 않는다(일반 사용자 권한으로는 쓸 수 없다).
 - 쓰기 경로는 전부 설치 루트의 `state/agent-runtime/`으로 돌린다: `AGENT_RUNTIME_MCP_TOOL_REGISTRY_PATH`, `AGENT_RUNTIME_LOCAL_AGENT_REGISTRY_PATH`, 그리고 D10 설정의 `ollamaBaseUrl`로 만든 `ollama.json`을 `AIHUB_OLLAMA_CONFIG`로 넘긴다(Desktop 설정과 Runtime이 서로 다른 Ollama를 보지 않도록 한 곳에서 정한다).
+- **채팅 모델도 Desktop 설정을 따른다(2026-09-29)**: `chatModelAlias`(대화 화면의 모델 선택)를 `AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE`로 넘긴다. 넘기지 않으면 Runtime이 office-profile.json의 `exaone3.5:7.8b`를 써서, 그 모델이 없는 PC에서는 MCP Tool 라우팅을 포함한 모든 Runtime 턴이 "모델 미설치"로 실패했다(Ollama 직접 대화만 정상). Runtime 주소·Ollama 주소·채팅 모델이 바뀌면 Desktop이 동봉 Runtime을 **재기동**하고 MCP 서버를 다시 등록한다(`runtimeSettingsChanged`, `restartWith`) — 앱 재시작이 필요 없다.
 - PC별 관리자 설정(`AGENT_RUNTIME_LOCAL_AGENT_ROOTS`, stdio MCP 허용 루트 등)은 `resources/runtime/app/services/agent-runtime/.env`에 둔다 — `config.py`가 이미 이 위치의 `.env`를 읽는다. `Program Files` 아래라 **관리자만 바꿀 수 있다**는 점이 의도한 성질이다.
 - 표준 출력·오류는 `state/logs/agent-runtime.log`로 보낸다(시작 시 5MB를 넘으면 `.1`로 한 번 돌린다).
 - 비정상 종료 시 1·2·4·8·16초 간격으로 최대 5번 재기동하고, 그 뒤에는 멈춘 채 D09에 실패와 로그 경로를 보여 준다. **Desktop 자체는 어떤 경우에도 종료되지 않는다**(루트 CLAUDE.md).

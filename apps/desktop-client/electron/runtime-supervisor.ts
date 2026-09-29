@@ -70,7 +70,26 @@ export interface RuntimeLaunchInput {
    * code (`ASSET_TYPE_FOLDER.mcp_server`). The only place the bundled runtime
    * may start stdio servers from. */
   mcpServerInstallRoot: string;
+  /** Saved `chatModelAlias` — the model the chat screen shows. Without it the
+   * runtime falls back to office-profile.json's `default-chat` model
+   * (exaone3.5:7.8b), which a PC may not have: every runtime turn, including
+   * MCP tool routing, then fails with "model not installed" while plain
+   * Ollama chat (which uses this setting) works (2026-09-29 report). */
+  chatModelId: string | null;
   appVersion: string;
+}
+
+/** Settings that are baked into the runtime process at start. A change to
+ * any of them needs a restart to take effect. */
+export function runtimeSettingsChanged(
+  before: { agentRuntimeBaseUrl: string; ollamaBaseUrl: string; chatModelAlias: string },
+  after: { agentRuntimeBaseUrl: string; ollamaBaseUrl: string; chatModelAlias: string },
+): boolean {
+  return (
+    before.agentRuntimeBaseUrl !== after.agentRuntimeBaseUrl ||
+    before.ollamaBaseUrl !== after.ollamaBaseUrl ||
+    before.chatModelAlias !== after.chatModelAlias
+  );
 }
 
 export interface RuntimeLaunchPlan {
@@ -130,6 +149,10 @@ export function planRuntimeLaunch(input: RuntimeLaunchInput): RuntimeLaunchPlanR
         AGENT_RUNTIME_MCP_SERVER_REGISTRATION_ENABLED: "true",
         AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS: JSON.stringify([input.mcpServerInstallRoot]),
         AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH: input.runtime.pythonExe,
+        // `chat_model_id_override` field -> this exact name (env_prefix +
+        // field name). The docs long said AGENT_RUNTIME_CHAT_MODEL_ID, which
+        // older runtimes silently ignore; this name works in every version.
+        ...(input.chatModelId?.trim() ? { AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE: input.chatModelId.trim() } : {}),
       },
       healthUrl: `${url.origin}/health`,
       logPath: path.join(input.stateDir, "logs", "agent-runtime.log"),
@@ -224,7 +247,7 @@ export class RuntimeSupervisor {
   private status: RuntimeSupervisorStatus = { state: "stopped", message: "", logPath: null };
 
   constructor(
-    private readonly input: RuntimeLaunchInput | null,
+    private input: RuntimeLaunchInput | null,
     private readonly logger: SupervisorLogger,
     deps: RuntimeSupervisorDeps = {},
   ) {
@@ -247,6 +270,22 @@ export class RuntimeSupervisor {
     } catch (err) {
       return this.setStatus("failed", `동봉된 Runtime을 시작하지 못했습니다: ${err instanceof Error ? err.message : String(err)}`, "error");
     }
+  }
+
+  /** Apply new settings. Restarts only a runtime this supervisor started —
+   * an adopted ("external") one is not ours to kill. Resolves like start(). */
+  async restartWith(input: RuntimeLaunchInput | null): Promise<RuntimeSupervisorStatus> {
+    const owned = this.child !== null || ["starting", "running", "restarting", "failed"].includes(this.status.state);
+    this.input = input;
+    if (!owned) return this.getStatus();
+    const healthUrl = this.plan?.healthUrl;
+    this.stop();
+    // Wait for the old process to let go of the port, or start() would
+    // "adopt" the dying one.
+    if (healthUrl) {
+      for (let i = 0; i < 20 && (await this.isHealthy(healthUrl)); i += 1) await this.sleep(250);
+    }
+    return this.start();
   }
 
   stop(): void {

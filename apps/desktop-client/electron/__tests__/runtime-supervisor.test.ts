@@ -10,6 +10,7 @@ import {
   findBundledRuntime,
   planRuntimeLaunch,
   restartDelayMs,
+  runtimeSettingsChanged,
   type BundledRuntime,
   type RuntimeLaunchInput,
 } from "../runtime-supervisor";
@@ -34,6 +35,7 @@ function input(overrides: Partial<RuntimeLaunchInput> = {}): RuntimeLaunchInput 
     ollamaBaseUrl: "http://127.0.0.1:11434/",
     stateDir: tempDir(),
     mcpServerInstallRoot: path.join(tempDir(), "assets", "mcp-servers"),
+    chatModelId: "gemma4:latest",
     appVersion: "0.1.1",
     ...overrides,
   };
@@ -96,6 +98,25 @@ describe("planRuntimeLaunch", () => {
     expect(JSON.parse(env.AGENT_RUNTIME_MCP_SERVER_INSTALL_ROOTS)).toEqual([i.mcpServerInstallRoot]);
     expect(env.AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH).toBe(i.runtime.pythonExe);
     expect(env.AGENT_RUNTIME_MCP_NODE_INTERPRETER_PATH).toBeUndefined();
+  });
+
+  it("hands the runtime the chat model the Desktop uses, under the env name the runtime actually reads", () => {
+    const withModel = planRuntimeLaunch(input());
+    if (!withModel.ok) throw new Error(withModel.message);
+    expect(withModel.plan.env.AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE).toBe("gemma4:latest");
+    for (const empty of [null, "", "  "]) {
+      const without = planRuntimeLaunch(input({ chatModelId: empty }));
+      if (!without.ok) throw new Error(without.message);
+      expect(without.plan.env).not.toHaveProperty("AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE");
+    }
+  });
+
+  it("knows which settings need a runtime restart", () => {
+    const base = { agentRuntimeBaseUrl: "http://127.0.0.1:8100", ollamaBaseUrl: "http://127.0.0.1:11434", chatModelAlias: "gemma4:latest" };
+    expect(runtimeSettingsChanged(base, { ...base })).toBe(false);
+    expect(runtimeSettingsChanged(base, { ...base, chatModelAlias: "qwen3:8b" })).toBe(true);
+    expect(runtimeSettingsChanged(base, { ...base, ollamaBaseUrl: "http://127.0.0.1:11435" })).toBe(true);
+    expect(runtimeSettingsChanged(base, { ...base, agentRuntimeBaseUrl: "http://127.0.0.1:9100" })).toBe(true);
   });
 
   it("hands the runtime the Desktop's own Ollama setting, in the form ollama_config.py accepts", () => {
@@ -219,6 +240,25 @@ describe("RuntimeSupervisor", () => {
       await new Promise((resolve) => setImmediate(resolve));
     }
     expect(supervisor.getStatus().state).not.toBe("failed");
+  });
+
+  it("restartWith relaunches the runtime it owns with the new settings", async () => {
+    // Healthy exactly while a spawned process is alive (spawned but not killed).
+    let h!: ReturnType<typeof harness>;
+    h = harness(() => h.spawned.length > h.killed.length);
+    expect((await h.supervisor.start()).state).toBe("running");
+    expect((await h.supervisor.restartWith(input({ chatModelId: "qwen3:8b" }))).state).toBe("running");
+    expect(h.killed).toEqual([h.children[0]]);
+    expect(h.spawned).toHaveLength(2);
+    expect(h.spawned[1].env.AGENT_RUNTIME_CHAT_MODEL_ID_OVERRIDE).toBe("qwen3:8b");
+  });
+
+  it("restartWith leaves an adopted runtime alone", async () => {
+    const h = harness(() => true);
+    expect((await h.supervisor.start()).state).toBe("external");
+    expect((await h.supervisor.restartWith(input({ chatModelId: "qwen3:8b" }))).state).toBe("external");
+    expect(h.spawned).toHaveLength(0);
+    expect(h.killed).toHaveLength(0);
   });
 
   it("kills the process tree it started on stop, and does not restart it", async () => {

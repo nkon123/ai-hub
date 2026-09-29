@@ -14,7 +14,7 @@ import {
 import { activateInstalledMcpServer, listRegisteredMcpServerAliases } from "./mcp-server-activation";
 import { LocalMcpServerStore, reconcileLocalMcpServers } from "./local-mcp-servers";
 import { LocalMcpServerManager } from "./local-mcp-server-manager";
-import { findBundledRuntime, RuntimeSupervisor } from "./runtime-supervisor";
+import { findBundledRuntime, RuntimeSupervisor, runtimeSettingsChanged, type RuntimeLaunchInput } from "./runtime-supervisor";
 import { APP_SCHEME, RENDERER_ENTRY_URL, resolveRendererAsset } from "./renderer-protocol";
 import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
@@ -1129,7 +1129,11 @@ function registerIpcHandlers(): void {
   ipcMain.handle(
     "settings:update",
     async (_event, patch: DesktopSettingsInput): Promise<DesktopSettingsUpdateResult> => {
+      const before = getDesktopSettingsStore().getPublic();
       const result = getDesktopSettingsStore().update(patch ?? {});
+      if (result.ok && runtimeSettingsChanged(before, getDesktopSettingsStore().getPublic())) {
+        applySettingsToBundledRuntime();
+      }
       if (result.ok) {
         // 값 자체(URL/Alias)는 운영 Secret이 아니라 설정된 사실만 기록한다 —
         // portal-settings의 "갱신되었습니다"류 로그와 같은 원칙.
@@ -1820,21 +1824,33 @@ async function reconcileMcpServersOnStartup(attempts = 24, intervalMs = 5_000): 
 // changed setting takes effect at the next app start.
 let runtimeSupervisor: RuntimeSupervisor | null = null;
 
-function startBundledRuntime(): void {
+function bundledRuntimeInput(): RuntimeLaunchInput | null {
   const runtime = app.isPackaged ? findBundledRuntime(process.resourcesPath) : null;
+  if (!runtime) return null;
   const settings = getDesktopSettingsStore().getPublic();
-  runtimeSupervisor = new RuntimeSupervisor(
-    runtime && {
-      runtime,
-      agentRuntimeBaseUrl: settings.agentRuntimeBaseUrl,
-      ollamaBaseUrl: settings.ollamaBaseUrl,
-      stateDir: getLayout().stateDir,
-      mcpServerInstallRoot: path.join(getLayout().assetsDir, ASSET_TYPE_FOLDER.mcp_server),
-      appVersion: app.getVersion(),
-    },
-    getLogger(),
-  );
+  return {
+    runtime,
+    agentRuntimeBaseUrl: settings.agentRuntimeBaseUrl,
+    ollamaBaseUrl: settings.ollamaBaseUrl,
+    stateDir: getLayout().stateDir,
+    mcpServerInstallRoot: path.join(getLayout().assetsDir, ASSET_TYPE_FOLDER.mcp_server),
+    chatModelId: settings.chatModelAlias,
+    appVersion: app.getVersion(),
+  };
+}
+
+function startBundledRuntime(): void {
+  runtimeSupervisor = new RuntimeSupervisor(bundledRuntimeInput(), getLogger());
   void runtimeSupervisor.start();
+}
+
+/** Address, Ollama or chat model changed: restart the bundled runtime so it
+ * uses them, then put back the MCP servers its in-memory registry lost. */
+function applySettingsToBundledRuntime(): void {
+  if (!runtimeSupervisor) return;
+  void runtimeSupervisor.restartWith(bundledRuntimeInput()).then((status) => {
+    if (status.state === "running") void reconcileMcpServersOnStartup();
+  });
 }
 
 app.on("before-quit", () => {
