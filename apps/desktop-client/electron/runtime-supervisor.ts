@@ -16,11 +16,13 @@ import { spawn as nodeSpawn, spawnSync, type ChildProcess } from "node:child_pro
 import fs from "node:fs";
 import path from "node:path";
 
-/** Origin of the packaged renderer (D-104). The bundled runtime is used only
- * by this PC's Desktop, so it allows nothing else — not Portal Web, and
- * never `null` (any web page can produce `Origin: null` via a sandboxed
- * iframe). */
-export const DESKTOP_APP_ORIGIN = "app://desktop";
+import { DESKTOP_APP_ORIGIN } from "./renderer-protocol";
+
+/** The packaged renderer's origin (D-104, `renderer-protocol.ts`) is the only
+ * one the bundled runtime allows: it is used only by this PC's Desktop — not
+ * Portal Web — and never `null` (any web page can produce `Origin: null` via
+ * a sandboxed iframe). */
+export { DESKTOP_APP_ORIGIN };
 
 const MAX_LOG_BYTES = 5 * 1024 * 1024;
 const RESTART_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000];

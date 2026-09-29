@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, ipcMain, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from "electron";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import fs from "node:fs";
 import crypto from "node:crypto";
 import {
@@ -11,6 +12,7 @@ import {
 } from "./bundle-install";
 import { activateInstalledMcpServer } from "./mcp-server-activation";
 import { findBundledRuntime, RuntimeSupervisor } from "./runtime-supervisor";
+import { APP_SCHEME, RENDERER_ENTRY_URL, resolveRendererAsset } from "./renderer-protocol";
 import { reactivateInstalledMcpServer, reconcileInstalledMcpServers } from "./mcp-server-connection";
 import { InstalledAssetsStore } from "./installed-assets-store";
 import { ActiveVersionStore } from "./active-version-store";
@@ -127,6 +129,22 @@ import type {
 // cross-platform shim like `cross-env` to work on Windows, the actual target
 // OS per D-005).
 const isDev = !app.isPackaged;
+
+// D-104: the packaged renderer loads from app://desktop/ (not file://, whose
+// `Origin: null` agent-runtime rejects). Privileges must be registered before
+// `ready`; the handler itself is installed in `registerRendererProtocol`.
+protocol.registerSchemesAsPrivileged([
+  { scheme: APP_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true } },
+]);
+
+function registerRendererProtocol(): void {
+  const rendererRoot = path.join(__dirname, "..", "renderer");
+  protocol.handle(APP_SCHEME, (request) => {
+    const filePath = resolveRendererAsset(rendererRoot, request.url);
+    if (!filePath) return new Response("Not found", { status: 404 });
+    return net.fetch(pathToFileURL(filePath).toString());
+  });
+}
 
 let mainWindow: BrowserWindow | null = null;
 let installLayout: InstallRootLayout | null = null;
@@ -285,7 +303,7 @@ function createWindow(): void {
     void loadURLWithRetry(win, "http://localhost:5173");
     win.webContents.openDevTools();
   } else {
-    void win.loadFile(path.join(__dirname, "../renderer/index.html"));
+    void win.loadURL(RENDERER_ENTRY_URL);
   }
 
   win.on("closed", () => {
@@ -1737,6 +1755,7 @@ app.on("before-quit", () => {
 
 app.whenReady().then(() => {
   registerIpcHandlers();
+  if (!isDev) registerRendererProtocol();
   // Before the window: the renderer's first connection check then finds the
   // runtime already starting. start() never throws (it resolves "failed").
   startBundledRuntime();
