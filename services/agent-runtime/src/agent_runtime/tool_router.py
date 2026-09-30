@@ -275,6 +275,9 @@ def _prune_unknown_properties(tool_input: dict[str, Any], schema: Any) -> dict[s
     `MCP_INPUT_INVALID` 로 버려지고 나머지 요청까지 통째로 사라진다. 없는 속성만
     **지운다** — 값을 만들어 채우거나 고치지는 않는다. 그래도 필수 속성이 없거나
     타입이 틀리면 뒤의 `validate_tool_input` 이 그대로 거부한다(관문은 그대로다)."""
+    # `null` 은 "값 없음"이다. 선택 인자에 null 을 넣는 모델이 있다(실측 qwen3.5:4b:
+    # `{"repo": null, "ref": null}`) — 그대로 두면 문자열 타입 검사에서 호출 전체가 거부된다.
+    tool_input = {k: v for k, v in tool_input.items() if v is not None}
     if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
         return tool_input
     properties = schema.get("properties")
@@ -382,9 +385,9 @@ async def route_tool_call(
 
 
 _SCOPED_NOTE = (
-    "(이 질문은 여러 종류의 Tool이 나눠 처리합니다. 아래 후보가 다루는 일에 해당하는 "
-    "부분에만 Tool을 고르고, 질문의 나머지 부분은 무시하세요. 해당하는 부분이 없으면 "
-    "calls를 빈 배열로 출력하세요.)\n\n"
+    "(이 질문은 여러 종류의 Tool이 나눠 처리합니다. 질문에 아래 후보 설명에 나오는 대상"
+    "(예: 메일, 시간, 저장소, 파일)이 직접 들어 있을 때만 그 부분에 Tool을 고르고, "
+    "나머지는 무시하세요. 그런 대상이 없으면 calls를 빈 배열로 출력하세요.)\n\n"
 )
 
 

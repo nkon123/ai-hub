@@ -80,3 +80,6 @@ uv.toml
 # 소스 관리 대상이 아니다 — 필요하면 각자 받아서 같은 경로에 둔다.
 /tmp/
 /output/
+
+# git-repo 샘플 서버: PC마다 다른 저장소 경로 (repos.example.json 을 복사해 만든다)
+samples/mcp-servers/git-repo/repos.json

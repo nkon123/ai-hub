@@ -1,0 +1,451 @@
+{
+  "schema_version": "1.0",
+  "id": "52ee0693-51fc-4dce-a28f-a49e4bc833ae",
+  "type": "mcp_server",
+  "name": "git 저장소 조회 (파일·검색·이력·diff·blame)",
+  "version": "1.0.0",
+  "owner": {
+    "org": "miracom",
+    "team": "platform",
+    "creator_id": "dev-user@miracom.com"
+  },
+  "classification": "INTERNAL",
+  "description": "이 PC 에 clone 된 git 저장소를 git 명령으로 읽는다: 파일 목록·내용, 문자열 검색, 커밋 이력, 변경 내용(diff), blame. repos.json 에 적은 저장소만 볼 수 있고 저장소를 바꾸지 않는다(commit·checkout·fetch·pull 없음). .env·키·인증서 같은 비밀값이 있을 법한 파일은 읽지 않는다. 네트워크·토큰이 필요 없다.",
+  "tags": [
+    "git",
+    "repository",
+    "stdio",
+    "read-only"
+  ],
+  "server_alias": "git-repo",
+  "provenance": "INTERNAL",
+  "protocol_version": "2025-06-18",
+  "transport": {
+    "kind": "STDIO",
+    "interpreter": "python",
+    "entrypoint": "server.py",
+    "args": [],
+    "vendored_dependencies": true
+  },
+  "declared_tools": [
+    {
+      "tool_name": "git.list_repos",
+      "label": "볼 수 있는 git 저장소 이름 목록",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {}
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.list_files",
+      "label": "git 저장소의 폴더 안 파일·폴더 목록",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "브랜치·태그·커밋 이름. 생략하면 HEAD(현재 브랜치 끝)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "볼 디렉터리(저장소 루트 기준). 생략하면 루트."
+          },
+          "recursive": {
+            "type": "boolean",
+            "description": "하위 폴더까지 전부 (기본 false)."
+          }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.read_file",
+      "label": "git 저장소의 파일 내용 읽기(줄 범위 지정 가능)",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "브랜치·태그·커밋 이름. 생략하면 HEAD(현재 브랜치 끝)."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "읽을 파일(저장소 루트 기준)."
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "시작 줄 (선택)."
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "끝 줄 (선택)."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 200,
+            "maximum": 40000,
+            "description": "글자 수 상한 (기본 8000)."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.search",
+      "label": "git 저장소에서 글자 검색(파일·줄 번호)",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "브랜치·태그·커밋 이름. 생략하면 HEAD(현재 브랜치 끝)."
+          },
+          "query": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "찾을 글자."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "이 폴더·파일 안에서만 (선택)."
+          },
+          "regex": {
+            "type": "boolean",
+            "description": "query 를 정규식(확장)으로 (기본 false = 글자 그대로)."
+          },
+          "ignore_case": {
+            "type": "boolean",
+            "description": "대소문자 무시 (기본 false)."
+          },
+          "max_results": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "description": "최대 개수 (기본 30)."
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.log",
+      "label": "git 커밋 이력(전체 또는 한 파일)",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "브랜치·태그·커밋 이름. 생략하면 HEAD(현재 브랜치 끝)."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "이 파일·폴더를 바꾼 커밋만 (선택)."
+          },
+          "max_count": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 50,
+            "description": "최대 개수 (기본 20). 최신 커밋부터."
+          }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.show_commit",
+      "label": "git 커밋 하나의 변경 요약(diff 선택)",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "commit": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "커밋 해시·태그·브랜치. 생략하면 HEAD."
+          },
+          "patch": {
+            "type": "boolean",
+            "description": "변경 내용(diff)까지 (기본 false = 바뀐 파일 요약만)."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 40000,
+            "description": "diff 글자 수 상한 (기본 12000)."
+          }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.diff",
+      "label": "git 두 ref 사이의 변경 내용",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "from_ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200,
+            "description": "비교의 기준(이전) ref."
+          },
+          "to_ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "비교 대상(이후) ref. 생략하면 HEAD."
+          },
+          "path": {
+            "type": "string",
+            "maxLength": 300,
+            "description": "이 파일·폴더만 (선택)."
+          },
+          "patch": {
+            "type": "boolean",
+            "description": "변경 내용(diff)까지 (기본 false = 바뀐 파일 요약만)."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 500,
+            "maximum": 40000,
+            "description": "diff 글자 수 상한 (기본 12000)."
+          }
+        },
+        "required": [
+          "from_ref"
+        ]
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    },
+    {
+      "tool_name": "git.blame",
+      "label": "git 파일의 줄별 마지막 수정자·커밋",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "repo": {
+            "type": "string",
+            "maxLength": 64,
+            "description": "저장소 이름. 등록된 저장소가 하나뿐이면 생략한다."
+          },
+          "ref": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "브랜치·태그·커밋 이름. 생략하면 HEAD(현재 브랜치 끝)."
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 300,
+            "description": "파일(저장소 루트 기준)."
+          },
+          "start_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "시작 줄 (기본 1)."
+          },
+          "end_line": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "끝 줄 (최대 200줄 범위)."
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 45,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 30
+      }
+    }
+  ]
+}

@@ -273,6 +273,30 @@ async def test_properties_outside_a_closed_schema_are_pruned_not_fatal() -> None
     assert result.calls == (("mail.list", {"folder": "inbox"}),)
 
 
+async def test_null_arguments_are_treated_as_omitted() -> None:
+    """qwen3.5:4b writes `{"repo": null, "ref": null}` for optional arguments; a null
+    would fail the string type check and drop the whole call."""
+    candidates = [
+        {
+            "tool_name": "git.list_files",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"repo": {"type": "string"}, "path": {"type": "string"}},
+            },
+        }
+    ]
+    adapter = FakeLLMAdapter(
+        tokens=_tokens(
+            {"calls": [{"tool_name": "git.list_files", "input": {"repo": None, "path": "docs"}}]}
+        )
+    )
+    result = await route_tool_call(
+        "q", candidates, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.calls == (("git.list_files", {"path": "docs"}),)
+
+
 async def test_open_schema_keeps_every_property() -> None:
     candidates = [{"tool_name": "mail.list", "input_schema": {"type": "object"}}]
     adapter = FakeLLMAdapter(

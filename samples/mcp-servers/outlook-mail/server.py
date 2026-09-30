@@ -946,8 +946,8 @@ async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
             types.Tool(
                 name="outlook.read_presentations",
                 description=(
-                    "메일 첨부 PowerPoint(.pptx) 내용을 슬라이드별로 읽는다. '첨부된 ppt/파워포인트 읽어줘·요약해줘'는 "
-                    "이 도구 하나로 끝난다(메일 목록 도구 불필요). 기간 생략 시 최근 7일."
+                    "Outlook 메일에 첨부된 PowerPoint(.pptx)만 슬라이드별로 읽는다(저장소·로컬 파일은 아님). "
+                    "'첨부된 ppt 읽어줘·요약해줘'는 이 도구 하나로 끝난다. 기간 생략 시 최근 7일."
                 ),
                 input_schema=PRESENTATIONS_SCHEMA,
                 annotations=types.ToolAnnotations(read_only_hint=True),
