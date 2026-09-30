@@ -114,6 +114,84 @@ async def test_model_proposes_valid_tool_and_input() -> None:
     assert result.tool_input == {"schema": "APP", "table": "ORDERS"}
 
 
+# --- route_tool_call: multiple calls in one turn -------------------------
+
+
+async def test_model_proposes_two_tools_for_a_compound_question() -> None:
+    adapter = FakeLLMAdapter(
+        tokens=_tokens(
+            {
+                "calls": [
+                    {"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}},
+                    {
+                        "tool_name": "db_metadata.get_columns",
+                        "input": {"schema": "APP", "table": "ORDERS"},
+                    },
+                ],
+                "reason": "복합 질문",
+            }
+        )
+    )
+    result = await route_tool_call(
+        "APP 테이블 목록이랑 ORDERS 컬럼 알려줘", CANDIDATES, adapter,
+        model_alias="default-chat", timeout_seconds=5.0, max_calls=3,
+    )
+    assert result.status == "ran"
+    assert [name for name, _ in result.calls] == [
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+    ]
+    # tool_name/tool_input stay an alias of the first call.
+    assert result.tool_name == "db_metadata.get_tables"
+    assert result.tool_input == {"schema": "APP"}
+
+
+async def test_max_calls_caps_the_proposal_list() -> None:
+    adapter = FakeLLMAdapter(
+        tokens=_tokens(
+            {
+                "calls": [
+                    {"tool_name": "db_metadata.get_tables", "input": {"schema": s}}
+                    for s in ("A", "B", "C", "D")
+                ]
+            }
+        )
+    )
+    result = await route_tool_call(
+        "q", CANDIDATES, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=2
+    )
+    assert len(result.calls) == 2
+
+
+async def test_duplicate_and_invented_entries_are_dropped_valid_ones_kept() -> None:
+    adapter = FakeLLMAdapter(
+        tokens=_tokens(
+            {
+                "calls": [
+                    {"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}},
+                    {"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}},
+                    {"tool_name": "not_a_real_tool.action", "input": {}},
+                ]
+            }
+        )
+    )
+    result = await route_tool_call(
+        "q", CANDIDATES, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.status == "ran"
+    assert len(result.calls) == 1
+
+
+async def test_empty_calls_list_is_a_decline() -> None:
+    adapter = FakeLLMAdapter(tokens=_tokens({"calls": [], "reason": "불필요"}))
+    result = await route_tool_call(
+        "q", CANDIDATES, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.status == "no_tool"
+    assert result.reason == "declined_by_model"
+    assert result.calls == ()
+
+
 # --- route_tool_call: fail-CLOSED paths -----------------------------------
 
 
@@ -352,4 +430,7 @@ async def test_routing_prompt_never_contains_citation_or_history_text() -> None:
         # not a free-text channel — this assertion's point (no path for
         # citation/history text into the routing prompt) still holds.
         "description_max_chars",
+        # A numeric cap on how many proposals are kept — likewise not a
+        # free-text channel.
+        "max_calls",
     }

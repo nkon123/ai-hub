@@ -244,6 +244,20 @@
 - **검증**: 신규 테스트 23개(`electron/__tests__/prompt-template.test.ts` 8 + `src/screens/promptPickerTypes.test.ts` 15). 전체 vitest 변경 전 **1039 passed / 12 failed** → 변경 후 **1062 passed / 12 failed**(+23 = 신규, 실패 집합 동일한 기존 실패). `pnpm typecheck` 통과. **변이 검증 2건**: 경로 담기 검사를 빼면 traversal 테스트가, 입력창에 쓰던 글을 버리게 하면 조립 테스트가 각각 깨진다. `tsc -p tsconfig.electron.json`으로 `dist/electron/preload.js` 재빌드(새 채널 포함 확인), `vite build`로 렌더러 번들에 패널이 들어간 것까지 확인.
 - **확인하지 못한 것**: 이 저장소에는 렌더링(jsdom/React) 테스트가 없고 이 세션에서 Electron 창이나 브라우저 렌더러를 눈으로 열지 못했다 — 버튼·모달의 실제 표시는 육안 확인이 남아 있다.
 
+## 2026-09-30 M05 TOOL_ROUTE 다중 Tool 제안 (D-083 보완)
+
+- **증상**: "오늘 메일 요약해주고 현재 시간 알려줘"처럼 서로 다른 MCP 서버의 Tool 둘이 필요한 질문에서 하나(메일)만 호출되고 나머지(`hello_mcp.now`)는 조용히 사라졌다. **원인**: `tool_router.route_tool_call` 이 "정확히 하나 고르기"로 설계돼 프롬프트·파서·`ToolRouteResult`·`workflow.py` 가 모두 단일 요청이었다(D-083 "LLM 호출 최대 1회로 Tool 이름+인자 제안" 은 유지, 제안 개수만 확장).
+- **변경**: 프롬프트 출력 형식을 `{"calls":[{tool_name,input}...]}` 로 바꾸고 예전 단일 형식도 받는다. `ToolRouteResult.calls` 추가(`tool_name`/`tool_input` 은 첫 호출 별칭 유지). 상한 `settings.tool_route_max_calls`(기본 3), 중복·후보 밖 이름은 그 항목만 버린다. `workflow.py` 는 제안 순서대로 **순차** 실행하며 각 호출이 기존 허용목록·스키마·확인 관문을 그대로 지난다. 사전 거부(`MCP_TOOL_NOT_FOUND`/`MCP_INPUT_INVALID`)나 사용자 거부는 그 호출만 건너뛰고 나머지는 계속, 취소·그 외 오류는 기존대로 Run 종료. `mcp.tool_route.selected` 이벤트에 `tool_names` 추가.
+- **검증**: 신규 테스트 5개(라우터 4 + 워크플로 1), agent_runtime 통합·단위 439 passed. 남은 실패 2건은 이 변경과 무관한 환경 요인(Windows 심볼릭 링크 권한, 수정 중인 `config/ollama.json` 엔드포인트). 실제 모델이 두 Tool 을 함께 고르는지는 미확인 — 소형 모델(exaone3.5)은 `router_max_output_tokens`(160) 안에서 JSON 두 개를 써야 하므로 `done_reason=length` 부터 본다.
+
+## 2026-09-18 Nexacro 17 참조 문서 지식 검색용 보완 산출물
+
+- `04-knowledge-platform.md` §2.4~2.7·§3.6~3.9에 맞춘 문서 가공 작업. 원본 `output/Nexacro17_Reference_Guide_Korean.md`는 유지하고 `.knowledge.md`를 별도 생성했다. API 단위 H2, 내부 굵은 라벨, 한영 검색 표현, 원문 근거 요약 18개, 매개변수/코드/상수표 구조를 보완했다. 런타임 코드·인덱스·API 계약은 변경하지 않았다.
+- 원문 8,391항목 중 8,385항목을 본문에 유지하고 탐색용 5항목·라이선스 1항목은 별도 원문 보관했다. 지원 환경 8,371표·속성 유형 4,450표는 각각 동일하며 판정 표시가 소실되어 공통 추출 한계로 명시했다. 본문 플랫폼 제약은 보존했다.
+- `output/nexacro17-knowledge/`에 재생성 스크립트·업로드 안내·원문 위치/해시 manifest·평가 질문 초안·검증 보고서를 두었다(기존 Git 제외 경로). 36,078필드의 토큰 보존, 16,240코드 블록 원문 일치, 전체 섹션 offset/hash·부모 참조 무결성을 확인했다. 원본 SHA-256 `312ed01d58b5f90452c9ab20fdec483e7e2154036971e3b57f9377363b9cf365` 불변.
+- 청커 dry-run: 기본 2048/512/64에서 원본 41,954자식→보완본 28,734자식; 후보 3072/768/96에서 8,912부모·19,652자식·100자 미만 자식 0개. 수치는 문자 단위이며 임베딩·하이브리드 품질 평가가 아니다. 본문과 겹치는 18문항은 사람 검토 전 스모크 초안으로 표시했다.
+- 확인한 제한: 현재 `hybrid.py`의 부모 응답 1,024자/발췌 512자 절단, 공백 BM25 토크나이저, 청커의 코드 블록 분할 때문에 문서 변경만으로 완전한 부모 확장·검색 품질을 보장할 수 없다. 안내서에 별도 후속 검토 사항으로 기록했다.
+
 ## 2026-09-17 M01/M02 지식 재색인 — 문서 교체와 색인 전략 변경 (D-097)
 
 - **없던 경로였다**: `/knowledge/new` 는 매번 새 asset id·version 1.0.0 고정이라 항상 **새 자산**을 만들고, `POST /assets/{id}/versions` 는 Manifest·파일을 복사만 하고 색인을 걸지 않는다(`_trigger_indexing` 호출부가 `POST /assets` 한 곳뿐이었다). 그래서 "문서를 갱신해 다시 색인"과 "청킹 전략만 바꿔 다시 색인"을 화면에서 할 수 없었고, 사용자는 같은 지식을 자산 id가 다른 둘로 만들 수밖에 없었다.

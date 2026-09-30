@@ -122,20 +122,28 @@ class ToolRouteResult:
     status: RouteStatus
     reason: str | None = None
     latency_ms: int | None = None
+    # 한 질문에 Tool 이 여럿 필요할 수 있다("오늘 메일 요약하고 현재 시간도"). 전에는
+    # 정확히 하나만 제안해서 두 번째 요청은 조용히 사라졌다. `tool_name`/`tool_input`
+    # 은 첫 호출의 별칭으로 남긴다 — 기존 호출자와 이벤트 페이로드가 그대로다.
+    # `status == "ran"` 일 때만 비어 있지 않으며, 순서는 모델이 낸 순서다.
+    calls: tuple[tuple[str, dict[str, Any]], ...] = ()
 
 
 _ROUTE_SYSTEM_PROMPT = (
     "당신은 사내 MCP Tool 라우터입니다. 사용자의 질문과 아래 후보 Tool 목록"
     "(이름, 입력 Schema)만 보고, 이 질문에 답하기 위해 지금 호출해야 할 Tool을 "
-    "정확히 하나 고르거나, 필요 없다면 아무 것도 고르지 마세요.\n"
+    "모두 고르세요. 질문이 서로 다른 요청을 함께 담고 있으면(예: 메일 조회와 "
+    "현재 시간) 요청마다 Tool을 하나씩 고릅니다. 필요 없다면 아무 것도 고르지 "
+    "마세요.\n"
     "규칙:\n"
     "- 반드시 JSON 객체 하나만 출력하세요. 다른 설명이나 코드 블록 표시를 "
     "덧붙이지 마세요.\n"
+    "- 같은 Tool을 같은 인자로 두 번 고르지 마세요.\n"
     "- Tool 호출이 필요한지 확신할 수 없으면 호출하지 마세요(과다 호출보다 "
-    "누락이 안전합니다) — 이 경우 tool_name을 null로 출력하세요.\n"
+    "누락이 안전합니다) — 이 경우 calls를 빈 배열로 출력하세요.\n"
     "- Tool을 고른다면 input은 그 Tool의 input_schema를 만족하는 값이어야 "
-    "합니다. 확실하지 않은 값은 만들어내지 말고 tool_name을 null로 출력하세요.\n"
-    '- 출력 형식: {"tool_name": "..." 또는 null, "input": {...} 또는 null, '
+    "합니다. 확실하지 않은 값은 만들어내지 말고 그 Tool은 고르지 마세요.\n"
+    '- 출력 형식: {"calls": [{"tool_name": "...", "input": {...}}, ...], '
     '"reason": "한국어 한 문장 이내"}'
 )
 
@@ -229,6 +237,23 @@ def _parse_json_object(raw: str) -> dict[str, Any] | None:
         return None
 
 
+def _extract_proposals(parsed: dict[str, Any]) -> list[tuple[Any, Any]]:
+    """`{"calls": [{tool_name, input}, ...]}` 를 읽는다. 예전 모양
+    `{"tool_name": ..., "input": ...}` 도 받는다 — 모델이 지시를 무시하고 옛 형식으로
+    답해도 하나짜리 제안은 그대로 통해야 한다. `tool_name: null` / 빈 `calls` 는
+    "고르지 않음"이다."""
+    calls = parsed.get("calls")
+    if isinstance(calls, list):
+        return [
+            (item.get("tool_name"), item.get("input"))
+            for item in calls
+            if isinstance(item, dict) and item.get("tool_name") is not None
+        ]
+    if parsed.get("tool_name") is not None:
+        return [(parsed.get("tool_name"), parsed.get("input"))]
+    return []
+
+
 def _no_tool(reason: str, latency_ms: int | None) -> ToolRouteResult:
     return ToolRouteResult(
         tool_name=None, tool_input=None, status="no_tool", reason=reason, latency_ms=latency_ms
@@ -244,8 +269,9 @@ async def route_tool_call(
     timeout_seconds: float,
     skip_threshold: int = 0,
     description_max_chars: int = 160,
+    max_calls: int = 1,
 ) -> ToolRouteResult:
-    """Proposes at most one Tool call for `question`, or proposes nothing.
+    """Proposes up to `max_calls` Tool calls for `question`, or proposes nothing.
 
     Never raises. See `ToolRouteResult`'s docstring for what each `status`
     means. The returned `tool_input` (when `status == "ran"`) is NOT yet
@@ -320,23 +346,42 @@ async def route_tool_call(
         logger.info("tool.route.no_tool reason=unparseable latency_ms=%d", latency_ms)
         return _no_tool("unparseable", latency_ms)
 
-    tool_name = parsed.get("tool_name")
-    if tool_name is None:
+    proposals = _extract_proposals(parsed)
+    if not proposals:
         logger.info("tool.route.no_tool reason=declined_by_model latency_ms=%d", latency_ms)
         return _no_tool("declined_by_model", latency_ms)
 
-    if not isinstance(tool_name, str) or tool_name not in candidate_names:
+    calls: list[tuple[str, dict[str, Any]]] = []
+    seen_calls: set[str] = set()
+    for tool_name, raw_input in proposals:
+        # 후보 밖 이름은 그 항목만 버린다. 하나라도 지어낸 이름이 섞였다고 나머지 유효한
+        # 제안까지 버리면 "두 개 중 하나"가 아니라 "둘 다 없음"이 된다 — 그래도 호출되는
+        # 것은 후보 안의 Tool 뿐이라 권한은 넓어지지 않는다.
+        if not isinstance(tool_name, str) or tool_name not in candidate_names:
+            continue
+        tool_input = raw_input if isinstance(raw_input, dict) else {}
+        fingerprint = f"{tool_name}\0{json.dumps(tool_input, sort_keys=True, default=str)}"
+        if fingerprint in seen_calls:
+            continue
+        seen_calls.add(fingerprint)
+        calls.append((tool_name, tool_input))
+        if len(calls) >= max_calls:
+            break
+
+    if not calls:
         logger.info("tool.route.no_tool reason=unknown_tool_name latency_ms=%d", latency_ms)
         return _no_tool("unknown_tool_name", latency_ms)
 
-    raw_input = parsed.get("input")
-    tool_input = raw_input if isinstance(raw_input, dict) else {}
-
     logger.info(
-        "tool.route.ran tool_name=%s latency_ms=%d",
-        tool_name,
+        "tool.route.ran tool_names=%s latency_ms=%d",
+        ",".join(name for name, _ in calls),
         latency_ms,
     )
     return ToolRouteResult(
-        tool_name=tool_name, tool_input=tool_input, status="ran", reason=None, latency_ms=latency_ms
+        tool_name=calls[0][0],
+        tool_input=calls[0][1],
+        status="ran",
+        reason=None,
+        latency_ms=latency_ms,
+        calls=tuple(calls),
     )

@@ -168,6 +168,11 @@ class AgentRuntimeSettings(BaseSettings):
     # is an action, unlike a Knowledge search, so "guess and call anyway" is
     # not an acceptable fallback here (see tool_router.py).
     tool_route_timeout_seconds: float = 8.0
+    # 한 턴에서 TOOL_ROUTE 가 제안할 수 있는 Tool 호출 수의 상한. 라우팅이 하나만
+    # 제안하던 때에는 "메일 요약 + 현재 시간" 같은 복합 질문의 뒤쪽 요청이 조용히
+    # 사라졌다. 상한은 모델이 후보를 전부 부르는 폭주를 막는다 — 각 호출은 여전히
+    # 개별로 허용목록·스키마·확인 정책을 지난다.
+    tool_route_max_calls: int = 3
 
     # --- 로컬 모델 지연 (2026-09-18 실사용: "채팅 반응이 너무 느리다") -------
     #

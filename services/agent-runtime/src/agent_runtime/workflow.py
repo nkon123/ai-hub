@@ -1075,7 +1075,9 @@ async def run_knowledge_chat(
         # never overrides an explicit caller decision) AND the resolved
         # agent allows MCP at all. See `run_knowledge_chat`'s own docstring
         # for the full contract, including the fail-CLOSED guarantee.
-        effective_mcp_tool_request = mcp_tool_request
+        effective_mcp_tool_requests: list[dict[str, Any]] = (
+            [mcp_tool_request] if mcp_tool_request is not None else []
+        )
         tool_route_is_ai_derived = False
         if mcp_tool_request is None and tool_route_enabled and mcp_allowed:
             # 후보는 언제나 서버가 만든다. `mcp_tool_scope`(사용자가 대화
@@ -1093,6 +1095,7 @@ async def run_knowledge_chat(
                 timeout_seconds=settings.tool_route_timeout_seconds,
                 skip_threshold=settings.tool_route_skip_threshold,
                 description_max_chars=settings.tool_route_description_max_chars,
+                max_calls=settings.tool_route_max_calls,
             )
             run_store.append_event(
                 run_id,
@@ -1101,6 +1104,7 @@ async def run_knowledge_chat(
                     "status": tool_route_result.status,
                     "reason": tool_route_result.reason,
                     "tool_name": tool_route_result.tool_name,
+                    "tool_names": [name for name, _ in tool_route_result.calls],
                 },
             )
             _log_stage(
@@ -1117,34 +1121,36 @@ async def run_knowledge_chat(
                 tool_route_result.reason,
                 tool_route_result.tool_name,
             )
-            if tool_route_result.status == "ran" and tool_route_result.tool_name:
-                effective_mcp_tool_request = {
-                    "tool_name": tool_route_result.tool_name,
-                    "input": tool_route_result.tool_input or {},
-                    "confirmed": False,
-                }
+            if tool_route_result.status == "ran" and tool_route_result.calls:
+                effective_mcp_tool_requests = [
+                    {"tool_name": name, "input": tool_input, "confirmed": False}
+                    for name, tool_input in tool_route_result.calls
+                ]
                 tool_route_is_ai_derived = True
 
         # --- TOOL_CONFIRM (optional) / MCP_TOOL_CALL (0..n) ---
         tool_results: list[dict[str, Any]] = []
-        if effective_mcp_tool_request is not None:
-            if not mcp_allowed:
-                _fail(
-                    run_store,
-                    run_id,
-                    trace_id,
-                    "MCP_PERMISSION_DENIED",
-                    "이 Agent는 MCP Tool을 호출할 수 없습니다.",
-                )
-                return
+        if effective_mcp_tool_requests and not mcp_allowed:
+            _fail(
+                run_store,
+                run_id,
+                trace_id,
+                "MCP_PERMISSION_DENIED",
+                "이 Agent는 MCP Tool을 호출할 수 없습니다.",
+            )
+            return
 
+        # 호출은 제안 순서대로 하나씩, 각각 같은 관문(허용목록·스키마·확인)을 지난다.
+        # 병렬로 돌리지 않는 이유: 확인 프롬프트가 사용자 앞에 하나씩 떠야 하고,
+        # 한 호출의 취소/거부가 나머지를 막아야 하기 때문이다.
+        for request in effective_mcp_tool_requests:
             outcome = await _run_mcp_tool_call(
                 run_id=run_id,
                 service_id=service_id,
                 trace_id=trace_id,
                 config=config,
                 mcp_adapter=mcp_adapter,
-                mcp_tool_request=effective_mcp_tool_request,
+                mcp_tool_request=request,
                 run_store=run_store,
                 confirmation_timeout_seconds=confirmation_timeout,
                 ai_derived=tool_route_is_ai_derived,
@@ -1163,19 +1169,20 @@ async def run_knowledge_chat(
                     # this: the local check passed, the real server's
                     # stricter schema rejected it) — is NEVER retried and
                     # NEVER fails the Run; it is treated exactly like no tool
-                    # had been proposed at all. Any OTHER outcome (a
-                    # different error code — network/execution failure,
-                    # possibly post-confirmation) still fails the Run
-                    # normally below.
+                    # had been proposed at all. With several proposals, only
+                    # THAT proposal is dropped; the others still run. Any
+                    # OTHER outcome (a different error code — network/
+                    # execution failure, possibly post-confirmation) still
+                    # fails the Run normally below.
                     run_store.append_event(
                         run_id,
                         "mcp.tool_route.rejected",
-                        {"tool_name": effective_mcp_tool_request.get("tool_name"), "code": code},
+                        {"tool_name": request.get("tool_name"), "code": code},
                     )
                     logger.info(
                         "tool.route.rejected run_id=%s tool_name=%s code=%s",
                         run_id,
-                        effective_mcp_tool_request.get("tool_name"),
+                        request.get("tool_name"),
                         code,
                     )
                 else:
@@ -1183,13 +1190,13 @@ async def run_knowledge_chat(
                     return
             elif isinstance(outcome, _Denied):
                 # "Denial is a first-class outcome (run ends cleanly, not an
-                # error)" — proceed exactly as if no mcp_tool_request had
-                # been given; the hallucination guard right below decides
-                # SUCCEEDED (off Knowledge citations alone) vs
+                # error)" — this call contributes no evidence; the remaining
+                # calls (if any) still run, and the hallucination guard right
+                # below decides SUCCEEDED (off whatever evidence exists) vs
                 # INSUFFICIENT_EVIDENCE. Never FAILED.
-                tool_results = []
+                continue
             else:
-                tool_results = [outcome]
+                tool_results.append(outcome)
 
         # D-103 — 지식을 미뤘는데 Tool 이 결과를 내지 못했다(선택 안 됨·거부·
         # 거절). 이제라도 전체 지식을 검색한다: abstain 은 "Tool 로 답한다"는

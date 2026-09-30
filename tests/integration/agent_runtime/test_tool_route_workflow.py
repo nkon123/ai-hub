@@ -127,6 +127,47 @@ async def test_tool_route_proposal_dispatches_through_unchanged_chokepoint(
     assert final.json()["status"] == "SUCCEEDED"
 
 
+async def test_tool_route_two_proposals_both_dispatch_in_order(
+    client: httpx.AsyncClient, fake_llm_adapter: FakeLLMAdapter, fake_mcp_adapter: FakeMCPAdapter
+) -> None:
+    """A compound question ("메일 요약 + 현재 시간") used to lose every
+    request after the first. Both proposals must now reach the unchanged
+    chokepoint, in the order the model gave them."""
+    fake_llm_adapter.responses = [
+        [
+            json.dumps(
+                {
+                    "calls": [
+                        {"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}},
+                        {
+                            "tool_name": "db_metadata.get_columns",
+                            "input": {"schema": "APP", "table": "INTERFACE_LOG"},
+                        },
+                    ],
+                    "reason": "복합 질문",
+                },
+                ensure_ascii=False,
+            )
+        ],
+        ["두 결과를 종합한 답변입니다."],
+    ]
+    resp = await _start_tool_route_run(client)
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+
+    route_event = next(e for e in events if e["event"] == "mcp.tool_route.selected")
+    assert route_event["data"]["tool_names"] == [
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+    ]
+    assert [c["tool_name"] for c in fake_mcp_adapter.calls] == [
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+    ]
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+
+
 async def test_tool_route_candidate_block_excludes_profile_disallowed_tool(
     client: httpx.AsyncClient, fake_llm_adapter: FakeLLMAdapter, fake_mcp_adapter: FakeMCPAdapter
 ) -> None:
