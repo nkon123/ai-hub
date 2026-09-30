@@ -20,6 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
+import { avatarInitial, avatarTone } from "./conversationAvatar";
 import { IDLE_CURSOR, type PromptHistoryCursor, caretLinePosition, pushPromptHistory, stepPromptHistory } from "./promptHistory";
 import { AlertTriangle, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
@@ -2054,7 +2055,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     connections ?? [],
     knowledgeLookupActive || mcpDevActive ? "knowledge" : "ollama",
   );
-  const { blockingFailures, featureFailures } = connectionAssessment;
+  const { blockingFailures } = connectionAssessment;
 
   // 연결 상태를 문장으로 설명하는 대신 점 하나로 보여주고, 어떤 서비스가 어떤
   // 상태인지는 hover(title)로 남긴다 — 이슈가 있을 때만 아래 Notice가 뜬다.
@@ -2066,6 +2067,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           상황이므로 한 줄 알림으로 항상 보여주고, 서비스별 사유와 복구 방법은
           펼쳤을 때 그대로 나온다. */}
       {blockingFailures.length > 0 && (
+        <div className="px-4 pt-4">
         <Notice
           tone="danger"
           title={`${blockingFailures.map((c) => c.label).join(", ")} 연결이 끊어져 대화가 제한될 수 있습니다.`}
@@ -2083,47 +2085,31 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             </>
           }
         />
-      )}
-
-      {featureFailures.length > 0 && (
-        <Notice
-          tone="warning"
-          title="Knowledge·Tool 일부 기능이 제한됩니다 (Ollama 대화는 정상)."
-          detail={
-            <>
-              <ul className="space-y-0.5">
-                {featureFailures.map((c) => (
-                  <li key={c.id}>
-                    {c.label}: {c.detail}
-                    {c.recoveryHint ? ` — ${c.recoveryHint}` : ""}
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-1.5 text-text-secondary">설정 &gt; 연결 상태에서 자세히 확인할 수 있습니다.</p>
-            </>
-          }
-        />
+        </div>
       )}
 
       <div className="flex min-h-0 flex-1 gap-4">
         {/* 좌측 대화 목록 패널(Ollama Desktop 앱과 같은 구성) — D06 대화
             보존. Electron 브릿지가 있을 때만(대화 저장은 Main Process 전용). */}
         {conversationBridge && (
-          <aside className="flex w-64 shrink-0 flex-col border-r border-border pr-3" aria-label="채팅 목록">
+          <aside className="flex w-64 shrink-0 flex-col border-r border-border bg-surface" aria-label="채팅 목록">
             {/* "대화 | 봇" 탭(2026-09-18 사용자 요청). 봇 탭은 스케줄러가 있는
                 Electron 에서만 의미가 있다 — 브릿지가 없으면 탭 없이 대화 목록만. */}
             {bridge && (
-              <Tabs
-                tabs={SIDEBAR_TABS}
-                activeId={sidebarTab}
-                onChange={(id) => handleSidebarTabChange(id as SidebarTab)}
-                compact
-                disabled={isRunning}
-              />
+              <div className="px-3 pt-3">
+                <Tabs
+                  tabs={SIDEBAR_TABS}
+                  activeId={sidebarTab}
+                  onChange={(id) => handleSidebarTabChange(id as SidebarTab)}
+                  compact
+                  disabled={isRunning}
+                />
+              </div>
             )}
-            {/* 목록은 카드가 아니라 꽉 찬 행 + 구분선이다(2026-09-29 요청). `-mr-3` 은
-                aside 의 `pr-3` 을 상쇄해 행이 오른쪽 경계선까지 닿게 한다. */}
-            <div className="-mr-3 flex-1 divide-y divide-border overflow-y-auto border-y border-border">
+            {/* 목록은 카드가 아니라 꽉 찬 행이고 행 사이 구분선도 없다(2026-09-30 요청:
+                흰 배경·구분선 제거·왼쪽에 동그라미). 스크롤바의 위/아래 화살표 버튼은
+                `.list-scroll`(styles.css) 이 숨긴다. */}
+            <div className="list-scroll mt-2 flex-1 overflow-y-auto">
               {/* 스케줄봇은 봇 탭에만 있다(예전에는 대화 목록 맨 위에 고정돼
                   대화와 섞여 보였다). 이력이 0건이어도 항목은 보인다 — 클릭하면
                   명확한 빈 상태 문구가 나온다(2026-08-19 요구 2 유지). */}
@@ -2138,14 +2124,21 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                       : "bg-transparent text-text-secondary hover:bg-slate-50"
                   }`}
                 >
-                  <span className="flex items-center gap-1.5 font-medium">
-                    <CalendarClock size={13} className="shrink-0" aria-hidden="true" />
-                    스케줄봇
-                  </span>
-                  <span className="block truncate text-[11px] text-text-muted">
-                    {scheduleBotHistory === null
-                      ? "실행 이력을 불러오는 중..."
-                      : `실행 이력 ${scheduleBotHistory.length}건 · 읽기 전용`}
+                  <span className="flex items-center gap-2.5">
+                    <span
+                      aria-hidden="true"
+                      className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-brand-100 text-brand-700"
+                    >
+                      <CalendarClock size={16} />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate font-medium">스케줄봇</span>
+                      <span className="block truncate text-[11px] text-text-muted">
+                        {scheduleBotHistory === null
+                          ? "실행 이력을 불러오는 중..."
+                          : `실행 이력 ${scheduleBotHistory.length}건 · 읽기 전용`}
+                      </span>
+                    </span>
                   </span>
                 </button>
               )}
@@ -2154,7 +2147,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 <LoadingState label="대화 목록을 불러오는 중..." />
               )}
               {sidebarTab === "chats" && conversations !== null && conversations.length === 0 && !conversationsError && (
-                <p className="px-1 py-6 text-center text-caption text-text-muted">아직 저장된 대화가 없습니다.</p>
+                <p className="px-3 py-6 text-center text-caption text-text-muted">아직 저장된 대화가 없습니다.</p>
               )}
               {sidebarTab === "chats" &&
                 conversations !== null &&
@@ -2177,11 +2170,21 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                     >
                       {/* 겹쳐 놓은 버튼이 긴 제목을 가리지 않도록, 버튼이
                           보이는 동안에만 오른쪽 여백을 준다. */}
-                      <span className="block truncate pr-0 font-medium transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
-                        {c.title}
-                      </span>
-                      <span className="block truncate text-[11px] text-text-muted transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
-                        {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
+                      <span className="flex items-center gap-2.5">
+                        <span
+                          aria-hidden="true"
+                          className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-full text-sm font-semibold ${avatarTone(c.id)}`}
+                        >
+                          {avatarInitial(c.title)}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate pr-0 font-medium transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
+                            {c.title}
+                          </span>
+                          <span className="block truncate text-[11px] text-text-muted transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
+                            {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
+                          </span>
+                        </span>
                       </span>
                     </button>
                     <Button
@@ -2204,7 +2207,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 variant="secondary"
                 onClick={handleNewConversation}
                 disabled={isRunning}
-                className="mt-3 w-full shrink-0 justify-center"
+                className="m-3 w-[calc(100%-1.5rem)] shrink-0 justify-center"
               >
                 <MessageSquarePlus size={14} /> 새 대화
               </Button>
@@ -2216,7 +2219,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                 variant="secondary"
                 disabled
                 title="봇 만들기는 향후 지원 예정입니다."
-                className="mt-3 w-full shrink-0 justify-center"
+                className="m-3 w-[calc(100%-1.5rem)] shrink-0 justify-center"
               >
                 <Bot size={14} /> 봇 생성(향후 지원)
               </Button>
@@ -2224,7 +2227,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
           </aside>
         )}
 
-        <div className="flex min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-w-0 flex-1 flex-col overflow-hidden py-4 pr-4">
           {/* 상태 점과 보조 동작 — 예전에는 "채팅" 제목과 함께 화면 전체 폭
               줄을 차지해 왼쪽 목록 탭이 한 줄 아래에서 시작했다(2026-09-18
               요청: 제목 제거, 탭이 위까지 꽉 차게). 정상일 때는 점 하나다. */}

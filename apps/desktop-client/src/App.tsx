@@ -163,7 +163,7 @@ export default function App() {
             채팅은 스스로 좌측 대화 목록 패널을 갖는 전체 화면 레이아웃이라
             상하 padding만 주고 좌우는 화면 자체가 관리한다(Ollama Desktop
             앱과 같은 방식). */}
-        <main className={`flex-1 overflow-y-auto bg-background ${tab === "chat" ? "p-4" : "p-8"}`}>
+        <main className={`flex-1 overflow-y-auto bg-background ${tab === "chat" ? "p-0" : "p-8"}`}>
           {tab === "chat" && (
             <ChatScreen
               onGoToInstalledAssets={() => {
