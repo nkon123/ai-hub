@@ -206,7 +206,9 @@ async def test_schema_rejected_proposal_is_not_retried_and_does_not_fail_run(
     rejected_event = next(e for e in events if e["event"] == "mcp.tool_route.rejected")
     assert rejected_event["data"]["code"] == "MCP_INPUT_INVALID"
 
-    assert fake_llm_adapter.call_count == 1  # one shot — never retried
+    # One routing call per tool namespace (db_metadata / table_count), and no
+    # retry after the rejection: the count must not grow past that.
+    assert fake_llm_adapter.call_count == 2
     assert fake_mcp_adapter.call_count == 0  # never dispatched — preflight rejected first
     assert "run.failed" not in event_names  # NOT a Run failure
 

@@ -78,6 +78,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -85,6 +86,8 @@ from typing import Any, Literal, TypedDict
 from agent_runtime.config import settings
 
 logger = logging.getLogger(__name__)
+
+_LINE_COMMENT = re.compile(r'("(?:[^"\\]|\\.)*")|//[^\n]*')
 
 
 class ToolCandidate(TypedDict, total=False):
@@ -131,20 +134,26 @@ class ToolRouteResult:
 
 _ROUTE_SYSTEM_PROMPT = (
     "당신은 사내 MCP Tool 라우터입니다. 사용자의 질문과 아래 후보 Tool 목록"
-    "(이름, 입력 Schema)만 보고, 이 질문에 답하기 위해 지금 호출해야 할 Tool을 "
-    "모두 고르세요. 질문이 서로 다른 요청을 함께 담고 있으면(예: 메일 조회와 "
-    "현재 시간) 요청마다 Tool을 하나씩 고릅니다. 필요 없다면 아무 것도 고르지 "
-    "마세요.\n"
+    "(이름, 설명, 입력 Schema)만 보고, 질문에 답하려면 지금 호출해야 하는 "
+    "Tool을 모두 고르세요. 질문이 서로 다른 조회를 함께 요구하면 조회마다 "
+    "Tool을 하나씩 고릅니다.\n"
     "규칙:\n"
-    "- 반드시 JSON 객체 하나만 출력하세요. 다른 설명이나 코드 블록 표시를 "
-    "덧붙이지 마세요.\n"
-    "- 같은 Tool을 같은 인자로 두 번 고르지 마세요.\n"
-    "- Tool 호출이 필요한지 확신할 수 없으면 호출하지 마세요(과다 호출보다 "
-    "누락이 안전합니다) — 이 경우 calls를 빈 배열로 출력하세요.\n"
-    "- Tool을 고른다면 input은 그 Tool의 input_schema를 만족하는 값이어야 "
-    "합니다. 확실하지 않은 값은 만들어내지 말고 그 Tool은 고르지 마세요.\n"
-    '- 출력 형식: {"calls": [{"tool_name": "...", "input": {...}}, ...], '
-    '"reason": "한국어 한 문장 이내"}'
+    "- 반드시 JSON 객체 하나만 출력하세요. 코드 블록 표시, 주석(//), 설명을 "
+    "붙이지 마세요.\n"
+    "- 요약·정리·번역·설명·비교는 Tool이 아니라 답변 단계에서 합니다. 그런 "
+    "말 때문에 Tool을 고르지 마세요.\n"
+    "- 질문이 요구하지 않은 Tool, 다른 Tool의 결과(id 등)가 있어야 인자를 "
+    "채울 수 있는 Tool은 고르지 마세요.\n"
+    "- input은 input_schema를 만족해야 합니다. 질문에서 알 수 없는 인자는 "
+    "생략하세요(날짜 자리에 '오늘' 같은 말을 쓰지 마세요).\n"
+    "- Tool이 필요 없으면 calls를 빈 배열로 출력하세요.\n"
+    "예시(가상의 Tool):\n"
+    '질문: "문서 목록 보여주고 한 줄로 요약해줘, 그리고 지금 시각도 알려줘"\n'
+    '→ {"calls": [{"tool_name": "docs.list", "input": {}}, '
+    '{"tool_name": "clock.now", "input": {}}]}\n'
+    '질문: "안녕, 고마워"\n'
+    '→ {"calls": []}\n'
+    '- 출력 형식: {"calls": [{"tool_name": "...", "input": {...}}, ...]}'
 )
 
 
@@ -221,6 +230,9 @@ def _parse_json_object(raw: str) -> dict[str, Any] | None:
     unparseable."""
     if not raw:
         return None
+    # 모델이 JSON 안에 `// 설명` 을 다는 일이 실측됐다(exaone3.5). 문자열 안의
+    # `//`(URL 등)는 건드리지 않도록 따옴표 밖의 것만 지운다.
+    raw = _LINE_COMMENT.sub(lambda m: m.group(1) or "", raw)
     try:
         parsed = json.loads(raw)
         return parsed if isinstance(parsed, dict) else None
@@ -297,15 +309,84 @@ async def route_tool_call(
             reason="candidate_count_at_or_below_threshold",
         )
 
-    candidate_names = {c["tool_name"] for c in normalized}
+    groups = _group_by_namespace(normalized) if max_calls > 1 else [normalized]
+    if len(groups) == 1:
+        return await _route_group(
+            question, groups[0], llm_adapter, model_alias=model_alias,
+            timeout_seconds=timeout_seconds, max_calls=max_calls, scoped=False,
+        )
+
+    # 후보가 서로 다른 서버(이름공간)의 Tool 로 나뉘면 서버마다 따로 묻는다. 한 번에
+    # 다 주면 소형 모델이 "요약해주고" 같은 말에 흔들려 다른 서버의 Tool 을 덧붙이거나
+    # 빠뜨렸다(실측 exaone3.5: 같은 질문에서 hello.now 가 들어갔다 빠졌다). 각 호출은
+    # 여전히 fail-closed 이고, 합친 뒤 개수 상한을 다시 적용한다.
+    results = [
+        await _route_group(
+            question, group, llm_adapter, model_alias=model_alias,
+            timeout_seconds=timeout_seconds, max_calls=max_calls, scoped=True,
+        )
+        for group in groups
+    ]
+    merged: list[tuple[str, dict[str, Any]]] = []
+    for r in results:
+        merged.extend(r.calls)
+    merged = merged[:max_calls]
+    latency = sum(r.latency_ms or 0 for r in results)
+    if not merged:
+        # 이유는 가장 "실패에 가까운" 것을 낸다: 전부 거절이면 거절, 하나라도
+        # 오류·파싱 실패·모르는 이름이면 그 이유.
+        reasons = [r.reason for r in results if r.reason and r.reason != "declined_by_model"]
+        return _no_tool(reasons[0] if reasons else "declined_by_model", latency)
+    return ToolRouteResult(
+        tool_name=merged[0][0],
+        tool_input=merged[0][1],
+        status="ran",
+        reason=None,
+        latency_ms=latency,
+        calls=tuple(merged),
+    )
+
+
+_SCOPED_NOTE = (
+    "(이 질문은 여러 종류의 Tool이 나눠 처리합니다. 아래 후보가 다루는 일에 해당하는 "
+    "부분에만 Tool을 고르고, 질문의 나머지 부분은 무시하세요. 해당하는 부분이 없으면 "
+    "calls를 빈 배열로 출력하세요.)\n\n"
+)
+
+
+def _group_by_namespace(candidates: list[ToolCandidate]) -> list[list[ToolCandidate]]:
+    """`hello.now` -> `hello`. 이름공간이 없는 Tool 은 각자 자기 이름을 이름공간으로
+    삼지 않고 한 묶음(`""`)에 모은다. 순서는 처음 나온 순서를 지킨다."""
+    groups: dict[str, list[ToolCandidate]] = {}
+    for c in candidates:
+        namespace = c["tool_name"].split(".", 1)[0] if "." in c["tool_name"] else ""
+        groups.setdefault(namespace, []).append(c)
+    return list(groups.values())
+
+
+async def _route_group(
+    question: str,
+    group: list[ToolCandidate],
+    llm_adapter: Any,
+    *,
+    model_alias: str,
+    timeout_seconds: float,
+    max_calls: int,
+    scoped: bool,
+) -> ToolRouteResult:
+    """모델 호출 한 번으로 `group` 안에서만 Tool 을 고른다. `scoped=True` 이면
+    (후보가 여러 서버로 나뉜 경우) 질문의 나머지 부분은 다른 Tool 이 맡는다고 알려
+    준다 — 안 그러면 모델이 자기 후보로 질문 전체를 처리하려 든다."""
+    candidate_names = {c["tool_name"] for c in group}
     messages = [
         {"role": "system", "content": _ROUTE_SYSTEM_PROMPT},
         {
             "role": "user",
             "content": (
                 f"질문: {question}\n\n"
-                f"후보 Tool:\n{_render_candidate_block(normalized)}\n\n"
-                "JSON:"
+                + (_SCOPED_NOTE if scoped else "")
+                + f"후보 Tool:\n{_render_candidate_block(group)}\n\n"
+                + "JSON:"
             ),
         },
     ]

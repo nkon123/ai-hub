@@ -192,6 +192,63 @@ async def test_empty_calls_list_is_a_decline() -> None:
     assert result.calls == ()
 
 
+# --- route_tool_call: one routing call per tool namespace ----------------
+
+
+async def test_candidates_from_two_namespaces_are_routed_separately_and_merged() -> None:
+    """Tools from different servers ("mail." / "clock.") get one model call
+    each, so wording aimed at one server ("요약해주고") cannot make the model
+    drop or invent a tool of the other. The merged result keeps group order."""
+    candidates = [
+        {"tool_name": "mail.list", "input_schema": {"type": "object"}},
+        {"tool_name": "clock.now", "input_schema": {"type": "object"}},
+    ]
+    adapter = FakeLLMAdapter()
+    adapter.responses = [
+        _tokens({"calls": [{"tool_name": "mail.list", "input": {}}]}),
+        _tokens({"calls": [{"tool_name": "clock.now", "input": {}}]}),
+    ]
+    result = await route_tool_call(
+        "메일 가져와 그리고 현재 시간 알려줘", candidates, adapter,
+        model_alias="default-chat", timeout_seconds=5.0, max_calls=3,
+    )
+    assert adapter.call_count == 2
+    assert [name for name, _ in result.calls] == ["mail.list", "clock.now"]
+
+
+async def test_one_namespace_declining_keeps_the_other_namespaces_call() -> None:
+    candidates = [
+        {"tool_name": "mail.list", "input_schema": {"type": "object"}},
+        {"tool_name": "clock.now", "input_schema": {"type": "object"}},
+    ]
+    adapter = FakeLLMAdapter()
+    adapter.responses = [
+        _tokens({"calls": []}),
+        _tokens({"calls": [{"tool_name": "clock.now", "input": {}}]}),
+    ]
+    result = await route_tool_call(
+        "지금 몇 시야?", candidates, adapter,
+        model_alias="default-chat", timeout_seconds=5.0, max_calls=3,
+    )
+    assert result.status == "ran"
+    assert [name for name, _ in result.calls] == ["clock.now"]
+
+
+async def test_model_json_with_line_comments_still_parses() -> None:
+    raw = (
+        "```json\n"
+        '{"calls": [{"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}}, // 설명\n'
+        '  {"tool_name": "db_metadata.get_tables", "input": {"schema": "http://x//y"}}]}\n'
+        "```"
+    )
+    adapter = FakeLLMAdapter(tokens=[raw])
+    result = await route_tool_call(
+        "q", CANDIDATES, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.status == "ran"
+    assert len(result.calls) == 2  # the `//` inside the string value survived
+
+
 # --- route_tool_call: fail-CLOSED paths -----------------------------------
 
 
