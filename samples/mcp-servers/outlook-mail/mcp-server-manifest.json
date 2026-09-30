@@ -2,19 +2,24 @@
   "schema_version": "1.0",
   "id": "7c473b66-b691-43ea-b530-a4703428730b",
   "type": "mcp_server",
-  "name": "Outlook 메일 (조회·초안 저장)",
-  "version": "1.1.0",
+  "name": "Outlook 메일 (조회·첨부 PPT 읽기·초안 저장)",
+  "version": "1.2.0",
   "owner": {
     "org": "miracom",
     "team": "platform",
     "creator_id": "dev-user@miracom.com"
   },
   "classification": "INTERNAL",
-  "description": "이 PC 의 클래식 Outlook(데스크톱)에서 기간별 받은/보낸 메일 목록과 본문을 읽고, 임시 보관함에 메일 초안을 저장한다. COM 으로 로컬 Outlook 에 접근하며 네트워크·계정 정보를 쓰지 않는다. 메일을 보내지 않고, 지우거나 읽음 표시를 바꾸지 않는다. 새 Outlook(olk)은 지원하지 않는다.",
+  "description": "이 PC 의 클래식 Outlook(데스크톱)에서 기간별 받은/보낸 메일 목록과 본문, 첨부된 PowerPoint(.pptx) 내용을 읽고, 임시 보관함에 메일 초안을 저장한다. COM 으로 로컬 Outlook 에 접근하며 네트워크·계정 정보를 쓰지 않는다. 첨부 파일은 디스크에 저장하지 않고 메모리에서 읽는다. 메일을 보내지 않고, 지우거나 읽음 표시를 바꾸지 않는다. 새 Outlook(olk)은 지원하지 않는다.",
   "tags": [
     "outlook",
     "email",
     "stdio",
+    "draft",
+    "draft",
+    "draft",
+    "draft",
+    "draft",
     "draft"
   ],
   "server_alias": "outlook-mail",
@@ -130,6 +135,85 @@
         "timeout_seconds": 30,
         "max_bytes": 65536,
         "rate_limit_per_minute": 20
+      }
+    },
+    {
+      "tool_name": "outlook.read_presentations",
+      "label": "Outlook 메일 첨부 PowerPoint(.pptx) 읽기 — 슬라이드별 제목·본문·노트",
+      "input_schema": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "시작일 YYYY-MM-DD (그날 0시부터). days 와 함께 쓰지 않는다."
+          },
+          "end_date": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+            "description": "종료일 YYYY-MM-DD (그날 끝까지 포함). 생략하면 시작일 하루 또는 오늘까지."
+          },
+          "days": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 366,
+            "description": "사용자가 기간을 말했을 때만(최근 3일이면 3). 말하지 않았으면 생략 — 기본 최근 7일."
+          },
+          "folder": {
+            "type": "string",
+            "enum": [
+              "inbox",
+              "sent"
+            ],
+            "description": "inbox=받은편지함(기본), sent=보낸편지함"
+          },
+          "subject_contains": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "사용자가 메일 제목의 일부를 직접 말했을 때만. '파워포인트'·'ppt' 같은 파일 종류는 넣지 않는다."
+          },
+          "from_contains": {
+            "type": "string",
+            "maxLength": 100,
+            "description": "사용자가 보낸 사람(이름·주소)을 말했을 때만."
+          },
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "특정 메일 한 통만 읽을 때 outlook.list_messages 결과의 id (선택)."
+          },
+          "max_files": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 5,
+            "description": "읽을 파일 최대 개수 (기본 3). 최신 메일부터."
+          },
+          "max_chars": {
+            "type": "integer",
+            "minimum": 1000,
+            "maximum": 20000,
+            "description": "전체 결과 글자 수 상한 (기본 6000). 파일 수로 나눠 쓴다."
+          }
+        }
+      },
+      "risk_level": "READ_ONLY",
+      "permissions": {
+        "allowed_roles": [
+          "USER",
+          "CREATOR",
+          "ADMIN"
+        ],
+        "allowed_orgs": [
+          "miracom"
+        ]
+      },
+      "data_classification": "INTERNAL",
+      "confirmation_policy": "ALWAYS",
+      "execution_guards": {
+        "timeout_seconds": 60,
+        "max_bytes": 262144,
+        "rate_limit_per_minute": 10
       }
     },
     {
