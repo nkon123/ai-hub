@@ -659,7 +659,11 @@ export function markKnowledgeRouteAbstainReverted(
 export interface ToolRouteSelectedEventData {
   status: "ran" | "skipped" | "no_tool";
   reason: string | null;
+  /** 첫 번째로 제안된 Tool. 여러 개일 때는 `tool_names` 를 본다. */
   tool_name: string | null;
+  /** 이번 턴에 제안된 Tool 전부(제안 순서). 구버전 Runtime 은 이 필드를 보내지
+   * 않으므로 없으면 `tool_name` 하나로 본다. */
+  tool_names?: string[];
 }
 
 /** SSE `"mcp.tool_route.rejected"`의 실제 payload — TOOL_ROUTE가 제안한
@@ -684,6 +688,10 @@ export interface ToolRouteDisplay {
    * 동작이라는 점을 분명히 한다(요구사항: 재시도를 유도하지 않는다). */
   headline: string;
   toolName: string | null;
+  /** 제안된 Tool 전부. `toolName` 은 그 첫 번째다. */
+  toolNames: string[];
+  /** 제안됐지만 실행 전에 막힌 Tool(`mcp.tool_route.rejected`). */
+  rejectedToolNames: string[];
 }
 
 /** `mcp.tool_route.rejected`의 `code`별 화면 문구 — 서버의 `_fail()` 경로가
@@ -708,11 +716,18 @@ const TOOL_ROUTE_REJECTED_MESSAGE: Record<string, string> = {
  *   답했다 — 이것이 가장 흔하고 정상적인 결과이며 오류가 아니다(요구사항:
  *   fail-closed가 고장으로 읽히면 안 된다). */
 export function describeToolRouteSelected(event: ToolRouteSelectedEventData): ToolRouteDisplay {
-  if (event.status === "ran" && event.tool_name) {
+  const proposed = event.tool_names?.length ? event.tool_names : event.tool_name ? [event.tool_name] : [];
+  if (event.status === "ran" && proposed.length > 0) {
+    const quoted = proposed.map((name) => `'${name}'`).join(", ");
     return {
       status: "ran",
-      headline: `AI가 이번 질문에 맞는 Tool로 '${event.tool_name}'을(를) 제안했습니다.`,
-      toolName: event.tool_name,
+      headline:
+        proposed.length === 1
+          ? `AI가 이번 질문에 맞는 Tool로 ${quoted}을(를) 제안했습니다.`
+          : `AI가 이번 질문에 맞는 Tool ${proposed.length}개로 ${quoted}을(를) 순서대로 제안했습니다.`,
+      toolName: proposed[0] ?? null,
+      toolNames: proposed,
+      rejectedToolNames: [],
     };
   }
   if (event.status === "skipped") {
@@ -720,6 +735,8 @@ export function describeToolRouteSelected(event: ToolRouteSelectedEventData): To
       status: "skipped",
       headline: "호출할 수 있는 Tool 후보가 없어 자동 선택을 건너뛰었습니다.",
       toolName: null,
+      toolNames: [],
+      rejectedToolNames: [],
     };
   }
   // "모델이 필요 없다고 판단함"과 "모델을 부르지 못함"은 다른 일이다. 뒤의 것을
@@ -731,12 +748,16 @@ export function describeToolRouteSelected(event: ToolRouteSelectedEventData): To
       headline:
         "Tool을 고르는 AI 호출이 실패해 Tool을 선택하지 못했습니다. 대화 화면의 채팅 모델이 설치되어 있는지 확인하고, 계속되면 agent-runtime.log를 확인하세요.",
       toolName: null,
+      toolNames: [],
+      rejectedToolNames: [],
     };
   }
   return {
     status: "no_tool",
     headline: "이번 질문에는 Tool 호출이 필요하지 않다고 판단해 아무 Tool도 선택하지 않았습니다.",
     toolName: null,
+    toolNames: [],
+    rejectedToolNames: [],
   };
 }
 
@@ -746,11 +767,32 @@ export function describeToolRouteSelected(event: ToolRouteSelectedEventData): To
  * 호출하지 않는다"는 결과 자체는 `"no_tool"`과 동일), 재시도를 유도하는
  * 문구를 넣지 않는다 — 서버가 이 제안을 다시 시도하지 않기 때문이다
  * (tool_router.py one-shot 규칙). */
-export function describeToolRouteRejected(event: ToolRouteRejectedEventData): ToolRouteDisplay {
+export function describeToolRouteRejected(
+  event: ToolRouteRejectedEventData,
+  previous: ToolRouteDisplay | null = null,
+): ToolRouteDisplay {
+  const message =
+    TOOL_ROUTE_REJECTED_MESSAGE[event.code] ?? `AI가 제안한 Tool 호출이 거부되어(${event.code}) 실행하지 않았습니다.`;
+  const rejected = [...(previous?.rejectedToolNames ?? []), ...(event.tool_name ? [event.tool_name] : [])];
+  const proposed = previous?.toolNames?.length ? previous.toolNames : event.tool_name ? [event.tool_name] : [];
+  // 제안이 여럿이면 하나가 막혔다고 나머지까지 "막혔다"로 보이게 하지 않는다 —
+  // 막힌 것만 짚고, 전부 막혔을 때만 예전처럼 거부 상태로 바꾼다.
+  if (proposed.length > 1 && rejected.length < proposed.length) {
+    const names = rejected.map((name) => `'${name}'`).join(", ");
+    return {
+      status: "ran",
+      headline: `AI가 제안한 Tool ${proposed.length}개 중 ${names}은(는) 실행하지 않았습니다. ${message}`,
+      toolName: proposed[0] ?? null,
+      toolNames: proposed,
+      rejectedToolNames: rejected,
+    };
+  }
   return {
     status: "rejected",
-    headline: TOOL_ROUTE_REJECTED_MESSAGE[event.code] ?? `AI가 제안한 Tool 호출이 거부되어(${event.code}) 실행하지 않았습니다.`,
+    headline: message,
     toolName: event.tool_name,
+    toolNames: proposed,
+    rejectedToolNames: rejected,
   };
 }
 

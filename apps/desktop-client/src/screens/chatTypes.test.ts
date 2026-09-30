@@ -815,6 +815,45 @@ describe("describeToolRouteRejected (D-083 TOOL_ROUTE preflight refusal)", () =>
   });
 });
 
+describe("describeToolRouteSelected / Rejected with several proposed tools", () => {
+  const two = {
+    status: "ran" as const,
+    reason: null,
+    tool_name: "outlook.list_messages",
+    tool_names: ["outlook.list_messages", "hello.now"],
+  };
+
+  it("names every proposed tool, in order — not only the first", () => {
+    const result = describeToolRouteSelected(two);
+    expect(result.toolNames).toEqual(["outlook.list_messages", "hello.now"]);
+    expect(result.headline).toContain("'outlook.list_messages'");
+    expect(result.headline).toContain("'hello.now'");
+    expect(result.headline.indexOf("outlook.list_messages")).toBeLessThan(result.headline.indexOf("hello.now"));
+  });
+
+  it("an old runtime without tool_names still shows the single tool", () => {
+    const result = describeToolRouteSelected({ status: "ran", reason: null, tool_name: "table_count.query" });
+    expect(result.toolNames).toEqual(["table_count.query"]);
+    expect(result.headline).toContain("'table_count.query'");
+  });
+
+  it("one rejected of two keeps the run visible and names only the blocked tool", () => {
+    const selected = describeToolRouteSelected(two);
+    const result = describeToolRouteRejected({ tool_name: "hello.now", code: "MCP_INPUT_INVALID" }, selected);
+    expect(result.status).toBe("ran");
+    expect(result.rejectedToolNames).toEqual(["hello.now"]);
+    expect(result.headline).toContain("2개 중 'hello.now'");
+  });
+
+  it("every proposed tool rejected turns into the rejected display", () => {
+    const selected = describeToolRouteSelected(two);
+    const first = describeToolRouteRejected({ tool_name: "outlook.list_messages", code: "MCP_INPUT_INVALID" }, selected);
+    const second = describeToolRouteRejected({ tool_name: "hello.now", code: "MCP_INPUT_INVALID" }, first);
+    expect(second.status).toBe("rejected");
+    expect(second.rejectedToolNames).toEqual(["outlook.list_messages", "hello.now"]);
+  });
+});
+
 describe("summarizeMcpToolConnections / describeToolRouteMcpToolsHint (D-080/D-084 혼동 정정 — MCP Tool 쪽 절반)", () => {
   it("returns empty connected list and 0 not-connected count for no MCP Tool assets", () => {
     const summary = summarizeMcpToolConnections([]);

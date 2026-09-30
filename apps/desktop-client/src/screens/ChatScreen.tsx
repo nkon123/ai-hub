@@ -1205,7 +1205,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             // 같아 보이면 안 된다(요구사항).
             const data = item.data as ToolRouteRejectedEventData | null;
             if (data) {
-              next = { ...next, toolRoute: describeToolRouteRejected(data) };
+              next = { ...next, toolRoute: describeToolRouteRejected(data, next.toolRoute) };
             }
             break;
           }
