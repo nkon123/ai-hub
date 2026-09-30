@@ -1,4 +1,4 @@
-"""Outlook 메일 조회 stdio MCP 서버 — 기간을 지정해 받은/보낸 메일을 읽는다(읽기 전용).
+"""Outlook 메일 stdio MCP 서버 — 기간별 메일 읽기 + 임시 보관함에 초안 저장(보내지는 않는다).
 
 이 PC 에 설치된 **클래식 Outlook(데스크톱)** 을 COM 으로 읽는다. 서버·토큰·
 비밀번호가 필요 없고 네트워크를 쓰지 않는다 — Outlook 이 이미 동기화해 둔 메일을
@@ -9,9 +9,17 @@
 - `outlook.list_messages` — 기간(`start_date`~`end_date`, 또는 최근 `days`일)의
   메일 목록. 폴더(받은편지함/보낸편지함), 안 읽은 메일만, 최대 개수를 고를 수 있다.
 - `outlook.get_message` — 목록에서 받은 `id` 로 메일 한 통의 본문을 읽는다.
+- `outlook.create_draft` — 받는 사람·제목·본문으로 **임시 보관함에 초안을 저장**한다.
 
-둘 다 읽기 전용이다. 메일을 보내거나, 지우거나, 읽음 표시를 바꾸지 않는다
-(COM 으로 본문을 읽는 것은 읽음 상태를 바꾸지 않는다).
+앞의 둘은 읽기 전용이다. 메일을 지우거나 읽음 표시를 바꾸지 않는다(COM 으로 본문을
+읽는 것은 읽음 상태를 바꾸지 않는다).
+
+**이 서버는 메일을 보내지 않는다.** `create_draft` 는 초안을 만들어 저장할 뿐이고,
+Outlook 에서 내용을 확인하고 직접 보내는 것은 사람이다. 코드에 `Send` 호출이 없고,
+시험이 그것을 고정한다(`tests/unit/mcp_samples/test_outlook_mail_draft.py`). 그래도
+초안이 생기는 것은 부작용이라 매니페스트에 `WRITE`·`ALWAYS`(매번 확인)로 선언한다 —
+그래서 AI 가 자동으로 고르지 않고, 사용자가 직접 지정했을 때만 확인 창을 거쳐 실행된다
+(open-decisions.md D-108).
 
 ## 제약과 알아둘 것
 
@@ -33,6 +41,7 @@
     server.py --list-tools
     server.py --call outlook.list_messages --args "{\"days\": 3}"
     server.py --call outlook.get_message --args "{\"id\": \"<목록의 id>\"}"
+    server.py --yes --call outlook.create_draft --args "{\"to\": [\"a@example.com\"], \"subject\": \"제목\", \"body\": \"본문\"}"
     server.py --help
 """
 
@@ -43,6 +52,7 @@ import asyncio
 import datetime as dt
 import json
 import pathlib
+import re
 import sys
 from typing import Any
 
@@ -111,6 +121,44 @@ GET_SCHEMA = {
             "minimum": 200,
             "maximum": BODY_MAX_CHARS,
             "description": f"본문 최대 글자 수 (기본 {BODY_DEFAULT_CHARS})",
+        },
+    },
+}
+
+
+MAX_RECIPIENTS = 20
+MAX_SUBJECT_CHARS = 200
+MAX_DRAFT_BODY_CHARS = 20000
+
+DRAFT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["to", "subject", "body"],
+    "properties": {
+        "to": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": MAX_RECIPIENTS,
+            "items": {"type": "string", "minLength": 3, "maxLength": 254},
+            "description": "받는 사람 이메일 주소 목록. 사용자가 말한 주소만 쓴다.",
+        },
+        "cc": {
+            "type": "array",
+            "maxItems": MAX_RECIPIENTS,
+            "items": {"type": "string", "minLength": 3, "maxLength": 254},
+            "description": "참조 이메일 주소 목록 (선택).",
+        },
+        "subject": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_SUBJECT_CHARS,
+            "description": "메일 제목 (한 줄).",
+        },
+        "body": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": MAX_DRAFT_BODY_CHARS,
+            "description": "메일 본문 (일반 텍스트).",
         },
     },
 }
@@ -280,6 +328,25 @@ class OutlookMailbox:
             item = items.GetNext()
         return out, truncated
 
+    def create_draft(self, to: list[str], cc: list[str], subject: str, body: str) -> dict:
+        """받은 내용으로 메일을 만들어 **임시 보관함에 저장**한다. 보내지 않는다 —
+        이 메서드는 `Save()` 만 부르고 `Send()` 는 어디서도 부르지 않는다."""
+        ns = self._session()
+        try:
+            mail = ns.Application.CreateItem(0)  # olMailItem
+            mail.To = "; ".join(to)
+            if cc:
+                mail.CC = "; ".join(cc)
+            mail.Subject = subject
+            mail.Body = body
+            mail.Save()
+            entry_id = str(mail.EntryID)
+        except Exception as exc:  # noqa: BLE001 — COM 오류는 종류가 많다
+            raise ToolError(
+                f"초안을 저장하지 못했습니다. Outlook 이 응답하는지 확인하세요. 원인: {type(exc).__name__}"
+            ) from None
+        return {"id": entry_id, "saved_to": "임시 보관함", "sent": False}
+
     def get_message(self, entry_id: str, max_chars: int) -> dict:
         ns = self._session()
         try:
@@ -350,7 +417,51 @@ def _get_message(arguments: dict) -> dict:
     return mailbox_factory().get_message(entry_id, max_chars)
 
 
+_ADDRESS = re.compile(r"^[^@\s;,<>\"]+@[^@\s;,<>\"]+\.[^@\s;,<>\"]+$")
+
+
+def _addresses(arguments: dict, key: str, *, required: bool) -> list[str]:
+    raw = arguments.get(key)
+    if raw is None and not required:
+        return []
+    if not isinstance(raw, list) or (required and not raw):
+        raise ToolError(f"{key} 는 이메일 주소 목록이어야 합니다.")
+    if len(raw) > MAX_RECIPIENTS:
+        raise ToolError(f"{key} 는 최대 {MAX_RECIPIENTS}명입니다.")
+    cleaned: list[str] = []
+    for item in raw:
+        address = str(item).strip()
+        # 세미콜론·쉼표·줄바꿈이 섞이면 주소 하나가 여러 명(또는 헤더 삽입)이 된다.
+        if not _ADDRESS.match(address):
+            raise ToolError(f"{key} 에 올바르지 않은 이메일 주소가 있습니다: '{address}'")
+        cleaned.append(address)
+    return cleaned
+
+
+def _create_draft(arguments: dict) -> dict:
+    to = _addresses(arguments, "to", required=True)
+    cc = _addresses(arguments, "cc", required=False)
+    subject = str(arguments.get("subject") or "").strip()
+    body = str(arguments.get("body") or "").replace("\r\n", "\n").strip()
+    if not subject or "\n" in subject or "\r" in subject:
+        raise ToolError("subject 는 한 줄의 비어 있지 않은 제목이어야 합니다.")
+    if len(subject) > MAX_SUBJECT_CHARS:
+        raise ToolError(f"subject 는 최대 {MAX_SUBJECT_CHARS}자입니다.")
+    if not body:
+        raise ToolError("body 가 비어 있습니다.")
+    if len(body) > MAX_DRAFT_BODY_CHARS:
+        raise ToolError(f"body 는 최대 {MAX_DRAFT_BODY_CHARS}자입니다.")
+    result = mailbox_factory().create_draft(to, cc, subject, body)
+    return {**result, "to": to, "cc": cc, "subject": subject}
+
+
 def _summary(name: str, data: dict) -> str:
+    if name == "outlook.create_draft":
+        return (
+            f"초안을 {data['saved_to']}에 저장했습니다(보내지 않았습니다). "
+            f"받는 사람: {', '.join(data['to'])} | 제목: {data['subject']}\n"
+            "Outlook 의 임시 보관함에서 내용을 확인한 뒤 직접 보내세요."
+        )
     if name == "outlook.list_messages":
         head = f"{data['start']} ~ {data['end']} {'받은' if data['folder'] == 'inbox' else '보낸'}편지함 메일 {data['count']}통"
         if data["truncated"]:
@@ -363,7 +474,11 @@ def _summary(name: str, data: dict) -> str:
     return f"{data['time']} | {data['from']} <{data['from_email']}> | {data['subject']}\n\n{data['body']}"
 
 
-_HANDLERS = {"outlook.list_messages": _list_messages, "outlook.get_message": _get_message}
+_HANDLERS = {
+    "outlook.list_messages": _list_messages,
+    "outlook.get_message": _get_message,
+    "outlook.create_draft": _create_draft,
+}
 
 
 async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
@@ -394,6 +509,17 @@ async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
                 ),
                 input_schema=GET_SCHEMA,
                 annotations=types.ToolAnnotations(read_only_hint=True),
+            ),
+            types.Tool(
+                name="outlook.create_draft",
+                description=(
+                    "Outlook 임시 보관함에 메일 초안을 저장한다(보내지 않음, 사용자가 확인 후 직접 발송). "
+                    "'메일 써줘', '메일 작성해줘', '초안 만들어줘'에 쓴다. 받는 사람 주소는 사용자가 말한 것만."
+                ),
+                input_schema=DRAFT_SCHEMA,
+                # 초안이 생기는 것은 부작용이다 — 읽기 전용이라고 선언하지 않는다. 삭제·덮어쓰기는
+                # 하지 않으므로 파괴적이지는 않다.
+                annotations=types.ToolAnnotations(read_only_hint=False, destructive_hint=False),
             ),
         ]
     )
@@ -550,8 +676,11 @@ def run_cli(argv: list[str]) -> int:
 async def serve() -> None:
     server = Server(
         "outlook-mail",
-        version="1.0.0",
-        instructions="이 PC 의 클래식 Outlook 에서 기간별 메일 목록과 본문을 읽습니다(읽기 전용).",
+        version="1.1.0",
+        instructions=(
+            "이 PC 의 클래식 Outlook 에서 기간별 메일 목록과 본문을 읽고, "
+            "임시 보관함에 초안을 저장합니다(메일을 보내지는 않습니다)."
+        ),
         on_list_tools=on_list_tools,
         on_call_tool=on_call_tool,
     )

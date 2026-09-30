@@ -26,7 +26,7 @@
 5. 테스트 증거 없는 기능은 완료로 표시하지 않는다.
 6. 실제 회사 Secret, 개인정보, 운영 DB 정보를 코드·Prompt·Fixture·Log에 넣지 않는다.
 7. 승인되지 않은 임의 Python 실행, 외부 URL, Package 설치 기능을 만들지 않는다.
-8. MCP PoC Tool은 읽기 전용만 구현한다.
+8. MCP PoC Tool은 읽기 전용만 구현한다. (예외: D-108 — outlook-mail 샘플의 초안 저장, 보내지 않음)
 9. 모든 주요 요청과 실행에는 Trace ID를 사용한다.
 10. Loading, Empty, Error, Permission, Cancellation 상태를 정상 흐름과 함께 구현한다.
 
