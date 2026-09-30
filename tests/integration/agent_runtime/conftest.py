@@ -212,7 +212,11 @@ class FakeMCPAdapter(MCPAdapter):
         response: dict[str, Any] | None = None,
         error_to_raise: MCPCallError | None = None,
         delay: float = 0.0,
+        errors_by_tool: dict[str, MCPCallError] | None = None,
     ) -> None:
+        # `errors_by_tool`: fail only the named tools (a multi-tool turn where
+        # one server is down while another answers).
+        self.errors_by_tool = errors_by_tool or {}
         self.calls: list[dict[str, Any]] = []
         self.call_count = 0
         self.response = response if response is not None else dict(DEFAULT_MCP_RESPONSE)
@@ -224,6 +228,9 @@ class FakeMCPAdapter(MCPAdapter):
         self.calls.append(request)
         if self.delay:
             await asyncio.sleep(self.delay)
+        tool_error = self.errors_by_tool.get(str(request.get("tool_name")))
+        if tool_error is not None:
+            raise tool_error
         if self.error_to_raise is not None:
             raise self.error_to_raise
         return dict(self.response)

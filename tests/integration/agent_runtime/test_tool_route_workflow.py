@@ -168,6 +168,73 @@ async def test_tool_route_two_proposals_both_dispatch_in_order(
     assert final.json()["status"] == "SUCCEEDED"
 
 
+_TWO_CALLS = [
+    json.dumps(
+        {
+            "calls": [
+                {"tool_name": "db_metadata.get_tables", "input": {"schema": "APP"}},
+                {
+                    "tool_name": "db_metadata.get_columns",
+                    "input": {"schema": "APP", "table": "INTERFACE_LOG"},
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+]
+
+
+async def test_one_failing_tool_does_not_discard_the_other_tools_result(
+    client: httpx.AsyncClient, fake_llm_adapter: FakeLLMAdapter, fake_mcp_adapter: FakeMCPAdapter
+) -> None:
+    """Live report 2026-09-30: the clock tool answered but the mail tool failed
+    at execution time, and the whole Run ended as MCP_SERVER_UNAVAILABLE. The
+    successful result must still be answered from; the failed tool is named in
+    the evidence as failed."""
+    from agent_runtime.adapters.mcp import MCPCallError
+
+    fake_mcp_adapter.errors_by_tool = {
+        "db_metadata.get_columns": MCPCallError("MCP_SERVER_UNAVAILABLE", "down", "t")
+    }
+    # One routing call per tool namespace (db_metadata, table_count), then the answer.
+    fake_llm_adapter.responses = [_TWO_CALLS, _route_tokens(None), ["테이블 목록만 확인했습니다."]]
+    resp = await _start_tool_route_run(client)
+    run_id = resp.json()["id"]
+    events = await _read_all_sse_events(client, run_id)
+
+    assert [c["tool_name"] for c in fake_mcp_adapter.calls] == [
+        "db_metadata.get_tables",
+        "db_metadata.get_columns",
+    ]
+    assert "run.failed" not in [e["event"] for e in events]
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "SUCCEEDED"
+    # The answer prompt names the failed tool as failed instead of hiding it.
+    answer_prompt = json.dumps(fake_llm_adapter.calls[-1], ensure_ascii=False)
+    assert "db_metadata.get_columns" in answer_prompt
+    assert "실패" in answer_prompt
+
+
+async def test_every_tool_failing_still_fails_the_run(
+    client: httpx.AsyncClient, fake_llm_adapter: FakeLLMAdapter, fake_mcp_adapter: FakeMCPAdapter
+) -> None:
+    from agent_runtime.adapters.mcp import MCPCallError
+
+    err = MCPCallError("MCP_SERVER_UNAVAILABLE", "down", "t")
+    fake_mcp_adapter.errors_by_tool = {
+        "db_metadata.get_tables": err,
+        "db_metadata.get_columns": err,
+    }
+    fake_llm_adapter.responses = [_TWO_CALLS, _route_tokens(None)]
+    resp = await _start_tool_route_run(client)
+    run_id = resp.json()["id"]
+    await _read_all_sse_events(client, run_id)
+
+    final = await client.get(f"/local/v1/runs/{run_id}")
+    assert final.json()["status"] == "FAILED"
+    assert final.json()["error"]["code"] == "MCP_SERVER_UNAVAILABLE"
+
+
 async def test_tool_route_candidate_block_excludes_profile_disallowed_tool(
     client: httpx.AsyncClient, fake_llm_adapter: FakeLLMAdapter, fake_mcp_adapter: FakeMCPAdapter
 ) -> None:

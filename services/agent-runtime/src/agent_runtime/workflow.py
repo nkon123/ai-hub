@@ -1130,6 +1130,7 @@ async def run_knowledge_chat(
 
         # --- TOOL_CONFIRM (optional) / MCP_TOOL_CALL (0..n) ---
         tool_results: list[dict[str, Any]] = []
+        failed_calls: list[tuple[str, str, str]] = []
         if effective_mcp_tool_requests and not mcp_allowed:
             _fail(
                 run_store,
@@ -1185,6 +1186,20 @@ async def run_knowledge_chat(
                         request.get("tool_name"),
                         code,
                     )
+                elif tool_route_is_ai_derived and len(effective_mcp_tool_requests) > 1:
+                    # 여러 Tool 을 제안했는데 하나가 실행 중 실패했다(서버 오류·시간 초과
+                    # 등). 다른 Tool 이 이미 낸 결과까지 버리고 Run 전체를 실패시키지
+                    # 않는다 — 실사용 제보(2026-09-30): 시간 Tool 은 성공했는데 메일
+                    # Tool 이 실패해 `MCP_SERVER_UNAVAILABLE` 만 보였다. 아래에서
+                    # 결과가 하나라도 있으면 실패한 Tool 을 근거에 "실패"로 남겨 답변이
+                    # 그 사실을 말하게 하고, 하나도 없으면 예전처럼 Run 을 실패시킨다.
+                    failed_calls.append((str(request.get("tool_name") or ""), code, message))
+                    logger.info(
+                        "tool.route.call_failed run_id=%s tool_name=%s code=%s",
+                        run_id,
+                        request.get("tool_name"),
+                        code,
+                    )
                 else:
                     _fail(run_store, run_id, trace_id, code, message)
                     return
@@ -1197,6 +1212,19 @@ async def run_knowledge_chat(
                 continue
             else:
                 tool_results.append(outcome)
+
+        if failed_calls:
+            if not tool_results:
+                _, code, message = failed_calls[0]
+                _fail(run_store, run_id, trace_id, code, message)
+                return
+            for failed_name, _, _ in failed_calls:
+                tool_results.append(
+                    {
+                        "tool_name": failed_name,
+                        "output": {"error": "이 Tool 호출이 실패해 결과를 가져오지 못했습니다."},
+                    }
+                )
 
         # D-103 — 지식을 미뤘는데 Tool 이 결과를 내지 못했다(선택 안 됨·거부·
         # 거절). 이제라도 전체 지식을 검색한다: abstain 은 "Tool 로 답한다"는
