@@ -6,6 +6,13 @@ Python 파일 하나면 된다. 허브 승인 없이 내 PC에서 바로 써 볼
 - 대상 버전: 데스크톱 **0.1.9 이상** (서버 직접 추가는 0.1.4부터, 여러 도구를 한 질문에 쓰는 것은 0.1.8부터)
 - 동작하는 예제: [`samples/mcp-servers/glossary-mcp/server.py`](../../samples/mcp-servers/glossary-mcp/server.py) — 복사해서 시작하면 된다.
 
+## 0. 데스크톱 클라이언트 설치
+
+- 다운로드: **[최신 릴리스 페이지](https://github.com/nkon123/ai-hub/releases/latest)** → Assets의 `AI.Asset.Hub.-Setup-<버전>-x64.exe`
+- Windows x64 설치 파일이며, 설치본에 필요한 실행 환경(agent-runtime)이 함께 들어 있다.
+- 코드 서명이 없어 **Windows Smart App Control/애플리케이션 제어가 실행을 막을 수 있다.** 막히면 관리자에게 문의한다.
+- 대화에는 접근 가능한 **Ollama**와 설치된 채팅 모델이 필요하다. 주소와 모델은 앱의 설정 화면에서 지정한다.
+
 ## 1. 어떻게 동작하나
 
 ```
