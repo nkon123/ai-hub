@@ -20,6 +20,7 @@
 // 노출해, 설치→연결→실행의 데모 경로를 검증한다. 임의 Tool 이름이나 자유형
 // JSON 입력을 받지 않는다.
 import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
+import { IDLE_CURSOR, type PromptHistoryCursor, caretLinePosition, pushPromptHistory, stepPromptHistory } from "./promptHistory";
 import { AlertTriangle, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
@@ -942,6 +943,10 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   // --- 대화 ---
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [question, setQuestion] = useState("");
+  // 위/아래 화살표로 다시 불러올 이번 세션의 질문들(promptHistory.ts). 저장하지 않으며
+  // 화면에 그릴 값이 아니라 ref 다 — 바뀔 때마다 다시 그리지 않는다.
+  const promptHistoryRef = useRef<string[]>([]);
+  const promptCursorRef = useRef<PromptHistoryCursor>(IDLE_CURSOR);
   const [isRunning, setIsRunning] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
@@ -1611,6 +1616,8 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
     // (`chatThreadMerge.ts`, 요구 B).
     setSendError(null);
     setQuestion("");
+    promptHistoryRef.current = pushPromptHistory(promptHistoryRef.current, q);
+    promptCursorRef.current = IDLE_CURSOR;
     // 새 턴을 시작하므로 이전 턴의 취소 표시 잔여물을 지운다(정상적으로는
     // 이전 턴이 끝날 때 이미 리셋되지만, 방어적으로 한 번 더).
     setPendingCancelling(false);
@@ -2732,11 +2739,39 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
               <div className="rounded-2xl border border-border bg-white shadow-sm transition focus-within:border-brand-400 focus-within:ring-1 focus-within:ring-brand-400">
                 <textarea
                   value={question}
-                  onChange={(e) => setQuestion(e.target.value)}
+                  onChange={(e) => {
+                    // 직접 고치기 시작하면 히스토리 탐색은 끝난 것이다 — 그 글이 새 초안이다.
+                    promptCursorRef.current = IDLE_CURSOR;
+                    setQuestion(e.target.value);
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
                       e.preventDefault();
                       void handleSend();
+                      return;
+                    }
+                    // 위/아래 화살표 = 이번 세션에 보낸 질문 다시 불러오기. 한글 조합 중이거나
+                    // 다른 키와 함께 눌렀거나 여러 줄 글 안에서 커서를 움직이는 중이면 건드리지 않는다.
+                    if (
+                      (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+                      !e.nativeEvent.isComposing &&
+                      !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey
+                    ) {
+                      const target = e.currentTarget;
+                      const line = caretLinePosition(target.value, target.selectionStart);
+                      const step = stepPromptHistory(promptCursorRef.current, e.key, {
+                        history: promptHistoryRef.current,
+                        current: target.value,
+                        caretOnFirstLine: line.first,
+                        caretOnLastLine: line.last,
+                      });
+                      if (step) {
+                        e.preventDefault();
+                        promptCursorRef.current = step.cursor;
+                        setQuestion(step.text);
+                        // 글이 바뀐 뒤 커서를 끝으로 — 안 그러면 처음으로 가서 다시 위 화살표가 먹는다.
+                        requestAnimationFrame(() => target.setSelectionRange(step.text.length, step.text.length));
+                      }
                     }
                   }}
                   placeholder="질문을 입력하세요..."
@@ -3027,9 +3062,41 @@ function turnContextTitle(message: ChatMessage): string | undefined {
 // 없다 — 이 화면 상단 import 주석 참고), 적어도 "어떻게 그리는지"는 이
 // 컴포넌트 하나로 통일해 셋이 서로 다른 모양으로 갈라지지 않게 한다.
 function QuestionBubble({ text }: { text: string }) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+
+  function copy() {
+    // 글을 드래그해서 고르는 중이면 그 선택을 존중한다 — 통째 복사로 덮어쓰지 않는다.
+    if (window.getSelection()?.toString()) return;
+    navigator.clipboard
+      .writeText(text)
+      .then(() => setState("copied"))
+      .catch(() => setState("failed"))
+      .finally(() => setTimeout(() => setState("idle"), 1500));
+  }
+
   return (
-    <div className="ml-auto w-fit max-w-[80%] whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white">
-      {text}
+    <div className="ml-auto flex w-fit max-w-[80%] flex-col items-end gap-0.5">
+      <div
+        role="button"
+        tabIndex={0}
+        title="눌러서 복사"
+        aria-label="내가 보낸 메시지 — 눌러서 복사"
+        onClick={copy}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            copy();
+          }
+        }}
+        className="cursor-pointer whitespace-pre-wrap rounded-2xl bg-brand-600 px-4 py-2.5 text-sm text-white transition hover:bg-brand-700"
+      >
+        {text}
+      </div>
+      {state !== "idle" && (
+        <span role="status" className="text-[11px] text-text-muted">
+          {state === "copied" ? "복사했습니다" : "복사하지 못했습니다"}
+        </span>
+      )}
     </div>
   );
 }
