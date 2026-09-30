@@ -249,6 +249,60 @@ async def test_model_json_with_line_comments_still_parses() -> None:
     assert len(result.calls) == 2  # the `//` inside the string value survived
 
 
+async def test_properties_outside_a_closed_schema_are_pruned_not_fatal() -> None:
+    """qwen3.5:4b adds `max_results` to a schema with additionalProperties:false;
+    that used to reject the whole call. Only the unknown key is dropped."""
+    candidates = [
+        {
+            "tool_name": "mail.list",
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {"folder": {"type": "string"}},
+            },
+        }
+    ]
+    adapter = FakeLLMAdapter(
+        tokens=_tokens(
+            {"calls": [{"tool_name": "mail.list", "input": {"folder": "inbox", "max_results": 10}}]}
+        )
+    )
+    result = await route_tool_call(
+        "q", candidates, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.calls == (("mail.list", {"folder": "inbox"}),)
+
+
+async def test_open_schema_keeps_every_property() -> None:
+    candidates = [{"tool_name": "mail.list", "input_schema": {"type": "object"}}]
+    adapter = FakeLLMAdapter(
+        tokens=_tokens({"calls": [{"tool_name": "mail.list", "input": {"anything": 1}}]})
+    )
+    result = await route_tool_call(
+        "q", candidates, adapter, model_alias="default-chat", timeout_seconds=5.0, max_calls=3
+    )
+    assert result.calls == (("mail.list", {"anything": 1}),)
+
+
+async def test_unbalanced_json_keeps_only_the_complete_call_objects() -> None:
+    """The model drops one `}` so the whole text is not JSON. The closed
+    `clock.now` object is kept; the broken `mail.list` one is not guessed at."""
+    candidates = [
+        {"tool_name": "mail.list", "input_schema": {"type": "object"}},
+        {"tool_name": "clock.now", "input_schema": {"type": "object"}},
+    ]
+    broken = (
+        '{"calls": [{"tool_name": "mail.list", "input": {"folder": "inbox"}, '
+        '{"tool_name": "clock.now", "input": {}}]}'
+    )
+    adapter = FakeLLMAdapter(tokens=[broken])
+    result = await route_tool_call(
+        "q", candidates[:1] + candidates[1:], adapter,
+        model_alias="default-chat", timeout_seconds=5.0, max_calls=3,
+    )
+    assert [name for name, _ in result.calls] == ["clock.now"]
+
+
 # --- route_tool_call: fail-CLOSED paths -----------------------------------
 
 

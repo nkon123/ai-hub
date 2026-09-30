@@ -147,12 +147,8 @@ _ROUTE_SYSTEM_PROMPT = (
     "- input은 input_schema를 만족해야 합니다. 질문에서 알 수 없는 인자는 "
     "생략하세요(날짜 자리에 '오늘' 같은 말을 쓰지 마세요).\n"
     "- Tool이 필요 없으면 calls를 빈 배열로 출력하세요.\n"
-    "예시(가상의 Tool):\n"
-    '질문: "문서 목록 보여주고 한 줄로 요약해줘, 그리고 지금 시각도 알려줘"\n'
-    '→ {"calls": [{"tool_name": "docs.list", "input": {}}, '
-    '{"tool_name": "clock.now", "input": {}}]}\n'
-    '질문: "안녕, 고마워"\n'
-    '→ {"calls": []}\n'
+    "- tool_name은 아래 후보 목록에 있는 이름만 그대로 쓰세요. input에는 그 Tool의 "
+    "input_schema에 있는 속성만 쓰세요.\n"
     '- 출력 형식: {"calls": [{"tool_name": "...", "input": {...}}, ...]}'
 )
 
@@ -247,6 +243,44 @@ def _parse_json_object(raw: str) -> dict[str, Any] | None:
         return parsed if isinstance(parsed, dict) else None
     except (json.JSONDecodeError, TypeError):
         return None
+
+
+def _salvage_call_objects(raw: str) -> list[dict[str, Any]]:
+    """전체가 JSON 이 아닐 때(실측 qwen3.5:4b: 첫 호출의 `}` 를 빠뜨려 뒤의 호출까지
+    통째로 못 읽었다) `{"tool_name": ...}` 모양으로 **온전히 닫힌** 객체만 건진다.
+    괄호가 깨진 객체는 건지지 않는다 — 반쯤 읽은 값으로 Tool 을 부르지 않는다.
+    건진 것도 이후 후보 이름·스키마 검사를 그대로 지난다."""
+    decoder = json.JSONDecoder()
+    found: list[dict[str, Any]] = []
+    index = 0
+    while True:
+        start = raw.find("{", index)
+        if start == -1:
+            return found
+        try:
+            value, end = decoder.raw_decode(raw, start)
+        except json.JSONDecodeError:
+            index = start + 1
+            continue
+        if isinstance(value, dict) and "tool_name" in value:
+            found.append(value)
+            index = end
+        else:
+            index = start + 1
+
+
+def _prune_unknown_properties(tool_input: dict[str, Any], schema: Any) -> dict[str, Any]:
+    """스키마가 `additionalProperties: false` 인데 모델이 없는 속성을 덧붙이면(실측
+    qwen3.5:4b: `max_results`, 인자 없는 시간 Tool 에 임의 인자) 그 호출 전체가
+    `MCP_INPUT_INVALID` 로 버려지고 나머지 요청까지 통째로 사라진다. 없는 속성만
+    **지운다** — 값을 만들어 채우거나 고치지는 않는다. 그래도 필수 속성이 없거나
+    타입이 틀리면 뒤의 `validate_tool_input` 이 그대로 거부한다(관문은 그대로다)."""
+    if not isinstance(schema, dict) or schema.get("additionalProperties") is not False:
+        return tool_input
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return tool_input
+    return {k: v for k, v in tool_input.items() if k in properties}
 
 
 def _extract_proposals(parsed: dict[str, Any]) -> list[tuple[Any, Any]]:
@@ -378,6 +412,7 @@ async def _route_group(
     (후보가 여러 서버로 나뉜 경우) 질문의 나머지 부분은 다른 Tool 이 맡는다고 알려
     준다 — 안 그러면 모델이 자기 후보로 질문 전체를 처리하려 든다."""
     candidate_names = {c["tool_name"] for c in group}
+    schemas = {c["tool_name"]: c.get("input_schema") for c in group}
     messages = [
         {"role": "system", "content": _ROUTE_SYSTEM_PROMPT},
         {
@@ -422,6 +457,10 @@ async def _route_group(
     latency_ms = int((time.monotonic() - started) * 1000)
     raw = "".join(parts).strip()
     parsed = _parse_json_object(raw)
+    if parsed is None:
+        salvaged = _salvage_call_objects(raw)
+        if salvaged:
+            parsed = {"calls": salvaged}
 
     if parsed is None:
         logger.info("tool.route.no_tool reason=unparseable latency_ms=%d", latency_ms)
@@ -440,7 +479,9 @@ async def _route_group(
         # 것은 후보 안의 Tool 뿐이라 권한은 넓어지지 않는다.
         if not isinstance(tool_name, str) or tool_name not in candidate_names:
             continue
-        tool_input = raw_input if isinstance(raw_input, dict) else {}
+        tool_input = _prune_unknown_properties(
+            raw_input if isinstance(raw_input, dict) else {}, schemas.get(tool_name)
+        )
         fingerprint = f"{tool_name}\0{json.dumps(tool_input, sort_keys=True, default=str)}"
         if fingerprint in seen_calls:
             continue
