@@ -27,8 +27,8 @@ from ai_asset_schemas.validator import validate as validate_schema
 from fastapi import APIRouter, Depends, status
 from fastapi.responses import JSONResponse
 from observability import get_trace_id
-from security_policy import Permission, VersionStatus
-from sqlalchemy import func, select
+from security_policy import Permission, Role, VersionStatus, is_mutable
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal_api.audit import record_audit
@@ -38,17 +38,20 @@ from portal_api.database import get_db
 from portal_api.models import (
     AssetVersion,
     DeploymentRevision,
+    DistributionRequest,
     IndexingJob,
     Service,
     ServiceDeployment,
     ServiceVersion,
 )
 from portal_api.models.asset import Asset
+from portal_api.models.review import ReviewDecision, ReviewRequest
 from portal_api.rbac import require_permission
 from portal_api.schemas import (
     ChatbotConfigOut,
     CreateDeploymentRequest,
     CreateServiceRequest,
+    DeleteServiceRequest,
     DeploymentBySlugOut,
     DeploymentListResponse,
     DeploymentOut,
@@ -250,6 +253,140 @@ async def list_services(
         )
 
     return ServiceListResponse(items=items, page=page, page_size=page_size, total=total)
+
+
+@router.delete("/services/{service_id}", response_model=None)
+async def delete_service(
+    service_id: str,
+    body: DeleteServiceRequest,
+    db: AsyncSession = Depends(get_db),
+    user: UserContext = Depends(get_current_user),
+) -> dict | JSONResponse:
+    """서비스를 영구 삭제한다. 되돌릴 수 없다(D-110).
+
+    **제작자(소유자)는 초안·수정 요청 상태의 서비스만**, **관리자(ADMIN)는 어느 상태든** 지운다.
+    **게시 중인 서비스는 관리자도 지우지 않는다** — 게시(배포)가 `RETIRED`(종료)가 아닌 채로 남아
+    있으면 그 URL 로 사용자가 아직 쓰고 있을 수 있다. 먼저 게시를 종료한다(`POST
+    /deployments/{id}/retire`). 배포 요청(반출)이 이 서비스의 버전을 가리키는 경우도 막는다.
+
+    함께 지우는 것: 모든 서비스 버전, 종료된 게시와 그 리비전, 검토 요청·결정. 감사 로그는 남긴다
+    (`SERVICE_DELETED` 에 상태·사유·관리자 재정의 여부). 이 서비스가 쓰는 자산(지식·프롬프트·MCP)은
+    건드리지 않는다.
+    """
+    trace_id = _trace_id()
+    denial = await require_permission(
+        db, user, Permission.SERVICE_DELETE,
+        trace_id=trace_id, resource_type="SERVICE", resource_id=service_id,
+    )
+    if denial:
+        return denial
+
+    if not body.reason or not body.reason.strip():
+        return _error(
+            status.HTTP_400_BAD_REQUEST, "VALIDATION_ERROR",
+            "삭제 사유(reason)는 필수입니다.", trace_id,
+        )
+
+    service = (
+        await db.execute(select(Service).where(Service.id == service_id))
+    ).scalar_one_or_none()
+    if service is None:
+        return _not_found("Service를 찾을 수 없습니다.", trace_id)
+
+    is_admin = user.role == Role.ADMIN.value
+    if not is_admin and service.owner_creator_id != user.user_id:
+        await record_audit(
+            db, event_type="SERVICE_DELETED", actor=user, resource_type="SERVICE",
+            resource_id=service_id, result="DENIED", trace_id=trace_id,
+            metadata={"reason": "not_owner"},
+        )
+        return _error(
+            status.HTTP_403_FORBIDDEN, "PERMISSION_DENIED",
+            "본인이 등록한 서비스만 삭제할 수 있습니다.", trace_id,
+        )
+
+    versions = (
+        await db.execute(select(ServiceVersion).where(ServiceVersion.service_id == service_id))
+    ).scalars().all()
+    undeletable = [v for v in versions if not is_mutable(VersionStatus(v.status))]
+    admin_override = bool(undeletable) and is_admin
+    if undeletable and not admin_override:
+        states = ", ".join(sorted({v.status for v in undeletable}))
+        return _error(
+            status.HTTP_409_CONFLICT, "SERVICE_NOT_DELETABLE",
+            f"승인 절차에 들어간 서비스는 삭제할 수 없습니다(현재: {states}). 영구 삭제는 관리자만 할 수 있습니다.",
+            trace_id,
+        )
+
+    version_ids = [v.id for v in versions]
+    deployments = (
+        await db.execute(select(ServiceDeployment).where(ServiceDeployment.service_id == service_id))
+    ).scalars().all()
+    live = [d for d in deployments if d.status != "RETIRED"]
+    blockers: list[str] = []
+    if live:
+        blockers.append(
+            "게시 중인 배포 " + ", ".join(f"{d.slug}({d.status})" for d in live)
+            + " — 먼저 게시를 종료하세요"
+        )
+    distributions = (
+        await db.execute(
+            select(DistributionRequest).where(
+                DistributionRequest.root_id.in_([service_id, *version_ids])
+            )
+        )
+    ).scalars().all()
+    if distributions:
+        blockers.append(f"반출(배포 요청) {len(distributions)}건")
+    if blockers:
+        return _error(
+            status.HTTP_409_CONFLICT, "SERVICE_IN_USE",
+            "사용 중이라 삭제할 수 없습니다: " + "; ".join(blockers) + ".",
+            trace_id,
+        )
+
+    review_ids = (
+        await db.execute(
+            select(ReviewRequest.id).where(
+                ReviewRequest.subject_type == "SERVICE_VERSION",
+                ReviewRequest.subject_id.in_(version_ids or [""]),
+            )
+        )
+    ).scalars().all()
+    if review_ids:
+        await db.execute(delete(ReviewDecision).where(ReviewDecision.review_id.in_(review_ids)))
+        await db.execute(delete(ReviewRequest).where(ReviewRequest.id.in_(review_ids)))
+    deployment_ids = [d.id for d in deployments]
+    if deployment_ids:
+        await db.execute(delete(DeploymentRevision).where(DeploymentRevision.deployment_id.in_(deployment_ids)))
+        await db.execute(delete(ServiceDeployment).where(ServiceDeployment.id.in_(deployment_ids)))
+    if version_ids:
+        await db.execute(delete(ServiceVersion).where(ServiceVersion.id.in_(version_ids)))
+    await db.execute(delete(Service).where(Service.id == service_id))
+    await db.commit()
+
+    await record_audit(
+        db, event_type="SERVICE_DELETED", actor=user, resource_type="SERVICE",
+        resource_id=service_id, result="SUCCESS", trace_id=trace_id,
+        metadata={
+            "service_name": service.name,
+            "version_count": len(versions),
+            "version_statuses": sorted({v.status for v in versions}),
+            "retired_deployments_removed": len(deployments),
+            "admin_override": admin_override,
+            "reason": body.reason.strip()[:500],
+        },
+    )
+    logger.info(
+        "service.deleted service_id=%s versions=%d deployments=%d trace_id=%s",
+        service_id, len(versions), len(deployments), trace_id,
+    )
+    return {
+        "deleted": True,
+        "service_id": service_id,
+        "version_count": len(versions),
+        "removed_deployments": len(deployments),
+    }
 
 
 @router.get("/services/{service_id}", response_model=ServiceDetailOut)

@@ -48,8 +48,9 @@ class Permission(StrEnum):
     # 초안 자산의 **영구 삭제**. SUSPEND/DEPRECATE/RETIRE 와 전혀 다른 행위라
     # 그것들을 재사용하지 않는다 — 앞의 셋은 승인된 자산의 상태를 바꿔 기록을
     # 남기는 일이고, 이것은 기록 자체를 지우는 일이다. 그래서 별도 권한이고,
-    # 라우터는 승인된 적이 있는 자산에는 이 권한이 있어도 삭제를 거부한다
-    # (승인 이력은 감사 대상이고, 게시된 서비스가 참조할 수 있다).
+    # 라우터는 승인된 적이 있는 자산에는 이 권한이 있어도 **제작자**의 삭제를 거부한다
+    # (승인 이력은 감사 대상이고, 게시된 서비스가 참조할 수 있다). 관리자는 참조가 없을 때
+    # 어느 상태든 지울 수 있다(D-109).
     ASSET_DELETE = "ASSET_DELETE"
     # P16 수명주기/회수 (01-portal-and-distribution.md §2 P16). Reading the
     # lifecycle screen and the impact query is intentionally narrower than
@@ -62,6 +63,9 @@ class Permission(StrEnum):
     SERVICE_READ = "SERVICE_READ"
     SERVICE_CREATE = "SERVICE_CREATE"
     SERVICE_EDIT_DRAFT = "SERVICE_EDIT_DRAFT"
+    # 서비스 영구 삭제(D-110). 제작자는 소유한 초안만, 관리자는 어느 상태든 — 라우터가
+    # 소유권·상태·참조를 따로 확인한다. 이 권한만으로 남의 서비스를 지울 수는 없다.
+    SERVICE_DELETE = "SERVICE_DELETE"
     DEPLOYMENT_CREATE = "DEPLOYMENT_CREATE"
     DEPLOYMENT_PUBLISH = "DEPLOYMENT_PUBLISH"
     DEPLOYMENT_SUSPEND = "DEPLOYMENT_SUSPEND"
@@ -134,6 +138,7 @@ ROLE_PERMISSIONS: dict[Role, frozenset[Permission]] = {
             Permission.SERVICE_READ,
             Permission.SERVICE_CREATE,
             Permission.SERVICE_EDIT_DRAFT,
+            Permission.SERVICE_DELETE,
             Permission.SERVICE_SUBMIT_REVIEW,
             Permission.DEPLOYMENT_CREATE,
             Permission.DISTRIBUTION_CREATE,

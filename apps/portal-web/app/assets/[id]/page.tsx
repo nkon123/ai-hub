@@ -26,7 +26,7 @@ import {
 } from "../../_components/ui";
 import { canCreateDistribution, useRole, type RoleDef } from "../../_components/role-context";
 
-import { DeleteAssetSection } from "./_components/delete-asset-section";
+import { DeleteResourceSection } from "../../_components/delete-resource-section";
 import { NewKnowledgeVersionForm } from "./_components/new-version-form";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
@@ -810,10 +810,11 @@ export default function KnowledgeDetailPage() {
         }}
       />
 
-      {/* 위험 구역 — 제작자는 초안만, 관리자는 어느 상태든(D-109). versions 화면과 같은 컴포넌트. */}
-      <DeleteAssetSection
-        assetId={info.id}
-        assetName={info.name}
+      {/* 위험 구역 — 제작자는 초안만, 관리자는 어느 상태든(D-109). versions·서비스 화면과 같은 컴포넌트. */}
+      <DeleteResourceSection
+        kind="asset"
+        resourceId={info.id}
+        resourceName={info.name}
         ownerCreatorId={info.owner_creator_id}
         versions={info.versions}
       />

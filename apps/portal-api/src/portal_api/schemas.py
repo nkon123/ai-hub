@@ -548,6 +548,12 @@ class DeprecateRequest(BaseModel):
     reason: str
 
 
+class DeleteServiceRequest(BaseModel):
+    """서비스 영구 삭제. 사유는 필수다 — 되돌릴 수 없는 행동이라 감사 기록에 "누가 왜 지웠는가"가 남아야 한다."""
+
+    reason: str
+
+
 class DeleteAssetRequest(BaseModel):
     """초안 자산 영구 삭제. 사유는 필수다 — 되돌릴 수 없는 행동이라 감사 기록에
     "누가 왜 지웠는가"가 남아야 한다(루트 CLAUDE.md UI 규칙: 폐기는 확인과

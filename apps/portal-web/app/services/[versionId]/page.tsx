@@ -47,6 +47,7 @@ import {
   formatDateTime,
 } from "../../_components/deployment-meta";
 import { useRole } from "../../_components/role-context";
+import { DeleteResourceSection } from "../../_components/delete-resource-section";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
@@ -881,6 +882,17 @@ export default function ServiceVersionDetailPage() {
             {JSON.stringify(def, null, 2)}
           </pre>
         </Section>
+      )}
+
+      {/* 위험 구역 — 제작자는 초안만, 관리자는 어느 상태든(D-110). 게시 중이면 서버가 거절한다. */}
+      {service && (
+        <DeleteResourceSection
+          kind="service"
+          resourceId={service.id}
+          resourceName={service.name}
+          ownerCreatorId={service.owner_creator_id}
+          versions={service.versions}
+        />
       )}
     </div>
   );

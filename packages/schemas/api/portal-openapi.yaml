@@ -1491,6 +1491,51 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [services]
+      summary: 서비스 영구 삭제 — 되돌릴 수 없다
+      description: |
+        모든 서비스 버전, **종료(RETIRED)된 게시**와 그 리비전, 검토 요청·결정을 함께 지운다.
+        **감사 로그는 남긴다**(`SERVICE_DELETED`: 상태·사유·관리자 재정의 여부). `reason`은 필수다.
+        - 제작자(소유자): 초안(DRAFT)·수정 요청(CHANGES_REQUESTED) 상태의 서비스만.
+          그 밖의 상태는 `SERVICE_NOT_DELETABLE`(409).
+        - 관리자(ADMIN): 어느 상태든(open-decisions.md D-110).
+        - **게시 중인 서비스는 관리자도 못 지운다** — 게시(배포)가 RETIRED 가 아니거나 반출
+          요청이 이 서비스의 버전을 가리키면 `SERVICE_IN_USE`(409).
+      operationId: delete_service
+      parameters:
+        - $ref: "#/components/parameters/ServiceId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAssetRequest"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, service_id, version_count, removed_deployments]
+                properties:
+                  deleted:
+                    type: boolean
+                  service_id:
+                    type: string
+                  version_count:
+                    type: integer
+                  removed_deployments:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: SERVICE_NOT_DELETABLE (non-admin, past draft) or SERVICE_IN_USE (live deployment / distribution)
 
   /api/v1/service-versions/{version_id}:
     get:
