@@ -31,3 +31,8 @@
 *.pkl  binary
 *.db   binary
 *.xlsx binary
+
+# 진행 로그는 세션마다 맨 아래/위에 항목을 덧붙이는 파일이라, 두 PC 에서 각자 고치면 같은 자리가
+# 겹쳐 병합 때마다 충돌한다. 양쪽 줄을 모두 살리는 union 병합으로 충돌 없이 합친다(항목이 중복되면
+# 사람이 한 번 정리한다).
+docs/implementation-spec/progress-log.md merge=union
