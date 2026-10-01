@@ -163,6 +163,50 @@ paths:
                 $ref: "#/components/schemas/AssetDetail"
         "404":
           $ref: "#/components/responses/NotFound"
+    delete:
+      tags: [assets]
+      summary: 자산 영구 삭제 — 되돌릴 수 없다
+      description: |
+        모든 버전과 업로드 원본·색인 디렉터리, 검토·평가 기록을 함께 지운다. **감사 로그는 남긴다**
+        (`ASSET_DELETED`: 상태·사유·관리자 재정의 여부). `reason`은 필수다.
+        - 제작자(소유자): 초안(DRAFT)·수정 요청(CHANGES_REQUESTED) 상태의 자산만. 그 밖의
+          상태는 `ASSET_NOT_DELETABLE`(409).
+        - 관리자(ADMIN): **어느 상태든**(open-decisions.md D-109). 단 서비스 정의·다른 자산의
+          매니페스트·배포 요청·회수 기록·대체 버전 지정이 이 자산을 가리키면 `ASSET_IN_USE`(409).
+      operationId: delete_asset
+      parameters:
+        - $ref: "#/components/parameters/AssetId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DeleteAssetRequest"
+      responses:
+        "200":
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deleted, asset_id, version_count, removed_directories]
+                properties:
+                  deleted:
+                    type: boolean
+                  asset_id:
+                    type: string
+                  version_count:
+                    type: integer
+                  removed_directories:
+                    type: integer
+        "400":
+          $ref: "#/components/responses/ValidationError"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          description: ASSET_NOT_DELETABLE (non-admin, past draft) or ASSET_IN_USE (referenced)
 
   /api/v1/assets/{asset_id}/versions:
     post:
@@ -3109,6 +3153,15 @@ components:
         manifest:
           type: object
           description: Asset-type specific manifest object
+
+    DeleteAssetRequest:
+      type: object
+      required: [reason]
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          description: 삭제 사유. 공백만이면 거절하고(400), 감사 로그에 최대 500자까지 남는다.
 
     CreateAssetVersionRequest:
       type: object

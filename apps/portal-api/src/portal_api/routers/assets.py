@@ -2414,20 +2414,28 @@ def _safe_rmtree(target: Path, allowed_root: Path) -> bool:
 async def _find_asset_references(db: AsyncSession, asset_id: str, version_ids: list[str]) -> list[str]:
     """이 자산을 가리키는 다른 것들. 있으면 삭제하지 않는다.
 
-    FK 만 보면 놓친다. 서비스 정의는 `knowledge_bindings[].knowledge_id` 를
-    **JSON 안에** 들고 있고, 배포 요청은 `root_id` 에 문자열로 들고 있다 —
-    데이터베이스가 막아 주지 않는 참조들이다. 이것을 확인하지 않고 지우면
-    게시된 챗봇이 질의 시점에 조용히 빈 결과를 내기 시작한다.
+    FK 만 보면 놓친다. 서비스 정의는 `knowledge_bindings`·`mcp_bindings`·`prompt_bindings`·
+    `agent_ref` 로 자산 id 를 **JSON 안에** 들고 있고, 다른 자산의 매니페스트도 id 로 서로를
+    가리키며, 배포 요청은 `root_id` 에 문자열로 들고 있다 — 데이터베이스가 막아 주지 않는
+    참조들이다. 이것을 확인하지 않고 지우면 게시된 챗봇이 질의 시점에 조용히 빈 결과를 내기
+    시작한다. 서비스·매니페스트는 바인딩 종류를 일일이 따지지 않고 **자산 id 문자열이 JSON
+    어디에든 있는지**로 본다(uuid 라 우연히 겹치지 않는다) — 새 참조 필드가 생겨도 놓치지 않는다.
     """
     blockers: list[str] = []
 
     service_versions = (await db.execute(select(ServiceVersion))).scalars().all()
     for sv in service_versions:
-        definition = sv.service_definition if isinstance(sv.service_definition, dict) else {}
-        for binding in definition.get("knowledge_bindings") or []:
-            if isinstance(binding, dict) and binding.get("knowledge_id") == asset_id:
-                blockers.append(f"서비스 버전 {sv.version or sv.id}")
-                break
+        if asset_id in json.dumps(sv.service_definition or {}, ensure_ascii=False, default=str):
+            blockers.append(f"서비스 버전 {sv.version or sv.id}")
+
+    others = (
+        await db.execute(select(AssetVersion).where(AssetVersion.asset_id != asset_id))
+    ).scalars().all()
+    for other in others:
+        if asset_id in json.dumps(other.manifest or {}, ensure_ascii=False, default=str):
+            blockers.append(f"다른 자산의 버전 {other.asset_id[:8]}… v{other.version}")
+        elif other.replacement_version_id in version_ids:
+            blockers.append(f"대체 버전으로 지정한 다른 자산 {other.asset_id[:8]}… v{other.version}")
 
     dist = (
         await db.execute(
@@ -2457,12 +2465,18 @@ async def delete_asset(
     db: AsyncSession = Depends(get_db),
     user: UserContext = Depends(get_current_user),
 ) -> dict | JSONResponse:
-    """초안 자산을 영구 삭제한다. 되돌릴 수 없다.
+    """자산을 영구 삭제한다. 되돌릴 수 없다.
 
-    **승인된 적이 있는 자산은 지우지 않는다.** 명세 §4.1 이 삭제를 허용하는
-    상태는 DRAFT(편집·삭제·검증) 와 CHANGES_REQUESTED 뿐이다. 승인 이력은 감사
-    대상이고, 게시된 서비스가 그 버전을 참조할 수 있다 — 승인된 자산을 내리는
-    수단은 이미 있다(중단/지원종료/폐기). 지우는 것과 내리는 것은 다른 일이다.
+    **제작자(소유자)는 초안만 지운다.** 명세 §4.1 이 삭제를 허용하는 상태는
+    DRAFT(편집·삭제·검증) 와 CHANGES_REQUESTED 뿐이다. 승인 이력은 감사 대상이고,
+    게시된 서비스가 그 버전을 참조할 수 있다 — 승인된 자산을 내리는 수단은 이미
+    있다(중단/지원종료/폐기). 지우는 것과 내리는 것은 다른 일이다.
+
+    **관리자(ADMIN)는 승인 절차에 들어간 자산도 지울 수 있다**(2026-10-01 사용자 결정,
+    open-decisions.md D-109). 단 **참조가 없을 때만**이다 — 서비스·다른 자산·배포 요청·회수
+    기록이 가리키는 자산은 관리자라도 막힌다(`_find_asset_references`). 승인 이력(검토 요청·
+    결정)과 평가·색인은 자산과 함께 지우고, **감사 로그는 남긴다**(`ASSET_DELETED` 에 상태·
+    사유·관리자 재정의 여부가 기록된다).
 
     FK 가 막아 주지 않는 참조도 함께 본다(`_find_asset_references`): 서비스
     정의의 `knowledge_bindings`, 배포 요청의 `root_id`, 회수 기록. 이것을
@@ -2509,12 +2523,13 @@ async def delete_asset(
     ).scalars().all()
 
     undeletable = [v for v in versions if not is_mutable(VersionStatus(v.status))]
-    if undeletable:
+    admin_override = bool(undeletable) and user.role == Role.ADMIN.value
+    if undeletable and not admin_override:
         states = ", ".join(sorted({v.status for v in undeletable}))
         return error_response(
             status.HTTP_409_CONFLICT, "ASSET_NOT_DELETABLE",
             f"승인 절차에 들어간 자산은 삭제할 수 없습니다(현재: {states}). "
-            "대신 중단 또는 지원 종료를 사용하세요.",
+            "대신 중단 또는 지원 종료를 사용하세요. 영구 삭제는 관리자만 할 수 있습니다.",
             trace_id,
         )
 
@@ -2533,6 +2548,19 @@ async def delete_asset(
     index_dirs = [settings.index_base / vid for vid in version_ids]
 
     if version_ids:
+        # 승인 이력(검토 요청·결정)은 `subject_id` 로 버전을 가리키는 FK 없는 행이다 — 지우지 않으면
+        # 검토함에 사라진 버전을 가리키는 항목이 남는다. 감사 로그(AuditEvent)는 따로 보존된다.
+        review_ids = (
+            await db.execute(
+                select(ReviewRequest.id).where(
+                    ReviewRequest.subject_type == "ASSET_VERSION",
+                    ReviewRequest.subject_id.in_(version_ids),
+                )
+            )
+        ).scalars().all()
+        if review_ids:
+            await db.execute(delete(ReviewDecision).where(ReviewDecision.review_id.in_(review_ids)))
+            await db.execute(delete(ReviewRequest).where(ReviewRequest.id.in_(review_ids)))
         await db.execute(
             delete(EvaluationResultRecord).where(EvaluationResultRecord.asset_version_id.in_(version_ids))
         )
@@ -2557,6 +2585,8 @@ async def delete_asset(
             "asset_type": asset.type,
             "version_count": len(versions),
             "removed_directories": removed_dirs,
+            "admin_override": admin_override,
+            "version_statuses": sorted({v.status for v in versions}),
             "reason": body.reason.strip()[:500],
         },
     )

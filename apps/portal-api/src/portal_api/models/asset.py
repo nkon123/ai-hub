@@ -64,8 +64,9 @@ class AssetVersion(Base):
     # P16 수명주기/회수 (01-portal-and-distribution.md §2 P16).
     retired_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # 대체 버전 설정 — points a DEPRECATED/RETIRED version at its successor.
-    # Self-referential FK; no `ondelete` because versions are never deleted
-    # (CLAUDE.md: 승인 Version을 수정하는 Update 코드를 만들지 않는다 — the
+    # Self-referential FK; no `ondelete`. Versions are deleted only as a whole asset
+    # (`DELETE /assets/{id}`: owner for drafts, ADMIN for any status when unreferenced,
+    # D-109), never one by one. (CLAUDE.md: 승인 Version을 수정하는 Update 코드를 만들지 않는다 — the
     # row itself is immutable once APPROVED, only this pointer is settable
     # while the *source* version is DEPRECATED/RETIRED, enforced in the
     # router, not the schema).

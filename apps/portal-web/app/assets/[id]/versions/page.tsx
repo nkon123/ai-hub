@@ -46,6 +46,7 @@ import { formatDateTime } from "../../../_components/review-meta";
 import { canCreateDistribution, useRole } from "../../../_components/role-context";
 
 import { NewMcpServerVersionForm } from "../_components/new-mcp-server-version-form";
+import { DeleteAssetSection } from "../_components/delete-asset-section";
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000";
 
 interface VersionOut {
@@ -1332,6 +1333,16 @@ export default function AssetVersionsPage() {
             </div>
           </Section>
         </>
+      )}
+
+      {/* 위험 구역 — 제작자는 초안만, 관리자는 어느 상태든(D-109). 지식 상세와 같은 컴포넌트. */}
+      {info && (
+        <DeleteAssetSection
+          assetId={assetId}
+          assetName={info.name}
+          ownerCreatorId={info.owner_creator_id}
+          versions={info.versions}
+        />
       )}
     </div>
   );

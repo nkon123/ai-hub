@@ -338,6 +338,7 @@ export function ReasonDialog({
   confirmVariant = "primary",
   reasonLabel = "사유",
   reasonPlaceholder,
+  confirmName,
   submitting = false,
   error,
   onConfirm,
@@ -350,6 +351,9 @@ export function ReasonDialog({
   confirmVariant?: ButtonVariant;
   reasonLabel?: string;
   reasonPlaceholder?: string;
+  /** 주어지면 사용자가 이 이름을 **그대로 다시 입력해야** 확인 버튼이 동작한다(명세 §1.2: 삭제·중단·폐기는
+   *  대상 이름을 다시 확인한다). 되돌릴 수 없는 동작에 쓴다. */
+  confirmName?: string;
   submitting?: boolean;
   error?: string | null;
   onConfirm: (reason: string) => void;
@@ -357,6 +361,7 @@ export function ReasonDialog({
 }) {
   const [reason, setReason] = useState("");
   const [touched, setTouched] = useState(false);
+  const [typedName, setTypedName] = useState("");
 
   // Reset the reason field each time the dialog is (re)opened — it's a
   // single persistent instance (never unmounted), so without this a reused
@@ -365,6 +370,7 @@ export function ReasonDialog({
     if (open) {
       setReason("");
       setTouched(false);
+      setTypedName("");
     }
   }, [open]);
 
@@ -372,16 +378,20 @@ export function ReasonDialog({
 
   const trimmed = reason.trim();
   const validationError = touched && trimmed.length === 0 ? "사유를 입력하세요." : undefined;
+  const nameMatches = confirmName === undefined || typedName.trim() === confirmName.trim();
+  const nameError =
+    touched && !nameMatches ? "이름이 일치하지 않습니다. 위에 적힌 이름을 그대로 입력하세요." : undefined;
 
   function handleConfirm() {
     setTouched(true);
-    if (trimmed.length === 0) return;
+    if (trimmed.length === 0 || !nameMatches) return;
     onConfirm(trimmed);
   }
 
   function handleCancel() {
     setReason("");
     setTouched(false);
+    setTypedName("");
     onCancel();
   }
 
@@ -405,6 +415,27 @@ export function ReasonDialog({
           </FormField>
         </div>
 
+        {confirmName !== undefined && (
+          <div className="mt-4">
+            <FormField
+              label={`확인을 위해 이름을 다시 입력하세요: ${confirmName}`}
+              required
+              error={nameError}
+            >
+              <input
+                type="text"
+                value={typedName}
+                onChange={(e) => setTypedName(e.target.value)}
+                onBlur={() => setTouched(true)}
+                placeholder={confirmName}
+                disabled={submitting}
+                autoComplete="off"
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+        )}
+
         {error && (
           <div className="mt-3">
             <ErrorBanner message={error} />
@@ -415,7 +446,11 @@ export function ReasonDialog({
           <Button variant="secondary" onClick={handleCancel} disabled={submitting}>
             취소
           </Button>
-          <Button variant={confirmVariant} onClick={handleConfirm} disabled={submitting}>
+          <Button
+            variant={confirmVariant}
+            onClick={handleConfirm}
+            disabled={submitting || (confirmName !== undefined && !nameMatches)}
+          >
             {submitting && <Loader2 size={14} className="animate-spin" />}
             {confirmLabel}
           </Button>
