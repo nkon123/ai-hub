@@ -16,6 +16,8 @@ import { InfoScreen } from "./screens/InfoScreen";
 import { ServiceDetailScreen, type ServiceDetailTarget } from "./screens/ServiceDetailScreen";
 import { Tabs, StaleBridgeBuildBanner } from "./ui";
 import { getDesktopBridge, getMissingBridgeMethods } from "./bridge";
+import { isBrowserDesktopPreviewEnabled } from "./browserPreviewBridge";
+import { TitleBar } from "./TitleBar";
 
 // IA 재편(11개 사이드바 탭 -> 3개, D14에서 스케줄 추가로 4개): 채팅 / 스케줄 /
 // 자산 허브 / 설정. "detail"(D03)과 "setup"(D01)은 사이드바에 없는
@@ -70,6 +72,10 @@ export default function App() {
     return getMissingBridgeMethods();
   });
 
+  // 앱 창에서만 사용자 정의 제목 막대를 그린다(OS 제목 줄을 숨겼기 때문). 일반 브라우저로 연
+  // 개발 화면에는 숨길 제목 줄이 없으니 그리지 않는다 — 미리보기 모드는 화면 확인용으로 그린다.
+  const [showTitleBar] = useState(() => getDesktopBridge() !== null || isBrowserDesktopPreviewEnabled());
+
   // Bumping this remounts the 설치된 자산 화면 so it reloads the asset list
   // right after a successful import/store install, without the screens
   // having to share state directly.
@@ -101,6 +107,7 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col">
+      {showTitleBar && <TitleBar />}
       {/* 상단 브랜딩 바는 2026-08-14에 제거했다 — 로고와 앱 이름만 있고
           동작이 하나도 없어서 68px을 그냥 쓰고 있었다. 앱 이름은 Electron
           `BrowserWindow`의 title(=OS 창 제목)이 이미 보여주므로 정보가

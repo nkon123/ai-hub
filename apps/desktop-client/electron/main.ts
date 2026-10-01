@@ -1,4 +1,5 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, net, protocol, shell } from "electron";
+import { APP_TITLE, shouldRemoveAppMenu, windowChromeOptions } from "./window-chrome";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import fs from "node:fs";
@@ -324,7 +325,9 @@ function createWindow(): void {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
-    title: "Enterprise AI Asset Hub",
+    title: APP_TITLE,
+    // OS 제목 줄과 File/Edit 메뉴 줄 대신 렌더러가 그리는 흰 막대(TitleBar) + OS 창 버튼.
+    ...windowChromeOptions(process.platform),
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -1899,6 +1902,8 @@ app.whenReady().then(() => {
   // Before the window: the renderer's first connection check then finds the
   // runtime already starting. start() never throws (it resolves "failed").
   void startBundledRuntime();
+  // "File Edit View ..." 메뉴 줄 제거. macOS 는 메뉴가 복사·붙여넣기 단축키의 통로라 둔다.
+  if (shouldRemoveAppMenu(process.platform)) Menu.setApplicationMenu(null);
   createWindow();
   void reconcileMcpServersOnStartup();
   // D14 — 앱이 실행되는 동안에만 동작하는 Main-process 스케줄러. 놓친 실행
