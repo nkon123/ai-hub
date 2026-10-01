@@ -97,7 +97,7 @@ describe("buildDiagnosticBundle — sanitization guarantee", () => {
 
     const bundle = await buildDiagnosticBundle(layout, store, [], {});
 
-    expect(bundle.clientVersion).toBe("0.1.13"); // apps/desktop-client/package.json
+    expect(bundle.clientVersion).toBe("0.1.14"); // apps/desktop-client/package.json
     expect(bundle.os.platform).toBe(process.platform);
     expect(bundle.installedAssets).toEqual([
       { assetId: "know-1", assetType: "knowledge", version: "1.0.0", contentHash: `manifest.json:${"a".repeat(64)}` },
