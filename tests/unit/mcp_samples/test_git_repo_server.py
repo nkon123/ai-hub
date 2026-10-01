@@ -93,6 +93,49 @@ def test_list_repos_without_config_is_a_normal_answer_that_says_what_to_do(serve
     assert "repos.example.json" in text(result)
 
 
+def test_registered_repo_names_are_in_every_lookup_tool_description(server, tmp_path: Path) -> None:
+    """The model cannot call list_repos and then pick a name inside one question, so the valid
+    names must already be in the descriptions it routes on."""
+    server.CONFIG_PATH.write_text(
+        json.dumps({"repos": {"ai-hub": "C:/a", "portal": "C:/b", "docs": "C:/c"}}), encoding="utf-8"
+    )
+    tools = {t.name: t for t in asyncio.run(server.on_list_tools(None, None)).tools}
+    for name, tool in tools.items():
+        if name == "git.list_repos":
+            assert "[저장소:" not in tool.description  # 이름 목록 도구 자신에게는 붙이지 않는다
+        else:
+            assert tool.description.startswith("[저장소: ai-hub, docs, portal]"), name
+
+
+def test_descriptions_have_no_repo_hint_without_config(server, tmp_path: Path) -> None:
+    server.CONFIG_PATH = tmp_path / "missing.json"
+    tools = asyncio.run(server.on_list_tools(None, None)).tools
+    assert len(tools) == 8 and all("[저장소:" not in t.description for t in tools)
+
+
+def test_each_lookup_tool_can_target_a_named_repo(server, tmp_path: Path, repo: Path) -> None:
+    other = tmp_path / "other"
+    other.mkdir()
+    _git(other, "init", "-q", "-b", "main")
+    (other / "ONLY_HERE.txt").write_text("second repository\n", encoding="utf-8")
+    _git(other, "add", "-A")
+    _git(other, "commit", "-q", "-m", "other repo commit")
+    server.CONFIG_PATH.write_text(
+        json.dumps({"repos": {"demo": str(repo).replace("\\", "/"), "other": str(other).replace("\\", "/")}}),
+        encoding="utf-8",
+    )
+    # With two repositories the repo must be named; naming it reaches that repository only.
+    assert "repo 를 지정하세요" in text(call(server, "git.list_files"))
+    names = [e["path"] for e in call(server, "git.list_files", {"repo": "other"}).structured_content["entries"]]
+    assert names == ["ONLY_HERE.txt"]
+    assert "second repository" in text(call(server, "git.read_file", {"repo": "other", "path": "ONLY_HERE.txt"}))
+    assert [c["subject"] for c in call(server, "git.log", {"repo": "other"}).structured_content["commits"]] == ["other repo commit"]
+    assert call(server, "git.search", {"repo": "other", "query": "second"}).structured_content["count"] == 1
+    assert call(server, "git.search", {"repo": "demo", "query": "second"}).structured_content["count"] == 0
+    # A file that exists only in one repository is not found through the other.
+    assert call(server, "git.read_file", {"repo": "demo", "path": "ONLY_HERE.txt"}).is_error
+
+
 def test_list_files_root_and_subdir_hide_secret_names(server) -> None:
     root = call(server, "git.list_files")
     names = [e["path"] for e in root.structured_content["entries"]]

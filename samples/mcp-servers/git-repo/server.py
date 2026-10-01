@@ -17,7 +17,9 @@
 
 ## 어떤 저장소를 볼 수 있나 — `repos.json`
 
-같은 폴더의 `repos.json` 에 적은 저장소만 본다. 사용자가 넘긴 문자열을 경로로 쓰지 않고,
+같은 폴더의 `repos.json` 에 적은 저장소만 본다. 여러 개를 적으면 대화에서
+"portal 저장소의 최근 커밋" 처럼 이름을 말해 고른다(모든 조회 Tool 의 `repo` 인자, 하나뿐이면 생략). 등록된 이름은
+각 Tool 설명 앞에 자동으로 붙어 AI 가 알아본다. 사용자가 넘긴 문자열을 경로로 쓰지 않고,
 **이름 → 경로** 표에서만 찾는다.
 
     {"repos": {"ai-hub": "C:/Dev/ai-hub"}}
@@ -602,8 +604,8 @@ _HANDLERS = {
 }
 
 _DESCRIPTIONS = {
-    "git.list_repos": "볼 수 있는 git 저장소 이름 목록. 저장소가 여러 개라 이름을 모를 때 쓴다.",
-    "git.list_files": "git 저장소의 폴더 안 파일·폴더 목록. '저장소에 어떤 파일이 있어', '폴더 구조 보여줘'에 쓴다.",
+    "git.list_repos": "등록된 git 저장소의 '이름'만 알려준다(파일 목록 아님). '어떤 저장소들이 있어', '깃 레포 목록'에 쓴다.",
+    "git.list_files": "git 저장소 안의 파일·폴더 목록. '○○ 저장소 파일 목록', '폴더 구조 보여줘'에 쓴다.",
     "git.read_file": "git 저장소의 파일 내용 읽기(줄 범위 지정 가능). '~ 파일 보여줘/읽어줘'에 쓴다. 경로를 알아야 한다.",
     "git.search": "git 저장소 전체에서 글자를 검색해 파일·줄을 알려준다. '~가 어디 있어', '~ 사용하는 곳 찾아줘'에 쓴다.",
     "git.log": "git 커밋 목록(해시·날짜·작성자·제목). '최근 커밋 보여줘', '이 파일 변경 이력'에 쓴다. 커밋 안의 변경 내용은 아님.",
@@ -623,12 +625,25 @@ _SCHEMAS = {
 }
 
 
+def _repo_hint() -> str:
+    """등록된 저장소 이름을 설명 앞에 붙인다 — AI 는 한 질문 안에서 list_repos 결과를 보고
+    이름을 고를 수 없으므로(라우팅이 결과를 보기 전에 끝난다), 쓸 수 있는 이름을 미리 알려 줘야
+    "docs 저장소에서 …" 같은 말에서 repo 를 채운다. 설정이 없으면 빈 문자열."""
+    try:
+        names = repo_names()
+    except ToolError:
+        return ""
+    joined = clip(", ".join(names), 60)[0]
+    return f"[저장소: {joined}] "
+
+
 async def on_list_tools(ctx, params) -> types.ListToolsResult:  # noqa: ARG001
+    hint = _repo_hint()
     return types.ListToolsResult(
         tools=[
             types.Tool(
                 name=name,
-                description=_DESCRIPTIONS[name],
+                description=(hint if name != "git.list_repos" else "") + _DESCRIPTIONS[name],
                 input_schema=_SCHEMAS[name],
                 annotations=types.ToolAnnotations(read_only_hint=True),
             )
