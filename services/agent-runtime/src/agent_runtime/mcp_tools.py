@@ -255,9 +255,14 @@ def list_candidate_tools(office_profile: dict[str, Any]) -> list[dict[str, Any]]
     prompt" discipline this module's docstring describes for `input_schema`.
     This is the exact shape `tool_router.route_tool_call` expects as
     `candidates`."""
+    from agent_runtime.config import settings as _settings
+
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for server in office_profile.get("allowed_mcp_servers", []):
+    profile_servers = (
+        office_profile.get("allowed_mcp_servers", []) if _settings.tool_route_include_profile_tools else []
+    )
+    for server in profile_servers:
         for tool_name in server.get("allowed_tools", []):
             if not isinstance(tool_name, str) or tool_name in seen:
                 continue

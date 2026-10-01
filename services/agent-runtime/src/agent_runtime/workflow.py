@@ -1216,6 +1216,11 @@ async def run_knowledge_chat(
         if failed_calls:
             if not tool_results:
                 _, code, message = failed_calls[0]
+                if len(failed_calls) > 1:
+                    # 첫 실패만 보이면 진짜 사유가 다른 Tool 의 일반 문구에 가려진다
+                    # (실사용 2026-10-01: DB Tool 의 '연결할 수 없습니다' 가 git-repo 의
+                    # 'repos.json 이 없습니다' 를 가렸다).
+                    message = " / ".join(f"[{name}] {msg}" for name, _, msg in failed_calls)
                 _fail(run_store, run_id, trace_id, code, message)
                 return
             for failed_name, _, _ in failed_calls:

@@ -416,8 +416,13 @@ def _int(arguments: dict, key: str, default: int | None, low: int, high: int | N
 
 
 def _list_repos(arguments: dict) -> dict:  # noqa: ARG001
-    names = repo_names()
-    return {"repos": names, "text": "등록된 저장소: " + ", ".join(names)}
+    try:
+        names = repo_names()
+    except ToolError as exc:
+        # 설정이 없거나 깨진 것은 "저장소가 아직 없다"는 정상 답이다 — 실패로 돌려주면 사용자는 일반
+        # 오류만 보고 무엇을 해야 하는지 모른다(실사용 2026-10-01: repos.json 을 안 만들고 추가).
+        return {"repos": [], "configured": False, "text": f"볼 수 있는 저장소가 아직 없습니다. {exc}"}
+    return {"repos": names, "configured": True, "text": "등록된 저장소: " + ", ".join(names)}
 
 
 def _list_files(arguments: dict) -> dict:

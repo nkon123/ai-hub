@@ -100,6 +100,8 @@ describe("planRuntimeLaunch", () => {
     expect(env.AGENT_RUNTIME_MCP_PYTHON_INTERPRETER_PATH).toBe(i.runtime.pythonExe);
     // A cold model load must not turn the first tool question into "no tool".
     expect(Number(env.AGENT_RUNTIME_TOOL_ROUTE_TIMEOUT_SECONDS)).toBeGreaterThanOrEqual(30);
+    // No office-mcp-server ships with the installer: its DB tools must not be offered to the model.
+    expect(env.AGENT_RUNTIME_TOOL_ROUTE_INCLUDE_PROFILE_TOOLS).toBe("false");
     expect(env.AGENT_RUNTIME_MCP_NODE_INTERPRETER_PATH).toBeUndefined();
   });
 

@@ -233,6 +233,9 @@ async def test_every_tool_failing_still_fails_the_run(
     final = await client.get(f"/local/v1/runs/{run_id}")
     assert final.json()["status"] == "FAILED"
     assert final.json()["error"]["code"] == "MCP_SERVER_UNAVAILABLE"
+    # Every failed tool is named, so one tool's generic sentence cannot hide another's real reason.
+    message = final.json()["error"]["message"]
+    assert "[db_metadata.get_tables]" in message and "[db_metadata.get_columns]" in message
 
 
 async def test_tool_route_candidate_block_excludes_profile_disallowed_tool(

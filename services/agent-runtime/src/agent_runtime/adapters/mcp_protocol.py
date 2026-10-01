@@ -48,6 +48,25 @@ _DENIAL_TO_ERROR_CODE = {
 }
 
 
+_TOOL_ERROR_PREFIX = "MCP Tool 이 오류를 반환했습니다"
+_TOOL_ERROR_MAX_CHARS = 300
+
+
+def _tool_error_message(content: Any) -> str:
+    """Tool 오류 결과의 첫 텍스트 블록을 한 줄·최대 300자로. 없으면 일반 문구."""
+    text = ""
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str):
+                text = " ".join(block["text"].split())
+                break
+    if not text:
+        return f"{_TOOL_ERROR_PREFIX}."
+    if len(text) > _TOOL_ERROR_MAX_CHARS:
+        text = text[:_TOOL_ERROR_MAX_CHARS].rstrip() + "…"
+    return f"{_TOOL_ERROR_PREFIX}: {text}"
+
+
 class ProtocolMCPAdapter(MCPAdapter):
     """등록된 MCP 서버를 프로토콜로 호출한다."""
 
@@ -113,9 +132,12 @@ class ProtocolMCPAdapter(MCPAdapter):
             raise MCPCallError(code, "MCP Tool 호출에 실패했습니다.")
 
         if outcome.result.is_error:
-            raise MCPCallError(
-                "MCP_SERVER_UNAVAILABLE", "MCP Tool 이 오류를 반환했습니다."
-            )
+            # Tool 이 스스로 돌려준 실패 문구를 사용자에게 보인다. 예전에는 이 줄이 늘
+            # "MCP Tool 이 오류를 반환했습니다." 뿐이라 "repos.json 이 없습니다" 같은 고칠
+            # 방법이 담긴 사유가 가려졌다(실사용 2026-10-01: git-repo 서버 설정 누락).
+            # 길이를 자르고 한 줄로 접으며, **이 문구는 로그·감사에 남기지 않는다** — 결과
+            # 화면에만 간다(서드파티 서버의 오류 문구에 데이터가 섞일 수 있어서).
+            raise MCPCallError("MCP_SERVER_UNAVAILABLE", _tool_error_message(outcome.result.content))
 
         return {
             "output": {

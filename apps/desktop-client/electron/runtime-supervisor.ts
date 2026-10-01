@@ -173,6 +173,10 @@ export function planRuntimeLaunch(input: RuntimeLaunchInput): RuntimeLaunchPlanR
         // on a dev PC), so it failed closed as "no tool" every first time. On
         // a single-user PC waiting for the load beats silently skipping the tool.
         AGENT_RUNTIME_TOOL_ROUTE_TIMEOUT_SECONDS: "30",
+        // The installed Desktop ships no office-mcp-server, so the Office Profile's built-in
+        // DB tools can never answer; offering them made the model pick them and fail with
+        // "cannot connect" (2026-10-01). Registered MCP servers' tools are unaffected.
+        AGENT_RUNTIME_TOOL_ROUTE_INCLUDE_PROFILE_TOOLS: "false",
       },
       healthUrl: `${url.origin}/health`,
       logPath: path.join(input.stateDir, "logs", "agent-runtime.log"),

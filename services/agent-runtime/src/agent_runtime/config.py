@@ -173,6 +173,13 @@ class AgentRuntimeSettings(BaseSettings):
     # 사라졌다. 상한은 모델이 후보를 전부 부르는 폭주를 막는다 — 각 호출은 여전히
     # 개별로 허용목록·스키마·확인 정책을 지난다.
     tool_route_max_calls: int = 3
+    # Office Profile(`allowed_mcp_servers[].allowed_tools`)의 내장 DB Tool(db_metadata.*,
+    # table_count.query)을 TOOL_ROUTE 후보에 넣을지. 이 Tool 들은 office-mcp-server 가
+    # 받아 준다 — 설치본 Desktop 에는 그 서버가 없어서 AI 가 고르면 "MCP Server에 연결할 수
+    # 없습니다" 로 실패했다(실사용 2026-10-01: "docs 폴더에는 뭐가 있어?" → db_metadata.get_tables).
+    # 기본은 True(게시된 Hosted 챗봇과 개발 스택은 그대로). 동봉 Runtime 은 False 로 띄운다.
+    # 등록된 MCP 서버의 Tool 은 이 값과 무관하게 후보에 든다.
+    tool_route_include_profile_tools: bool = True
 
     # --- 로컬 모델 지연 (2026-09-18 실사용: "채팅 반응이 너무 느리다") -------
     #

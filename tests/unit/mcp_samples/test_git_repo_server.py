@@ -83,6 +83,16 @@ def test_list_repos_and_default_repo(server) -> None:
     assert not call(server, "git.list_files").is_error
 
 
+def test_list_repos_without_config_is_a_normal_answer_that_says_what_to_do(server, tmp_path: Path) -> None:
+    """Live report 2026-10-01: repos.json is not committed, so a fresh copy has none; the
+    user only saw a generic error. list_repos must answer, not fail."""
+    server.CONFIG_PATH = tmp_path / "missing.json"
+    result = call(server, "git.list_repos")
+    assert not result.is_error
+    assert result.structured_content == {"repos": [], "configured": False}
+    assert "repos.example.json" in text(result)
+
+
 def test_list_files_root_and_subdir_hide_secret_names(server) -> None:
     root = call(server, "git.list_files")
     names = [e["path"] for e in root.structured_content["entries"]]
