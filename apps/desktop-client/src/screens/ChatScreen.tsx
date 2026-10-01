@@ -2602,7 +2602,7 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
             <div
               ref={threadScrollRef}
               onScroll={handleThreadScroll}
-              className="flex-1 space-y-5 overflow-y-auto pr-1"
+              className="list-scroll flex-1 space-y-5 overflow-y-auto pr-1"
             >
               {messages.length === 0 &&
                 localToolEntries.length === 0 &&
@@ -2978,7 +2978,7 @@ function ScheduleBotPanel({
           클릭하면 실행 결과 전문을 볼 수 있습니다. 왼쪽 위의 "대화" 탭을 누르면 다시 일반 대화로 돌아갑니다.
         </span>
       </div>
-      <div className="flex-1 space-y-2 overflow-y-auto pr-1">
+      <div className="list-scroll flex-1 space-y-2 overflow-y-auto pr-1">
         {error && <ErrorBanner message={error} />}
         {!error && loading && <LoadingState label="스케줄 실행 이력을 불러오는 중..." />}
         {!error && !loading && history.length === 0 && (
