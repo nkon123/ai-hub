@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import { canSeeAdminNav, useRole } from "./role-context";
 import {
   ClipboardCheck,
   Cog,
@@ -28,6 +29,8 @@ interface NavSection {
   /** Group label rendered above its items — a heading, never a link. */
   section: string;
   items: NavLink[];
+  /** true 면 관리자(ADMIN)에게만 보인다 — `canSeeAdminNav`(role-context.tsx). */
+  adminOnly?: boolean;
 }
 
 // 메뉴에 **없는** 것 셋과 그 이유(다음에 "빠졌네" 하고 되돌리지 않도록):
@@ -78,6 +81,7 @@ const NAV_SECTIONS: NavSection[] = [
     // 만들어진 서비스를 내보내는 쪽 — 자산 자체가 아니라 그 자산으로 하는 일이다.
     // /deployments·/distributions 둘 다 목록을 가리킨다(신규 생성은 각 화면 안).
     section: "운영",
+    adminOnly: true,
     items: [
       { href: "/deployments", label: "게시 관리", icon: Rocket },
       { href: "/distributions", label: "반출 요청", icon: PackageOpen },
@@ -85,6 +89,7 @@ const NAV_SECTIONS: NavSection[] = [
   },
   {
     section: "거버넌스",
+    adminOnly: true,
     items: [
       { href: "/reviews", label: "검토함", icon: ClipboardCheck },
       { href: "/downloads", label: "다운로드 이력", icon: Download },
@@ -158,11 +163,16 @@ function NavItem({ link, active }: { link: NavLink; active: boolean }) {
 /** Left sidebar menu — style guide §4.2. */
 export function NavLinks() {
   const pathname = usePathname();
+  const { role } = useRole();
   const active = activeHref(pathname, ALL_LINKS);
+  // 처음 그릴 때는 저장된 역할을 아직 읽기 전이라 기본 역할(제작자)이다 — 관리자 구역이 "보였다가
+  // 사라지는" 깜빡임 대신 "숨었다가 나타나게" 둔다(보여서는 안 되는 역할에게 먼저 보이는 쪽이 더 나쁘다).
+  const isAdmin = canSeeAdminNav(role.code);
+  const sections = NAV_SECTIONS.filter((s) => !s.adminOnly || isAdmin);
 
   return (
     <nav aria-label="주요 메뉴" className="flex flex-1 flex-col gap-6 overflow-y-auto px-3 py-5">
-      {NAV_SECTIONS.map(({ section, items }) => {
+      {sections.map(({ section, items }) => {
         const headingId = sectionHeadingId(section);
         return (
           <div key={section} className="flex flex-col gap-1">
@@ -181,6 +191,7 @@ export function NavLinks() {
         );
       })}
 
+      {isAdmin && (
       <div className="flex flex-col gap-1">
         <p
           id={sectionHeadingId("관리")}
@@ -207,6 +218,7 @@ export function NavLinks() {
           })}
         </ul>
       </div>
+      )}
     </nav>
   );
 }

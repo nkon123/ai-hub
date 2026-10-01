@@ -103,6 +103,18 @@ export function useRole(): RoleContextValue {
  * of what it returns. Keep this set in sync with roles.py if that matrix
  * changes.
  */
+const ADMIN_NAV_ROLES: ReadonlySet<RoleCode> = new Set<RoleCode>(["ADMIN"]);
+
+/**
+ * 좌측 메뉴의 "운영"·"거버넌스"(와 "관리") 구역을 보여줄지 — **관리자(ADMIN)만**(2026-10-01 요청).
+ * 메뉴를 숨기는 것일 뿐 접근 통제가 아니다: 같은 주소로 직접 들어가도 각 화면은 서버의 권한 판정
+ * 결과(403 → 권한 없음 상태)를 그대로 보여주고, 실제 통제는 서버가 전담한다. 검토자·배포
+ * 관리자·감사자는 이 구역이 메뉴에서 사라지므로, 그 역할에게 메뉴를 다시 열려면 이 집합을 넓힌다.
+ */
+export function canSeeAdminNav(role: RoleCode): boolean {
+  return ADMIN_NAV_ROLES.has(role);
+}
+
 const AUDIT_READ_ROLES: ReadonlySet<RoleCode> = new Set<RoleCode>(["AUDITOR", "ADMIN"]);
 
 export function canReadAudit(role: RoleCode): boolean {
