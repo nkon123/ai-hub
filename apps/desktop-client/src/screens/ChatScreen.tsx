@@ -22,7 +22,7 @@
 import { type ReactNode, type UIEvent, useCallback, useEffect, useRef, useState } from "react";
 import { avatarInitial, avatarTone } from "./conversationAvatar";
 import { IDLE_CURSOR, type PromptHistoryCursor, caretLinePosition, pushPromptHistory, stepPromptHistory } from "./promptHistory";
-import { AlertTriangle, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
+import { AlertTriangle, Bot, CalendarClock, Check, Copy, Download, FileSearch, Globe, Globe2, Info, ListChecks, Loader2, MessageSquarePlus, RefreshCw, Send, Pencil, Sparkles, Square, Terminal, Trash2, Wrench } from "lucide-react";
 import type {
   ConnectionStatus,
   ConversationSummary,
@@ -43,7 +43,7 @@ import { getBrowserSettingsBridge } from "../browserPreviewBridge";
 import { formatDateTime } from "../format";
 import { AgentDraftDialog } from "./AgentDraftDialog";
 import { AnswerMarkdown } from "./AnswerMarkdown";
-import { Button, ConfirmDialog, ErrorBanner, LoadingState, Tabs } from "../ui";
+import { Button, ConfirmDialog, ErrorBanner, LoadingState, Modal, Tabs } from "../ui";
 import {
   SCHEDULE_HISTORY_OUTCOME_LABELS,
   SCHEDULE_HISTORY_OUTCOME_TONE,
@@ -1012,6 +1012,11 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   const [conversationsError, setConversationsError] = useState<string | null>(null);
   const [currentConversationId, setCurrentConversationId] = useState<string | null>(null);
   const [deletingConversation, setDeletingConversation] = useState<ConversationSummary | null>(null);
+  // 대화방 이름 정하기 — 비워서 저장하면 정한 이름을 지워 첫 질문 이름으로 돌아간다.
+  const [renamingConversation, setRenamingConversation] = useState<ConversationSummary | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
   const [deleteConversationBusy, setDeleteConversationBusy] = useState(false);
   const [deleteConversationError, setDeleteConversationError] = useState<string | null>(null);
   // 이미 저장소에 반영한 턴을 다시 반영하지 않기 위한 표시 — 화면이 다시
@@ -1465,6 +1470,32 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
   function requestDeleteConversation(c: ConversationSummary): void {
     setDeletingConversation(c);
     setDeleteConversationError(null);
+  }
+
+  function requestRenameConversation(c: ConversationSummary): void {
+    setRenamingConversation(c);
+    // 지금 보이는 이름으로 시작한다 — 고치거나, 전부 지워 저장하면 첫 질문 이름으로 돌아간다.
+    setRenameValue(c.title);
+    setRenameError(null);
+  }
+
+  async function handleConfirmRenameConversation(): Promise<void> {
+    if (!conversationBridge || !renamingConversation) return;
+    setRenameBusy(true);
+    setRenameError(null);
+    try {
+      const result = await conversationBridge.renameConversation(renamingConversation.id, renameValue);
+      if (!result.ok) {
+        setRenameError(result.error ?? "이름을 바꾸지 못했습니다.");
+        return;
+      }
+      setRenamingConversation(null);
+      await loadConversations();
+    } catch (err) {
+      setRenameError(err instanceof Error ? err.message : "이름을 바꾸지 못했습니다.");
+    } finally {
+      setRenameBusy(false);
+    }
   }
 
   async function handleConfirmDeleteConversation(): Promise<void> {
@@ -2178,15 +2209,25 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
                           {avatarInitial(c.title)}
                         </span>
                         <span className="min-w-0 flex-1">
-                          <span className="block truncate pr-0 font-medium transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
+                          <span className="block truncate pr-0 font-medium transition-[padding] group-hover:pr-[4.5rem] group-focus-within:pr-[4.5rem]">
                             {c.title}
                           </span>
-                          <span className="block truncate text-[11px] text-text-muted transition-[padding] group-hover:pr-8 group-focus-within:pr-8">
+                          <span className="block truncate text-[11px] text-text-muted transition-[padding] group-hover:pr-[4.5rem] group-focus-within:pr-[4.5rem]">
                             {c.knowledgeLabel} · 턴 {c.turnCount}개 · {formatDateTime(c.updatedAt)}
                           </span>
                         </span>
                       </span>
                     </button>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => requestRenameConversation(c)}
+                      title="이름 바꾸기"
+                      aria-label={`'${c.title}' 대화 이름 바꾸기`}
+                      className="absolute right-10 top-1/2 -translate-y-1/2 px-2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100"
+                    >
+                      <Pencil size={13} />
+                    </Button>
                     <Button
                       variant="secondary"
                       size="sm"
@@ -2922,6 +2963,51 @@ export function ChatScreen({ onGoToInstalledAssets }: { onGoToInstalledAssets?: 
       {agentDraftDialogOpen && (
         <AgentDraftDialog messages={messages} onClose={() => setAgentDraftDialogOpen(false)} />
       )}
+
+      <Modal
+        open={renamingConversation !== null}
+        title="대화 이름 바꾸기"
+        onClose={() => {
+          if (!renameBusy) setRenamingConversation(null);
+        }}
+      >
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            void handleConfirmRenameConversation();
+          }}
+          className="space-y-3"
+        >
+          <div>
+            <label htmlFor="conversation-rename" className="mb-1 block text-caption font-semibold text-text-muted">
+              대화 이름
+            </label>
+            <input
+              id="conversation-rename"
+              type="text"
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              maxLength={60}
+              autoFocus
+              disabled={renameBusy}
+              placeholder="이름을 정하지 않으면 첫 질문이 이름이 됩니다"
+              className="h-10 w-full rounded-lg border border-border px-3 text-sm text-text-primary disabled:bg-slate-50 disabled:text-text-muted"
+            />
+            <p className="mt-1 text-caption text-text-muted">
+              최대 60자. 이름을 모두 지우고 저장하면 처음처럼 첫 질문이 이름으로 보입니다.
+            </p>
+          </div>
+          {renameError && <ErrorBanner message={renameError} />}
+          <div className="flex justify-end gap-2 pt-1">
+            <Button variant="secondary" type="button" onClick={() => setRenamingConversation(null)} disabled={renameBusy}>
+              취소
+            </Button>
+            <Button type="submit" disabled={renameBusy}>
+              {renameBusy ? "저장 중..." : "저장"}
+            </Button>
+          </div>
+        </form>
+      </Modal>
 
       <ConfirmDialog
         open={deletingConversation !== null}

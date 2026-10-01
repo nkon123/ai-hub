@@ -270,6 +270,9 @@ const bridge: DesktopBridge = {
   deleteConversation: (id: string): Promise<{ ok: boolean; error: string | null }> =>
     ipcRenderer.invoke("conversations:delete", id),
 
+  renameConversation: (id: string, title: string): Promise<{ ok: boolean; error: string | null }> =>
+    ipcRenderer.invoke("conversations:rename", id, title),
+
   // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
   generateAgentDraftSystemPrompt: (liveQuestions: string[]): Promise<OllamaChatResult> =>
     ipcRenderer.invoke("agentDraft:generateSystemPrompt", liveQuestions),

@@ -226,7 +226,8 @@ function conversationSummary(conversation: ConversationRecord): ConversationSumm
     id: conversation.id,
     knowledgeId: conversation.knowledgeId,
     knowledgeLabel: conversation.knowledgeLabel,
-    title: conversation.title,
+    title: conversation.customTitle?.trim() ? conversation.customTitle : conversation.title,
+    titleIsCustom: Boolean(conversation.customTitle?.trim()),
     createdAt: conversation.createdAt,
     updatedAt: conversation.updatedAt,
     turnCount: conversation.turns.length,
@@ -618,6 +619,19 @@ export function getBrowserSettingsBridge(): BrowserSettingsBridge | null {
       conversations[index] = updated;
       persistConversations(conversations);
       return updated;
+    },
+    async renameConversation(id, title) {
+      const conversations = readConversations();
+      const index = conversations.findIndex((conversation) => conversation.id === id);
+      if (index === -1) return { ok: false, error: "대화를 찾을 수 없습니다." };
+      // electron/conversation-store.ts::normalizeCustomTitle 와 같은 규칙(공백 접기·60자·빈 값=지움).
+      const custom = title.replace(/\s+/g, " ").trim().slice(0, 60).trimEnd();
+      const next = { ...conversations[index] };
+      if (custom) next.customTitle = custom;
+      else delete next.customTitle;
+      conversations[index] = next;
+      persistConversations(conversations);
+      return { ok: true, error: null };
     },
     async deleteConversation(id) {
       const conversations = readConversations();

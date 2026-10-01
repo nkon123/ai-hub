@@ -269,6 +269,9 @@ function createCompleteBridge(): DesktopBridge {
     async deleteConversation() {
       return { ok: true, error: null };
     },
+    async renameConversation() {
+      return { ok: true, error: null };
+    },
     async generateAgentDraftSystemPrompt() {
       return { answer: "", model: "" };
     },

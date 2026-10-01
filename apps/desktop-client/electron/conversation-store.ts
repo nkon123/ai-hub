@@ -81,7 +81,11 @@ export interface ConversationRecord {
   id: string;
   knowledgeId: string;
   knowledgeLabel: string;
+  /** 첫 질문에서 만든 이름(자동). 사용자가 이름을 정하지 않았을 때 목록에 보이는 것. */
   title: string;
+  /** 사용자가 정한 이름. 없으면(생략·빈 값) 목록은 `title`(첫 질문)을 그대로 보여준다 — 이름을 지우면
+   * "처음 대화로" 돌아가는 근거다. `title` 은 건드리지 않으므로 지워도 원래 이름이 남아 있다. */
+  customTitle?: string;
   createdAt: string;
   updatedAt: string;
   turns: ConversationTurnRecord[];
@@ -91,7 +95,10 @@ export interface ConversationSummary {
   id: string;
   knowledgeId: string;
   knowledgeLabel: string;
+  /** 목록에 보이는 이름 — 사용자가 정한 이름이 있으면 그것, 없으면 첫 질문. */
   title: string;
+  /** `title` 이 사용자가 정한 이름인가(false 면 첫 질문에서 자동으로 만든 것). */
+  titleIsCustom: boolean;
   createdAt: string;
   updatedAt: string;
   turnCount: number;
@@ -99,6 +106,16 @@ export interface ConversationSummary {
 
 const TITLE_PLACEHOLDER = "새 대화";
 const TITLE_MAX_LENGTH = 40;
+/** 사용자가 정하는 이름의 최대 길이. 첫 질문에서 만드는 자동 이름(40자)보다 넉넉하다. */
+export const CUSTOM_TITLE_MAX_LENGTH = 60;
+
+/** 사용자가 입력한 대화 이름을 저장 형태로 다듬는다 — 앞뒤·연속 공백(줄바꿈 포함)을 한 칸으로 접고
+ * 길이를 자른다. 비어 있으면 `null` = "이름을 정하지 않음"(첫 질문 이름으로 돌아간다). */
+export function normalizeCustomTitle(input: string): string | null {
+  const collapsed = input.replace(/\s+/g, " ").trim();
+  if (!collapsed) return null;
+  return collapsed.length > CUSTOM_TITLE_MAX_LENGTH ? collapsed.slice(0, CUSTOM_TITLE_MAX_LENGTH).trimEnd() : collapsed;
+}
 
 /** Derives a short list-view title from a turn's question — never stores a
  * second, hand-maintained summary; always the literal (truncated) question
@@ -114,7 +131,8 @@ function toSummary(record: ConversationRecord): ConversationSummary {
     id: record.id,
     knowledgeId: record.knowledgeId,
     knowledgeLabel: record.knowledgeLabel,
-    title: record.title,
+    title: record.customTitle?.trim() ? record.customTitle : record.title,
+    titleIsCustom: Boolean(record.customTitle?.trim()),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     turnCount: record.turns.length,
@@ -238,6 +256,22 @@ export class ConversationStore {
     all[index] = updated;
     this.save(all);
     return updated;
+  }
+
+  /** 대화 이름 정하기. 빈 값이면 사용자가 정한 이름을 지워 목록이 다시 **첫 질문**으로 보이게 한다
+   * (`title` 은 처음부터 건드리지 않았으니 그대로 돌아온다). 질문·답변 내용은 바뀌지 않는다. */
+  rename(id: string, title: string): { ok: boolean; error: string | null } {
+    const all = this.readAll();
+    const index = all.findIndex((r) => r.id === id);
+    if (index === -1) return { ok: false, error: "대화를 찾을 수 없습니다." };
+    const custom = normalizeCustomTitle(title);
+    const next: ConversationRecord = { ...all[index] };
+    if (custom === null) delete next.customTitle;
+    else next.customTitle = custom;
+    // `updatedAt` 은 올리지 않는다 — 이름만 바꿨는데 목록 순서가 뛰면 안 된다.
+    all[index] = next;
+    this.save(all);
+    return { ok: true, error: null };
   }
 
   /** 내 대화 삭제. 확인은 렌더러가 받고(`ConfirmDialog`), **사유는 받지

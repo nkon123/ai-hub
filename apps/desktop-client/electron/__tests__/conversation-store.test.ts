@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ConversationStore } from "../conversation-store";
+import { CUSTOM_TITLE_MAX_LENGTH, ConversationStore, normalizeCustomTitle } from "../conversation-store";
 
 let tmpRoot: string;
 let stateDir: string;
@@ -255,5 +255,105 @@ describe("ConversationStore", () => {
       });
       expect(store.list()[0].title).toBe("오늘 날씨 어때?");
     });
+  });
+});
+
+describe("ConversationStore.rename (대화 이름 정하기)", () => {
+  const turn = (question: string) => ({
+    question,
+    answer: "답변",
+    status: "succeeded" as const,
+    citationCount: 0,
+  });
+
+  it("shows the user's name in the list instead of the first question", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.appendTurn(created.id, turn("재택근무는 주 며칠까지 가능한가요?"));
+
+    expect(store.rename(created.id, "재택근무 문의")).toEqual({ ok: true, error: null });
+
+    const [summary] = store.list();
+    expect(summary.title).toBe("재택근무 문의");
+    expect(summary.titleIsCustom).toBe(true);
+  });
+
+  it("without a custom name the list keeps showing the first question, as before", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.appendTurn(created.id, turn("재택근무는 주 며칠까지 가능한가요?"));
+
+    const [summary] = store.list();
+    expect(summary.title).toBe("재택근무는 주 며칠까지 가능한가요?");
+    expect(summary.titleIsCustom).toBe(false);
+  });
+
+  it("clearing the name (empty or blank) goes back to the first question", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.appendTurn(created.id, turn("처음 질문"));
+    store.rename(created.id, "내가 정한 이름");
+
+    expect(store.rename(created.id, "   ").ok).toBe(true);
+
+    const [summary] = store.list();
+    expect(summary.title).toBe("처음 질문");
+    expect(summary.titleIsCustom).toBe(false);
+    expect(store.get(created.id)?.customTitle).toBeUndefined();
+  });
+
+  it("a named conversation keeps its name when later turns arrive", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.appendTurn(created.id, turn("첫 질문"));
+    store.rename(created.id, "내 이름");
+    store.appendTurn(created.id, turn("두 번째 질문"));
+
+    expect(store.list()[0].title).toBe("내 이름");
+  });
+
+  it("a conversation named before its first turn keeps the name (and the first question is still recorded)", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.rename(created.id, "미리 정한 이름");
+    store.appendTurn(created.id, turn("첫 질문"));
+
+    expect(store.list()[0].title).toBe("미리 정한 이름");
+    expect(store.get(created.id)?.title).toBe("첫 질문");
+  });
+
+  it("survives a restart", () => {
+    const store = new ConversationStore(stateDir);
+    const created = store.create("know-1", "label");
+    store.appendTurn(created.id, turn("질문"));
+    store.rename(created.id, "저장되는 이름");
+
+    expect(new ConversationStore(stateDir).list()[0].title).toBe("저장되는 이름");
+  });
+
+  it("does not change the order of the list or the conversation's content", () => {
+    const store = new ConversationStore(stateDir);
+    const a = store.create("k", "label");
+    store.appendTurn(a.id, turn("A"));
+    const before = store.get(a.id);
+
+    store.rename(a.id, "새 이름");
+    const after = store.get(a.id);
+
+    expect(after?.updatedAt).toBe(before?.updatedAt);
+    expect(after?.turns).toEqual(before?.turns);
+  });
+
+  it("collapses whitespace and cuts a long name to 60 characters", () => {
+    expect(normalizeCustomTitle("  가   나\n다  ")).toBe("가 나 다");
+    expect(normalizeCustomTitle("")).toBeNull();
+    expect(normalizeCustomTitle(" \n\t ")).toBeNull();
+    const long = "가".repeat(100);
+    expect(normalizeCustomTitle(long)).toHaveLength(CUSTOM_TITLE_MAX_LENGTH);
+  });
+
+  it("reports an unknown conversation instead of throwing", () => {
+    const store = new ConversationStore(stateDir);
+    expect(store.rename("missing", "이름")).toEqual({ ok: false, error: "대화를 찾을 수 없습니다." });
   });
 });

@@ -1367,6 +1367,8 @@ export interface ConversationRecord {
   knowledgeId: string;
   knowledgeLabel: string;
   title: string;
+  /** 사용자가 정한 이름. 없으면 목록은 `title`(첫 질문)을 보여준다. */
+  customTitle?: string;
   createdAt: string;
   updatedAt: string;
   turns: ConversationTurnRecord[];
@@ -1376,7 +1378,10 @@ export interface ConversationSummary {
   id: string;
   knowledgeId: string;
   knowledgeLabel: string;
+  /** 목록에 보이는 이름 — 사용자가 정한 이름이 있으면 그것, 없으면 첫 질문. */
   title: string;
+  /** `title` 이 사용자가 정한 이름인가. */
+  titleIsCustom: boolean;
   createdAt: string;
   updatedAt: string;
   turnCount: number;
@@ -1839,6 +1844,8 @@ export interface DesktopBridge {
    * 저장하지 않고 실패를 반환한다(Main Process에서도 다시 검증, 방어적
    * 이중 검사). */
   deleteConversation(id: string): Promise<{ ok: boolean; error: string | null }>;
+  /** 대화 이름을 정한다. 빈 값이면 정한 이름을 지워 첫 질문 이름으로 돌아간다. */
+  renameConversation(id: string, title: string): Promise<{ ok: boolean; error: string | null }>;
 
   // --- D06 대화 -> Agent 초안 (`electron/agent-draft.ts`) ----------------------
   /** 라이브 턴의 질문 텍스트만으로 시스템 프롬프트 초안을 Ollama에게

@@ -1390,6 +1390,16 @@ function registerIpcHandlers(): void {
   );
 
   ipcMain.handle(
+    "conversations:rename",
+    async (_event, id: string, title: string): Promise<{ ok: boolean; error: string | null }> => {
+      const result = getConversationStore().rename(id, typeof title === "string" ? title : "");
+      // 이름 자체는 로그에 남기지 않는다(사용자가 쓴 글) — 어느 대화인지만.
+      if (result.ok) getLogger().info("conversation-store", `대화 이름 변경됨: ${id}`);
+      return result;
+    },
+  );
+
+  ipcMain.handle(
     "conversations:delete",
     async (_event, id: string): Promise<{ ok: boolean; error: string | null }> => {
       const result = getConversationStore().remove(id);

@@ -90,6 +90,7 @@ const BRIDGE_METHOD_PRESENCE: Record<keyof DesktopBridge, true> = {
   createConversation: true,
   appendConversationTurn: true,
   deleteConversation: true,
+  renameConversation: true,
   generateAgentDraftSystemPrompt: true,
   cancelAgentDraftSystemPromptGeneration: true,
   pickAgentDraftExportDirectory: true,
