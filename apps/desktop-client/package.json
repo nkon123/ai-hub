@@ -1,6 +1,6 @@
 {
   "name": "desktop-client",
-  "version": "0.1.14",
+  "version": "0.1.15",
   "private": true,
   "description": "Enterprise AI Asset Hub — Desktop Client (M04, Electron)",
   "author": "Enterprise AI Asset Hub Team (placeholder — replace with the legal entity name before production packaging/signing)",
