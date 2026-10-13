@@ -8,6 +8,14 @@
 4. `docs/implementation-spec/open-decisions.md`
 5. `docs/implementation-spec/progress-log.md` — 모듈별 구현 현황 스냅샷. 전체 코드베이스를 다시 탐색하기 전에 먼저 확인하고, 의미 있는 변경 후에는 갱신한다.
 
+## 다른 저장소: `C:\Dev\ai-agent`
+
+`C:\Dev\ai-agent`(github.com/nkon123/ai-agent)의 파일을 다룰 때는 **먼저
+`C:\Dev\ai-agent\CLAUDE.md` 를 Read 로 읽고 그 지침을 따른다.** 이 저장소 밖이라
+자동으로 읽히지 않는다. 그 경로의 작업에는 이 파일의 규칙(모듈 소유권, 제품 언어,
+구현 원칙, 스크립트 인벤토리, 완료 전 확인)을 적용하지 않으며, 두 저장소의 코드를
+서로 import 하거나 섞지 않는다.
+
 ## 제품 언어
 
 - 사용자 화면과 신규 코드에서 `RAG`라는 용어를 사용하지 않는다.
